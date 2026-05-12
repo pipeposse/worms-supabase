@@ -8,16 +8,16 @@ import pandas as pd
 import psycopg2
 import streamlit as st
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from worms_supabase.etl.db import (
+from etl.db import (
     conectar, convertir, login as login_db,
     crear_usuario, reset_pin, cambiar_rol, cambiar_sector, set_activo,
     cambiar_mi_pin,
     listar_mis_cargas, anular_registro, puede_anular,
 )
-from worms_supabase.etl.config import DATABASE_URL
+from etl.config import DATABASE_URL
 
 st.set_page_config(page_title="WORMS Carga", layout="wide")
 

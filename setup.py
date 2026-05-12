@@ -2,12 +2,11 @@
 import sys
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
-PARENT = HERE.parent
-if str(PARENT) not in sys.path:
-    sys.path.insert(0, str(PARENT))
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 
 import psycopg2  # noqa
-from worms_supabase.etl.config import DATABASE_URL, SCHEMA_SQL, SEED_SQL  # noqa
+from etl.config import DATABASE_URL, SCHEMA_SQL, SEED_SQL  # noqa
 
 
 def run():
