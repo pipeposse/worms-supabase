@@ -355,6 +355,21 @@ CREATE TABLE IF NOT EXISTS dim_bien_uso (
     activo      BOOLEAN NOT NULL DEFAULT TRUE
 );
 
+-- Parámetros específicos por reactor (capacidad y consumos formulados por TN)
+ALTER TABLE dim_bien_uso
+  ADD COLUMN IF NOT EXISTS capacidad_max_l            DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS consumo_fuel_kg_x_tn       DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS consumo_naoh_kg_x_tn       DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS consumo_potasio_kg_x_tn    DOUBLE PRECISION;
+
+-- Constantes químicas globales (PMa, PMg, densidades, factor de exceso)
+CREATE TABLE IF NOT EXISTS dic_constante_proceso (
+    codigo       TEXT PRIMARY KEY,
+    descripcion  TEXT NOT NULL,
+    valor        DOUBLE PRECISION NOT NULL,
+    unidad       TEXT
+);
+
 -- Tipos de proceso principales (PRODUCCION_ARE, DESGOMADO_ACUOSO)
 CREATE TABLE IF NOT EXISTS dic_tipo_proceso (
     codigo      TEXT PRIMARY KEY,
@@ -394,7 +409,15 @@ ALTER TABLE fact_batch_proceso
   ADD COLUMN IF NOT EXISTS fin_ts                   TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS tiempo_estimado_horas    DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS parametros_proceso       JSONB NOT NULL DEFAULT '{}'::jsonb,
-  -- Glicerina (solo PRODUCCION_ARE)
+  -- Inputs iniciales para fórmula de carga
+  ADD COLUMN IF NOT EXISTS acidez_oleico_pct        DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS glicerol_pct             DOUBLE PRECISION,
+  -- Estimados calculados al armar (snapshot del momento de carga)
+  ADD COLUMN IF NOT EXISTS estimado_glicerina_kg    DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS estimado_naoh_kg         DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS estimado_potasio_kg      DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS estimado_fuel_kg         DOUBLE PRECISION,
+  -- Glicerina real (solo PRODUCCION_ARE)
   ADD COLUMN IF NOT EXISTS gli_fresca_lts           DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS gli_fresca_kg            DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS gli_recup_lts            DOUBLE PRECISION,
@@ -402,6 +425,62 @@ ALTER TABLE fact_batch_proceso
   ADD COLUMN IF NOT EXISTS gli_pct_real             DOUBLE PRECISION,
   -- Agua (solo DESGOMADO_ACUOSO)
   ADD COLUMN IF NOT EXISTS agua_lts                 DOUBLE PRECISION;
+
+-- Eventos de etapa: registra cada vez que se entra/sale de una etapa,
+-- con horas hombre dedicadas. Una reacción tiene varios eventos.
+CREATE TABLE IF NOT EXISTS fact_etapa_evento (
+    id_evento_etapa  BIGSERIAL PRIMARY KEY,
+    id_batch         BIGINT NOT NULL REFERENCES fact_batch_proceso(id_batch) ON DELETE CASCADE,
+    etapa            TEXT NOT NULL REFERENCES dic_etapa_proceso(codigo),
+    inicio_ts        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    fin_ts           TIMESTAMPTZ,
+    horas_hombre     DOUBLE PRECISION,
+    observaciones    TEXT,
+    id_usuario       BIGINT NOT NULL REFERENCES dim_usuario(id_usuario),
+    creado_en        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_etapa_evento_batch ON fact_etapa_evento(id_batch, inicio_ts);
+
+-- Evaluaciones internas (NO son las de laboratorio).
+-- El operador toma muestra y anota acidez, ppm fósforo, temperatura, etc.
+CREATE TABLE IF NOT EXISTS fact_evaluacion_interna (
+    id_eval          BIGSERIAL PRIMARY KEY,
+    id_batch         BIGINT NOT NULL REFERENCES fact_batch_proceso(id_batch) ON DELETE CASCADE,
+    etapa            TEXT REFERENCES dic_etapa_proceso(codigo),
+    ts               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    mediciones       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    observaciones    TEXT,
+    id_usuario       BIGINT NOT NULL REFERENCES dim_usuario(id_usuario),
+    anulado          BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS ix_eval_int_batch ON fact_evaluacion_interna(id_batch, ts);
+
+-- Salidas de decantación: glicerina, fondo de tanque, etc. y a dónde se deriva.
+CREATE TABLE IF NOT EXISTS fact_salida_decantacion (
+    id_salida        BIGSERIAL PRIMARY KEY,
+    id_batch         BIGINT NOT NULL REFERENCES fact_batch_proceso(id_batch) ON DELETE CASCADE,
+    id_producto      BIGINT NOT NULL REFERENCES dim_producto(id_producto),
+    kg               DOUBLE PRECISION,
+    lts              DOUBLE PRECISION,
+    glicerol_pct     DOUBLE PRECISION,   -- solo si producto es glicerina
+    destino_tanque   TEXT,
+    observaciones    TEXT,
+    id_usuario       BIGINT NOT NULL REFERENCES dim_usuario(id_usuario),
+    creado_en        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Gasto extraordinario: cuando se gastó MÁS de lo formulado (fuel, glicerina,
+-- potasio, soda, etc.) con motivo. Insumo viene del catálogo dic_insumo.
+CREATE TABLE IF NOT EXISTS fact_gasto_extra (
+    id_gasto_extra   BIGSERIAL PRIMARY KEY,
+    id_batch         BIGINT NOT NULL REFERENCES fact_batch_proceso(id_batch) ON DELETE CASCADE,
+    codigo_insumo    TEXT NOT NULL REFERENCES dic_insumo(codigo),
+    cantidad         DOUBLE PRECISION NOT NULL CHECK (cantidad > 0),
+    motivo           TEXT NOT NULL CHECK (length(trim(motivo)) >= 5),
+    id_usuario       BIGINT NOT NULL REFERENCES dim_usuario(id_usuario),
+    creado_en        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_gasto_extra_batch ON fact_gasto_extra(id_batch);
 
 -- Tabla de muestras intermedias: el operador toma muestras durante la reacción
 -- (acidez por muestra, ppm fósforo, % goma, etc.). Muchas filas por id_batch.

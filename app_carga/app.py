@@ -125,10 +125,16 @@ productos_mp    = productos[productos["tipo_producto"] == "MP"]
 productos_obt   = productos  # salida puede ser MP (vuelve al proceso) o FINAL
 
 # Catálogos para REACTORES
-bienes_uso     = cat("SELECT id_bien_uso, codigo, nombre_ui FROM dim_bien_uso WHERE activo ORDER BY codigo")
+
 tipos_proceso  = cat("SELECT codigo, descripcion FROM dic_tipo_proceso WHERE activo ORDER BY codigo")
 etapas_proc    = cat("SELECT codigo, descripcion, orden FROM dic_etapa_proceso WHERE activo ORDER BY orden")
 params_proceso = cat("SELECT codigo, descripcion, unidad, aplica_a FROM dic_parametro_proceso WHERE activo ORDER BY codigo")
+constantes     = cat("SELECT codigo, valor FROM dic_constante_proceso")
+def K(cod, default=None):
+    """Lookup de constante química."""
+    r = constantes[constantes["codigo"]==cod]
+    return float(r.iloc[0]["valor"]) if not r.empty else default
+bienes_uso_full = cat("SELECT id_bien_uso, codigo, nombre_ui, capacidad_max_l, consumo_fuel_kg_x_tn, consumo_naoh_kg_x_tn, consumo_potasio_kg_x_tn FROM dim_bien_uso WHERE activo ORDER BY codigo")
 sectores = cat("SELECT codigo, nombre_ui FROM dic_sector WHERE activo ORDER BY codigo")
 calidades = cat("SELECT codigo, descripcion FROM dic_calidad WHERE activo ORDER BY orden")
 turnos = cat("SELECT codigo FROM dic_turno WHERE activo")
@@ -146,7 +152,7 @@ tab_objs = st.tabs(tabs)
 # =========================================================================
 with tab_objs[0]:
     st.subheader("🏭 Carga de producción")
-    sub_nueva, sub_edit, sub_muestra = st.tabs(["➕ Nueva carga", "✏️ Editar por ticket", "🧪 Cargar muestra intermedia"])
+    sub_nueva, sub_edit, sub_eval, sub_dec, sub_gasto = st.tabs(["➕ Nueva carga", "✏️ Avanzar etapa", "\U0001f9ea Evaluación interna", "\U0001f4a7 Salida de decantación", "\u26a0\ufe0f Gasto extraordinario"])
 
     # ---------- SUB-TAB: NUEVA CARGA ----------
     with sub_nueva:
@@ -189,14 +195,17 @@ with tab_objs[0]:
         inicio_dt = None
         fin_dt = None
         tiempo_est = None
+        acidez_oleico_v = None; glicerol_v = None
+        est_glice_kg = est_naoh_kg = est_potasio_kg = est_fuel_kg = None
         if es_reactor:
             st.markdown("**Reactor + proceso + etapa**")
             cR1, cR2, cR3 = st.columns(3)
             cod_bien = cR1.selectbox(
-                "Bien de uso *", bienes_uso["codigo"].tolist(), key="b_bien",
-                format_func=lambda c: bienes_uso[bienes_uso["codigo"]==c].iloc[0]["nombre_ui"]
+                "Bien de uso *", bienes_uso_full["codigo"].tolist(), key="b_bien",
+                format_func=lambda c: bienes_uso_full[bienes_uso_full["codigo"]==c].iloc[0]["nombre_ui"]
             )
-            id_bien_sel = int(bienes_uso[bienes_uso["codigo"]==cod_bien].iloc[0]["id_bien_uso"])
+            fila_bien = bienes_uso_full[bienes_uso_full["codigo"]==cod_bien].iloc[0]
+            id_bien_sel = int(fila_bien["id_bien_uso"])
             tipo_proceso_sel = cR2.selectbox(
                 "Proceso *", tipos_proceso["codigo"].tolist(), key="b_tproc",
                 format_func=lambda c: tipos_proceso[tipos_proceso["codigo"]==c].iloc[0]["descripcion"]
@@ -205,6 +214,33 @@ with tab_objs[0]:
                 "Etapa actual *", etapas_proc["codigo"].tolist(), key="b_etapa",
                 format_func=lambda c: etapas_proc[etapas_proc["codigo"]==c].iloc[0]["descripcion"]
             )
+
+            st.caption(f"🔧 Capacidad: {int(fila_bien['capacidad_max_l'] or 0):,} L  ·  Fuel {fila_bien['consumo_fuel_kg_x_tn']:.1f} kg/TN  ·  NaOH {fila_bien['consumo_naoh_kg_x_tn']:.1f} kg/TN  ·  K {fila_bien['consumo_potasio_kg_x_tn']:.3f} kg/TN")
+
+            # --- Inputs iniciales para formula de carga (PRODUCCION_ARE) ---
+            if tipo_proceso_sel == "PRODUCCION_ARE":
+                st.markdown("**Inputs iniciales (dispara la formulación)**")
+                cF1, cF2, cF3 = st.columns(3)
+                acidez_oleico_v = cF1.number_input("Acidez oleico (%)", 0.0, 100.0, step=0.1, key="b_acidez_ol")
+                glicerol_v      = cF2.number_input("% Glicerol en glicerina", 0.0, 100.0, value=80.0, step=0.1, key="b_glicerol")
+                q_ag_kg_ref     = cF3.number_input("Q AG a procesar (kg)", 0.0, 100000.0, step=100.0, key="b_qag_ref")
+
+                # Formula del Excel:
+                # Q_glice_kg = Q_AG_kg * (acidez/100) * (PMg/(PMa*2)) * (1/(glicerol/100)) * factor_exceso
+                PMa = K("PMa", 282); PMg = K("PMg", 92); FE = K("factor_exceso_gli", 1.1)
+                D_GLI = K("densidad_glicerina", 1.25)
+                if q_ag_kg_ref > 0 and acidez_oleico_v > 0 and glicerol_v > 0:
+                    est_glice_kg = q_ag_kg_ref * (acidez_oleico_v/100) * (PMg/(PMa*2)) * (1/(glicerol_v/100)) * FE
+                    tn = q_ag_kg_ref / 1000.0
+                    est_naoh_kg    = tn * (fila_bien["consumo_naoh_kg_x_tn"] or 0)
+                    est_potasio_kg = tn * (fila_bien["consumo_potasio_kg_x_tn"] or 0)
+                    est_fuel_kg    = tn * (fila_bien["consumo_fuel_kg_x_tn"] or 0)
+                    cE1, cE2, cE3, cE4 = st.columns(4)
+                    cE1.metric("Glicerina est.", f"{est_glice_kg:,.0f} kg", f"{est_glice_kg/D_GLI:,.0f} L")
+                    cE2.metric("NaOH est.",     f"{est_naoh_kg:,.1f} kg")
+                    cE3.metric("Potasio est.",  f"{est_potasio_kg:,.2f} kg")
+                    cE4.metric("Fuel est.",     f"{est_fuel_kg:,.0f} kg")
+                    st.caption(f"📐 Fórmula: Q_glice = Q_AG × (acidez/100) × (PMg/(PMa×2)) × (1/(glicerol/100)) × {FE}")
             st.markdown("**Horarios**")
             cH1, cH2, cH3, cH4, cH5 = st.columns(5)
             f_ini = cH1.date_input("Fecha inicio", date.today(), key="b_fini")
@@ -366,6 +402,8 @@ with tab_objs[0]:
                                 "  horas_trabajadas, calidad_final, insumos, materias_primas_extras,"
                                 "  id_bien_uso, tipo_proceso, etapa_actual, inicio_ts, fin_ts, tiempo_estimado_horas,"
                                 "  parametros_proceso,"
+                                "  acidez_oleico_pct, glicerol_pct,"
+                                "  estimado_glicerina_kg, estimado_naoh_kg, estimado_potasio_kg, estimado_fuel_kg,"
                                 "  gli_fresca_lts, gli_fresca_kg, gli_recup_lts, gli_recup_kg, gli_pct_real,"
                                 "  agua_lts,"
                                 "  observaciones, fuera_de_rango, motivo_fuera_rango"
@@ -373,6 +411,8 @@ with tab_objs[0]:
                                 "  %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,"
                                 "  %s,%s,%s,%s,%s,%s,%s::jsonb,"
                                 "  %s,%s,%s,%s,%s,%s,"
+                                "  %s,%s,%s,%s,%s,"
+                                "  %s,"
                                 "  %s,%s,%s"
                                 ") RETURNING id_batch",
                                 (fecha_b.isoformat(), sector, turno, int(USR["id_usuario"]), tipo_op,
@@ -385,6 +425,8 @@ with tab_objs[0]:
                                  fin_dt.isoformat() if fin_dt else None,
                                  float(tiempo_est) if tiempo_est else None,
                                  json.dumps(parametros_dict),
+                                 acidez_oleico_v or None, glicerol_v or None,
+                                 est_glice_kg, est_naoh_kg, est_potasio_kg, est_fuel_kg,
                                  gli_fl or None, gli_fk or None, gli_rl or None, gli_rk or None, gli_pct or None,
                                  agua_lts_v or None,
                                  obs or None, bool(fuera_rango), motivo_rango or None)
@@ -438,7 +480,7 @@ with tab_objs[0]:
                     st.exception(e)
 
     # ---------- SUB-TAB: CARGAR MUESTRA INTERMEDIA ----------
-    with sub_muestra:
+    with sub_eval:
         st.caption("Durante la reacción podés tomar muestras y cargar las mediciones (acidez, ppm, % goma).")
         df_rec2 = cat("""
             SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha,
@@ -485,16 +527,110 @@ with tab_objs[0]:
                         with conectar(USR["id_usuario"]) as (conn, audit):
                             with conn.cursor() as cur:
                                 cur.execute("""
-                                    INSERT INTO fact_muestra_proceso
-                                    (id_batch, etapa, mediciones, observaciones, id_usuario_carga)
-                                    VALUES (%s,%s,%s::jsonb,%s,%s) RETURNING id_muestra
+                                    INSERT INTO fact_evaluacion_interna
+                                    (id_batch, etapa, mediciones, observaciones, id_usuario)
+                                    VALUES (%s,%s,%s::jsonb,%s,%s) RETURNING id_eval
                                 """, (int(r2["id_batch"]), etapa_m, json.dumps(med), obs_m or None, int(USR["id_usuario"])))
                                 id_m = cur.fetchone()[0]
-                            audit.insert("fact_muestra_proceso", id_m, med)
-                        st.success(f"Muestra #{id_m} guardada.")
+                            audit.insert("fact_evaluacion_interna", id_m, med)
+                        st.success(f"Evaluación interna #{id_m} guardada.")
                     except Exception as e:
                         st.exception(e)
 
+
+
+
+    # ---------- SUB-TAB: SALIDA DE DECANTACIÓN ----------
+    with sub_dec:
+        st.caption("Al decantar salen productos paralelos: glicerina (con su % glicerol) o fondo de tanque, etc.")
+        df_dec = cat("""
+            SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha, b.tipo_proceso
+            FROM fact_batch_proceso b
+            WHERE NOT b.anulado AND b.sector='REACTORES'
+            ORDER BY b.creado_en DESC LIMIT 100
+        """)
+        if df_dec.empty:
+            st.info("Sin cargas en REACTORES.")
+        else:
+            optd = df_dec.apply(lambda r: f"#{r['id_batch']} · {r['ticket'] or '—'} · {r['tipo_proceso']}", axis=1).tolist()
+            seld = st.selectbox("Reacción", optd, key="d_sel")
+            rd = df_dec.iloc[optd.index(seld)]
+            cD1, cD2 = st.columns(2)
+            prod_sal = cD1.selectbox(
+                "Producto que sale",
+                productos["codigo_producto"].tolist(), key="d_prod",
+                format_func=lambda c: c
+            )
+            destino = cD2.text_input("Destino (tanque/sector)", max_chars=40, key="d_dest")
+            cD3, cD4, cD5 = st.columns(3)
+            kg_d  = cD3.number_input("kg",  0.0, 100000.0, key="d_kg")
+            lts_d = cD4.number_input("L",   0.0, 100000.0, key="d_l")
+            gpct  = cD5.number_input("% glicerol (si glicerina)", 0.0, 100.0, key="d_gpct")
+            obs_d = st.text_input("Obs.", max_chars=200, key="d_obs")
+            if st.button("\U0001f4be Guardar salida", type="primary", use_container_width=True, key="d_save"):
+                try:
+                    with conectar(USR["id_usuario"]) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s",(prod_sal,))
+                            pid = cur.fetchone()[0]
+                            cur.execute("""
+                                INSERT INTO fact_salida_decantacion
+                                (id_batch, id_producto, kg, lts, glicerol_pct, destino_tanque, observaciones, id_usuario)
+                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id_salida
+                            """, (int(rd["id_batch"]), pid, kg_d or None, lts_d or None,
+                                  gpct or None, destino or None, obs_d or None, int(USR["id_usuario"])))
+                            id_s = cur.fetchone()[0]
+                        audit.insert("fact_salida_decantacion", id_s,
+                                     {"producto": prod_sal, "kg": kg_d, "destino": destino})
+                    st.success(f"Salida #{id_s} guardada.")
+                except Exception as e:
+                    st.exception(e)
+
+    # ---------- SUB-TAB: GASTO EXTRAORDINARIO ----------
+    with sub_gasto:
+        st.caption("Cuando se gastó MÁS de lo formulado: fuel, glicerina, potasio, soda, etc. Con motivo.")
+        df_g = cat("""
+            SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha, b.tipo_proceso
+            FROM fact_batch_proceso b
+            WHERE NOT b.anulado AND b.sector='REACTORES'
+            ORDER BY b.creado_en DESC LIMIT 100
+        """)
+        if df_g.empty:
+            st.info("Sin cargas en REACTORES.")
+        else:
+            optg = df_g.apply(lambda r: f"#{r['id_batch']} · {r['ticket'] or '—'} · {r['tipo_proceso']}", axis=1).tolist()
+            selg = st.selectbox("Reacción", optg, key="g_sel")
+            rg = df_g.iloc[optg.index(selg)]
+            cG1, cG2 = st.columns([2,1])
+            ins_g = cG1.selectbox(
+                "Insumo gastado de más",
+                insumos_cat["codigo"].tolist(), key="g_ins",
+                format_func=lambda c: f"{insumos_cat[insumos_cat['codigo']==c].iloc[0]['descripcion']} ({c})"
+            )
+            unidad_g = insumos_cat[insumos_cat["codigo"]==ins_g].iloc[0]["unidad"]
+            cant_g = cG2.number_input(f"Cantidad ({unidad_g})", 0.0, 100000.0, key="g_cant")
+            motivo_g = st.text_input("Motivo * (mín 5 chars)", max_chars=200, key="g_mot",
+                                     placeholder="ej. perdida por fuga, recarga adicional por baja conversión")
+            if st.button("\u26a0\ufe0f Registrar gasto extra", type="primary", use_container_width=True, key="g_save"):
+                if cant_g <= 0:
+                    st.error("Cantidad > 0.")
+                elif len(motivo_g.strip()) < 5:
+                    st.error("Motivo obligatorio (mín 5 chars).")
+                else:
+                    try:
+                        with conectar(USR["id_usuario"]) as (conn, audit):
+                            with conn.cursor() as cur:
+                                cur.execute("""
+                                    INSERT INTO fact_gasto_extra
+                                    (id_batch, codigo_insumo, cantidad, motivo, id_usuario)
+                                    VALUES (%s,%s,%s,%s,%s) RETURNING id_gasto_extra
+                                """, (int(rg["id_batch"]), ins_g, float(cant_g), motivo_g.strip(), int(USR["id_usuario"])))
+                                id_g = cur.fetchone()[0]
+                            audit.insert("fact_gasto_extra", id_g,
+                                         {"insumo": ins_g, "cantidad": cant_g, "motivo": motivo_g})
+                        st.success(f"Gasto extra #{id_g} registrado.")
+                    except Exception as e:
+                        st.exception(e)
 
 
 # =========================================================================

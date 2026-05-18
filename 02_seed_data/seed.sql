@@ -338,11 +338,28 @@ ON CONFLICT (codigo) DO NOTHING;
 
 UPDATE dic_sector SET activo=FALSE WHERE codigo IN ('ARE','DESGOMADO');
 
--- Bienes de uso
-INSERT INTO dim_bien_uso(codigo, nombre_ui, tipo) VALUES
- ('REACTOR_1','REACTOR 1','REACTOR'),
- ('REACTOR_2','REACTOR 2','REACTOR')
-ON CONFLICT (codigo) DO NOTHING;
+-- Bienes de uso con capacidades y consumos por TN (de FORMULA_CARGA_REACTOR.xlsx)
+INSERT INTO dim_bien_uso(codigo, nombre_ui, tipo, capacidad_max_l,
+                         consumo_fuel_kg_x_tn, consumo_naoh_kg_x_tn, consumo_potasio_kg_x_tn) VALUES
+ ('REACTOR_1','REACTOR 1','REACTOR', 80000, 76.9, 4.4, 3.125),
+ ('REACTOR_2','REACTOR 2','REACTOR', 50000, 76.9, 4.4, 3.125)
+ON CONFLICT (codigo) DO UPDATE SET
+  capacidad_max_l         = EXCLUDED.capacidad_max_l,
+  consumo_fuel_kg_x_tn    = EXCLUDED.consumo_fuel_kg_x_tn,
+  consumo_naoh_kg_x_tn    = EXCLUDED.consumo_naoh_kg_x_tn,
+  consumo_potasio_kg_x_tn = EXCLUDED.consumo_potasio_kg_x_tn;
+
+-- Constantes químicas globales (del Excel)
+INSERT INTO dic_constante_proceso(codigo, descripcion, valor, unidad) VALUES
+ ('PMa',                 'Peso molecular ácidos grasos',          282,   'g/mol'),
+ ('PMg',                 'Peso molecular glicerina',              92,    'g/mol'),
+ ('densidad_glicerina',  'Densidad glicerina',                    1.25,  'kg/L'),
+ ('densidad_aagg',       'Densidad ácidos grasos',                0.90,  'kg/L'),
+ ('factor_exceso_gli',   'Factor de exceso de glicerina',         1.10,  'ratio')
+ON CONFLICT (codigo) DO UPDATE SET
+  descripcion = EXCLUDED.descripcion,
+  valor       = EXCLUDED.valor,
+  unidad      = EXCLUDED.unidad;
 
 -- Procesos principales (solo 2)
 DELETE FROM dic_tipo_proceso WHERE codigo IN ('REACCION','TRATAMIENTO_CITRICO','TRATAMIENTO_TERMICO','ELABORACION_ARE');
@@ -351,15 +368,27 @@ INSERT INTO dic_tipo_proceso(codigo, descripcion) VALUES
  ('DESGOMADO_ACUOSO', 'Desgomado acuoso')
 ON CONFLICT (codigo) DO NOTHING;
 
--- Etapas dentro de un proceso
+-- Etapas dentro de un proceso (sin INSISTENCIA)
+-- Si hay batches usando INSISTENCIA, primero migrar a REACCION
+UPDATE fact_batch_proceso SET etapa_actual='REACCION' WHERE etapa_actual='INSISTENCIA';
+UPDATE fact_muestra_proceso SET etapa='REACCION' WHERE etapa='INSISTENCIA';
+DELETE FROM dic_etapa_proceso WHERE codigo='INSISTENCIA';
+-- Renumerar el orden
+UPDATE dic_etapa_proceso SET orden=1 WHERE codigo='ARMADO';
+UPDATE dic_etapa_proceso SET orden=2 WHERE codigo='REACCION';
+UPDATE dic_etapa_proceso SET orden=3 WHERE codigo='REPOSANDO';
+UPDATE dic_etapa_proceso SET orden=4 WHERE codigo='DECANTACION';
+UPDATE dic_etapa_proceso SET orden=5 WHERE codigo='EN_TANQUE';
+
 INSERT INTO dic_etapa_proceso(codigo, descripcion, orden) VALUES
- ('ARMADO',           'Armado · mezcla de insumos',                1),
- ('REACCION',         'Reacción · fuel, calor',                    2),
- ('INSISTENCIA',      'Insistencia · hasta acidez objetivo',       3),
- ('REPOSANDO',        'Producto reposando',                        4),
- ('DECANTACION',      'Decantación · salen finales y paralelos',   5),
- ('EN_TANQUE',        'Producto final en tanque (a laboratorio)',  6)
-ON CONFLICT (codigo) DO NOTHING;
+ ('ARMADO',      'Armado · mezcla de insumos',               1),
+ ('REACCION',    'Reacción · fuel, calor',                   2),
+ ('REPOSANDO',   'Producto reposando',                       3),
+ ('DECANTACION', 'Decantación · salen finales y paralelos',  4),
+ ('EN_TANQUE',   'Producto final en tanque (a laboratorio)', 5)
+ON CONFLICT (codigo) DO UPDATE SET
+  descripcion = EXCLUDED.descripcion,
+  orden       = EXCLUDED.orden;
 
 -- Parámetros de proceso (con rangos típicos en notas)
 DELETE FROM dic_parametro_proceso WHERE codigo IN ('acidez_inicial','acidez_final','temperatura_inicio','temperatura_fin','ppm_fosforo','prc_goma','q_merma_kg');
@@ -371,9 +400,10 @@ INSERT INTO dic_parametro_proceso(codigo, descripcion, unidad, aplica_a) VALUES
  ('q_merma_kg',        'Merma',               'kg',  '["PRODUCCION_ARE","DESGOMADO_ACUOSO"]')
 ON CONFLICT (codigo) DO NOTHING;
 
--- Insumo AGUA para desgomado acuoso (estaba faltando)
+-- Insumos AGUA y POTASIO
 INSERT INTO dic_insumo(codigo, descripcion, unidad) VALUES
- ('AGUA','Agua proceso','L')
+ ('AGUA',    'Agua proceso',         'L'),
+ ('POTASIO', 'Potasio (KOH puro)',  'kg')
 ON CONFLICT (codigo) DO NOTHING;
 
 -- Densidades (g/mL · sirven para convertir L↔kg en la app)
