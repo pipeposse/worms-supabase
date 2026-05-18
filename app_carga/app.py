@@ -369,16 +369,32 @@ with tab_objs[0]:
             p_ini, kg_ini = "", 0.0
 
         # Bloque GLICERINA (solo PRODUCCION_ARE)
-        gli_fl=gli_fk=gli_rl=gli_rk=gli_pct=None
+        # Inputs: kg + % glicerol (fresca y recuperada). L se calcula con densidad.
+        gli_fl = gli_fk = gli_rl = gli_rk = None
+        gli_fresca_pct = gli_pct = None         # gli_pct = % glicerol recuperada (gli_pct_real)
+        gli_pura_total = None
         if tipo_proceso_sel == "PRODUCCION_ARE":
+            D_GLI = K("densidad_glicerina", 1.25)
             st.markdown("**Glicerina**")
-            cG1, cG2, cG3, cG4, cG5 = st.columns(5)
-            gli_fl  = cG1.number_input("Fresca (L)",   0.0, 100000.0, key="b_glfl")
-            gli_fk  = cG2.number_input("Fresca (kg)",  0.0, 100000.0, key="b_glfk")
-            gli_rl  = cG3.number_input("Recup. (L)",   0.0, 100000.0, key="b_glrl")
-            gli_rk  = cG4.number_input("Recup. (kg)",  0.0, 100000.0, key="b_glrk")
-            gli_pct = cG5.number_input("% real recup.", 0.0, 100.0, step=0.1, key="b_glpct")
-            st.caption("ℹ️ Densidad glicerina ≈ 1.26 kg/L · si solo cargás L, kg se puede calcular.")
+            cG1, cG2, cG3, cG4 = st.columns(4)
+            gli_fk         = cG1.number_input("Fresca (kg)",       0.0, 100000.0, step=10.0, key="b_glfk")
+            gli_fresca_pct = cG2.number_input("% glicerol fresca", 0.0, 100.0,    step=0.1, value=99.5, key="b_glfpct")
+            gli_rk         = cG3.number_input("Recuperada (kg)",   0.0, 100000.0, step=10.0, key="b_glrk")
+            gli_pct        = cG4.number_input("% glicerol recup.", 0.0, 100.0,    step=0.1, value=80.0, key="b_glpct")
+
+            # Cálculos derivados (en vivo)
+            gli_fl = (gli_fk / D_GLI) if gli_fk else 0.0
+            gli_rl = (gli_rk / D_GLI) if gli_rk else 0.0
+            pura_fresca = (gli_fk or 0.0) * (gli_fresca_pct or 0.0) / 100
+            pura_recup  = (gli_rk or 0.0) * (gli_pct or 0.0) / 100
+            gli_pura_total = pura_fresca + pura_recup
+
+            cD1, cD2, cD3 = st.columns(3)
+            cD1.metric("Fresca (L calc.)",      f"{gli_fl:,.1f} L")
+            cD2.metric("Recuperada (L calc.)",  f"{gli_rl:,.1f} L")
+            cD3.metric("Glicerina pura total",  f"{gli_pura_total:,.1f} kg",
+                       f"fresca {pura_fresca:,.0f} + recup {pura_recup:,.0f}")
+            st.caption(f"ℹ️ Densidad glicerina = {D_GLI} kg/L · L = kg / {D_GLI}. Pura = kg × %glicerol.")
 
         # Bloque AGUA (solo DESGOMADO_ACUOSO)
         agua_lts_v = None
@@ -471,7 +487,9 @@ with tab_objs[0]:
                                 "  acidez_oleico_pct, glicerol_pct,"
                                 "  estimado_glicerina_kg, estimado_naoh_kg, estimado_potasio_kg, estimado_fuel_kg,"
                                 "  estimado_are_kg, q_ag_planeado_kg,"
-                                "  gli_fresca_lts, gli_fresca_kg, gli_recup_lts, gli_recup_kg, gli_pct_real,"
+                                "  gli_fresca_lts, gli_fresca_kg, gli_fresca_pct,"
+                                "  gli_recup_lts, gli_recup_kg, gli_pct_real,"
+                                "  gli_pura_total_kg,"
                                 "  agua_lts,"
                                 "  observaciones, fuera_de_rango, motivo_fuera_rango"
                                 ") VALUES ("
@@ -481,7 +499,9 @@ with tab_objs[0]:
                                 "  %s,%s,"
                                 "  %s,%s,%s,%s,"
                                 "  %s,%s,"
-                                "  %s,%s,%s,%s,%s,"
+                                "  %s,%s,%s,"
+                                "  %s,%s,%s,"
+                                "  %s,"
                                 "  %s,"
                                 "  %s,%s,%s"
                                 ") RETURNING id_batch",
@@ -499,7 +519,9 @@ with tab_objs[0]:
                                  acidez_oleico_v or None, glicerol_v or None,
                                  est_glice_kg, est_naoh_kg, est_potasio_kg, est_fuel_kg,
                                  est_are_kg, (float(q_ag_kg_ref) if q_ag_kg_ref else None),
-                                 gli_fl or None, gli_fk or None, gli_rl or None, gli_rk or None, gli_pct or None,
+                                 gli_fl or None, gli_fk or None, gli_fresca_pct or None,
+                                 gli_rl or None, gli_rk or None, gli_pct or None,
+                                 gli_pura_total or None,
                                  agua_lts_v or None,
                                  obs or None, bool(fuera_rango), motivo_rango or None)
                             )

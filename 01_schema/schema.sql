@@ -419,12 +419,14 @@ ALTER TABLE fact_batch_proceso
   ADD COLUMN IF NOT EXISTS estimado_fuel_kg         DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS estimado_are_kg          DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS q_ag_planeado_kg         DOUBLE PRECISION,
-  -- Glicerina real (solo PRODUCCION_ARE)
-  ADD COLUMN IF NOT EXISTS gli_fresca_lts           DOUBLE PRECISION,
+  -- Glicerina real (solo PRODUCCION_ARE) · cargar SIEMPRE en kg; L se derivan por densidad
+  ADD COLUMN IF NOT EXISTS gli_fresca_lts           DOUBLE PRECISION,   -- legacy, calculado por la app
   ADD COLUMN IF NOT EXISTS gli_fresca_kg            DOUBLE PRECISION,
-  ADD COLUMN IF NOT EXISTS gli_recup_lts            DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS gli_fresca_pct           DOUBLE PRECISION,   -- % glicerol de la fresca
+  ADD COLUMN IF NOT EXISTS gli_recup_lts            DOUBLE PRECISION,   -- legacy, calculado por la app
   ADD COLUMN IF NOT EXISTS gli_recup_kg             DOUBLE PRECISION,
-  ADD COLUMN IF NOT EXISTS gli_pct_real             DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS gli_pct_real             DOUBLE PRECISION,   -- % glicerol de la recuperada
+  ADD COLUMN IF NOT EXISTS gli_pura_total_kg        DOUBLE PRECISION,   -- pura = fresca*%+recup*%
   -- Agua (solo DESGOMADO_ACUOSO)
   ADD COLUMN IF NOT EXISTS agua_lts                 DOUBLE PRECISION;
 
