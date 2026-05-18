@@ -214,6 +214,7 @@ with tab_objs[0]:
         tiempo_est = None
         acidez_oleico_v = None; glicerol_v = None
         est_glice_kg = est_naoh_kg = est_potasio_kg = est_fuel_kg = est_are_kg = None
+        est_glicerol_puro_kg = None
         q_ag_kg_ref = 0.0
         if es_reactor:
             st.markdown("**Reactor + proceso + etapa**")
@@ -269,8 +270,16 @@ with tab_objs[0]:
                     help=f"Sugerido por capacidad: {int(q_ag_max_kg):,} kg"
                 )
 
+                # variables disponibles para comparación posterior
+                est_glicerol_puro_kg = None
                 if q_ag_kg_ref > 0 and acidez_oleico_v > 0 and glicerol_v > 0:
-                    est_glice_kg = float(q_ag_kg_ref) * (acidez_oleico_v/100) * (PMg/(PMa*2)) * (1/(glicerol_v/100)) * FE
+                    # Glicerol PURO necesario (química pura, sin descontar pureza)
+                    est_glicerol_puro_kg = float(q_ag_kg_ref) * (acidez_oleico_v/100) * (PMg/(PMa*2)) * FE
+                    # Glicerina total a cargar (con la pureza informada): glicerol_puro / (glicerol/100)
+                    est_glice_kg = est_glicerol_puro_kg / (glicerol_v/100)
+                    # Cuánto más glicerina por la impureza vs glicerina 100% pura
+                    mas_por_impureza = est_glice_kg - est_glicerol_puro_kg
+
                     tn = float(q_ag_kg_ref) / 1000.0
                     est_naoh_kg    = tn * float(fila_bien["consumo_naoh_kg_x_tn"]    or 0)
                     est_potasio_kg = tn * float(fila_bien["consumo_potasio_kg_x_tn"] or 0)
@@ -279,10 +288,20 @@ with tab_objs[0]:
 
                     st.markdown("**🧮 Insumos estimados a cargar**")
                     cE1, cE2, cE3, cE4 = st.columns(4)
-                    cE1.metric("Glicerina", f"{est_glice_kg:,.0f} kg", f"{est_glice_kg/D_GLI:,.0f} L")
+                    cE1.metric(
+                        "Glicerina a cargar",
+                        f"{est_glice_kg:,.0f} kg",
+                        f"+{mas_por_impureza:,.0f} kg por pureza {glicerol_v:.0f}%"
+                    )
                     cE2.metric("NaOH",      f"{est_naoh_kg:,.1f} kg")
                     cE3.metric("Potasio",   f"{est_potasio_kg:,.2f} kg")
                     cE4.metric("Fuel",      f"{est_fuel_kg:,.0f} kg")
+
+                    st.caption(
+                        f"💡 Glicerol **puro** necesario = **{est_glicerol_puro_kg:,.0f} kg**. "
+                        f"Como la glicerina tiene {glicerol_v:.0f}% de glicerol, hay que cargar "
+                        f"**{est_glice_kg:,.0f} kg** de glicerina ({mas_por_impureza:,.0f} kg extra para compensar la impureza)."
+                    )
 
                     st.markdown("**🎯 Producto final esperado**")
                     st.metric("ARE estimado", f"{est_are_kg:,.0f} kg", f"~{est_are_kg/1000:.1f} TN")
@@ -386,16 +405,32 @@ with tab_objs[0]:
             # Cálculos derivados (en vivo)
             gli_fl = (gli_fk / D_GLI) if gli_fk else 0.0
             gli_rl = (gli_rk / D_GLI) if gli_rk else 0.0
-            pura_fresca = (gli_fk or 0.0) * (gli_fresca_pct or 0.0) / 100
-            pura_recup  = (gli_rk or 0.0) * (gli_pct or 0.0) / 100
-            gli_pura_total = pura_fresca + pura_recup
+            glicerol_fresca = (gli_fk or 0.0) * (gli_fresca_pct or 0.0) / 100
+            glicerol_recup  = (gli_rk or 0.0) * (gli_pct or 0.0) / 100
+            gli_pura_total = glicerol_fresca + glicerol_recup   # = glicerol total cargado
 
             cD1, cD2, cD3 = st.columns(3)
-            cD1.metric("Fresca (L calc.)",      f"{gli_fl:,.1f} L")
-            cD2.metric("Recuperada (L calc.)",  f"{gli_rl:,.1f} L")
-            cD3.metric("Glicerina pura total",  f"{gli_pura_total:,.1f} kg",
-                       f"fresca {pura_fresca:,.0f} + recup {pura_recup:,.0f}")
-            st.caption(f"ℹ️ Densidad glicerina = {D_GLI} kg/L · L = kg / {D_GLI}. Pura = kg × %glicerol.")
+            cD1.metric("Fresca (L calc.)",     f"{gli_fl:,.1f} L")
+            cD2.metric("Recuperada (L calc.)", f"{gli_rl:,.1f} L")
+            cD3.metric("Glicerol total cargado",
+                       f"{gli_pura_total:,.1f} kg",
+                       f"fresca {glicerol_fresca:,.0f} + recup {glicerol_recup:,.0f}")
+            st.caption(f"ℹ️ Densidad glicerina = {D_GLI} kg/L · L = kg / {D_GLI}. Glicerol = kg × %glicerol.")
+
+            # Comparación con el glicerol PURO necesario según fórmula
+            if est_glicerol_puro_kg and gli_pura_total > 0:
+                desv_abs = gli_pura_total - est_glicerol_puro_kg
+                desv_pct = desv_abs / est_glicerol_puro_kg * 100
+                tol = 5.0  # tolerancia ±5%
+                txt = f"Glicerol cargado **{gli_pura_total:,.0f} kg** vs requerido **{est_glicerol_puro_kg:,.0f} kg** → desvío **{desv_pct:+.1f}%** ({desv_abs:+,.0f} kg)"
+                if abs(desv_pct) <= tol:
+                    st.success("✅ " + txt + " · dentro del parámetro recomendado (±5%).")
+                elif desv_pct > 0:
+                    st.warning("⚠️ " + txt + " · **fuera** del recomendado: estás cargando glicerol de **más**.")
+                else:
+                    st.warning("⚠️ " + txt + " · **fuera** del recomendado: falta glicerol para la reacción.")
+            elif est_glicerol_puro_kg:
+                st.caption(f"💡 Para esta corrida se necesitan **{est_glicerol_puro_kg:,.0f} kg de glicerol puro** según la fórmula.")
 
         # Bloque AGUA (solo DESGOMADO_ACUOSO)
         agua_lts_v = None
