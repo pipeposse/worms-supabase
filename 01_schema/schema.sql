@@ -426,6 +426,22 @@ ALTER TABLE fact_batch_proceso
   -- Agua (solo DESGOMADO_ACUOSO)
   ADD COLUMN IF NOT EXISTS agua_lts                 DOUBLE PRECISION;
 
+-- En REACTORES el producto obtenido y la calidad solo se conocen en la etapa
+-- EN_TANQUE; al crear la reacción todavía no hay producto definido. Se hace
+-- nullable y se valida a nivel app cuando corresponde.
+ALTER TABLE fact_batch_proceso ALTER COLUMN id_producto_obtenido DROP NOT NULL;
+ALTER TABLE fact_batch_proceso ALTER COLUMN kg_obtenido          DROP NOT NULL;
+
+-- Target vs real: el operador define qué producto/calidad APUNTA a producir
+-- al armar la reacción. Al cerrar en EN_TANQUE se compara con el real.
+ALTER TABLE fact_batch_proceso
+  ADD COLUMN IF NOT EXISTS id_producto_buscado BIGINT REFERENCES dim_producto(id_producto),
+  ADD COLUMN IF NOT EXISTS calidad_buscada     TEXT REFERENCES dic_calidad(codigo);
+ALTER TABLE fact_batch_proceso DROP CONSTRAINT IF EXISTS fact_batch_proceso_kg_obtenido_check;
+ALTER TABLE fact_batch_proceso
+  ADD CONSTRAINT fact_batch_proceso_kg_obtenido_check
+  CHECK (kg_obtenido IS NULL OR kg_obtenido >= 0);
+
 -- Eventos de etapa: registra cada vez que se entra/sale de una etapa,
 -- con horas hombre dedicadas. Una reacción tiene varios eventos.
 CREATE TABLE IF NOT EXISTS fact_etapa_evento (

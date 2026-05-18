@@ -254,32 +254,44 @@ with tab_objs[0]:
             if fin_dt < inicio_dt:
                 st.error("Fecha/hora de fin anterior al inicio.")
 
-        # Producto obtenido (con sugerencia automática según proceso)
-        st.markdown("**Producto obtenido**")
-        cOB1, cOB2 = st.columns(2)
-        sugerido = None
-        if tipo_proceso_sel == "PRODUCCION_ARE": sugerido = "ARE-A"
-        if tipo_proceso_sel == "DESGOMADO_ACUOSO": sugerido = "AFE-S"
-        opciones_obt = productos_obt["codigo_producto"].tolist()
-        idx_obt = opciones_obt.index(sugerido) if (sugerido and sugerido in opciones_obt) else 0
-        p_obt = cOB1.selectbox(
-            "Producto obtenido *", opciones_obt, index=idx_obt, key="b_po",
-            format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
-        )
-        kg_obt = cOB2.number_input("Kg obtenido *", 0.0, 1_000_000.0, key="b_ko")
-
-        fila_p = productos_obt[productos_obt["codigo_producto"] == p_obt].iloc[0]
-        rmin, rmax = fila_p["rango_kg_min"], fila_p["rango_kg_max"]
-        if pd.notna(rmin) and pd.notna(rmax):
-            st.caption(f"📏 Rango habitual: {int(rmin):,} – {int(rmax):,} kg")
+        # Producto obtenido / kg / calidad
+        # En REACTORES: solo se completan al llegar a EN_TANQUE. En otros sectores: ahora.
+        p_obt = None
+        kg_obt = 0.0
+        calidad_b = ""
+        rmin = rmax = None
         fuera_rango = False
-        if pd.notna(rmin) and pd.notna(rmax) and kg_obt > 0:
-            fuera_rango = bool((kg_obt < rmin) or (kg_obt > rmax))
-
-        # Calidad final (importante para ARE)
-        if tipo_proceso_sel == "PRODUCCION_ARE":
-            calidad_b = st.selectbox("Calidad final ARE", calidades["codigo"].tolist(), key="b_cal")
+        p_buscado = None
+        calidad_buscada = ""
+        if es_reactor:
+            st.markdown("**Producto buscado (target)** — lo que se quiere obtener con la reacción")
+            cTG1, cTG2 = st.columns(2)
+            opt_obj = productos_obt["codigo_producto"].tolist()
+            sug = None
+            if tipo_proceso_sel == "PRODUCCION_ARE": sug = "ARE-A"
+            if tipo_proceso_sel == "DESGOMADO_ACUOSO": sug = "AFE-S"
+            idx_obj = opt_obj.index(sug) if (sug and sug in opt_obj) else 0
+            p_buscado = cTG1.selectbox(
+                "Producto buscado *", opt_obj, index=idx_obj, key="b_pbusc",
+                format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
+            )
+            calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
+            st.caption("ℹ️ El producto **obtenido real** y su calidad se cargan al cerrar la reacción en la etapa EN_TANQUE (sub-tab 'Avanzar etapa').")
         else:
+            st.markdown("**Producto obtenido**")
+            cOB1, cOB2 = st.columns(2)
+            opciones_obt = productos_obt["codigo_producto"].tolist()
+            p_obt = cOB1.selectbox(
+                "Producto obtenido *", opciones_obt, key="b_po",
+                format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
+            )
+            kg_obt = cOB2.number_input("Kg obtenido *", 0.0, 1_000_000.0, key="b_ko")
+            fila_p = productos_obt[productos_obt["codigo_producto"] == p_obt].iloc[0]
+            rmin, rmax = fila_p["rango_kg_min"], fila_p["rango_kg_max"]
+            if pd.notna(rmin) and pd.notna(rmax):
+                st.caption(f"\U0001f4cf Rango habitual: {int(rmin):,} – {int(rmax):,} kg")
+            if pd.notna(rmin) and pd.notna(rmax) and kg_obt > 0:
+                fuera_rango = bool((kg_obt < rmin) or (kg_obt > rmax))
             calidad_b = st.selectbox("Calidad final", [""] + calidades["codigo"].tolist(), key="b_cal")
 
         # Materia prima
@@ -373,7 +385,7 @@ with tab_objs[0]:
 
         if submit_b:
             errs = []
-            if kg_obt <= 0:
+            if not es_reactor and kg_obt <= 0:
                 errs.append("Kg obtenido > 0.")
             if not es_recup and (not p_ini or kg_ini <= 0):
                 errs.append("En NORMAL la materia prima es obligatoria.")
@@ -391,8 +403,14 @@ with tab_objs[0]:
                             if p_ini:
                                 cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s",(p_ini,))
                                 pid_ini = cur.fetchone()[0]
-                            cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s",(p_obt,))
-                            pid_obt = cur.fetchone()[0]
+                            pid_buscado = None
+                            if p_buscado:
+                                cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s",(p_buscado,))
+                                pid_buscado = cur.fetchone()[0]
+                            pid_obt = None
+                            if p_obt:
+                                cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s",(p_obt,))
+                                pid_obt = cur.fetchone()[0]
                             mp_extras = [{"producto": c, "kg": k} for c, k in mps_ingresadas[1:]] if not es_recup else []
                             cur.execute(
                                 "INSERT INTO fact_batch_proceso ("
@@ -402,6 +420,7 @@ with tab_objs[0]:
                                 "  horas_trabajadas, calidad_final, insumos, materias_primas_extras,"
                                 "  id_bien_uso, tipo_proceso, etapa_actual, inicio_ts, fin_ts, tiempo_estimado_horas,"
                                 "  parametros_proceso,"
+                                "  id_producto_buscado, calidad_buscada,"
                                 "  acidez_oleico_pct, glicerol_pct,"
                                 "  estimado_glicerina_kg, estimado_naoh_kg, estimado_potasio_kg, estimado_fuel_kg,"
                                 "  gli_fresca_lts, gli_fresca_kg, gli_recup_lts, gli_recup_kg, gli_pct_real,"
@@ -417,7 +436,7 @@ with tab_objs[0]:
                                 ") RETURNING id_batch",
                                 (fecha_b.isoformat(), sector, turno, int(USR["id_usuario"]), tipo_op,
                                  (identificador or None),
-                                 pid_ini, float(kg_ini) if kg_ini else None, pid_obt, float(kg_obt),
+                                 pid_ini, float(kg_ini) if kg_ini else None, pid_obt, float(kg_obt) if kg_obt else None,
                                  None, calidad_b or None,
                                  json.dumps(insumos_dict), json.dumps(mp_extras),
                                  id_bien_sel, tipo_proceso_sel, etapa_sel,
@@ -425,6 +444,7 @@ with tab_objs[0]:
                                  fin_dt.isoformat() if fin_dt else None,
                                  float(tiempo_est) if tiempo_est else None,
                                  json.dumps(parametros_dict),
+                                 pid_buscado, calidad_buscada or None,
                                  acidez_oleico_v or None, glicerol_v or None,
                                  est_glice_kg, est_naoh_kg, est_potasio_kg, est_fuel_kg,
                                  gli_fl or None, gli_fk or None, gli_rl or None, gli_rk or None, gli_pct or None,
@@ -446,9 +466,11 @@ with tab_objs[0]:
         df_rec = cat("""
             SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha, b.sector,
                    b.tipo_proceso, b.etapa_actual,
+                   pb.codigo_producto AS buscado, b.calidad_buscada,
                    p.codigo_producto AS obtenido, b.kg_obtenido
             FROM fact_batch_proceso b
-            JOIN dim_producto p ON p.id_producto = b.id_producto_obtenido
+            LEFT JOIN dim_producto p  ON p.id_producto  = b.id_producto_obtenido
+            LEFT JOIN dim_producto pb ON pb.id_producto = b.id_producto_buscado
             WHERE NOT b.anulado AND b.sector='REACTORES'
             ORDER BY b.creado_en DESC LIMIT 100
         """)

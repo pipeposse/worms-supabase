@@ -403,7 +403,7 @@ ON CONFLICT (codigo) DO NOTHING;
 -- Insumos AGUA y POTASIO
 INSERT INTO dic_insumo(codigo, descripcion, unidad) VALUES
  ('AGUA',    'Agua proceso',         'L'),
- ('POTASIO', 'Potasio (KOH puro)',  'kg')
+ ('POTASIO', 'Potasio (KOH puro)',  'KG')
 ON CONFLICT (codigo) DO NOTHING;
 
 -- Densidades (g/mL · sirven para convertir L↔kg en la app)
@@ -501,7 +501,7 @@ INSERT INTO fact_muestra_proceso (id_batch, ts, etapa, mediciones, id_usuario_ca
 SELECT
   b.id_batch,
   b.inicio_ts + ((etapa_n-1) * (b.fin_ts - b.inicio_ts) / 2),
-  CASE etapa_n WHEN 1 THEN 'ARMADO' WHEN 2 THEN 'REACCION' WHEN 3 THEN 'INSISTENCIA' END,
+  CASE etapa_n WHEN 1 THEN 'ARMADO' WHEN 2 THEN 'REACCION' WHEN 3 THEN 'REPOSANDO' END,
   CASE
     WHEN b.tipo_proceso='PRODUCCION_ARE'
       THEN jsonb_build_object(
