@@ -261,20 +261,21 @@ with tab_objs[0]:
                 acidez_oleico_v = cF1.number_input("Acidez oleico (%)", 0.0, 100.0, step=0.1, key="b_acidez_ol")
                 glicerol_v      = cF2.number_input("% Glicerol en glicerina", 0.0, 100.0, value=80.0, step=0.1, key="b_glicerol")
                 q_ag_kg_ref     = cF3.number_input(
-                    "Q AG a procesar (kg)", 0.0,
-                    max_value=q_ag_max_kg if q_ag_max_kg > 0 else 200000.0,
-                    value=float(q_ag_max_kg) if q_ag_max_kg > 0 else 0.0,
-                    step=100.0, key="b_qag_ref",
+                    "Q AG a procesar (kg)",
+                    min_value=0,
+                    max_value=int(q_ag_max_kg) if q_ag_max_kg > 0 else 200000,
+                    value=int(q_ag_max_kg) if q_ag_max_kg > 0 else 0,
+                    step=100, key="b_qag_ref",
                     help=f"Sugerido por capacidad: {int(q_ag_max_kg):,} kg"
                 )
 
                 if q_ag_kg_ref > 0 and acidez_oleico_v > 0 and glicerol_v > 0:
-                    est_glice_kg = q_ag_kg_ref * (acidez_oleico_v/100) * (PMg/(PMa*2)) * (1/(glicerol_v/100)) * FE
-                    tn = q_ag_kg_ref / 1000.0
-                    est_naoh_kg    = tn * (fila_bien["consumo_naoh_kg_x_tn"] or 0)
-                    est_potasio_kg = tn * (fila_bien["consumo_potasio_kg_x_tn"] or 0)
-                    est_fuel_kg    = tn * (fila_bien["consumo_fuel_kg_x_tn"] or 0)
-                    est_are_kg     = q_ag_kg_ref  # 1:1 aprox · ajustar con rendimiento real
+                    est_glice_kg = float(q_ag_kg_ref) * (acidez_oleico_v/100) * (PMg/(PMa*2)) * (1/(glicerol_v/100)) * FE
+                    tn = float(q_ag_kg_ref) / 1000.0
+                    est_naoh_kg    = tn * float(fila_bien["consumo_naoh_kg_x_tn"]    or 0)
+                    est_potasio_kg = tn * float(fila_bien["consumo_potasio_kg_x_tn"] or 0)
+                    est_fuel_kg    = tn * float(fila_bien["consumo_fuel_kg_x_tn"]    or 0)
+                    est_are_kg     = float(q_ag_kg_ref)  # 1:1 aprox
 
                     st.markdown("**🧮 Insumos estimados a cargar**")
                     cE1, cE2, cE3, cE4 = st.columns(4)
@@ -332,7 +333,7 @@ with tab_objs[0]:
                 "Producto obtenido *", opciones_obt, key="b_po",
                 format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
             )
-            kg_obt = cOB2.number_input("Kg obtenido *", 0.0, 1_000_000.0, key="b_ko")
+            kg_obt = cOB2.number_input("Kg obtenido *", min_value=0, max_value=1_000_000, step=100, value=0, key="b_ko")
             fila_p = productos_obt[productos_obt["codigo_producto"] == p_obt].iloc[0]
             rmin, rmax = fila_p["rango_kg_min"], fila_p["rango_kg_max"]
             if pd.notna(rmin) and pd.notna(rmax):
@@ -358,7 +359,7 @@ with tab_objs[0]:
                     productos_mp["codigo_producto"].tolist(),
                     key=f"b_pi_{i}"
                 )
-                kg = cMP2.number_input(f"Kg inicial #{i+1} *", 0.0, 1_000_000.0, key=f"b_ki_{i}")
+                kg = cMP2.number_input(f"Kg inicial #{i+1} *", min_value=0, max_value=1_000_000, step=100, value=0, key=f"b_ki_{i}")
                 if cod and kg > 0:
                     mps_ingresadas.append((cod, float(kg)))
             if mps_ingresadas:
@@ -377,10 +378,10 @@ with tab_objs[0]:
             D_GLI = K("densidad_glicerina", 1.25)
             st.markdown("**Glicerina**")
             cG1, cG2, cG3, cG4 = st.columns(4)
-            gli_fk         = cG1.number_input("Fresca (kg)",       0.0, 100000.0, step=10.0, key="b_glfk")
-            gli_fresca_pct = cG2.number_input("% glicerol fresca", 0.0, 100.0,    step=0.1, value=99.5, key="b_glfpct")
-            gli_rk         = cG3.number_input("Recuperada (kg)",   0.0, 100000.0, step=10.0, key="b_glrk")
-            gli_pct        = cG4.number_input("% glicerol recup.", 0.0, 100.0,    step=0.1, value=80.0, key="b_glpct")
+            gli_fk         = cG1.number_input("Fresca (kg)",       min_value=0, max_value=100000, step=100, value=0, key="b_glfk")
+            gli_fresca_pct = cG2.number_input("% glicerol fresca", 0.0, 100.0, step=0.1, value=99.5, key="b_glfpct")
+            gli_rk         = cG3.number_input("Recuperada (kg)",   min_value=0, max_value=100000, step=100, value=0, key="b_glrk")
+            gli_pct        = cG4.number_input("% glicerol recup.", 0.0, 100.0, step=0.1, value=80.0, key="b_glpct")
 
             # Cálculos derivados (en vivo)
             gli_fl = (gli_fk / D_GLI) if gli_fk else 0.0
@@ -400,7 +401,7 @@ with tab_objs[0]:
         agua_lts_v = None
         if tipo_proceso_sel == "DESGOMADO_ACUOSO":
             st.markdown("**Agua de proceso**")
-            agua_lts_v = st.number_input("Cantidad de agua (L)", 0.0, 100000.0, step=10.0, key="b_agua")
+            agua_lts_v = st.number_input("Cantidad de agua (L)", min_value=0, max_value=100000, step=100, value=0, key="b_agua")
 
         # Insumos
         st.markdown("**Insumos**")
@@ -517,11 +518,19 @@ with tab_objs[0]:
                                  json.dumps(parametros_dict),
                                  pid_buscado, calidad_buscada or None,
                                  acidez_oleico_v or None, glicerol_v or None,
-                                 est_glice_kg, est_naoh_kg, est_potasio_kg, est_fuel_kg,
-                                 est_are_kg, (float(q_ag_kg_ref) if q_ag_kg_ref else None),
-                                 gli_fl or None, gli_fk or None, gli_fresca_pct or None,
-                                 gli_rl or None, gli_rk or None, gli_pct or None,
-                                 gli_pura_total or None,
+                                 (float(est_glice_kg)  if est_glice_kg  is not None else None),
+                                 (float(est_naoh_kg)   if est_naoh_kg   is not None else None),
+                                 (float(est_potasio_kg) if est_potasio_kg is not None else None),
+                                 (float(est_fuel_kg)   if est_fuel_kg   is not None else None),
+                                 (float(est_are_kg)    if est_are_kg    is not None else None),
+                                 (float(q_ag_kg_ref) if q_ag_kg_ref else None),
+                                 (float(gli_fl) if gli_fl else None),
+                                 (float(gli_fk) if gli_fk else None),
+                                 (float(gli_fresca_pct) if gli_fresca_pct else None),
+                                 (float(gli_rl) if gli_rl else None),
+                                 (float(gli_rk) if gli_rk else None),
+                                 (float(gli_pct) if gli_pct else None),
+                                 (float(gli_pura_total) if gli_pura_total else None),
                                  agua_lts_v or None,
                                  obs or None, bool(fuera_rango), motivo_rango or None)
                             )
