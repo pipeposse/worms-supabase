@@ -417,6 +417,8 @@ ALTER TABLE fact_batch_proceso
   ADD COLUMN IF NOT EXISTS estimado_naoh_kg         DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS estimado_potasio_kg      DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS estimado_fuel_kg         DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS estimado_are_kg          DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS q_ag_planeado_kg         DOUBLE PRECISION,
   -- Glicerina real (solo PRODUCCION_ARE)
   ADD COLUMN IF NOT EXISTS gli_fresca_lts           DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS gli_fresca_kg            DOUBLE PRECISION,

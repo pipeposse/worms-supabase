@@ -213,7 +213,8 @@ with tab_objs[0]:
         fin_dt = None
         tiempo_est = None
         acidez_oleico_v = None; glicerol_v = None
-        est_glice_kg = est_naoh_kg = est_potasio_kg = est_fuel_kg = None
+        est_glice_kg = est_naoh_kg = est_potasio_kg = est_fuel_kg = est_are_kg = None
+        q_ag_kg_ref = 0.0
         if es_reactor:
             st.markdown("**Reactor + proceso + etapa**")
             cR1, cR2, cR3 = st.columns(3)
@@ -469,6 +470,7 @@ with tab_objs[0]:
                                 "  id_producto_buscado, calidad_buscada,"
                                 "  acidez_oleico_pct, glicerol_pct,"
                                 "  estimado_glicerina_kg, estimado_naoh_kg, estimado_potasio_kg, estimado_fuel_kg,"
+                                "  estimado_are_kg, q_ag_planeado_kg,"
                                 "  gli_fresca_lts, gli_fresca_kg, gli_recup_lts, gli_recup_kg, gli_pct_real,"
                                 "  agua_lts,"
                                 "  observaciones, fuera_de_rango, motivo_fuera_rango"
@@ -478,6 +480,7 @@ with tab_objs[0]:
                                 "  %s,%s,"
                                 "  %s,%s,"
                                 "  %s,%s,%s,%s,"
+                                "  %s,%s,"
                                 "  %s,%s,%s,%s,%s,"
                                 "  %s,"
                                 "  %s,%s,%s"
@@ -495,6 +498,7 @@ with tab_objs[0]:
                                  pid_buscado, calidad_buscada or None,
                                  acidez_oleico_v or None, glicerol_v or None,
                                  est_glice_kg, est_naoh_kg, est_potasio_kg, est_fuel_kg,
+                                 est_are_kg, (float(q_ag_kg_ref) if q_ag_kg_ref else None),
                                  gli_fl or None, gli_fk or None, gli_rl or None, gli_rk or None, gli_pct or None,
                                  agua_lts_v or None,
                                  obs or None, bool(fuera_rango), motivo_rango or None)
@@ -757,6 +761,63 @@ with tab_objs[1]:
         prod_x_prod = df_obs.groupby("obtenido", as_index=False)["kg_obtenido"].sum().sort_values("kg_obtenido", ascending=False)
         st.bar_chart(prod_x_prod, x="obtenido", y="kg_obtenido")
 
+        # ----- Plan vs Real (REACTORES con estimados cargados) -----
+        st.markdown("**🎯 Plan vs Real (reactores)**")
+        df_pvr = cat(f"""
+            SELECT
+              b.id_batch,
+              b.identificador_unidad AS ticket,
+              b.fecha,
+              b.q_ag_planeado_kg,
+              b.kg_inicial            AS q_ag_real_kg,
+              b.estimado_glicerina_kg,
+              b.estimado_naoh_kg,
+              b.estimado_potasio_kg,
+              b.estimado_fuel_kg,
+              b.estimado_are_kg,
+              b.kg_obtenido           AS are_real_kg,
+              (b.insumos->>'GLICERINA')::numeric  AS gli_real_kg,
+              (b.insumos->>'SODA')::numeric       AS naoh_real_kg,
+              (b.insumos->>'POTASIO')::numeric    AS potasio_real_kg,
+              (b.insumos->>'FUEL')::numeric       AS fuel_real_kg
+            FROM fact_batch_proceso b
+            WHERE NOT b.anulado AND b.sector='REACTORES'
+              AND b.estimado_are_kg IS NOT NULL
+              AND b.creado_en >= NOW() - INTERVAL %s
+            ORDER BY b.fecha DESC, b.id_batch DESC
+            LIMIT 50
+        """, (f"{int(rango_dias)} days",))
+
+        if df_pvr.empty:
+            st.caption("Aún no hay reacciones con estimado cargado en este período.")
+        else:
+            # Calcular desvíos %
+            import numpy as np
+            def desvio(real, est):
+                if est is None or est == 0 or pd.isna(est) or pd.isna(real): return None
+                return round((real - est) / est * 100, 1)
+            df_pvr["desv_ARE_%"]      = df_pvr.apply(lambda r: desvio(r["are_real_kg"], r["estimado_are_kg"]), axis=1)
+            df_pvr["desv_Glice_%"]    = df_pvr.apply(lambda r: desvio(r["gli_real_kg"], r["estimado_glicerina_kg"]), axis=1)
+            df_pvr["desv_NaOH_%"]     = df_pvr.apply(lambda r: desvio(r["naoh_real_kg"], r["estimado_naoh_kg"]), axis=1)
+            df_pvr["desv_Potasio_%"]  = df_pvr.apply(lambda r: desvio(r["potasio_real_kg"], r["estimado_potasio_kg"]), axis=1)
+            df_pvr["desv_Fuel_%"]     = df_pvr.apply(lambda r: desvio(r["fuel_real_kg"], r["estimado_fuel_kg"]), axis=1)
+
+            st.dataframe(df_pvr[[
+                "id_batch","ticket","fecha",
+                "q_ag_planeado_kg","q_ag_real_kg",
+                "estimado_glicerina_kg","gli_real_kg","desv_Glice_%",
+                "estimado_naoh_kg","naoh_real_kg","desv_NaOH_%",
+                "estimado_potasio_kg","potasio_real_kg","desv_Potasio_%",
+                "estimado_fuel_kg","fuel_real_kg","desv_Fuel_%",
+                "estimado_are_kg","are_real_kg","desv_ARE_%",
+            ]], use_container_width=True, hide_index=True)
+
+            # KPI de rendimiento promedio
+            kP1, kP2, kP3 = st.columns(3)
+            kP1.metric("Desv. ARE prom.",      f"{df_pvr['desv_ARE_%'].dropna().mean():+.1f}%"     if df_pvr['desv_ARE_%'].notna().any()    else "—")
+            kP2.metric("Desv. Glicerina prom.", f"{df_pvr['desv_Glice_%'].dropna().mean():+.1f}%"   if df_pvr['desv_Glice_%'].notna().any()  else "—")
+            kP3.metric("Desv. Fuel prom.",     f"{df_pvr['desv_Fuel_%'].dropna().mean():+.1f}%"    if df_pvr['desv_Fuel_%'].notna().any()   else "—")
+
         # Gasto de insumos (consolida JSONB)
         st.markdown("**Gasto de insumos (período)**")
         df_ins = cat(f"""
@@ -916,7 +977,7 @@ if USR["rol"] == "ADMIN":
         with ac1:
             st.markdown("**Estado**")
             if u_row["activo"]:
-                if st.button("🚫 Desactivar usuario", key=f"deact_{u_id}", use_container_width=True):
+                if st.button("\U0001f6ab Desactivar usuario", key=f"deact_{u_id}", use_container_width=True):
                     try: set_activo(USR["id_usuario"], u_id, False); st.success("Desactivado."); cat.clear(); st.rerun()
                     except Exception as e: st.error(str(e))
             else:
