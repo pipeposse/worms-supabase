@@ -143,6 +143,10 @@ def productos_de_sector(sec):
 tipos_proceso  = cat("SELECT codigo, descripcion FROM dic_tipo_proceso WHERE activo ORDER BY codigo")
 etapas_proc    = cat("SELECT codigo, descripcion, orden FROM dic_etapa_proceso WHERE activo ORDER BY orden")
 params_proceso = cat("SELECT codigo, descripcion, unidad, aplica_a FROM dic_parametro_proceso WHERE activo ORDER BY codigo")
+duraciones_etapa = cat("""
+    SELECT sector, tipo_proceso, etapa, duracion_target_min, duracion_min_min, duracion_max_min
+    FROM dic_etapa_duracion
+""")
 constantes     = cat("SELECT codigo, valor FROM dic_constante_proceso")
 def K(cod, default=None):
     """Lookup de constante química."""
@@ -235,6 +239,23 @@ with tab_objs[0]:
             )
 
             st.caption(f"🔧 Capacidad: {int(fila_bien['capacidad_max_l'] or 0):,} L  ·  Fuel {fila_bien['consumo_fuel_kg_x_tn']:.1f} kg/TN  ·  NaOH {fila_bien['consumo_naoh_kg_x_tn']:.1f} kg/TN  ·  K {fila_bien['consumo_potasio_kg_x_tn']:.3f} kg/TN")
+
+            # Duraciones esperadas por etapa para este (sector, proceso)
+            dur_filt = duraciones_etapa[
+                (duraciones_etapa["sector"]==sector) &
+                (duraciones_etapa["tipo_proceso"]==tipo_proceso_sel)
+            ]
+            if not dur_filt.empty:
+                total_target = int(dur_filt["duracion_target_min"].sum())
+                etapas_order = etapas_proc.set_index("codigo")["orden"].to_dict()
+                dur_filt = dur_filt.copy()
+                dur_filt["orden"] = dur_filt["etapa"].map(etapas_order).fillna(99)
+                dur_filt = dur_filt.sort_values("orden")
+                resumen = " · ".join(
+                    f"**{row['etapa']}** {int(row['duracion_target_min'])}m ({int(row['duracion_min_min'])}–{int(row['duracion_max_min'])})"
+                    for _, row in dur_filt.iterrows()
+                )
+                st.caption(f"⏱️ Duraciones esperadas por etapa (min): {resumen}  ·  **Total target: {total_target} min** ({total_target/60:.1f} h)")
 
             # --- Inputs iniciales para formula de carga (PRODUCCION_ARE) ---
             if tipo_proceso_sel == "PRODUCCION_ARE":

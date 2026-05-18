@@ -390,6 +390,24 @@ ON CONFLICT (codigo) DO UPDATE SET
   descripcion = EXCLUDED.descripcion,
   orden       = EXCLUDED.orden;
 
+-- Duraciones estimadas por (sector, proceso, etapa) en MINUTOS
+-- Valores fijos 30-90 min. Ajustar luego con datos reales de planta.
+INSERT INTO dic_etapa_duracion(sector, tipo_proceso, etapa, duracion_target_min, duracion_min_min, duracion_max_min) VALUES
+ ('REACTORES','PRODUCCION_ARE',  'ARMADO',      45, 30, 60),
+ ('REACTORES','PRODUCCION_ARE',  'REACCION',    75, 60, 90),
+ ('REACTORES','PRODUCCION_ARE',  'REPOSANDO',   75, 60, 90),
+ ('REACTORES','PRODUCCION_ARE',  'DECANTACION', 45, 30, 60),
+ ('REACTORES','PRODUCCION_ARE',  'EN_TANQUE',   45, 30, 60),
+ ('REACTORES','DESGOMADO_ACUOSO','ARMADO',      35, 30, 45),
+ ('REACTORES','DESGOMADO_ACUOSO','REACCION',    60, 45, 75),
+ ('REACTORES','DESGOMADO_ACUOSO','REPOSANDO',   45, 30, 60),
+ ('REACTORES','DESGOMADO_ACUOSO','DECANTACION', 35, 30, 45),
+ ('REACTORES','DESGOMADO_ACUOSO','EN_TANQUE',   35, 30, 45)
+ON CONFLICT (sector, tipo_proceso, etapa) DO UPDATE SET
+  duracion_target_min = EXCLUDED.duracion_target_min,
+  duracion_min_min    = EXCLUDED.duracion_min_min,
+  duracion_max_min    = EXCLUDED.duracion_max_min;
+
 -- Parámetros de proceso (con rangos típicos en notas)
 DELETE FROM dic_parametro_proceso WHERE codigo IN ('acidez_inicial','acidez_final','temperatura_inicio','temperatura_fin','ppm_fosforo','prc_goma','q_merma_kg');
 INSERT INTO dic_parametro_proceso(codigo, descripcion, unidad, aplica_a) VALUES

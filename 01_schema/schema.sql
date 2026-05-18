@@ -385,6 +385,18 @@ CREATE TABLE IF NOT EXISTS dic_etapa_proceso (
     activo      BOOLEAN NOT NULL DEFAULT TRUE
 );
 
+-- Duración estimada por (sector, proceso, etapa)
+-- Permite saber si una corrida tardó más o menos de lo esperado.
+CREATE TABLE IF NOT EXISTS dic_etapa_duracion (
+    sector              TEXT NOT NULL REFERENCES dic_sector(codigo),
+    tipo_proceso        TEXT NOT NULL REFERENCES dic_tipo_proceso(codigo),
+    etapa               TEXT NOT NULL REFERENCES dic_etapa_proceso(codigo),
+    duracion_target_min INTEGER NOT NULL CHECK (duracion_target_min > 0),
+    duracion_min_min    INTEGER NOT NULL CHECK (duracion_min_min  > 0),
+    duracion_max_min    INTEGER NOT NULL CHECK (duracion_max_min  > duracion_min_min),
+    PRIMARY KEY (sector, tipo_proceso, etapa)
+);
+
 -- Catálogo de parámetros (acidez, temperatura, ppm fósforo, etc.)
 CREATE TABLE IF NOT EXISTS dic_parametro_proceso (
     codigo      TEXT PRIMARY KEY,
