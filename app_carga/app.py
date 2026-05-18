@@ -118,11 +118,25 @@ def cat(query, params=None):
 
 productos = cat(
     "SELECT id_producto, codigo_producto, corriente, tipo_producto, "
-    "rango_kg_min, rango_kg_max FROM dim_producto "
+    "rango_kg_min, rango_kg_max, "
+    "usa_reactor, usa_bachas, usa_piletas, es_exportacion "
+    "FROM dim_producto "
     "WHERE activo AND tipo_producto IN ('MP','FINAL') ORDER BY codigo_producto"
 )
-productos_mp    = productos[productos["tipo_producto"] == "MP"]
-productos_obt   = productos  # salida puede ser MP (vuelve al proceso) o FINAL
+
+def productos_de_sector(sec):
+    """Devuelve (productos_mp, productos_obt) filtrados por flag de sector."""
+    flag = {
+        "REACTORES":    "usa_reactor",
+        "BACHAS":       "usa_bachas",
+        "RECUPERACION": "usa_piletas",
+        "EXPO":         "es_exportacion",
+    }.get(sec)
+    if flag and flag in productos.columns:
+        df = productos[productos[flag] == True]
+    else:
+        df = productos
+    return df[df["tipo_producto"] == "MP"], df
 
 # Catálogos para REACTORES
 
@@ -178,6 +192,9 @@ with tab_objs[0]:
         turno = c3.selectbox("Turno", turnos["codigo"], key="b_t")
 
         es_reactor = (sector == "REACTORES")
+        productos_mp, productos_obt = productos_de_sector(sector)
+        if productos_mp.empty:
+            st.warning(f"⚠️ No hay productos de tipo MP marcados para el sector {sector}. Revisá `dim_producto.usa_*` en Supabase.")
 
         label_id = {
             "BACHAS":       "N° de bacha *",
@@ -219,28 +236,57 @@ with tab_objs[0]:
 
             # --- Inputs iniciales para formula de carga (PRODUCCION_ARE) ---
             if tipo_proceso_sel == "PRODUCCION_ARE":
-                st.markdown("**Inputs iniciales (dispara la formulación)**")
+                PMa   = K("PMa", 282)
+                PMg   = K("PMg", 92)
+                FE    = K("factor_exceso_gli", 1.1)
+                D_GLI = K("densidad_glicerina", 1.25)
+                D_AG  = K("densidad_aagg", 0.9)
+                cap_l = float(fila_bien["capacidad_max_l"] or 0)
+                q_ag_max_kg = cap_l * D_AG
+
+                st.markdown("**📐 Fórmulas de carga (PRODUCCION_ARE)**")
+                st.code(
+                    "Q_glicerina (kg) = Q_AG × (acidez/100) × (PMg / (PMa × 2)) × (1 / (glicerol/100)) × factor_exceso\n"
+                    f"                 = Q_AG × (acidez/100) × ({PMg}/({PMa}×2)) × (1/(glicerol/100)) × {FE}\n\n"
+                    f"NaOH (kg)        = (Q_AG / 1000) × {fila_bien['consumo_naoh_kg_x_tn']} kg/TN\n"
+                    f"Potasio (kg)     = (Q_AG / 1000) × {fila_bien['consumo_potasio_kg_x_tn']} kg/TN\n"
+                    f"Fuel (kg)        = (Q_AG / 1000) × {fila_bien['consumo_fuel_kg_x_tn']} kg/TN",
+                    language="text"
+                )
+                st.caption(f"🛢️ Capacidad del reactor: **{int(cap_l):,} L** → hasta **{int(q_ag_max_kg):,} kg** de AG (~{q_ag_max_kg/1000:.1f} TN). Densidad AG = {D_AG} kg/L.")
+
+                st.markdown("**Inputs iniciales (dispara los estimados)**")
                 cF1, cF2, cF3 = st.columns(3)
                 acidez_oleico_v = cF1.number_input("Acidez oleico (%)", 0.0, 100.0, step=0.1, key="b_acidez_ol")
                 glicerol_v      = cF2.number_input("% Glicerol en glicerina", 0.0, 100.0, value=80.0, step=0.1, key="b_glicerol")
-                q_ag_kg_ref     = cF3.number_input("Q AG a procesar (kg)", 0.0, 100000.0, step=100.0, key="b_qag_ref")
+                q_ag_kg_ref     = cF3.number_input(
+                    "Q AG a procesar (kg)", 0.0,
+                    max_value=q_ag_max_kg if q_ag_max_kg > 0 else 200000.0,
+                    value=float(q_ag_max_kg) if q_ag_max_kg > 0 else 0.0,
+                    step=100.0, key="b_qag_ref",
+                    help=f"Sugerido por capacidad: {int(q_ag_max_kg):,} kg"
+                )
 
-                # Formula del Excel:
-                # Q_glice_kg = Q_AG_kg * (acidez/100) * (PMg/(PMa*2)) * (1/(glicerol/100)) * factor_exceso
-                PMa = K("PMa", 282); PMg = K("PMg", 92); FE = K("factor_exceso_gli", 1.1)
-                D_GLI = K("densidad_glicerina", 1.25)
                 if q_ag_kg_ref > 0 and acidez_oleico_v > 0 and glicerol_v > 0:
                     est_glice_kg = q_ag_kg_ref * (acidez_oleico_v/100) * (PMg/(PMa*2)) * (1/(glicerol_v/100)) * FE
                     tn = q_ag_kg_ref / 1000.0
                     est_naoh_kg    = tn * (fila_bien["consumo_naoh_kg_x_tn"] or 0)
                     est_potasio_kg = tn * (fila_bien["consumo_potasio_kg_x_tn"] or 0)
                     est_fuel_kg    = tn * (fila_bien["consumo_fuel_kg_x_tn"] or 0)
+                    est_are_kg     = q_ag_kg_ref  # 1:1 aprox · ajustar con rendimiento real
+
+                    st.markdown("**🧮 Insumos estimados a cargar**")
                     cE1, cE2, cE3, cE4 = st.columns(4)
-                    cE1.metric("Glicerina est.", f"{est_glice_kg:,.0f} kg", f"{est_glice_kg/D_GLI:,.0f} L")
-                    cE2.metric("NaOH est.",     f"{est_naoh_kg:,.1f} kg")
-                    cE3.metric("Potasio est.",  f"{est_potasio_kg:,.2f} kg")
-                    cE4.metric("Fuel est.",     f"{est_fuel_kg:,.0f} kg")
-                    st.caption(f"📐 Fórmula: Q_glice = Q_AG × (acidez/100) × (PMg/(PMa×2)) × (1/(glicerol/100)) × {FE}")
+                    cE1.metric("Glicerina", f"{est_glice_kg:,.0f} kg", f"{est_glice_kg/D_GLI:,.0f} L")
+                    cE2.metric("NaOH",      f"{est_naoh_kg:,.1f} kg")
+                    cE3.metric("Potasio",   f"{est_potasio_kg:,.2f} kg")
+                    cE4.metric("Fuel",      f"{est_fuel_kg:,.0f} kg")
+
+                    st.markdown("**🎯 Producto final esperado**")
+                    st.metric("ARE estimado", f"{est_are_kg:,.0f} kg", f"~{est_are_kg/1000:.1f} TN")
+                    st.caption("⚠️ Aproximación 1:1 sobre la masa de AG. Cuando tengas rendimiento real de planta lo ajustamos.")
+                else:
+                    st.info("Cargá **acidez oleico**, **% glicerol** y **Q AG** para ver los estimados (glicerina, NaOH, potasio, fuel) y la producción esperada.")
             st.markdown("**Horarios**")
             cH1, cH2, cH3, cH4, cH5 = st.columns(5)
             f_ini = cH1.date_input("Fecha inicio", date.today(), key="b_fini")
@@ -429,7 +475,9 @@ with tab_objs[0]:
                                 ") VALUES ("
                                 "  %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,"
                                 "  %s,%s,%s,%s,%s,%s,%s::jsonb,"
-                                "  %s,%s,%s,%s,%s,%s,"
+                                "  %s,%s,"
+                                "  %s,%s,"
+                                "  %s,%s,%s,%s,"
                                 "  %s,%s,%s,%s,%s,"
                                 "  %s,"
                                 "  %s,%s,%s"
@@ -879,7 +927,7 @@ if USR["rol"] == "ADMIN":
             st.markdown("**Reset PIN**")
             with st.form(f"form_resetpin_{u_id}"):
                 npin = st.text_input("PIN nuevo (4-6 dígitos)", type="password", max_chars=6, key=f"npin_{u_id}")
-                if st.form_submit_button("🔑 Resetear PIN", use_container_width=True):
+                if st.form_submit_button("\U0001f511 Resetear PIN", use_container_width=True):
                     if not npin.isdigit() or not (4 <= len(npin) <= 6):
                         st.error("PIN inválido.")
                     else:
@@ -894,7 +942,7 @@ if USR["rol"] == "ADMIN":
                 opciones_sec = [""] + sectores["codigo"].tolist()
                 idx_sec = opciones_sec.index(u_row["sector"]) if u_row["sector"] in opciones_sec else 0
                 nsec = st.selectbox("Sector default", opciones_sec, index=idx_sec, key=f"ns_{u_id}")
-                if st.form_submit_button("💾 Aplicar cambios", use_container_width=True):
+                if st.form_submit_button("\U0001f4be Aplicar cambios", use_container_width=True):
                     try:
                         if nrol != u_row["rol"]: cambiar_rol(USR["id_usuario"], u_id, nrol)
                         if (nsec or None) != u_row["sector"]: cambiar_sector(USR["id_usuario"], u_id, nsec or None)
