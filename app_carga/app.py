@@ -320,26 +320,37 @@ if st.session_state.section != "CARGAS":
         st.title("🚛 Portería")
         with st.expander("Filtros", expanded=True):
             c1, c2, c3 = st.columns(3)
-            fmin = c1.date_input("fecha_entrada desde", value=(date.today()-_td(days=7)), key="p_fmin")
+            # default: día corriente (camiones que entraron HOY)
+            fmin = c1.date_input("fecha_entrada desde", value=date.today(), key="p_fmin")
             fmax = c2.date_input("fecha_entrada hasta", value=date.today(), key="p_fmax")
             limit_p = c3.number_input("Límite filas", 100, 200000, 10000, step=1000, key="p_lim")
             try:
-                prods_p = cat("SELECT DISTINCT producto FROM produccion.v_transacciones_limpias WHERE producto IS NOT NULL ORDER BY 1 LIMIT 200")["producto"].tolist()
-            except Exception: prods_p = []
+                prods_base = cat("SELECT DISTINCT producto_base FROM produccion.v_transacciones_limpias WHERE producto_base IS NOT NULL ORDER BY 1 LIMIT 500")["producto_base"].tolist()
+            except Exception: prods_base = []
             try:
-                dest_p = cat("SELECT DISTINCT destino FROM produccion.v_transacciones_limpias WHERE destino IS NOT NULL ORDER BY 1 LIMIT 200")["destino"].tolist()
-            except Exception: dest_p = []
+                corrientes_p = cat("SELECT DISTINCT corriente FROM produccion.v_transacciones_limpias WHERE corriente IS NOT NULL ORDER BY 1")["corriente"].tolist()
+            except Exception: corrientes_p = []
+            try:
+                proc_p = cat("SELECT DISTINCT procedencia FROM produccion.v_transacciones_limpias WHERE procedencia IS NOT NULL ORDER BY 1 LIMIT 500")["procedencia"].tolist()
+            except Exception: proc_p = []
             c4, c5, c6 = st.columns(3)
-            sel_pp = c4.multiselect("Producto",  prods_p, key="p_prods")
-            sel_dp = c5.multiselect("Destino",   dest_p,  key="p_dest")
-            pat    = c6.text_input("Patente chasis contiene", key="p_pat")
+            sel_pb = c4.multiselect("Producto base", prods_base, key="p_prodsbase")
+            sel_co = c5.multiselect("Corriente", corrientes_p, key="p_corr")
+            sel_pr = c6.multiselect("Procedencia", proc_p, key="p_proc")
+            c7, c8 = st.columns(2)
+            eval_filt = c7.radio("Evaluado", ["Todos","SI","NO"], horizontal=True, key="p_eval")
+            pat = c8.text_input("Patente chasis contiene", key="p_pat")
 
-        where = ["fecha_entrada >= %s", "fecha_entrada < %s"]
-        params = [fmin.isoformat(), (fmax + _td(days=1)).isoformat()]
-        if sel_pp:
-            where.append("producto = ANY(%s)"); params.append(sel_pp)
-        if sel_dp:
-            where.append("destino = ANY(%s)"); params.append(sel_dp)
+        where = ["fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
+        params = [fmin.isoformat(), fmax.isoformat()]
+        if sel_pb:
+            where.append("producto_base = ANY(%s)"); params.append(sel_pb)
+        if sel_co:
+            where.append("corriente = ANY(%s)"); params.append(sel_co)
+        if sel_pr:
+            where.append("procedencia = ANY(%s)"); params.append(sel_pr)
+        if eval_filt != "Todos":
+            where.append("evaluado = %s"); params.append(eval_filt)
         if pat.strip():
             where.append("patente_chasis ILIKE %s"); params.append(f"%{pat.strip()}%")
         sql_p = f"""
@@ -347,7 +358,8 @@ if st.session_state.section != "CARGAS":
                    usuario, conductor, patente_chasis, patente_acoplado,
                    producto, producto_base, corriente, evaluado,
                    procedencia, destino,
-                   peso_entrada, peso_salida, peso_neto,
+                   peso_entrada, peso_salida,
+                   (peso_neto * -1) AS peso_neto,
                    lab_calidad, lab_color, lab_prc_acidez, lab_prc_agua,
                    lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
                    lab_empleado, lab_rechazado, lab_num_muestra, lab_fecha,
@@ -373,12 +385,19 @@ if st.session_state.section != "CARGAS":
             st.markdown("**Transacciones por día**")
             by_day = df_p.dropna(subset=["fecha_entrada"]).groupby("fecha_entrada").size().reset_index(name="cantidad")
             st.line_chart(by_day, x="fecha_entrada", y="cantidad", use_container_width=True)
-            st.markdown("**Peso neto promedio por producto (top 15)**")
-            prod_avg = (df_p.dropna(subset=["producto"])
+            st.markdown("**Peso neto total por producto base (top 15)**")
+            prod_sum = (df_p.dropna(subset=["producto_base"])
                             .assign(peso=pd.to_numeric(df_p["peso_neto"], errors="coerce"))
-                            .groupby("producto")["peso"].mean()
+                            .groupby("producto_base")["peso"].sum()
                             .sort_values(ascending=False).head(15).reset_index())
-            st.bar_chart(prod_avg, x="producto", y="peso", use_container_width=True)
+            st.bar_chart(prod_sum, x="producto_base", y="peso", use_container_width=True)
+
+            st.markdown("**Peso neto total por corriente**")
+            corr_sum = (df_p.dropna(subset=["corriente"])
+                            .assign(peso=pd.to_numeric(df_p["peso_neto"], errors="coerce"))
+                            .groupby("corriente")["peso"].sum()
+                            .sort_values(ascending=False).reset_index())
+            st.bar_chart(corr_sum, x="corriente", y="peso", use_container_width=True)
             st.dataframe(df_p, use_container_width=True, hide_index=True, height=420)
             st.download_button("⬇️ Descargar CSV", df_p.to_csv(index=False).encode("utf-8"),
                                file_name=f"transacciones_{fmin}_{fmax}.csv", mime="text/csv")
