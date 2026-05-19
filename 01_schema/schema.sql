@@ -20,6 +20,17 @@ CREATE TABLE IF NOT EXISTS dim_usuario (
     ultimo_login TIMESTAMPTZ
 );
 
+-- Multi-sector: lista de sectores accesibles por usuario (JSONB).
+-- Si está vacío, se asume que el usuario puede ver todos los sectores activos.
+ALTER TABLE dim_usuario
+  ADD COLUMN IF NOT EXISTS sectores JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- Migración suave: si tiene `sector` y no tiene `sectores`, copiar el default
+UPDATE dim_usuario
+   SET sectores = jsonb_build_array(sector)
+ WHERE sector IS NOT NULL
+   AND (sectores IS NULL OR sectores = '[]'::jsonb);
+
 -- ===========================================================================
 -- DICCIONARIOS (códigos cerrados)
 -- ===========================================================================

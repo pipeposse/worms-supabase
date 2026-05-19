@@ -38,7 +38,7 @@ def login(nombre, pin):
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public")
             cur.execute(
-                "SELECT id_usuario, nombre, nombre_full, rol, sector "
+                "SELECT id_usuario, nombre, nombre_full, rol, sector, sectores "
                 "FROM dim_usuario WHERE nombre=%s AND pin_hash=%s AND activo=TRUE",
                 (nombre.strip(), h)
             )
@@ -48,7 +48,7 @@ def login(nombre, pin):
             cur.execute("UPDATE dim_usuario SET ultimo_login=NOW() WHERE id_usuario=%s", (row[0],))
             conn.commit()
             return {"id_usuario": row[0], "nombre": row[1], "nombre_full": row[2],
-                    "rol": row[3], "sector": row[4]}
+                    "rol": row[3], "sector": row[4], "sectores": row[5] or []}
     finally:
         conn.close()
 
@@ -134,6 +134,17 @@ def cambiar_sector(id_usuario_admin, id_usuario_target, sector_nuevo):
     _admin_update(id_usuario_admin, id_usuario_target,
         "UPDATE dim_usuario SET sector=%s WHERE id_usuario=%s",
         (sector_nuevo, id_usuario_target), {"sector_nuevo": sector_nuevo})
+
+
+def cambiar_sectores(id_usuario_admin, id_usuario_target, sectores_lista):
+    """Asigna la lista de sectores accesibles a un usuario (multi-sector).
+    Si la lista está vacía, el usuario tiene acceso a todos."""
+    if sectores_lista is None:
+        sectores_lista = []
+    _admin_update(id_usuario_admin, id_usuario_target,
+        "UPDATE dim_usuario SET sectores=%s::jsonb WHERE id_usuario=%s",
+        (json.dumps(sectores_lista), id_usuario_target),
+        {"sectores_nuevos": sectores_lista})
 
 
 def set_activo(id_usuario_admin, id_usuario_target, activo):

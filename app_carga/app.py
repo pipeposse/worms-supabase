@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from etl.db import (
     conectar, convertir, login as login_db,
-    crear_usuario, reset_pin, cambiar_rol, cambiar_sector, set_activo,
+    crear_usuario, reset_pin, cambiar_rol, cambiar_sector, cambiar_sectores, set_activo,
     cambiar_mi_pin,
     listar_mis_cargas, anular_registro, puede_anular,
 )
@@ -76,6 +76,8 @@ with st.sidebar:
     st.caption(f"`{USR['nombre']}` · rol **{USR['rol']}**")
     if USR.get("sector"):
         st.caption(f"Sector default: **{USR['sector']}**")
+    if USR.get("sectores"):
+        st.caption(f"Sectores: {', '.join(USR['sectores'])}")
     if st.button("🔑 Cambiar mi PIN", use_container_width=True):
         st.session_state.show_chg_pin = True
     st.button("Cerrar sesión", on_click=cerrar_sesion, use_container_width=True)
@@ -1236,9 +1238,24 @@ if USR["rol"] == "ADMIN":
                 opciones_sec = [""] + sectores["codigo"].tolist()
                 idx_sec = opciones_sec.index(u_row["sector"]) if u_row["sector"] in opciones_sec else 0
                 nsec = st.selectbox("Sector default", opciones_sec, index=idx_sec, key=f"ns_{u_id}")
+
+                # Multi-sector: traer los actuales y permitir seleccionar varios
+                df_usr = cat(f"SELECT sectores FROM produccion.dim_usuario WHERE id_usuario={u_id}")
+                actuales = list(df_usr.iloc[0]["sectores"]) if not df_usr.empty and df_usr.iloc[0]["sectores"] else []
+                todos_secs = sectores["codigo"].tolist()
+                sectores_mult = st.multiselect(
+                    "Sectores asignados (vacío = todos)",
+                    options=todos_secs, default=actuales,
+                    format_func=lambda c: sectores[sectores["codigo"]==c].iloc[0]["nombre_ui"],
+                    key=f"nss_{u_id}"
+                )
+                st.caption("ℹ️ Si la lista queda vacía, el usuario tiene acceso a todos los sectores.")
+
                 if st.form_submit_button("\U0001f4be Aplicar cambios", use_container_width=True):
                     try:
                         if nrol != u_row["rol"]: cambiar_rol(USR["id_usuario"], u_id, nrol)
                         if (nsec or None) != u_row["sector"]: cambiar_sector(USR["id_usuario"], u_id, nsec or None)
+                        if sorted(sectores_mult) != sorted(actuales):
+                            cambiar_sectores(USR["id_usuario"], u_id, sectores_mult)
                         st.success("Cambios aplicados."); cat.clear(); st.rerun()
                     except Exception as e: st.error(str(e))
