@@ -17,11 +17,17 @@ def _load_dotenv():
 
 
 def _load_streamlit_secrets():
-    """Si corre en Streamlit Cloud, leer st.secrets también."""
+    """Si corre en Streamlit Cloud, leer st.secrets también. Fuerza overwrite."""
     try:
         import streamlit as st
-        for k, v in st.secrets.items():
-            os.environ.setdefault(k, str(v))
+        if hasattr(st, "secrets") and len(st.secrets) > 0:
+            for k in st.secrets.keys():
+                try:
+                    v = st.secrets[k]
+                    # forzar overwrite, no setdefault (puede haber env vacíos)
+                    os.environ[k] = str(v)
+                except Exception:
+                    continue
     except Exception:
         pass
 
@@ -30,6 +36,10 @@ _load_dotenv()
 _load_streamlit_secrets()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Diagnóstico opcional: si está vacío, imprimir hint (queda en logs de Cloud)
+if not DATABASE_URL:
+    print("[config] DATABASE_URL vacio. Verificar .env local o Streamlit Secrets.")
 if not DATABASE_URL:
     host = os.getenv("PGHOST")
     if host:
