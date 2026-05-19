@@ -252,37 +252,38 @@ WHERE codigo_producto IN (
 -- Editables con UPDATE dim_producto SET rango_kg_min=..., rango_kg_max=...
 -- Defaults conservadores; ajustar con datos reales de planta.
 -- ===========================================================================
--- Aceites filtrados especiales
+-- Solo aplican si todavía NO hay valor cargado manualmente (preserva ediciones)
 UPDATE dim_producto SET rango_kg_min=12000, rango_kg_max=24000
-WHERE codigo_producto IN ('AFE-S','AFE-G','AFE-SG','AFE-AL','AFE-P');
+WHERE codigo_producto IN ('AFE-S','AFE-G','AFE-SG','AFE-AL','AFE-P')
+  AND rango_kg_min IS NULL AND rango_kg_max IS NULL;
 
--- Aceites genéricos
 UPDATE dim_producto SET rango_kg_min=10000, rango_kg_max=22000
-WHERE codigo_producto IN ('AG-A','AG-B','AG-C','AG-D','AG-E');
+WHERE codigo_producto IN ('AG-A','AG-B','AG-C','AG-D','AG-E')
+  AND rango_kg_min IS NULL AND rango_kg_max IS NULL;
 
--- ARE
 UPDATE dim_producto SET rango_kg_min=15000, rango_kg_max=25000
-WHERE codigo_producto IN ('ARE-A','ARE-B','ARE-A-ANIMAL');
+WHERE codigo_producto IN ('ARE-A','ARE-B','ARE-A-ANIMAL')
+  AND rango_kg_min IS NULL AND rango_kg_max IS NULL;
 
--- Sebos
 UPDATE dim_producto SET rango_kg_min=8000, rango_kg_max=20000
-WHERE codigo_producto IN ('SEBO-A-1RA','SEBO-B-1RA','SEBO-A-2DA','SEBO-B-2DA','SEBO-C-2DA');
+WHERE codigo_producto IN ('SEBO-A-1RA','SEBO-B-1RA','SEBO-A-2DA','SEBO-B-2DA','SEBO-C-2DA')
+  AND rango_kg_min IS NULL AND rango_kg_max IS NULL;
 
--- Borras
 UPDATE dim_producto SET rango_kg_min=500, rango_kg_max=3000
-WHERE codigo_producto IN ('BORRA-A','BORRA-B','BORRA-ANIMAL','BORRA-PES');
+WHERE codigo_producto IN ('BORRA-A','BORRA-B','BORRA-ANIMAL','BORRA-PES')
+  AND rango_kg_min IS NULL AND rango_kg_max IS NULL;
 
--- Pescado
 UPDATE dim_producto SET rango_kg_min=500, rango_kg_max=5000
-WHERE codigo_producto IN ('AG-PES');
+WHERE codigo_producto IN ('AG-PES')
+  AND rango_kg_min IS NULL AND rango_kg_max IS NULL;
 
--- Glicerina y subproductos químicos
 UPDATE dim_producto SET rango_kg_min=1000, rango_kg_max=5000
-WHERE codigo_producto IN ('GLICERINA','GLICERINA-FE','SAL-GLICERINOSA');
+WHERE codigo_producto IN ('GLICERINA','GLICERINA-FE','SAL-GLICERINOSA')
+  AND rango_kg_min IS NULL AND rango_kg_max IS NULL;
 
--- Emulsión / fondo
 UPDATE dim_producto SET rango_kg_min=200, rango_kg_max=4000
-WHERE codigo_producto IN ('EMULSION','FONDO-TK');
+WHERE codigo_producto IN ('EMULSION','FONDO-TK')
+  AND rango_kg_min IS NULL AND rango_kg_max IS NULL;
 
 -- TCO (sin data → dejar NULL para que admin defina)
 -- Caucho / Acero (sin data) → NULL
@@ -341,13 +342,9 @@ UPDATE dic_sector SET activo=FALSE WHERE codigo IN ('ARE','DESGOMADO');
 -- Bienes de uso con capacidades y consumos por TN (de FORMULA_CARGA_REACTOR.xlsx)
 INSERT INTO dim_bien_uso(codigo, nombre_ui, tipo, capacidad_max_l,
                          consumo_fuel_kg_x_tn, consumo_naoh_kg_x_tn, consumo_potasio_kg_x_tn) VALUES
- ('REACTOR_1','REACTOR 1','REACTOR', 80000, 76.9, 4.4, 3.125),
+ ('REACTOR_1','REACTOR 1','REACTOR', 8000,  76.9, 4.4, 3.125),
  ('REACTOR_2','REACTOR 2','REACTOR', 50000, 76.9, 4.4, 3.125)
-ON CONFLICT (codigo) DO UPDATE SET
-  capacidad_max_l         = EXCLUDED.capacidad_max_l,
-  consumo_fuel_kg_x_tn    = EXCLUDED.consumo_fuel_kg_x_tn,
-  consumo_naoh_kg_x_tn    = EXCLUDED.consumo_naoh_kg_x_tn,
-  consumo_potasio_kg_x_tn = EXCLUDED.consumo_potasio_kg_x_tn;
+ON CONFLICT (codigo) DO NOTHING;   -- ediciones manuales sobreviven a setup.py
 
 -- Constantes químicas globales (del Excel)
 INSERT INTO dic_constante_proceso(codigo, descripcion, valor, unidad) VALUES
@@ -356,10 +353,7 @@ INSERT INTO dic_constante_proceso(codigo, descripcion, valor, unidad) VALUES
  ('densidad_glicerina',  'Densidad glicerina',                    1.25,  'kg/L'),
  ('densidad_aagg',       'Densidad ácidos grasos',                0.90,  'kg/L'),
  ('factor_exceso_gli',   'Factor de exceso de glicerina',         1.10,  'ratio')
-ON CONFLICT (codigo) DO UPDATE SET
-  descripcion = EXCLUDED.descripcion,
-  valor       = EXCLUDED.valor,
-  unidad      = EXCLUDED.unidad;
+ON CONFLICT (codigo) DO NOTHING;
 
 -- Procesos principales (solo 2)
 DELETE FROM dic_tipo_proceso WHERE codigo IN ('REACCION','TRATAMIENTO_CITRICO','TRATAMIENTO_TERMICO','ELABORACION_ARE');
@@ -403,10 +397,7 @@ INSERT INTO dic_etapa_duracion(sector, tipo_proceso, etapa, duracion_target_min,
  ('REACTORES','DESGOMADO_ACUOSO','REPOSANDO',   45, 30, 60),
  ('REACTORES','DESGOMADO_ACUOSO','DECANTACION', 35, 30, 45),
  ('REACTORES','DESGOMADO_ACUOSO','EN_TANQUE',   35, 30, 45)
-ON CONFLICT (sector, tipo_proceso, etapa) DO UPDATE SET
-  duracion_target_min = EXCLUDED.duracion_target_min,
-  duracion_min_min    = EXCLUDED.duracion_min_min,
-  duracion_max_min    = EXCLUDED.duracion_max_min;
+ON CONFLICT (sector, tipo_proceso, etapa) DO NOTHING;
 
 -- Parámetros de proceso (con rangos típicos en notas)
 DELETE FROM dic_parametro_proceso WHERE codigo IN ('acidez_inicial','acidez_final','temperatura_inicio','temperatura_fin','ppm_fosforo','prc_goma','q_merma_kg');
@@ -436,12 +427,13 @@ UPDATE dim_producto SET usa_reactor=TRUE
 WHERE codigo_producto IN ('FONDO-TK','GLICERINA','GLICERINA-FE','AGUA-PROC');
 
 -- Densidades (g/mL · sirven para convertir L↔kg en la app)
-UPDATE dim_producto SET densidad_g_ml=0.890 WHERE codigo_producto IN ('AFE-S','AFE-G','AFE-SG','AFE-AL','AFE-P','AG-A','AG-B','AG-C','AG-D','AG-E');
-UPDATE dim_producto SET densidad_g_ml=0.880 WHERE codigo_producto IN ('ARE-A','ARE-B','ARE-A-ANIMAL');
-UPDATE dim_producto SET densidad_g_ml=1.260 WHERE codigo_producto IN ('GLICERINA','GLICERINA-FE');
-UPDATE dim_producto SET densidad_g_ml=0.920 WHERE codigo_producto IN ('SEBO-A-1RA','SEBO-B-1RA','SEBO-A-2DA','SEBO-B-2DA','SEBO-C-2DA');
-UPDATE dim_producto SET densidad_g_ml=0.950 WHERE codigo_producto IN ('BORRA-A','BORRA-B','BORRA-ANIMAL','BORRA-PES');
-UPDATE dim_producto SET densidad_g_ml=0.910 WHERE codigo_producto IN ('AG-PES','EMULSION','FONDO-TK');
+-- Densidades · solo si la columna está vacía
+UPDATE dim_producto SET densidad_g_ml=0.890 WHERE codigo_producto IN ('AFE-S','AFE-G','AFE-SG','AFE-AL','AFE-P','AG-A','AG-B','AG-C','AG-D','AG-E') AND densidad_g_ml IS NULL;
+UPDATE dim_producto SET densidad_g_ml=0.880 WHERE codigo_producto IN ('ARE-A','ARE-B','ARE-A-ANIMAL') AND densidad_g_ml IS NULL;
+UPDATE dim_producto SET densidad_g_ml=1.260 WHERE codigo_producto IN ('GLICERINA','GLICERINA-FE') AND densidad_g_ml IS NULL;
+UPDATE dim_producto SET densidad_g_ml=0.920 WHERE codigo_producto IN ('SEBO-A-1RA','SEBO-B-1RA','SEBO-A-2DA','SEBO-B-2DA','SEBO-C-2DA') AND densidad_g_ml IS NULL;
+UPDATE dim_producto SET densidad_g_ml=0.950 WHERE codigo_producto IN ('BORRA-A','BORRA-B','BORRA-ANIMAL','BORRA-PES') AND densidad_g_ml IS NULL;
+UPDATE dim_producto SET densidad_g_ml=0.910 WHERE codigo_producto IN ('AG-PES','EMULSION','FONDO-TK') AND densidad_g_ml IS NULL;
 
 -- ===========================================================================
 -- DEMO: 10 reacciones random + muestras intermedias (idempotente)
