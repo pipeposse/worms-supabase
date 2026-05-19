@@ -384,6 +384,21 @@ ON CONFLICT (codigo) DO UPDATE SET
   descripcion = EXCLUDED.descripcion,
   orden       = EXCLUDED.orden;
 
+-- Asegurar que FUEL/POTASIO/AGUA existan antes de los consumos (orden de FKs)
+INSERT INTO dic_insumo(codigo, descripcion, unidad) VALUES
+ ('AGUA',    'Agua proceso',         'L'),
+ ('POTASIO', 'Potasio (KOH puro)',  'KG'),
+ ('FUEL',    'Fuel oil',             'KG')
+ON CONFLICT (codigo) DO NOTHING;
+
+-- Consumos teóricos por proceso (insumo × TN)
+INSERT INTO dic_consumo_proceso(tipo_proceso, codigo_insumo, consumo_por_tn, unidad_consumo, base_referencia, nota) VALUES
+ ('PRODUCCION_ARE',  'FUEL',    76.9,  'kg', 'AG_INPUT',         'Excel formula_inicial'),
+ ('PRODUCCION_ARE',  'soda_kg', 4.4,   'kg', 'AG_INPUT',         'NaOH por TN de AG procesado'),
+ ('PRODUCCION_ARE',  'POTASIO', 3.125, 'kg', 'AG_INPUT',         'Excel formula_inicial'),
+ ('DESGOMADO_ACUOSO','FUEL',    8.7,   'L',  'PRODUCTO_OUTPUT',  'Promedio L de fuel por TN de AFE-S generado')
+ON CONFLICT (tipo_proceso, codigo_insumo) DO NOTHING;
+
 -- Duraciones estimadas por (sector, proceso, etapa) en MINUTOS
 -- Valores fijos 30-90 min. Ajustar luego con datos reales de planta.
 INSERT INTO dic_etapa_duracion(sector, tipo_proceso, etapa, duracion_target_min, duracion_min_min, duracion_max_min) VALUES
@@ -399,6 +414,19 @@ INSERT INTO dic_etapa_duracion(sector, tipo_proceso, etapa, duracion_target_min,
  ('REACTORES','DESGOMADO_ACUOSO','EN_TANQUE',   35, 30, 45)
 ON CONFLICT (sector, tipo_proceso, etapa) DO NOTHING;
 
+-- Ajuste explícito para DESGOMADO_ACUOSO (proceso real ~10 min total).
+-- Se aplica una sola vez: deja los valores manuales si fueron editados después.
+UPDATE dic_etapa_duracion SET duracion_target_min=2, duracion_min_min=1, duracion_max_min=3
+  WHERE sector='REACTORES' AND tipo_proceso='DESGOMADO_ACUOSO' AND etapa='ARMADO'      AND duracion_target_min=35;
+UPDATE dic_etapa_duracion SET duracion_target_min=4, duracion_min_min=2, duracion_max_min=6
+  WHERE sector='REACTORES' AND tipo_proceso='DESGOMADO_ACUOSO' AND etapa='REACCION'    AND duracion_target_min=60;
+UPDATE dic_etapa_duracion SET duracion_target_min=2, duracion_min_min=1, duracion_max_min=3
+  WHERE sector='REACTORES' AND tipo_proceso='DESGOMADO_ACUOSO' AND etapa='REPOSANDO'   AND duracion_target_min=45;
+UPDATE dic_etapa_duracion SET duracion_target_min=1, duracion_min_min=1, duracion_max_min=2
+  WHERE sector='REACTORES' AND tipo_proceso='DESGOMADO_ACUOSO' AND etapa='DECANTACION' AND duracion_target_min=35;
+UPDATE dic_etapa_duracion SET duracion_target_min=1, duracion_min_min=1, duracion_max_min=2
+  WHERE sector='REACTORES' AND tipo_proceso='DESGOMADO_ACUOSO' AND etapa='EN_TANQUE'   AND duracion_target_min=35;
+
 -- Parámetros de proceso (con rangos típicos en notas)
 DELETE FROM dic_parametro_proceso WHERE codigo IN ('acidez_inicial','acidez_final','temperatura_inicio','temperatura_fin','ppm_fosforo','prc_goma','q_merma_kg');
 INSERT INTO dic_parametro_proceso(codigo, descripcion, unidad, aplica_a) VALUES
@@ -409,10 +437,11 @@ INSERT INTO dic_parametro_proceso(codigo, descripcion, unidad, aplica_a) VALUES
  ('q_merma_kg',        'Merma',               'kg',  '["PRODUCCION_ARE","DESGOMADO_ACUOSO"]')
 ON CONFLICT (codigo) DO NOTHING;
 
--- Insumos AGUA y POTASIO
+-- Insumos AGUA, POTASIO, FUEL (faltaban para dic_consumo_proceso)
 INSERT INTO dic_insumo(codigo, descripcion, unidad) VALUES
  ('AGUA',    'Agua proceso',         'L'),
- ('POTASIO', 'Potasio (KOH puro)',  'KG')
+ ('POTASIO', 'Potasio (KOH puro)',  'KG'),
+ ('FUEL',    'Fuel oil',             'KG')
 ON CONFLICT (codigo) DO NOTHING;
 
 -- Productos adicionales para salidas de decantación

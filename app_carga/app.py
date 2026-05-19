@@ -147,6 +147,10 @@ duraciones_etapa = cat("""
     SELECT sector, tipo_proceso, etapa, duracion_target_min, duracion_min_min, duracion_max_min
     FROM dic_etapa_duracion
 """)
+consumos_proceso = cat("""
+    SELECT tipo_proceso, codigo_insumo, consumo_por_tn, unidad_consumo, base_referencia, nota
+    FROM dic_consumo_proceso
+""")
 constantes     = cat("SELECT codigo, valor FROM dic_constante_proceso")
 def K(cod, default=None):
     """Lookup de constante química."""
@@ -329,6 +333,37 @@ with tab_objs[0]:
                     st.caption("⚠️ Aproximación 1:1 sobre la masa de AG. Cuando tengas rendimiento real de planta lo ajustamos.")
                 else:
                     st.info("Cargá **acidez oleico**, **% glicerol** y **Q AG** para ver los estimados (glicerina, NaOH, potasio, fuel) y la producción esperada.")
+
+            # Estimación específica DESGOMADO_ACUOSO (fuel por TN AFE-S generado)
+            if tipo_proceso_sel == "DESGOMADO_ACUOSO":
+                st.markdown("**📐 Estimación DESGOMADO_ACUOSO**")
+                cDA1, cDA2 = st.columns(2)
+                tn_afe_target = cDA1.number_input(
+                    "TN de AFE-S a generar",
+                    min_value=0.0, max_value=100.0, step=0.5, value=10.0,
+                    key="b_tn_afe", help="Estimación de cuánto AFE-S vas a obtener (≈ AFE-SG procesado)."
+                )
+                fila_fuel = consumos_proceso[
+                    (consumos_proceso["tipo_proceso"]=="DESGOMADO_ACUOSO") &
+                    (consumos_proceso["codigo_insumo"]=="FUEL")
+                ]
+                if not fila_fuel.empty:
+                    rate = float(fila_fuel.iloc[0]["consumo_por_tn"])
+                    unidad_fuel = fila_fuel.iloc[0]["unidad_consumo"]
+                    est_fuel_total = tn_afe_target * rate
+                    cDA2.metric(f"Fuel estimado ({unidad_fuel})", f"{est_fuel_total:,.1f}",
+                                f"{rate:.1f} {unidad_fuel}/TN AFE-S")
+                    # Duración total esperada
+                    dur_d = duraciones_etapa[
+                        (duraciones_etapa["sector"]==sector) &
+                        (duraciones_etapa["tipo_proceso"]=="DESGOMADO_ACUOSO")
+                    ]
+                    if not dur_d.empty:
+                        total_min = int(dur_d["duracion_target_min"].sum())
+                        st.caption(f"⏱️ Duración total esperada: **~{total_min} min**")
+                else:
+                    st.caption("⚠️ Cargá un consumo en `dic_consumo_proceso` para ver fuel estimado.")
+
             st.markdown("**Horarios**")
             cH1, cH2, cH3, cH4 = st.columns(4)
             f_ini = cH1.date_input("Fecha inicio", date.today(), key="b_fini")
@@ -363,12 +398,22 @@ with tab_objs[0]:
                 p_buscado = cTG1.text_input("Producto buscado *", value="AFE-S", disabled=True, key="b_pbusc")
                 calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
                 st.caption("🔒 DESGOMADO_ACUOSO va siempre de **AFE-SG** → **AFE-S**.")
+            elif tipo_proceso_sel == "PRODUCCION_ARE":
+                # Solo productos que empiezan con ARE (familia biodiesel)
+                opt_obj = [c for c in opt_obj if c.startswith("ARE")]
+                if not opt_obj:
+                    st.error("No hay productos ARE-* activos en dim_producto.")
+                cTG1, cTG2 = st.columns(2)
+                p_buscado = cTG1.selectbox(
+                    "Producto buscado *", opt_obj, index=0, key="b_pbusc",
+                    format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
+                )
+                calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
+                st.caption("🔒 PRODUCCION_ARE solo admite productos de la familia **ARE-***.")
             else:
                 cTG1, cTG2 = st.columns(2)
-                sug = "ARE-A" if tipo_proceso_sel == "PRODUCCION_ARE" else None
-                idx_obj = opt_obj.index(sug) if (sug and sug in opt_obj) else 0
                 p_buscado = cTG1.selectbox(
-                    "Producto buscado *", opt_obj, index=idx_obj, key="b_pbusc",
+                    "Producto buscado *", opt_obj, index=0, key="b_pbusc",
                     format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
                 )
                 calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")

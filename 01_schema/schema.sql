@@ -397,6 +397,19 @@ CREATE TABLE IF NOT EXISTS dic_etapa_duracion (
     PRIMARY KEY (sector, tipo_proceso, etapa)
 );
 
+-- Consumos teóricos de insumos por TN según (proceso, insumo).
+-- Para PRODUCCION_ARE vienen del Excel; DESGOMADO_ACUOSO es bajo (~8.7 L fuel/TN).
+-- base_referencia = AG_INPUT (TN de materia prima) o PRODUCTO_OUTPUT (TN de producto generado)
+CREATE TABLE IF NOT EXISTS dic_consumo_proceso (
+    tipo_proceso     TEXT NOT NULL REFERENCES dic_tipo_proceso(codigo),
+    codigo_insumo    TEXT NOT NULL REFERENCES dic_insumo(codigo),
+    consumo_por_tn   DOUBLE PRECISION NOT NULL CHECK (consumo_por_tn > 0),
+    unidad_consumo   TEXT NOT NULL DEFAULT 'kg',
+    base_referencia  TEXT NOT NULL DEFAULT 'AG_INPUT',
+    nota             TEXT,
+    PRIMARY KEY (tipo_proceso, codigo_insumo)
+);
+
 -- Catálogo de parámetros (acidez, temperatura, ppm fósforo, etc.)
 CREATE TABLE IF NOT EXISTS dic_parametro_proceso (
     codigo      TEXT PRIMARY KEY,
