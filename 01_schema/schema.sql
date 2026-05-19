@@ -357,6 +357,15 @@ ALTER TABLE dim_producto
 -- Drop view primero porque depende de b.* (expandido por Postgres como columnas fijas).
 DROP VIEW IF EXISTS v_batch_activo;
 
+-- Tabla de mapeo de productos según se declaran en portería / origen.
+-- producto = nombre crudo (puede traer typos / variantes); producto_base = código normalizado;
+-- corriente = clasificación (vegetal/animal/insumo/solido/efluente_liquido/sin_declarar).
+CREATE TABLE IF NOT EXISTS porteria_limpieza (
+    producto      TEXT PRIMARY KEY,
+    producto_base TEXT NOT NULL,
+    corriente     TEXT NOT NULL
+);
+
 -- Bienes de uso (equipos físicos: reactores y futuros)
 CREATE TABLE IF NOT EXISTS dim_bien_uso (
     id_bien_uso BIGSERIAL PRIMARY KEY,
