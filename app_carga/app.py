@@ -1180,7 +1180,17 @@ if USR["rol"] == "ADMIN":
                 c3, c4 = st.columns(2)
                 n_pin = c3.text_input("PIN (4-6 dígitos) *", type="password", max_chars=6)
                 n_rol = c4.selectbox("Rol *", ["OPERADOR", "SUPERVISOR", "ADMIN"])
-                n_sector = st.selectbox("Sector default", [""] + sectores["codigo"].tolist())
+                n_sector = st.selectbox(
+                    "Sector default", [""] + sectores["codigo"].tolist(),
+                    format_func=lambda c: "(ninguno)" if c=="" else sectores[sectores["codigo"]==c].iloc[0]["nombre_ui"]
+                )
+                n_sectores = st.multiselect(
+                    "Sectores asignados (vacío = todos)",
+                    options=sectores["codigo"].tolist(),
+                    default=([n_sector] if n_sector else []),
+                    format_func=lambda c: sectores[sectores["codigo"]==c].iloc[0]["nombre_ui"]
+                )
+                st.caption("ℹ️ Si dejás los sectores asignados vacíos, el usuario tendrá acceso a todos.")
                 crear = st.form_submit_button("Crear usuario", type="primary")
             if crear:
                 if not n_nombre or not n_full or not n_pin:
@@ -1191,6 +1201,8 @@ if USR["rol"] == "ADMIN":
                     try:
                         nid = crear_usuario(USR["id_usuario"], n_nombre.lower().strip(),
                                              n_full, n_pin, n_rol, n_sector or None)
+                        if n_sectores:
+                            cambiar_sectores(USR["id_usuario"], nid, n_sectores)
                         st.success(f"✅ Usuario '{n_nombre}' creado (id #{nid}).")
                         cat.clear()
                     except Exception as e:
