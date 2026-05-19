@@ -384,11 +384,17 @@ ON CONFLICT (codigo) DO UPDATE SET
   descripcion = EXCLUDED.descripcion,
   orden       = EXCLUDED.orden;
 
--- Asegurar que FUEL/POTASIO/AGUA existan antes de los consumos (orden de FKs)
+-- Asegurar que FUEL/POTASIO/AGUA/HORAS existan antes de los consumos (orden de FKs)
+-- 'unidad' tiene que existir en dic_unidad
+INSERT INTO dic_unidad(codigo, descripcion, magnitud, es_estandar) VALUES
+ ('H', 'Horas', 'TIEMPO', TRUE)
+ON CONFLICT (codigo) DO NOTHING;
+
 INSERT INTO dic_insumo(codigo, descripcion, unidad) VALUES
- ('AGUA',    'Agua proceso',         'L'),
- ('POTASIO', 'Potasio (KOH puro)',  'KG'),
- ('FUEL',    'Fuel oil',             'KG')
+ ('AGUA',    'Agua proceso',           'L'),
+ ('POTASIO', 'Potasio (KOH puro)',    'KG'),
+ ('FUEL',    'Fuel oil',               'KG'),
+ ('HORAS',   'Horas hombre',           'H')
 ON CONFLICT (codigo) DO NOTHING;
 
 -- Consumos teóricos por proceso (insumo × TN)
@@ -396,7 +402,8 @@ INSERT INTO dic_consumo_proceso(tipo_proceso, codigo_insumo, consumo_por_tn, uni
  ('PRODUCCION_ARE',  'FUEL',    76.9,  'kg', 'AG_INPUT',         'Excel formula_inicial'),
  ('PRODUCCION_ARE',  'soda_kg', 4.4,   'kg', 'AG_INPUT',         'NaOH por TN de AG procesado'),
  ('PRODUCCION_ARE',  'POTASIO', 3.125, 'kg', 'AG_INPUT',         'Excel formula_inicial'),
- ('DESGOMADO_ACUOSO','FUEL',    8.7,   'L',  'PRODUCTO_OUTPUT',  'Promedio L de fuel por TN de AFE-S generado')
+ ('DESGOMADO_ACUOSO','FUEL',    8.7,   'L',  'PRODUCTO_OUTPUT',  'Promedio L de fuel por TN de AFE-S generado'),
+ ('DESGOMADO_ACUOSO','HORAS',   0.1,   'h',  'PRODUCTO_OUTPUT',  'Horas hombre estimadas por TN AFE-S')
 ON CONFLICT (tipo_proceso, codigo_insumo) DO NOTHING;
 
 -- Duraciones estimadas por (sector, proceso, etapa) en MINUTOS

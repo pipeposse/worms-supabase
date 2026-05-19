@@ -448,6 +448,7 @@ ALTER TABLE fact_batch_proceso
   -- Inputs iniciales para fórmula de carga
   ADD COLUMN IF NOT EXISTS acidez_oleico_pct        DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS glicerol_pct             DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS catalizador_tipo         TEXT,
   -- Estimados calculados al armar (snapshot del momento de carga)
   ADD COLUMN IF NOT EXISTS estimado_glicerina_kg    DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS estimado_naoh_kg         DOUBLE PRECISION,
@@ -558,6 +559,12 @@ ALTER TABLE fact_batch_proceso DROP CONSTRAINT IF EXISTS chk_batch_horarios;
 ALTER TABLE fact_batch_proceso
   ADD CONSTRAINT chk_batch_horarios
   CHECK (inicio_ts IS NULL OR fin_ts IS NULL OR fin_ts >= inicio_ts);
+
+-- catalizador válido
+ALTER TABLE fact_batch_proceso DROP CONSTRAINT IF EXISTS chk_batch_catalizador;
+ALTER TABLE fact_batch_proceso
+  ADD CONSTRAINT chk_batch_catalizador
+  CHECK (catalizador_tipo IS NULL OR catalizador_tipo IN ('NAOH','POTASIO'));
 
 ALTER TABLE dim_producto
   DROP CONSTRAINT IF EXISTS chk_producto_rango_coherente;

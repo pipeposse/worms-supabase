@@ -226,6 +226,7 @@ with tab_objs[0]:
         est_glice_kg = est_naoh_kg = est_potasio_kg = est_fuel_kg = est_are_kg = None
         est_glicerol_puro_kg = None
         q_ag_kg_ref = 0.0
+        catalizador_tipo = None
         if es_reactor:
             st.markdown("**Reactor + proceso + etapa**")
             cR1, cR2, cR3 = st.columns(3)
@@ -296,6 +297,12 @@ with tab_objs[0]:
                     step=100, key="b_qag_ref",
                     help=f"Sugerido por capacidad: {int(q_ag_max_kg):,} kg"
                 )
+                catalizador_tipo = st.radio(
+                    "Catalizador a usar",
+                    options=["NAOH","POTASIO"],
+                    format_func=lambda x: "🧪 Soda cáustica (NaOH)" if x=="NAOH" else "🧪 Potasio (KOH)",
+                    horizontal=True, key="b_catalizador"
+                )
 
                 # variables disponibles para comparación posterior
                 est_glicerol_puro_kg = None
@@ -304,13 +311,16 @@ with tab_objs[0]:
                     est_glicerol_puro_kg = float(q_ag_kg_ref) * (acidez_oleico_v/100) * (PMg/(PMa*2)) * FE
                     # Glicerina total a cargar (con la pureza informada): glicerol_puro / (glicerol/100)
                     est_glice_kg = est_glicerol_puro_kg / (glicerol_v/100)
-                    # Cuánto más glicerina por la impureza vs glicerina 100% pura
                     mas_por_impureza = est_glice_kg - est_glicerol_puro_kg
 
                     tn = float(q_ag_kg_ref) / 1000.0
-                    est_naoh_kg    = tn * float(fila_bien["consumo_naoh_kg_x_tn"]    or 0)
-                    est_potasio_kg = tn * float(fila_bien["consumo_potasio_kg_x_tn"] or 0)
-                    est_fuel_kg    = tn * float(fila_bien["consumo_fuel_kg_x_tn"]    or 0)
+                    rate_naoh    = float(fila_bien["consumo_naoh_kg_x_tn"]    or 0)
+                    rate_potasio = float(fila_bien["consumo_potasio_kg_x_tn"] or 0)
+                    rate_fuel    = float(fila_bien["consumo_fuel_kg_x_tn"]    or 0)
+                    # Solo aplica el catalizador elegido
+                    est_naoh_kg    = (tn * rate_naoh)    if catalizador_tipo == "NAOH"    else 0.0
+                    est_potasio_kg = (tn * rate_potasio) if catalizador_tipo == "POTASIO" else 0.0
+                    est_fuel_kg    = tn * rate_fuel
                     est_are_kg     = float(q_ag_kg_ref)  # 1:1 aprox
 
                     st.markdown("**🧮 Insumos estimados a cargar**")
@@ -320,14 +330,25 @@ with tab_objs[0]:
                         f"{est_glice_kg:,.0f} kg",
                         f"+{mas_por_impureza:,.0f} kg por pureza {glicerol_v:.0f}%"
                     )
-                    cE2.metric("NaOH",      f"{est_naoh_kg:,.1f} kg")
-                    cE3.metric("Potasio",   f"{est_potasio_kg:,.2f} kg")
-                    cE4.metric("Fuel",      f"{est_fuel_kg:,.0f} kg")
+                    if catalizador_tipo == "NAOH":
+                        cE2.metric("NaOH (catalizador)", f"{est_naoh_kg:,.1f} kg",
+                                   f"alternativa: {tn*rate_potasio:.2f} kg potasio")
+                        cE3.metric("Potasio", "—", "no aplica")
+                    else:
+                        cE2.metric("NaOH", "—", "no aplica")
+                        cE3.metric("Potasio (catalizador)", f"{est_potasio_kg:,.2f} kg",
+                                   f"alternativa: {tn*rate_naoh:.1f} kg NaOH")
+                    cE4.metric("Fuel", f"{est_fuel_kg:,.0f} kg")
 
                     st.caption(
                         f"💡 Glicerol **puro** necesario = **{est_glicerol_puro_kg:,.0f} kg**. "
                         f"Como la glicerina tiene {glicerol_v:.0f}% de glicerol, hay que cargar "
-                        f"**{est_glice_kg:,.0f} kg** de glicerina ({mas_por_impureza:,.0f} kg extra para compensar la impureza)."
+                        f"**{est_glice_kg:,.0f} kg** de glicerina ({mas_por_impureza:,.0f} kg extra por la impureza)."
+                    )
+                    st.caption(
+                        f"🧪 Catalizador elegido: **{('NaOH' if catalizador_tipo=='NAOH' else 'Potasio (KOH)')}**. "
+                        f"Si cambiaras al otro: {('NaOH' if catalizador_tipo=='POTASIO' else 'Potasio')} → "
+                        f"{(tn*rate_naoh) if catalizador_tipo=='POTASIO' else (tn*rate_potasio):,.2f} kg."
                     )
 
                     st.markdown("**🎯 Producto final esperado**")
@@ -336,35 +357,50 @@ with tab_objs[0]:
                 else:
                     st.info("Cargá **acidez oleico**, **% glicerol** y **Q AG** para ver los estimados (glicerina, NaOH, potasio, fuel) y la producción esperada.")
 
-            # Estimación específica DESGOMADO_ACUOSO (fuel por TN AFE-S generado)
+            # Estimación específica DESGOMADO_ACUOSO (fuel + horas por TN AFE-S generado)
             if tipo_proceso_sel == "DESGOMADO_ACUOSO":
                 st.markdown("**📐 Estimación DESGOMADO_ACUOSO**")
-                cDA1, cDA2 = st.columns(2)
+                cDA1, cDA2, cDA3 = st.columns(3)
                 tn_afe_target = cDA1.number_input(
                     "TN de AFE-S a generar",
                     min_value=0.0, max_value=100.0, step=0.5, value=10.0,
                     key="b_tn_afe", help="Estimación de cuánto AFE-S vas a obtener (≈ AFE-SG procesado)."
                 )
-                fila_fuel = consumos_proceso[
-                    (consumos_proceso["tipo_proceso"]=="DESGOMADO_ACUOSO") &
-                    (consumos_proceso["codigo_insumo"]=="FUEL")
-                ]
-                if not fila_fuel.empty:
-                    rate = float(fila_fuel.iloc[0]["consumo_por_tn"])
-                    unidad_fuel = fila_fuel.iloc[0]["unidad_consumo"]
-                    est_fuel_total = tn_afe_target * rate
-                    cDA2.metric(f"Fuel estimado ({unidad_fuel})", f"{est_fuel_total:,.1f}",
-                                f"{rate:.1f} {unidad_fuel}/TN AFE-S")
-                    # Duración total esperada
-                    dur_d = duraciones_etapa[
-                        (duraciones_etapa["sector"]==sector) &
-                        (duraciones_etapa["tipo_proceso"]=="DESGOMADO_ACUOSO")
+                def _rate(insumo):
+                    f = consumos_proceso[
+                        (consumos_proceso["tipo_proceso"]=="DESGOMADO_ACUOSO") &
+                        (consumos_proceso["codigo_insumo"]==insumo)
                     ]
-                    if not dur_d.empty:
-                        total_min = int(dur_d["duracion_target_min"].sum())
-                        st.caption(f"⏱️ Duración total esperada: **~{total_min} min**")
-                else:
-                    st.caption("⚠️ Cargá un consumo en `dic_consumo_proceso` para ver fuel estimado.")
+                    if f.empty: return None, None
+                    return float(f.iloc[0]["consumo_por_tn"]), f.iloc[0]["unidad_consumo"]
+
+                rate_fuel, u_fuel = _rate("FUEL")
+                rate_h,    u_h    = _rate("HORAS")
+
+                if rate_fuel is not None:
+                    est_fuel_kg = tn_afe_target * rate_fuel   # se guarda en estimado_fuel_kg (valor en su unidad)
+                    cDA2.metric(f"Fuel estimado ({u_fuel})", f"{est_fuel_kg:,.1f}",
+                                f"{rate_fuel:.1f} {u_fuel}/TN AFE-S")
+                if rate_h is not None:
+                    est_horas_total = tn_afe_target * rate_h
+                    tiempo_est = est_horas_total              # se guarda en tiempo_estimado_horas
+                    cDA3.metric("Horas hombre est.", f"{est_horas_total:,.2f} h",
+                                f"{rate_h:.2f} h/TN AFE-S")
+
+                # ARE estimated lo reusamos como kg de AFE-S (interpretación: producto final esperado)
+                est_are_kg = tn_afe_target * 1000.0
+                # Q AG planeado igual al output (1:1 aprox para desgomado)
+                q_ag_kg_ref = est_are_kg
+
+                # Duración total esperada por suma de etapas (alternativa)
+                dur_d = duraciones_etapa[
+                    (duraciones_etapa["sector"]==sector) &
+                    (duraciones_etapa["tipo_proceso"]=="DESGOMADO_ACUOSO")
+                ]
+                if not dur_d.empty:
+                    total_min = int(dur_d["duracion_target_min"].sum())
+                    st.caption(f"⏱️ Duración total esperada por etapas: **~{total_min} min** "
+                               f"({total_min/60:.2f} h)")
 
             st.markdown("**Horarios**")
             cH1, cH2, cH3, cH4 = st.columns(4)
@@ -555,6 +591,45 @@ with tab_objs[0]:
                         if val and val > 0:
                             parametros_dict[p["codigo"]] = float(val)
 
+        # ----- Alarmas plan-vs-real para insumos cargados -----
+        def _alarma_consumo(label, real_kg, est_kg, tol=5.0, unidad="kg"):
+            if est_kg is None or est_kg <= 0:
+                return
+            if real_kg is None or real_kg <= 0:
+                st.caption(f"⏳ {label}: estimado {est_kg:,.1f} {unidad} · sin cargar real todavía.")
+                return
+            desv_abs = real_kg - est_kg
+            desv_pct = (desv_abs / est_kg) * 100
+            txt = (f"{label}: real **{real_kg:,.1f} {unidad}** vs estimado **{est_kg:,.1f} {unidad}** "
+                   f"→ desvío **{desv_pct:+.1f}%** ({desv_abs:+,.1f} {unidad})")
+            if abs(desv_pct) <= tol:
+                st.success("✅ " + txt + " · dentro de ±5%.")
+            elif desv_pct > 0:
+                st.warning("⚠️ " + txt + " · **fuera** del estándar (cargaste de **más**).")
+            else:
+                st.warning("⚠️ " + txt + " · **fuera** del estándar (falta para llegar al estimado).")
+
+        if tipo_proceso_sel == "PRODUCCION_ARE" and insumos_dict:
+            st.markdown("**🚨 Plan vs real (insumos)**")
+            real_fuel    = float(insumos_dict.get("FUEL", 0.0) or 0)
+            real_naoh    = float(insumos_dict.get("soda_kg", 0.0) or 0)
+            real_potasio = float(insumos_dict.get("POTASIO", 0.0) or 0)
+            _alarma_consumo("Fuel", real_fuel, est_fuel_kg, unidad="kg")
+            if catalizador_tipo == "NAOH":
+                _alarma_consumo("NaOH", real_naoh, est_naoh_kg, unidad="kg")
+                if real_potasio > 0:
+                    st.warning(f"⚠️ Cargaste {real_potasio:.2f} kg de Potasio pero el catalizador elegido era NaOH.")
+            elif catalizador_tipo == "POTASIO":
+                _alarma_consumo("Potasio", real_potasio, est_potasio_kg, unidad="kg")
+                if real_naoh > 0:
+                    st.warning(f"⚠️ Cargaste {real_naoh:.2f} kg de NaOH pero el catalizador elegido era Potasio.")
+
+        if tipo_proceso_sel == "DESGOMADO_ACUOSO" and insumos_dict:
+            st.markdown("**🚨 Plan vs real (insumos)**")
+            real_fuel = float(insumos_dict.get("FUEL", 0.0) or 0)
+            # est_fuel_kg para DESGOMADO se computó en L (8.7 L/TN)
+            _alarma_consumo("Fuel", real_fuel, est_fuel_kg, unidad="L")
+
         motivo_rango = ""
         if fuera_rango:
             st.warning(f"⚠️ {kg_obt:,.0f} kg fuera del rango ({int(rmin):,}–{int(rmax):,}).")
@@ -601,6 +676,7 @@ with tab_objs[0]:
                                 "  id_bien_uso, tipo_proceso, etapa_actual, inicio_ts, fin_ts, tiempo_estimado_horas,"
                                 "  parametros_proceso,"
                                 "  id_producto_buscado, calidad_buscada,"
+                                "  catalizador_tipo,"
                                 "  acidez_oleico_pct, glicerol_pct,"
                                 "  estimado_glicerina_kg, estimado_naoh_kg, estimado_potasio_kg, estimado_fuel_kg,"
                                 "  estimado_are_kg, q_ag_planeado_kg,"
@@ -613,6 +689,7 @@ with tab_objs[0]:
                                 "  %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,"
                                 "  %s,%s,%s,%s,%s,%s,%s::jsonb,"
                                 "  %s,%s,"
+                                "  %s,"
                                 "  %s,%s,"
                                 "  %s,%s,%s,%s,"
                                 "  %s,%s,"
@@ -633,6 +710,7 @@ with tab_objs[0]:
                                  float(tiempo_est) if tiempo_est else None,
                                  json.dumps(parametros_dict),
                                  pid_buscado, calidad_buscada or None,
+                                 catalizador_tipo or None,
                                  acidez_oleico_v or None, glicerol_v or None,
                                  (float(est_glice_kg)  if est_glice_kg  is not None else None),
                                  (float(est_naoh_kg)   if est_naoh_kg   is not None else None),
