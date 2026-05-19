@@ -651,6 +651,15 @@ with tab_objs[0]:
                                  obs or None, bool(fuera_rango), motivo_rango or None)
                             )
                             id_b = cur.fetchone()[0]
+                            # Insertar primer evento de etapa (abre el ARMADO o etapa seleccionada)
+                            if es_reactor and etapa_sel:
+                                cur.execute("""
+                                    INSERT INTO fact_etapa_evento
+                                    (id_batch, etapa, inicio_ts, id_usuario)
+                                    VALUES (%s, %s, COALESCE(%s, NOW()), %s)
+                                """, (id_b, etapa_sel,
+                                      inicio_dt.isoformat() if inicio_dt else None,
+                                      int(USR["id_usuario"])))
                         audit.insert("fact_batch_proceso", id_b,
                                      {"sector": sector, "proceso": tipo_proceso_sel,
                                       "producto": p_obt, "kg": kg_obt, "fuera_rango": bool(fuera_rango)})
@@ -681,22 +690,86 @@ with tab_objs[0]:
             r = df_rec.iloc[opt.index(sel)]
             id_batch_edit = int(r["id_batch"])
 
+            # Historial de eventos de etapa para esta reacción
+            df_eve = cat(f"""
+                SELECT e.id_evento_etapa, e.etapa, e.inicio_ts, e.fin_ts, e.horas_hombre, e.observaciones,
+                       u.nombre AS usuario,
+                       d.duracion_target_min, d.duracion_min_min, d.duracion_max_min
+                FROM produccion.fact_etapa_evento e
+                JOIN produccion.dim_usuario u ON u.id_usuario = e.id_usuario
+                LEFT JOIN produccion.dic_etapa_duracion d
+                  ON d.sector='REACTORES' AND d.tipo_proceso='{r["tipo_proceso"]}' AND d.etapa=e.etapa
+                WHERE e.id_batch = {id_batch_edit}
+                ORDER BY e.inicio_ts
+            """)
+            if not df_eve.empty:
+                df_eve = df_eve.copy()
+                df_eve["duracion_min"] = df_eve.apply(
+                    lambda x: round(((x["fin_ts"] or pd.Timestamp.now(tz="UTC")) - x["inicio_ts"]).total_seconds()/60, 1)
+                              if pd.notna(x["inicio_ts"]) else None, axis=1)
+                df_eve["estado"] = df_eve["fin_ts"].apply(lambda v: "✅ cerrada" if pd.notna(v) else "🟢 abierta")
+                df_eve["desv_vs_target"] = df_eve.apply(
+                    lambda x: None if pd.isna(x.get("duracion_target_min")) or pd.isna(x["duracion_min"])
+                              else round((x["duracion_min"] - x["duracion_target_min"])/x["duracion_target_min"]*100, 1),
+                    axis=1)
+                st.markdown("**Historial de etapas (real vs target)**")
+                st.dataframe(
+                    df_eve[["etapa","estado","inicio_ts","fin_ts","duracion_min","duracion_target_min","desv_vs_target","horas_hombre","usuario","observaciones"]],
+                    use_container_width=True, hide_index=True
+                )
+                # KPIs
+                total_real = df_eve["duracion_min"].fillna(0).sum()
+                total_target = df_eve["duracion_target_min"].fillna(0).sum()
+                kK1, kK2, kK3 = st.columns(3)
+                kK1.metric("Tiempo real (min)", f"{total_real:,.0f}")
+                kK2.metric("Tiempo target (min)", f"{total_target:,.0f}")
+                if total_target > 0 and pd.notna(r.get("kg_obtenido")) and r["kg_obtenido"]:
+                    kg_h = (r["kg_obtenido"] / (total_real/60)) if total_real > 0 else None
+                    kK3.metric("Productividad (kg/h)", f"{kg_h:,.0f}" if kg_h else "—")
+                elif total_target > 0:
+                    kK3.metric("Desvío total", f"{((total_real-total_target)/total_target*100):+.1f}%" if total_real>0 else "—")
+            else:
+                st.caption("No hay eventos de etapa registrados para esta reacción todavía.")
+
+            st.divider()
+            st.markdown("**Avanzar a la siguiente etapa**")
             cE1, cE2 = st.columns(2)
+            etapas_codigos = etapas_proc["codigo"].tolist()
+            idx_actual = etapas_codigos.index(r["etapa_actual"]) if r["etapa_actual"] in etapas_codigos else 0
+            idx_nueva = min(idx_actual + 1, len(etapas_codigos)-1)
             nueva_etapa = cE1.selectbox(
-                "Avanzar etapa a", etapas_proc["codigo"].tolist(),
-                index=etapas_proc["codigo"].tolist().index(r["etapa_actual"]) if r["etapa_actual"] in etapas_proc["codigo"].tolist() else 0,
+                "Próxima etapa", etapas_codigos, index=idx_nueva,
                 format_func=lambda c: etapas_proc[etapas_proc["codigo"]==c].iloc[0]["descripcion"],
                 key="e_etapa"
             )
-            if cE2.button("💾 Actualizar etapa", use_container_width=True, key="e_save"):
+            horas_hombre_in = cE2.number_input("Horas hombre dedicadas en la etapa actual", 0.0, 24.0, step=0.5, key="e_hh")
+            obs_etapa = st.text_input("Observaciones (opcional)", max_chars=200, key="e_obs_etapa")
+            if st.button("💾 Cerrar etapa actual y abrir nueva", use_container_width=True, type="primary", key="e_save"):
                 try:
                     with conectar(USR["id_usuario"]) as (conn, audit):
                         with conn.cursor() as cur:
+                            # Cerrar evento abierto
+                            cur.execute("""
+                                UPDATE fact_etapa_evento
+                                   SET fin_ts = NOW(),
+                                       horas_hombre = COALESCE(%s, horas_hombre),
+                                       observaciones = COALESCE(NULLIF(%s,''), observaciones)
+                                 WHERE id_batch=%s AND fin_ts IS NULL
+                            """, (float(horas_hombre_in) if horas_hombre_in else None,
+                                  obs_etapa, id_batch_edit))
+                            # Abrir el nuevo evento
+                            cur.execute("""
+                                INSERT INTO fact_etapa_evento
+                                (id_batch, etapa, inicio_ts, id_usuario)
+                                VALUES (%s, %s, NOW(), %s)
+                            """, (id_batch_edit, nueva_etapa, int(USR["id_usuario"])))
+                            # Actualizar etapa_actual del batch
                             cur.execute("UPDATE fact_batch_proceso SET etapa_actual=%s WHERE id_batch=%s",
                                         (nueva_etapa, id_batch_edit))
-                        audit.log("U","fact_batch_proceso",id_batch_edit,{"etapa_actual": nueva_etapa})
-                    st.success(f"Etapa actualizada a {nueva_etapa}.")
-                    cat.clear()
+                        audit.log("U","fact_batch_proceso",id_batch_edit,
+                                  {"etapa_actual": nueva_etapa, "etapa_anterior_cerrada": True})
+                    st.success(f"Etapa avanzada a {nueva_etapa}.")
+                    cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
 
@@ -1251,7 +1324,7 @@ if USR["rol"] == "ADMIN":
                 idx_sec = opciones_sec.index(u_row["sector"]) if u_row["sector"] in opciones_sec else 0
                 nsec = st.selectbox("Sector default", opciones_sec, index=idx_sec, key=f"ns_{u_id}")
 
-                # Multi-sector: traer los actuales y permitir seleccionar varios
+                # Multi-sector
                 df_usr = cat(f"SELECT sectores FROM produccion.dim_usuario WHERE id_usuario={u_id}")
                 actuales = list(df_usr.iloc[0]["sectores"]) if not df_usr.empty and df_usr.iloc[0]["sectores"] else []
                 todos_secs = sectores["codigo"].tolist()
@@ -1261,7 +1334,6 @@ if USR["rol"] == "ADMIN":
                     format_func=lambda c: sectores[sectores["codigo"]==c].iloc[0]["nombre_ui"],
                     key=f"nss_{u_id}"
                 )
-                st.caption("ℹ️ Si la lista queda vacía, el usuario tiene acceso a todos los sectores.")
 
                 if st.form_submit_button("\U0001f4be Aplicar cambios", use_container_width=True):
                     try:
