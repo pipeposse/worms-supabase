@@ -71,9 +71,41 @@ if "user" not in st.session_state:
 
 USR = st.session_state.user
 
+# ---------- LANDING (post-login): elegir sección ----------
+if "section" not in st.session_state:
+    st.session_state.section = None
+
+def go_to(sec):
+    st.session_state.section = sec
+    st.rerun()
+
+if st.session_state.section is None:
+    st.title("WORMS · Elegí qué querés hacer")
+    st.caption(f"Sesión: **{USR['nombre_full']}** (rol {USR['rol']})")
+    cA, cB, cC = st.columns(3)
+    with cA:
+        st.markdown("### 🏭 Cargas")
+        st.write("Carga de producción, anulaciones, observación, auditoría y admin.")
+        if st.button("Entrar a Cargas", type="primary", use_container_width=True, key="land_cargas"):
+            go_to("CARGAS")
+    with cB:
+        st.markdown("### 🧪 Laboratorio")
+        st.write("Vista de procesos_lab: filtros, estadísticas, descarga CSV.")
+        if st.button("Entrar a Laboratorio", use_container_width=True, key="land_lab"):
+            go_to("LAB")
+    with cC:
+        st.markdown("### 🚛 Portería")
+        st.write("Vista de v_transacciones_limpias: filtros, peso por producto, descarga.")
+        if st.button("Entrar a Portería", use_container_width=True, key="land_port"):
+            go_to("PORT")
+    st.stop()
+
 with st.sidebar:
     st.markdown(f"### 👤 {USR['nombre_full']}")
     st.caption(f"`{USR['nombre']}` · rol **{USR['rol']}**")
+    if st.button("← Cambiar de sección", use_container_width=True, key="sb_back"):
+        st.session_state.section = None
+        st.rerun()
     if USR.get("sector"):
         st.caption(f"Sector default: **{USR['sector']}**")
     if USR.get("sectores"):
@@ -164,6 +196,195 @@ calidades = cat("SELECT codigo, descripcion FROM dic_calidad WHERE activo ORDER 
 turnos = cat("SELECT codigo FROM dic_turno WHERE activo")
 insumos_cat = cat("SELECT codigo, descripcion, unidad FROM dic_insumo WHERE activo ORDER BY codigo")
 
+
+# ============================================================================
+# Si NO es la sección CARGAS, mostramos LAB o PORT y cortamos acá
+# ============================================================================
+def _humanize_ago(ts):
+    if ts is None or pd.isna(ts): return "—"
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc) if getattr(ts, "tzinfo", None) else _dt.now()
+    s = int((now - ts).total_seconds())
+    if s < 60:    return f"hace {s} s"
+    if s < 3600:  return f"hace {s//60} min"
+    if s < 86400: return f"hace {s//3600} h"
+    return f"hace {s//86400} d"
+
+def _header_sync():
+    """Header con último registro subido a procesos_lab y transacciones."""
+    try:
+        df_lab = cat("SELECT id, empleado, _synced_at FROM produccion.procesos_lab ORDER BY id DESC LIMIT 1")
+        df_port = cat("SELECT id, usuario, _synced_at FROM produccion.transacciones ORDER BY id DESC LIMIT 1")
+        df_sync = cat("SELECT source_id, last_status, last_successful_sync, updated_at, left(coalesce(last_error,''),120) AS err FROM produccion.sync_control")
+    except Exception as e:
+        st.warning(f"No se pudo leer sync_control / tablas raw: {e}")
+        return
+    cA, cB = st.columns(2)
+    def _card(col, titulo, df_last, user_col, source):
+        with col:
+            if df_last.empty:
+                st.error(f"**{titulo}** · sin datos")
+                return
+            r = df_last.iloc[0]
+            synced = r.get("_synced_at")
+            uname  = r.get(user_col, "—") or "—"
+            sync_row = df_sync[df_sync["source_id"]==source]
+            status = sync_row.iloc[0]["last_status"] if not sync_row.empty else "—"
+            last_try = sync_row.iloc[0]["updated_at"] if not sync_row.empty else None
+            last_ok  = sync_row.iloc[0]["last_successful_sync"] if not sync_row.empty else None
+            err = sync_row.iloc[0]["err"] if not sync_row.empty else ""
+            es_viejo = False
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                now = _dt.now(_tz.utc) if getattr(synced,"tzinfo",None) else _dt.now()
+                es_viejo = (now - synced).total_seconds() > 300
+            except Exception:
+                pass
+            if status != "OK" or es_viejo:
+                st.error(f"**{titulo}**\n\n"
+                         f"Último ID: **{r['id']}** · usuario **{uname}** · {_humanize_ago(synced)}\n\n"
+                         f"Agente **{status}** · último intento {_humanize_ago(last_try)} · última carga OK {_humanize_ago(last_ok)}"
+                         + (f"\n\nError: {err}" if err else ""))
+            else:
+                st.success(f"**{titulo}**\n\n"
+                           f"Último ID: **{r['id']}** · usuario **{uname}** · {_humanize_ago(synced)}\n\n"
+                           f"Agente **OK** · último intento {_humanize_ago(last_try)} · última carga OK {_humanize_ago(last_ok)}")
+    _card(cA, "🧪 procesos_lab",     df_lab,  "empleado", "laboratorio_pc_1")
+    _card(cB, "🚛 transacciones",    df_port, "usuario",  "porteria_pc_1")
+
+
+if st.session_state.section != "CARGAS":
+    _header_sync()
+    st.divider()
+    from datetime import timedelta as _td
+    if st.session_state.section == "LAB":
+        # =================== LABORATORIO ===================
+        st.title("🧪 Laboratorio")
+        with st.expander("Filtros", expanded=True):
+            c1, c2, c3 = st.columns(3)
+            fmin = c1.date_input("Fecha desde", value=(date.today()-_td(days=30)), key="lab_fmin")
+            fmax = c2.date_input("Fecha hasta", value=date.today(), key="lab_fmax")
+            limit_lab = c3.number_input("Límite filas", 100, 100000, 5000, step=500, key="lab_lim")
+            try:
+                prods_lab = cat("SELECT DISTINCT producto_lab FROM produccion.procesos_lab WHERE producto_lab IS NOT NULL ORDER BY 1")["producto_lab"].tolist()
+            except Exception: prods_lab = []
+            try:
+                emps_lab = cat("SELECT DISTINCT empleado FROM produccion.procesos_lab WHERE empleado IS NOT NULL ORDER BY 1")["empleado"].tolist()
+            except Exception: emps_lab = []
+            c4, c5 = st.columns(2)
+            sel_prod = c4.multiselect("Producto", prods_lab, key="lab_prods")
+            sel_emp  = c5.multiselect("Empleado", emps_lab, key="lab_emps")
+
+        where = ["fecha >= %s", "fecha < %s"]
+        params = [fmin.isoformat(), (fmax + _td(days=1)).isoformat()]
+        if sel_prod:
+            where.append("producto_lab = ANY(%s)"); params.append(sel_prod)
+        if sel_emp:
+            where.append("empleado = ANY(%s)"); params.append(sel_emp)
+        sql_lab = f"""
+            SELECT id, fecha, ticket, producto_lab, calidad_final_lab, color,
+                   prc_acidez, prc_agua, prc_producto, ppm_azufre, ppm_fosforo,
+                   densidad__g_ml, temp_celcius, empleado, rechazado,
+                   patente_chasis, _synced_at
+            FROM produccion.procesos_lab
+            WHERE {' AND '.join(where)}
+            ORDER BY fecha DESC NULLS LAST
+            LIMIT {int(limit_lab)}
+        """
+        try:
+            df_l = cat(sql_lab, tuple(params))
+        except Exception as e:
+            st.exception(e); df_l = pd.DataFrame()
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Filas", len(df_l))
+        k2.metric("Productos distintos", df_l["producto_lab"].nunique() if not df_l.empty else 0)
+        k3.metric("Aceptados", int((df_l["rechazado"]=="ACEPTADO").sum()) if not df_l.empty else 0)
+        k4.metric("Rechazados", int((df_l["rechazado"]=="RECHAZADO").sum()) if not df_l.empty else 0)
+
+        if not df_l.empty:
+            st.markdown("**Procesos por día**")
+            by_day = df_l.assign(dia=pd.to_datetime(df_l["fecha"]).dt.date).groupby("dia").size().reset_index(name="cantidad")
+            st.line_chart(by_day, x="dia", y="cantidad", use_container_width=True)
+            st.markdown("**Distribución por producto**")
+            by_prod = df_l["producto_lab"].value_counts().reset_index()
+            by_prod.columns = ["producto_lab","cantidad"]
+            st.bar_chart(by_prod, x="producto_lab", y="cantidad", use_container_width=True)
+            st.dataframe(df_l, use_container_width=True, hide_index=True, height=380)
+            st.download_button("⬇️ Descargar CSV", df_l.to_csv(index=False).encode("utf-8"),
+                               file_name=f"procesos_lab_{fmin}_{fmax}.csv", mime="text/csv")
+        else:
+            st.info("Sin datos en el rango.")
+    elif st.session_state.section == "PORT":
+        # =================== PORTERÍA ===================
+        st.title("🚛 Portería")
+        with st.expander("Filtros", expanded=True):
+            c1, c2, c3 = st.columns(3)
+            fmin = c1.date_input("fecha_entrada desde", value=(date.today()-_td(days=7)), key="p_fmin")
+            fmax = c2.date_input("fecha_entrada hasta", value=date.today(), key="p_fmax")
+            limit_p = c3.number_input("Límite filas", 100, 200000, 10000, step=1000, key="p_lim")
+            try:
+                prods_p = cat("SELECT DISTINCT producto FROM produccion.v_transacciones_limpias WHERE producto IS NOT NULL ORDER BY 1 LIMIT 200")["producto"].tolist()
+            except Exception: prods_p = []
+            try:
+                dest_p = cat("SELECT DISTINCT destino FROM produccion.v_transacciones_limpias WHERE destino IS NOT NULL ORDER BY 1 LIMIT 200")["destino"].tolist()
+            except Exception: dest_p = []
+            c4, c5, c6 = st.columns(3)
+            sel_pp = c4.multiselect("Producto",  prods_p, key="p_prods")
+            sel_dp = c5.multiselect("Destino",   dest_p,  key="p_dest")
+            pat    = c6.text_input("Patente chasis contiene", key="p_pat")
+
+        where = ["fecha_entrada >= %s", "fecha_entrada < %s"]
+        params = [fmin.isoformat(), (fmax + _td(days=1)).isoformat()]
+        if sel_pp:
+            where.append("producto = ANY(%s)"); params.append(sel_pp)
+        if sel_dp:
+            where.append("destino = ANY(%s)"); params.append(sel_dp)
+        if pat.strip():
+            where.append("patente_chasis ILIKE %s"); params.append(f"%{pat.strip()}%")
+        sql_p = f"""
+            SELECT id, transaccion, fecha_entrada, hora_e, fecha_salida, hora_s,
+                   usuario, conductor, patente_chasis, patente_acoplado,
+                   producto, procedencia, destino,
+                   peso_entrada, peso_salida, peso_neto,
+                   observaciones, _synced_at
+            FROM produccion.v_transacciones_limpias
+            WHERE {' AND '.join(where)}
+            ORDER BY fecha_entrada DESC NULLS LAST, id DESC
+            LIMIT {int(limit_p)}
+        """
+        try:
+            df_p = cat(sql_p, tuple(params))
+        except Exception as e:
+            st.exception(e); df_p = pd.DataFrame()
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Transacciones", len(df_p))
+        k2.metric("Patentes distintas", df_p["patente_chasis"].nunique() if not df_p.empty else 0)
+        if not df_p.empty:
+            tot = pd.to_numeric(df_p["peso_neto"], errors="coerce").sum()
+            avg = pd.to_numeric(df_p["peso_neto"], errors="coerce").mean()
+            k3.metric("Peso neto total (kg)", f"{int(tot):,}".replace(",", "."))
+            k4.metric("Peso neto promedio", f"{int(avg or 0):,}".replace(",", "."))
+            st.markdown("**Transacciones por día**")
+            by_day = df_p.dropna(subset=["fecha_entrada"]).groupby("fecha_entrada").size().reset_index(name="cantidad")
+            st.line_chart(by_day, x="fecha_entrada", y="cantidad", use_container_width=True)
+            st.markdown("**Peso neto promedio por producto (top 15)**")
+            prod_avg = (df_p.dropna(subset=["producto"])
+                            .assign(peso=pd.to_numeric(df_p["peso_neto"], errors="coerce"))
+                            .groupby("producto")["peso"].mean()
+                            .sort_values(ascending=False).head(15).reset_index())
+            st.bar_chart(prod_avg, x="producto", y="peso", use_container_width=True)
+            st.dataframe(df_p, use_container_width=True, hide_index=True, height=420)
+            st.download_button("⬇️ Descargar CSV", df_p.to_csv(index=False).encode("utf-8"),
+                               file_name=f"transacciones_{fmin}_{fmax}.csv", mime="text/csv")
+        else:
+            st.info("Sin datos en el rango.")
+    st.stop()
+
+# A partir de acá: SECCIÓN CARGAS (todo el flujo histórico)
+_header_sync()
+st.divider()
 
 tabs = ["🏭 Producción", "📊 Observación", "✏️ Mis cargas", "🕒 Audit"]
 if USR["rol"] == "ADMIN":
