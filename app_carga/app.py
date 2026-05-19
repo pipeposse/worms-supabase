@@ -334,33 +334,27 @@ if st.session_state.section != "CARGAS":
             sel_dp = c5.multiselect("Destino",   dest_p,  key="p_dest")
             pat    = c6.text_input("Patente chasis contiene", key="p_pat")
 
-        # CAST inline: fecha_e (text) → date para filtrar. Tolera vacíos/NULL.
-        where = ["NULLIF(fecha_e,'')::date >= %s", "NULLIF(fecha_e,'')::date < %s"]
+        where = ["fecha_entrada >= %s", "fecha_entrada < %s"]
         params = [fmin.isoformat(), (fmax + _td(days=1)).isoformat()]
         if sel_pp:
             where.append("producto = ANY(%s)"); params.append(sel_pp)
         if sel_dp:
             where.append("destino = ANY(%s)"); params.append(sel_dp)
         if pat.strip():
-            where.append("patcha ILIKE %s"); params.append(f"%{pat.strip()}%")
+            where.append("patente_chasis ILIKE %s"); params.append(f"%{pat.strip()}%")
         sql_p = f"""
-            SELECT id, transaccion,
-                   NULLIF(fecha_e,'')::date AS fecha_entrada,
-                   hora_e,
-                   NULLIF(fecha_s,'')::date AS fecha_salida,
-                   hora_s,
-                   usuario, conductor,
-                   patcha    AS patente_chasis,
-                   patacopl  AS patente_acoplado,
+            SELECT id, transaccion, fecha_entrada, hora_e, fecha_salida, hora_s,
+                   usuario, conductor, patente_chasis, patente_acoplado,
                    producto, producto_base, corriente, evaluado,
                    procedencia, destino,
-                   pesoent   AS peso_entrada,
-                   pesosal   AS peso_salida,
-                   pesoneto  AS peso_neto,
+                   peso_entrada, peso_salida, peso_neto,
+                   lab_calidad, lab_color, lab_prc_acidez, lab_prc_agua,
+                   lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
+                   lab_empleado, lab_rechazado, lab_num_muestra, lab_fecha,
                    observaciones, _synced_at
             FROM produccion.v_transacciones_limpias
             WHERE {' AND '.join(where)}
-            ORDER BY NULLIF(fecha_e,'')::date DESC NULLS LAST, id DESC
+            ORDER BY fecha_entrada DESC NULLS LAST, id DESC
             LIMIT {int(limit_p)}
         """
         try:
