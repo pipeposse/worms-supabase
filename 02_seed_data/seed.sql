@@ -424,6 +424,17 @@ INSERT INTO dic_insumo(codigo, descripcion, unidad) VALUES
  ('POTASIO', 'Potasio (KOH puro)',  'KG')
 ON CONFLICT (codigo) DO NOTHING;
 
+-- Productos adicionales para salidas de decantación
+INSERT INTO dim_producto(codigo_producto, nombre_producto, variante, corriente, tipo_producto,
+                         usa_piletas, usa_bachas, usa_reactor, es_exportacion,
+                         usa_sales, requiere_ag, requiere_are, es_mezcla) VALUES
+ ('AGUA-PROC', 'Agua de proceso (residual)', NULL, 'OTRO', 'MP', FALSE,FALSE,TRUE,FALSE,FALSE,FALSE,FALSE,FALSE)
+ON CONFLICT (codigo_producto) DO NOTHING;
+
+-- Marcar como usables en reactor a los productos que pueden salir de decantación
+UPDATE dim_producto SET usa_reactor=TRUE
+WHERE codigo_producto IN ('FONDO-TK','GLICERINA','GLICERINA-FE','AGUA-PROC');
+
 -- Densidades (g/mL · sirven para convertir L↔kg en la app)
 UPDATE dim_producto SET densidad_g_ml=0.890 WHERE codigo_producto IN ('AFE-S','AFE-G','AFE-SG','AFE-AL','AFE-P','AG-A','AG-B','AG-C','AG-D','AG-E');
 UPDATE dim_producto SET densidad_g_ml=0.880 WHERE codigo_producto IN ('ARE-A','ARE-B','ARE-A-ANIMAL');

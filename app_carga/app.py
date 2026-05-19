@@ -330,15 +330,18 @@ with tab_objs[0]:
                 else:
                     st.info("Cargá **acidez oleico**, **% glicerol** y **Q AG** para ver los estimados (glicerina, NaOH, potasio, fuel) y la producción esperada.")
             st.markdown("**Horarios**")
-            cH1, cH2, cH3, cH4, cH5 = st.columns(5)
+            cH1, cH2, cH3, cH4 = st.columns(4)
             f_ini = cH1.date_input("Fecha inicio", date.today(), key="b_fini")
             h_ini = cH2.time_input("Hora inicio",  key="b_hini")
             f_fin = cH3.date_input("Fecha fin",    date.today(), key="b_ffin")
             h_fin = cH4.time_input("Hora fin",     key="b_hfin")
-            tiempo_est = cH5.number_input("T. estimado (h)", 0.0, 48.0, value=6.0, step=0.5, key="b_test")
             from datetime import datetime as _dt
             inicio_dt = _dt.combine(f_ini, h_ini)
             fin_dt    = _dt.combine(f_fin, h_fin)
+            # T. estimado = (fin - inicio) en horas, calculado en vivo
+            delta_horas = (fin_dt - inicio_dt).total_seconds() / 3600 if fin_dt >= inicio_dt else 0
+            tiempo_est = round(delta_horas, 2)
+            st.caption(f"⏱️ Duración: **{tiempo_est:.2f} h** ({int(delta_horas*60)} min)")
             if fin_dt < inicio_dt:
                 st.error("Fecha/hora de fin anterior al inicio.")
 
@@ -353,18 +356,23 @@ with tab_objs[0]:
         calidad_buscada = ""
         if es_reactor:
             st.markdown("**Producto buscado (target)** — lo que se quiere obtener con la reacción")
-            cTG1, cTG2 = st.columns(2)
             opt_obj = productos_obt["codigo_producto"].tolist()
-            sug = None
-            if tipo_proceso_sel == "PRODUCCION_ARE": sug = "ARE-A"
-            if tipo_proceso_sel == "DESGOMADO_ACUOSO": sug = "AFE-S"
-            idx_obj = opt_obj.index(sug) if (sug and sug in opt_obj) else 0
-            p_buscado = cTG1.selectbox(
-                "Producto buscado *", opt_obj, index=idx_obj, key="b_pbusc",
-                format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
-            )
-            calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
-            st.caption("ℹ️ El producto **obtenido real** y su calidad se cargan al cerrar la reacción en la etapa EN_TANQUE (sub-tab 'Avanzar etapa').")
+            if tipo_proceso_sel == "DESGOMADO_ACUOSO":
+                # Flujo fijo: AFE-SG → AFE-S
+                cTG1, cTG2 = st.columns(2)
+                p_buscado = cTG1.text_input("Producto buscado *", value="AFE-S", disabled=True, key="b_pbusc")
+                calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
+                st.caption("🔒 DESGOMADO_ACUOSO va siempre de **AFE-SG** → **AFE-S**.")
+            else:
+                cTG1, cTG2 = st.columns(2)
+                sug = "ARE-A" if tipo_proceso_sel == "PRODUCCION_ARE" else None
+                idx_obj = opt_obj.index(sug) if (sug and sug in opt_obj) else 0
+                p_buscado = cTG1.selectbox(
+                    "Producto buscado *", opt_obj, index=idx_obj, key="b_pbusc",
+                    format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
+                )
+                calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
+            st.caption("ℹ️ El producto **obtenido real** y su calidad se cargan al cerrar la reacción en la etapa EN_TANQUE.")
         else:
             st.markdown("**Producto obtenido**")
             cOB1, cOB2 = st.columns(2)
@@ -394,11 +402,16 @@ with tab_objs[0]:
             )
             for i in range(int(n_mp)):
                 cMP1, cMP2 = st.columns(2)
-                cod = cMP1.selectbox(
-                    f"Producto inicial #{i+1} *",
-                    productos_mp["codigo_producto"].tolist(),
-                    key=f"b_pi_{i}"
-                )
+                opts_mp = productos_mp["codigo_producto"].tolist()
+                # DESGOMADO_ACUOSO siempre arranca de AFE-SG
+                if i == 0 and tipo_proceso_sel == "DESGOMADO_ACUOSO":
+                    cod = cMP1.text_input(f"Producto inicial #{i+1} *", value="AFE-SG", disabled=True, key=f"b_pi_{i}")
+                else:
+                    default_idx = 0
+                    cod = cMP1.selectbox(
+                        f"Producto inicial #{i+1} *", opts_mp, index=default_idx,
+                        key=f"b_pi_{i}"
+                    )
                 kg = cMP2.number_input(f"Kg inicial #{i+1} *", min_value=0, max_value=1_000_000, step=100, value=0, key=f"b_ki_{i}")
                 if cod and kg > 0:
                     mps_ingresadas.append((cod, float(kg)))
@@ -703,7 +716,7 @@ with tab_objs[0]:
 
     # ---------- SUB-TAB: SALIDA DE DECANTACIÓN ----------
     with sub_dec:
-        st.caption("Al decantar salen productos paralelos: glicerina (con su % glicerol) o fondo de tanque, etc.")
+        st.caption("Al decantar pueden salir varios subproductos a la vez: glicerina recuperada, fondo de tanque, agua, etc.")
         df_dec = cat("""
             SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha, b.tipo_proceso
             FROM fact_batch_proceso b
@@ -716,36 +729,70 @@ with tab_objs[0]:
             optd = df_dec.apply(lambda r: f"#{r['id_batch']} · {r['ticket'] or '—'} · {r['tipo_proceso']}", axis=1).tolist()
             seld = st.selectbox("Reacción", optd, key="d_sel")
             rd = df_dec.iloc[optd.index(seld)]
-            cD1, cD2 = st.columns(2)
-            prod_sal = cD1.selectbox(
-                "Producto que sale",
-                productos["codigo_producto"].tolist(), key="d_prod",
-                format_func=lambda c: c
-            )
-            destino = cD2.text_input("Destino (tanque/sector)", max_chars=40, key="d_dest")
-            cD3, cD4, cD5 = st.columns(3)
-            kg_d  = cD3.number_input("kg",  0.0, 100000.0, key="d_kg")
-            lts_d = cD4.number_input("L",   0.0, 100000.0, key="d_l")
-            gpct  = cD5.number_input("% glicerol (si glicerina)", 0.0, 100.0, key="d_gpct")
-            obs_d = st.text_input("Obs.", max_chars=200, key="d_obs")
-            if st.button("\U0001f4be Guardar salida", type="primary", use_container_width=True, key="d_save"):
-                try:
-                    with conectar(USR["id_usuario"]) as (conn, audit):
-                        with conn.cursor() as cur:
-                            cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s",(prod_sal,))
-                            pid = cur.fetchone()[0]
-                            cur.execute("""
-                                INSERT INTO fact_salida_decantacion
-                                (id_batch, id_producto, kg, lts, glicerol_pct, destino_tanque, observaciones, id_usuario)
-                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id_salida
-                            """, (int(rd["id_batch"]), pid, kg_d or None, lts_d or None,
-                                  gpct or None, destino or None, obs_d or None, int(USR["id_usuario"])))
-                            id_s = cur.fetchone()[0]
-                        audit.insert("fact_salida_decantacion", id_s,
-                                     {"producto": prod_sal, "kg": kg_d, "destino": destino})
-                    st.success(f"Salida #{id_s} guardada.")
-                except Exception as e:
-                    st.exception(e)
+            tipo_actual_dec = rd["tipo_proceso"]
+
+            # Lista de productos plausibles según proceso
+            if tipo_actual_dec == "PRODUCCION_ARE":
+                opciones_decant = ["GLICERINA","GLICERINA-FE","FONDO-TK","AGUA-PROC"]
+            elif tipo_actual_dec == "DESGOMADO_ACUOSO":
+                opciones_decant = ["FONDO-TK","AGUA-PROC","BORRA-A","BORRA-B"]
+            else:
+                opciones_decant = productos["codigo_producto"].tolist()
+            # Filtrar a los que realmente existan en dim_producto
+            opciones_decant = [c for c in opciones_decant if c in productos["codigo_producto"].tolist()]
+
+            n_sal = st.number_input("Cantidad de subproductos a registrar", 1, 5, value=1, key="d_n")
+            salidas = []
+            for i in range(int(n_sal)):
+                st.markdown(f"**Salida #{i+1}**")
+                cD1, cD2 = st.columns(2)
+                cod_sal = cD1.selectbox(
+                    f"Producto #{i+1}", opciones_decant, key=f"d_prod_{i}"
+                )
+                destino_i = cD2.text_input(f"Destino (tanque/sector) #{i+1}", max_chars=40, key=f"d_dest_{i}")
+                cD3, cD4, cD5 = st.columns(3)
+                kg_i  = cD3.number_input(f"kg #{i+1}", min_value=0, max_value=100000, step=100, value=0, key=f"d_kg_{i}")
+                # L calculado por densidad del producto si existe; si no, manual
+                fila_p = productos[productos["codigo_producto"]==cod_sal].iloc[0] if cod_sal in productos["codigo_producto"].tolist() else None
+                dens = float(fila_p["densidad_g_ml"]) if (fila_p is not None and pd.notna(fila_p.get("densidad_g_ml"))) else None
+                if dens:
+                    lts_i = (kg_i/dens) if kg_i else 0
+                    cD4.metric("L (calc)", f"{lts_i:,.0f}")
+                else:
+                    lts_i = cD4.number_input(f"L #{i+1}", min_value=0, max_value=100000, step=100, value=0, key=f"d_l_{i}")
+                gpct_i = cD5.number_input(f"% glicerol #{i+1} (si glicerina)", 0.0, 100.0, step=0.1, value=0.0, key=f"d_gpct_{i}")
+                obs_i  = st.text_input(f"Obs. #{i+1}", max_chars=200, key=f"d_obs_{i}")
+                if kg_i > 0 or (lts_i and lts_i > 0):
+                    salidas.append({
+                        "cod": cod_sal, "destino": destino_i,
+                        "kg": int(kg_i) if kg_i else None,
+                        "lts": float(lts_i) if lts_i else None,
+                        "gpct": float(gpct_i) if gpct_i else None,
+                        "obs": obs_i or None,
+                    })
+
+            if st.button("\U0001f4be Guardar salidas", type="primary", use_container_width=True, key="d_save"):
+                if not salidas:
+                    st.error("Cargá al menos una salida con kg o L > 0.")
+                else:
+                    try:
+                        with conectar(USR["id_usuario"]) as (conn, audit):
+                            with conn.cursor() as cur:
+                                ids = []
+                                for s in salidas:
+                                    cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s",(s["cod"],))
+                                    pid = cur.fetchone()[0]
+                                    cur.execute("""
+                                        INSERT INTO fact_salida_decantacion
+                                        (id_batch, id_producto, kg, lts, glicerol_pct, destino_tanque, observaciones, id_usuario)
+                                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id_salida
+                                    """, (int(rd["id_batch"]), pid, s["kg"], s["lts"], s["gpct"], s["destino"], s["obs"], int(USR["id_usuario"])))
+                                    ids.append(cur.fetchone()[0])
+                            audit.log("I","fact_salida_decantacion",str(rd["id_batch"]),
+                                      {"salidas": [{"prod": s["cod"], "kg": s["kg"], "destino": s["destino"]} for s in salidas]})
+                        st.success(f"✅ {len(ids)} salida(s) registrada(s) (#{', #'.join(map(str,ids))}).")
+                    except Exception as e:
+                        st.exception(e)
 
     # ---------- SUB-TAB: GASTO EXTRAORDINARIO ----------
     with sub_gasto:
@@ -919,6 +966,60 @@ with tab_objs[1]:
             st.caption("Sin insumos cargados en el período.")
         else:
             st.dataframe(df_ins, use_container_width=True, hide_index=True)
+
+        # ===== Vista visual de reacciones (tarjetas con estado) =====
+        st.divider()
+        st.markdown("### 🧪 Reacciones recientes (vista visual)")
+        df_cards = cat("""
+            SELECT
+              b.id_batch, b.identificador_unidad AS ticket,
+              b.fecha, b.tipo_proceso, b.etapa_actual,
+              bu.nombre_ui AS reactor,
+              pb.codigo_producto AS buscado, b.calidad_buscada,
+              p.codigo_producto  AS obtenido, b.kg_obtenido, b.calidad_final,
+              b.kg_inicial, b.estimado_are_kg,
+              b.inicio_ts, b.fin_ts,
+              u.nombre AS cargado_por
+            FROM fact_batch_proceso b
+            LEFT JOIN dim_producto p   ON p.id_producto  = b.id_producto_obtenido
+            LEFT JOIN dim_producto pb  ON pb.id_producto = b.id_producto_buscado
+            LEFT JOIN dim_bien_uso bu  ON bu.id_bien_uso = b.id_bien_uso
+            LEFT JOIN dim_usuario u    ON u.id_usuario   = b.id_usuario_carga
+            WHERE NOT b.anulado AND b.sector='REACTORES'
+            ORDER BY b.creado_en DESC
+            LIMIT 24
+        """)
+        if df_cards.empty:
+            st.caption("No hay reacciones todavía.")
+        else:
+            # iconos por etapa
+            etapa_emoji = {
+                "ARMADO":"🧱", "REACCION":"🔥", "REPOSANDO":"⏸️",
+                "DECANTACION":"💧", "EN_TANQUE":"🪣"
+            }
+            ncols = 3
+            chunks = [df_cards.iloc[i:i+ncols] for i in range(0, len(df_cards), ncols)]
+            for chunk in chunks:
+                cols = st.columns(ncols)
+                for j, (_, row) in enumerate(chunk.iterrows()):
+                    with cols[j]:
+                        em = etapa_emoji.get(row["etapa_actual"], "❔")
+                        cerrado = (row["etapa_actual"] == "EN_TANQUE")
+                        color_bg = "#0f172a" if not cerrado else "#064e3b"
+                        st.markdown(
+                            f"""
+<div style="background:{color_bg};padding:12px;border-radius:10px;border:1px solid #1f2937">
+  <div style="font-size:13px;color:#cbd5e1">#{int(row['id_batch'])} · <b>{row['ticket'] or '—'}</b></div>
+  <div style="font-size:20px;margin:4px 0">{em} {row['etapa_actual'] or '—'}</div>
+  <div style="font-size:13px;color:#e2e8f0">{row['tipo_proceso']} · {row['reactor'] or '—'}</div>
+  <hr style="border-color:#1f2937;margin:8px 0">
+  <div style="font-size:12px;color:#94a3b8">🎯 {row['buscado'] or '—'} · cal {row['calidad_buscada'] or '—'}</div>
+  <div style="font-size:12px;color:#94a3b8">📦 {row['obtenido'] or '—'} · {int(row['kg_obtenido']) if pd.notna(row['kg_obtenido']) else '—'} kg · cal {row['calidad_final'] or '—'}</div>
+  <div style="font-size:12px;color:#94a3b8">📅 {row['fecha']}</div>
+</div>
+""",
+                            unsafe_allow_html=True
+                        )
 
 
 # =========================================================================
