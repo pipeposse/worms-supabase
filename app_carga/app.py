@@ -345,8 +345,9 @@ if st.session_state.section != "CARGAS":
             cD2.caption("Camiones que entraron en el dia, ordenados por hora (lo mas reciente arriba). "
                         "Toca 'Refrescar datos' en la barra lateral para ver llegadas nuevas.")
             sqld = """
-                SELECT transaccion, hora_e, patente_chasis, conductor, chofer,
-                       producto, producto_base, corriente, procedencia, destino,
+                SELECT transaccion, hora_e, patente_chasis, conductor,
+                       producto, producto_base, corriente,
+                       cliente, transporte, procedencia,
                        (peso_neto * -1) AS peso_neto, evaluado, lab_calidad, _synced_at
                 FROM produccion.v_transacciones_limpias
                 WHERE fecha_entrada = %s
@@ -383,7 +384,7 @@ if st.session_state.section != "CARGAS":
                 df_show["evaluado"] = df_show["eval_estado"].map({"SI":"\u2705 SI","NO":"\u26a0\ufe0f NO","no corresponde":"\u2014 no corresponde"}).fillna(df_show["eval_estado"])
                 st.dataframe(
                     df_show[["transaccion","hora_e","patente_chasis","conductor","producto_base","corriente",
-                             "peso_neto","evaluado","lab_calidad","procedencia","destino"]],
+                             "peso_neto","evaluado","lab_calidad","cliente","transporte","procedencia"]],
                     use_container_width=True, hide_index=True, height=460
                 )
                 st.download_button("\u2b07\ufe0f Descargar CSV del dia",
@@ -464,12 +465,12 @@ if st.session_state.section != "CARGAS":
                     corrientes_p = cat("SELECT DISTINCT corriente FROM produccion.v_transacciones_limpias WHERE corriente IS NOT NULL ORDER BY 1")["corriente"].tolist()
                 except Exception: corrientes_p = []
                 try:
-                    proc_p = cat("SELECT DISTINCT procedencia FROM produccion.v_transacciones_limpias WHERE procedencia IS NOT NULL ORDER BY 1 LIMIT 500")["procedencia"].tolist()
+                    cli_p = cat("SELECT DISTINCT cliente FROM produccion.v_transacciones_limpias WHERE cliente IS NOT NULL ORDER BY 1 LIMIT 500")["cliente"].tolist()
                 except Exception: proc_p = []
                 c4, c5, c6 = st.columns(3)
                 sel_pb = c4.multiselect("Producto base", prods_base, key="ph_pb")
                 sel_co = c5.multiselect("Corriente", corrientes_p, key="ph_co")
-                sel_pr = c6.multiselect("Procedencia", proc_p, key="ph_pr")
+                sel_pr = c6.multiselect("Cliente", cli_p, key="ph_pr")
                 c7, c8 = st.columns(2)
                 eval_filt = c7.radio("Evaluado", ["Todos","SI","NO"], horizontal=True, key="ph_eval")
                 pat = c8.text_input("Patente chasis contiene", key="ph_pat")
@@ -478,16 +479,16 @@ if st.session_state.section != "CARGAS":
             params = [fmin.isoformat(), fmax.isoformat()]
             if sel_pb: where.append("producto_base = ANY(%s)"); params.append(sel_pb)
             if sel_co: where.append("corriente = ANY(%s)"); params.append(sel_co)
-            if sel_pr: where.append("procedencia = ANY(%s)"); params.append(sel_pr)
+            if sel_pr: where.append("cliente = ANY(%s)"); params.append(sel_pr)
             if eval_filt != "Todos": where.append("evaluado = %s"); params.append(eval_filt)
             if pat.strip(): where.append("patente_chasis ILIKE %s"); params.append(f"%{pat.strip()}%")
             wsql = " AND ".join(where)
 
             sql_p = f"""
                 SELECT id, transaccion, fecha_entrada, hora_e,
-                       usuario, conductor, patente_chasis,
+                       operador, conductor, patente_chasis,
                        producto, producto_base, corriente, evaluado,
-                       procedencia, destino,
+                       cliente, transporte, procedencia,
                        (peso_neto * -1) AS peso_neto,
                        lab_calidad, lab_color, lab_prc_acidez, lab_prc_agua,
                        lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
@@ -569,7 +570,7 @@ if st.session_state.section != "CARGAS":
                 df_pd = df_p.copy()
                 df_pd["eval_estado"] = df_pd.apply(
                     lambda r: ("no corresponde" if r["corriente"] not in CORR_EVAL else r["evaluado"]), axis=1)
-                _front = ["transaccion","fecha_entrada","eval_estado","producto_base","corriente","peso_neto","procedencia"]
+                _front = ["transaccion","fecha_entrada","eval_estado","producto_base","corriente","peso_neto","cliente"]
                 _rest = [c for c in df_pd.columns if c not in _front]
                 st.dataframe(df_pd[_front + _rest], use_container_width=True, hide_index=True, height=420)
                 st.download_button("\u2b07\ufe0f Descargar CSV", df_p.to_csv(index=False).encode("utf-8"),
@@ -585,7 +586,7 @@ if st.session_state.section != "CARGAS":
             ef_desde = cE1.date_input("Desde", value=date(date.today().year,1,1), key="ef_desde")
             ef_hasta = cE2.date_input("Hasta", value=date.today(), key="ef_hasta")
             sql_ef = """
-                SELECT fecha_entrada, hora_e, patente_chasis, procedencia, destino,
+                SELECT fecha_entrada, hora_e, patente_chasis, cliente, transporte, procedencia,
                        (peso_neto * -1) AS peso_neto, evaluado
                 FROM produccion.v_transacciones_limpias
                 WHERE producto_base = 'EFLUENTES LIQUIDOS'
@@ -675,16 +676,16 @@ if st.session_state.section != "CARGAS":
                                    help="Ritmo diario actual × días del mes")
 
                 # Estadisticas por procedencia
-                st.markdown("**Por procedencia (cliente)**")
-                by_proc = (df_ef.dropna(subset=["procedencia"])
-                                .groupby("procedencia")
+                st.markdown("**Por cliente**")
+                by_proc = (df_ef.dropna(subset=["cliente"])
+                                .groupby("cliente")
                                 .agg(viajes=("peso_neto","size"),
                                      kg_total=("peso_neto","sum"),
                                      kg_promedio=("peso_neto","mean"))
                                 .sort_values("kg_total", ascending=False).reset_index())
                 by_proc["kg_total"] = by_proc["kg_total"].round(0)
                 by_proc["kg_promedio"] = by_proc["kg_promedio"].round(0)
-                st.bar_chart(by_proc.head(15), x="procedencia", y="kg_total", use_container_width=True)
+                st.bar_chart(by_proc.head(15), x="cliente", y="kg_total", use_container_width=True)
                 st.dataframe(by_proc, use_container_width=True, hide_index=True)
 
                 st.download_button("\u2b07\ufe0f Descargar CSV efluentes",
@@ -737,7 +738,7 @@ if st.session_state.section != "CARGAS":
             if sel_cal:
                 where.append("lab_calidad = ANY(%s)"); params.append(sel_cal)
             sql_lc = f"""
-                SELECT producto_base, procedencia, corriente, lab_calidad, {param_sel} AS valor
+                SELECT producto_base, cliente, corriente, lab_calidad, {param_sel} AS valor
                 FROM produccion.v_transacciones_limpias
                 WHERE {' AND '.join(where)}
             """
@@ -752,7 +753,7 @@ if st.session_state.section != "CARGAS":
                 df_lc["valor"] = pd.to_numeric(df_lc["valor"], errors="coerce")
                 df_lc = df_lc.dropna(subset=["valor"])
                 # Agrupado por producto_base + procedencia
-                resumen = (df_lc.groupby(["producto_base","procedencia"])["valor"]
+                resumen = (df_lc.groupby(["producto_base","cliente"])["valor"]
                                .agg(n="size", promedio="mean", minimo="min", maximo="max", desvio="std")
                                .reset_index())
                 resumen = resumen[resumen["n"] >= int(min_n)]
@@ -769,7 +770,7 @@ if st.session_state.section != "CARGAS":
                     st.bar_chart(sub, x="procedencia", y="promedio", use_container_width=True)
                 else:
                     # vista por producto: tabla pivote (filas producto_base, columnas procedencia)
-                    piv = resumen.pivot_table(index="producto_base", columns="procedencia",
+                    piv = resumen.pivot_table(index="producto_base", columns="cliente",
                                               values="promedio", aggfunc="mean")
                     st.markdown("**Promedio por producto_base (filas) x cliente (columnas)**")
                     st.dataframe(piv, use_container_width=True)
