@@ -349,14 +349,19 @@ if st.session_state.section != "CARGAS":
             except Exception as e:
                 st.exception(e); df_d = pd.DataFrame()
 
+            CORR_EVAL = ["vegetal","animal","efluente_liquido","insumo"]
             kd1, kd2, kd3, kd4 = st.columns(4)
             kd1.metric("Camiones hoy", len(df_d))
             if not df_d.empty:
                 kg_tot = pd.to_numeric(df_d["peso_neto"], errors="coerce").sum()
                 kd2.metric("Kg netos del dia", f"{int(kg_tot):,}".replace(",", "."))
-                n_eval = int((df_d["evaluado"]=="SI").sum())
-                kd3.metric("Evaluados", f"{n_eval}/{len(df_d)}")
-                kd4.metric("% evaluado", f"{(n_eval/len(df_d)*100):.0f}%")
+                df_d["eval_estado"] = df_d.apply(
+                    lambda r: ("no corresponde" if r["corriente"] not in CORR_EVAL else r["evaluado"]), axis=1)
+                df_evbl = df_d[df_d["corriente"].isin(CORR_EVAL)]
+                base_evbl = len(df_evbl)
+                n_eval = int((df_evbl["eval_estado"]=="SI").sum())
+                kd3.metric("Evaluados (evaluables)", f"{n_eval}/{base_evbl}")
+                kd4.metric("% evaluado", f"{(n_eval/base_evbl*100):.0f}%" if base_evbl else "—")
 
                 # Linea por hora (cantidad por franja horaria)
                 st.markdown("**Llegadas por hora**")
@@ -368,9 +373,9 @@ if st.session_state.section != "CARGAS":
                 # Tabla "permeable": cada camion con su estado evaluado
                 st.markdown("**Detalle de llegadas**")
                 df_show = df_d.copy()
-                df_show["evaluado"] = df_show["evaluado"].map({"SI":"\u2705 SI","NO":"\u26a0\ufe0f NO"}).fillna(df_show["evaluado"])
+                df_show["evaluado"] = df_show["eval_estado"].map({"SI":"\u2705 SI","NO":"\u26a0\ufe0f NO","no corresponde":"\u2014 no corresponde"}).fillna(df_show["eval_estado"])
                 st.dataframe(
-                    df_show[["hora_e","patente_chasis","conductor","producto_base","corriente",
+                    df_show[["transaccion","hora_e","patente_chasis","conductor","producto_base","corriente",
                              "peso_neto","evaluado","lab_calidad","procedencia","destino"]],
                     use_container_width=True, hide_index=True, height=460
                 )
@@ -497,7 +502,12 @@ if st.session_state.section != "CARGAS":
                                  use_container_width=True, hide_index=True)
 
                 st.markdown("### Detalle")
-                st.dataframe(df_p, use_container_width=True, hide_index=True, height=420)
+                df_pd = df_p.copy()
+                df_pd["eval_estado"] = df_pd.apply(
+                    lambda r: ("no corresponde" if r["corriente"] not in ["vegetal","animal","efluente_liquido","insumo"] else r["evaluado"]), axis=1)
+                _front = ["transaccion","fecha_entrada","eval_estado","producto_base","corriente","peso_neto","procedencia"]
+                _rest = [c for c in df_pd.columns if c not in _front]
+                st.dataframe(df_pd[_front + _rest], use_container_width=True, hide_index=True, height=420)
                 st.download_button("\u2b07\ufe0f Descargar CSV", df_p.to_csv(index=False).encode("utf-8"),
                                    file_name=f"porteria_hist_{fmin}_{fmax}.csv", mime="text/csv")
             else:
@@ -642,9 +652,16 @@ if st.session_state.section != "CARGAS":
                     ORDER BY 1
                 """)["producto_base"].tolist()
             except Exception: pbs = []
-            cF1, cF2 = st.columns(2)
+            try:
+                cals = cat("""
+                    SELECT DISTINCT lab_calidad FROM produccion.v_transacciones_limpias
+                    WHERE lab_calidad IS NOT NULL ORDER BY 1
+                """)["lab_calidad"].tolist()
+            except Exception: cals = []
+            cF1, cF2, cF3 = st.columns(3)
             sel_pbs = cF1.multiselect("Producto base (vacio = todos)", pbs, key="lc_pbs")
-            min_n = cF2.number_input("Minimo de mediciones por grupo", 1, 100, 1, key="lc_minn")
+            sel_cal = cF2.multiselect("Calidad final (vacio = todas)", cals, key="lc_cal")
+            min_n = cF3.number_input("Minimo de mediciones por grupo", 1, 100, 1, key="lc_minn")
 
             where = ["evaluado = 'SI'", f"{param_sel} IS NOT NULL", "procedencia IS NOT NULL",
                      "producto_base IS NOT NULL",
@@ -653,8 +670,10 @@ if st.session_state.section != "CARGAS":
             params = [lab_desde.isoformat(), lab_hasta.isoformat()]
             if sel_pbs:
                 where.append("producto_base = ANY(%s)"); params.append(sel_pbs)
+            if sel_cal:
+                where.append("lab_calidad = ANY(%s)"); params.append(sel_cal)
             sql_lc = f"""
-                SELECT producto_base, procedencia, corriente, {param_sel} AS valor
+                SELECT producto_base, procedencia, corriente, lab_calidad, {param_sel} AS valor
                 FROM produccion.v_transacciones_limpias
                 WHERE {' AND '.join(where)}
             """
