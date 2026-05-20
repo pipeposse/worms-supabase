@@ -1269,7 +1269,8 @@ with tab_objs[0]:
 
             # Historial de eventos de etapa para esta reacción
             df_eve = cat(f"""
-                SELECT e.id_evento_etapa, e.etapa, e.inicio_ts, e.fin_ts, e.horas_hombre, e.observaciones,
+                SELECT e.id_evento_etapa, e.etapa, e.inicio_ts, e.fin_ts,
+                       e.duracion_real_min, e.observaciones,
                        u.nombre AS usuario,
                        d.duracion_target_min, d.duracion_min_min, d.duracion_max_min
                 FROM produccion.fact_etapa_evento e
@@ -1281,17 +1282,23 @@ with tab_objs[0]:
             """)
             if not df_eve.empty:
                 df_eve = df_eve.copy()
-                df_eve["duracion_min"] = df_eve.apply(
-                    lambda x: round(((x["fin_ts"] or pd.Timestamp.now(tz="UTC")) - x["inicio_ts"]).total_seconds()/60, 1)
-                              if pd.notna(x["inicio_ts"]) else None, axis=1)
+                # duración: la cargada manualmente; si falta, la calculada por timestamps
+                def _dur(x):
+                    if pd.notna(x.get("duracion_real_min")):
+                        return float(x["duracion_real_min"])
+                    if pd.notna(x["inicio_ts"]):
+                        fin = x["fin_ts"] if pd.notna(x["fin_ts"]) else pd.Timestamp.now(tz="UTC")
+                        return round((fin - x["inicio_ts"]).total_seconds()/60, 1)
+                    return None
+                df_eve["duracion_min"] = df_eve.apply(_dur, axis=1)
                 df_eve["estado"] = df_eve["fin_ts"].apply(lambda v: "✅ cerrada" if pd.notna(v) else "🟢 abierta")
                 df_eve["desv_vs_target"] = df_eve.apply(
                     lambda x: None if pd.isna(x.get("duracion_target_min")) or pd.isna(x["duracion_min"])
                               else round((x["duracion_min"] - x["duracion_target_min"])/x["duracion_target_min"]*100, 1),
                     axis=1)
-                st.markdown("**Historial de etapas (real vs target)**")
+                st.markdown("**Historial de etapas (real vs target, en minutos)**")
                 st.dataframe(
-                    df_eve[["etapa","estado","inicio_ts","fin_ts","duracion_min","duracion_target_min","desv_vs_target","horas_hombre","usuario","observaciones"]],
+                    df_eve[["etapa","estado","duracion_min","duracion_target_min","desv_vs_target","inicio_ts","fin_ts","usuario","observaciones"]],
                     use_container_width=True, hide_index=True
                 )
                 # KPIs
@@ -1309,30 +1316,56 @@ with tab_objs[0]:
                 st.caption("No hay eventos de etapa registrados para esta reacción todavía.")
 
             st.divider()
-            st.markdown("**Avanzar a la siguiente etapa**")
-            cE1, cE2 = st.columns(2)
             etapas_codigos = etapas_proc["codigo"].tolist()
-            idx_actual = etapas_codigos.index(r["etapa_actual"]) if r["etapa_actual"] in etapas_codigos else 0
+            etapa_actual_cod = r["etapa_actual"]
+            etapa_actual_desc = (etapas_proc[etapas_proc["codigo"]==etapa_actual_cod].iloc[0]["descripcion"]
+                                 if etapa_actual_cod in etapas_codigos else (etapa_actual_cod or "—"))
+            # target de duración de la etapa actual (si existe)
+            dur_tgt = duraciones_etapa[
+                (duraciones_etapa["sector"]=="REACTORES") &
+                (duraciones_etapa["tipo_proceso"]==r["tipo_proceso"]) &
+                (duraciones_etapa["etapa"]==etapa_actual_cod)
+            ]
+            tgt_min = int(dur_tgt.iloc[0]["duracion_target_min"]) if not dur_tgt.empty else None
+
+            st.markdown(f"### Cerrar etapa actual: **{etapa_actual_desc}**")
+            st.caption(f"Estás cerrando la etapa **{etapa_actual_cod}**. Indicá cuántos minutos duró y a qué etapa pasás.")
+
+            cE1, cE2 = st.columns(2)
+            dur_help = f"Target sugerido: {tgt_min} min" if tgt_min else "Sin target definido"
+            dur_min_in = cE1.number_input(
+                f"Duración de '{etapa_actual_desc}' (minutos)",
+                min_value=0, max_value=100000,
+                value=(tgt_min or 0), step=1, key="e_durmin", help=dur_help
+            )
+            idx_actual = etapas_codigos.index(etapa_actual_cod) if etapa_actual_cod in etapas_codigos else 0
             idx_nueva = min(idx_actual + 1, len(etapas_codigos)-1)
-            nueva_etapa = cE1.selectbox(
-                "Próxima etapa", etapas_codigos, index=idx_nueva,
+            nueva_etapa = cE2.selectbox(
+                "Pasar a la etapa", etapas_codigos, index=idx_nueva,
                 format_func=lambda c: etapas_proc[etapas_proc["codigo"]==c].iloc[0]["descripcion"],
                 key="e_etapa"
             )
-            horas_hombre_in = cE2.number_input("Horas hombre dedicadas en la etapa actual", 0.0, 24.0, step=0.5, key="e_hh")
+            # feedback de desvío vs target en vivo
+            if tgt_min and dur_min_in > 0:
+                desv = (dur_min_in - tgt_min) / tgt_min * 100
+                if abs(desv) <= 20:
+                    st.success(f"✅ {dur_min_in} min vs target {tgt_min} min ({desv:+.0f}%) · dentro de lo esperado.")
+                else:
+                    st.warning(f"⚠️ {dur_min_in} min vs target {tgt_min} min ({desv:+.0f}%) · fuera de lo esperado.")
+
             obs_etapa = st.text_input("Observaciones (opcional)", max_chars=200, key="e_obs_etapa")
-            if st.button("💾 Cerrar etapa actual y abrir nueva", use_container_width=True, type="primary", key="e_save"):
+            if st.button(f"💾 Cerrar '{etapa_actual_desc}' y pasar a la nueva", use_container_width=True, type="primary", key="e_save"):
                 try:
                     with conectar(USR["id_usuario"]) as (conn, audit):
                         with conn.cursor() as cur:
-                            # Cerrar evento abierto
+                            # Cerrar evento abierto: guarda duración manual en minutos
                             cur.execute("""
                                 UPDATE fact_etapa_evento
                                    SET fin_ts = NOW(),
-                                       horas_hombre = COALESCE(%s, horas_hombre),
+                                       duracion_real_min = COALESCE(%s, duracion_real_min),
                                        observaciones = COALESCE(NULLIF(%s,''), observaciones)
                                  WHERE id_batch=%s AND fin_ts IS NULL
-                            """, (float(horas_hombre_in) if horas_hombre_in else None,
+                            """, (int(dur_min_in) if dur_min_in else None,
                                   obs_etapa, id_batch_edit))
                             # Abrir el nuevo evento
                             cur.execute("""
@@ -1340,12 +1373,12 @@ with tab_objs[0]:
                                 (id_batch, etapa, inicio_ts, id_usuario)
                                 VALUES (%s, %s, NOW(), %s)
                             """, (id_batch_edit, nueva_etapa, int(USR["id_usuario"])))
-                            # Actualizar etapa_actual del batch
                             cur.execute("UPDATE fact_batch_proceso SET etapa_actual=%s WHERE id_batch=%s",
                                         (nueva_etapa, id_batch_edit))
                         audit.log("U","fact_batch_proceso",id_batch_edit,
-                                  {"etapa_actual": nueva_etapa, "etapa_anterior_cerrada": True})
-                    st.success(f"Etapa avanzada a {nueva_etapa}.")
+                                  {"cerro_etapa": etapa_actual_cod, "duracion_min": int(dur_min_in) if dur_min_in else None,
+                                   "nueva_etapa": nueva_etapa})
+                    st.success(f"Cerraste **{etapa_actual_desc}** ({dur_min_in} min). Ahora en **{nueva_etapa}**.")
                     cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
@@ -1697,6 +1730,7 @@ with tab_objs[1]:
         # ===== Vista visual de reacciones (tarjetas) =====
         st.divider()
         st.markdown("### 🧪 Reacciones recientes (vista visual)")
+
         df_cards = cat("""
             SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha,
                    b.tipo_proceso, b.etapa_actual, bu.nombre_ui AS reactor,

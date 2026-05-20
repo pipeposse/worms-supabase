@@ -505,6 +505,9 @@ CREATE TABLE IF NOT EXISTS fact_etapa_evento (
     id_usuario       BIGINT NOT NULL REFERENCES dim_usuario(id_usuario),
     creado_en        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Duración real de la etapa cargada manualmente en minutos (lo que dijo el operador)
+ALTER TABLE fact_etapa_evento
+  ADD COLUMN IF NOT EXISTS duracion_real_min INTEGER;
 CREATE INDEX IF NOT EXISTS ix_etapa_evento_batch ON fact_etapa_evento(id_batch, inicio_ts);
 
 -- Evaluaciones internas (NO son las de laboratorio).
