@@ -348,6 +348,7 @@ if st.session_state.section != "CARGAS":
                 SELECT transaccion, hora_e, patente_chasis, conductor,
                        producto, producto_base, corriente,
                        cliente, transporte, procedencia,
+                       peso_entrada, peso_salida,
                        (peso_neto * -1) AS peso_neto, evaluado, lab_calidad, _synced_at
                 FROM produccion.v_transacciones_limpias
                 WHERE fecha_entrada = %s
@@ -384,7 +385,7 @@ if st.session_state.section != "CARGAS":
                 df_show["evaluado"] = df_show["eval_estado"].map({"SI":"\u2705 SI","NO":"\u26a0\ufe0f NO","no corresponde":"\u2014 no corresponde"}).fillna(df_show["eval_estado"])
                 st.dataframe(
                     df_show[["transaccion","hora_e","patente_chasis","conductor","producto_base","corriente",
-                             "peso_neto","evaluado","lab_calidad","cliente","transporte","procedencia"]],
+                             "peso_entrada","peso_salida","peso_neto","evaluado","lab_calidad","cliente","transporte","procedencia"]],
                     use_container_width=True, hide_index=True, height=460
                 )
                 st.download_button("\u2b07\ufe0f Descargar CSV del dia",
@@ -499,6 +500,7 @@ if st.session_state.section != "CARGAS":
                        operador, conductor, patente_chasis,
                        producto, producto_base, corriente, evaluado,
                        cliente, transporte, procedencia,
+                       peso_entrada, peso_salida,
                        (peso_neto * -1) AS peso_neto,
                        lab_calidad, lab_color, lab_prc_acidez, lab_prc_agua,
                        lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
