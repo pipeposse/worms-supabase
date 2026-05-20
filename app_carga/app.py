@@ -345,7 +345,7 @@ if st.session_state.section != "CARGAS":
             cD2.caption("Camiones que entraron en el dia, ordenados por hora (lo mas reciente arriba). "
                         "Toca 'Refrescar datos' en la barra lateral para ver llegadas nuevas.")
             sqld = """
-                SELECT transaccion, hora_e, patente_chasis, conductor,
+                SELECT id, transaccion, hora_e, patente_chasis, conductor,
                        producto, producto_base, corriente,
                        cliente, transporte, procedencia,
                        peso_entrada, peso_salida,
@@ -392,13 +392,16 @@ if st.session_state.section != "CARGAS":
                                    df_d.to_csv(index=False).encode("utf-8"),
                                    file_name=f"porteria_{dia_sel}.csv", mime="text/csv")
 
-                # ----- Comprobante de pesaje por transaccion -----
+                # ----- Comprobante de pesaje (por id unico; transaccion puede repetirse) -----
                 st.divider()
                 st.markdown("**\U0001f9fe Comprobante de pesaje**")
-                tickets = df_d["transaccion"].dropna().astype(int).tolist()
-                if tickets:
-                    tk = st.selectbox("Ver comprobante de transaccion N\u00b0", tickets, key="cp_tk")
-                    rowc = cat("SELECT * FROM produccion.transacciones WHERE transaccion=%s ORDER BY id DESC LIMIT 1", (tk,))
+                opts_cp = df_d.dropna(subset=["id"]).copy()
+                if not opts_cp.empty:
+                    opts_cp["lbl"] = opts_cp.apply(
+                        lambda r: f"Ticket {int(r['transaccion'])} \u00b7 {r['hora_e']} \u00b7 {r['patente_chasis'] or ''} \u00b7 {r['cliente'] or ''}", axis=1)
+                    lbl = st.selectbox("Ver comprobante", opts_cp["lbl"].tolist(), key="cp_tk")
+                    id_sel = int(opts_cp[opts_cp["lbl"]==lbl].iloc[0]["id"])
+                    rowc = cat("SELECT * FROM produccion.transacciones WHERE id=%s LIMIT 1", (id_sel,))
                     if not rowc.empty:
                         rr = rowc.iloc[0]
                         def g(c):
@@ -457,7 +460,7 @@ if st.session_state.section != "CARGAS":
                             "\u2b07\ufe0f Descargar comprobante (HTML para imprimir)",
                             ("<html><head><meta charset='utf-8'><title>Comprobante "
                              + g('transaccion') + "</title></head><body>" + comp_html + "</body></html>").encode("utf-8"),
-                            file_name=f"comprobante_{tk}.html", mime="text/html", key="cp_dl")
+                            file_name=f"comprobante_{g('transaccion')}_{id_sel}.html", mime="text/html", key="cp_dl")
                         st.caption("Abrilo y us\u00e1 Ctrl+P para imprimir o guardar como PDF.")
             else:
                 st.info("Todavia no entro ningun camion en la fecha elegida.")
