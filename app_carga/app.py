@@ -316,93 +316,171 @@ if st.session_state.section != "CARGAS":
         else:
             st.info("Sin datos en el rango.")
     elif st.session_state.section == "PORT":
-        # =================== PORTERÍA ===================
-        st.title("🚛 Portería")
-        with st.expander("Filtros", expanded=True):
-            c1, c2, c3 = st.columns(3)
-            # default: día corriente (camiones que entraron HOY)
-            fmin = c1.date_input("fecha_entrada desde", value=date.today(), key="p_fmin")
-            fmax = c2.date_input("fecha_entrada hasta", value=date.today(), key="p_fmax")
-            limit_p = c3.number_input("Límite filas", 100, 200000, 10000, step=1000, key="p_lim")
-            try:
-                prods_base = cat("SELECT DISTINCT producto_base FROM produccion.v_transacciones_limpias WHERE producto_base IS NOT NULL ORDER BY 1 LIMIT 500")["producto_base"].tolist()
-            except Exception: prods_base = []
-            try:
-                corrientes_p = cat("SELECT DISTINCT corriente FROM produccion.v_transacciones_limpias WHERE corriente IS NOT NULL ORDER BY 1")["corriente"].tolist()
-            except Exception: corrientes_p = []
-            try:
-                proc_p = cat("SELECT DISTINCT procedencia FROM produccion.v_transacciones_limpias WHERE procedencia IS NOT NULL ORDER BY 1 LIMIT 500")["procedencia"].tolist()
-            except Exception: proc_p = []
-            c4, c5, c6 = st.columns(3)
-            sel_pb = c4.multiselect("Producto base", prods_base, key="p_prodsbase")
-            sel_co = c5.multiselect("Corriente", corrientes_p, key="p_corr")
-            sel_pr = c6.multiselect("Procedencia", proc_p, key="p_proc")
-            c7, c8 = st.columns(2)
-            eval_filt = c7.radio("Evaluado", ["Todos","SI","NO"], horizontal=True, key="p_eval")
-            pat = c8.text_input("Patente chasis contiene", key="p_pat")
+        # =================== PORTERIA ===================
+        st.title("\U0001f69b Porteria")
+        sub_dia, sub_hist = st.tabs(["\U0001f4c5 Entrada diaria", "\U0001f4ca Revision historica"])
 
-        where = ["fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
-        params = [fmin.isoformat(), fmax.isoformat()]
-        if sel_pb:
-            where.append("producto_base = ANY(%s)"); params.append(sel_pb)
-        if sel_co:
-            where.append("corriente = ANY(%s)"); params.append(sel_co)
-        if sel_pr:
-            where.append("procedencia = ANY(%s)"); params.append(sel_pr)
-        if eval_filt != "Todos":
-            where.append("evaluado = %s"); params.append(eval_filt)
-        if pat.strip():
-            where.append("patente_chasis ILIKE %s"); params.append(f"%{pat.strip()}%")
-        sql_p = f"""
-            SELECT id, transaccion, fecha_entrada, hora_e, fecha_salida, hora_s,
-                   usuario, conductor, patente_chasis, patente_acoplado,
-                   producto, producto_base, corriente, evaluado,
-                   procedencia, destino,
-                   peso_entrada, peso_salida,
-                   (peso_neto * -1) AS peso_neto,
-                   lab_calidad, lab_color, lab_prc_acidez, lab_prc_agua,
-                   lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
-                   lab_empleado, lab_rechazado, lab_num_muestra, lab_fecha,
-                   observaciones, _synced_at
-            FROM produccion.v_transacciones_limpias
-            WHERE {' AND '.join(where)}
-            ORDER BY fecha_entrada DESC NULLS LAST, id DESC
-            LIMIT {int(limit_p)}
-        """
-        try:
-            df_p = cat(sql_p, tuple(params))
-        except Exception as e:
-            st.exception(e); df_p = pd.DataFrame()
+        # ---------------- ENTRADA DIARIA ----------------
+        with sub_dia:
+            cD1, cD2 = st.columns([1,3])
+            dia_sel = cD1.date_input("Dia", value=date.today(), key="pd_dia")
+            cD2.caption("Camiones que entraron en el dia, ordenados por hora (lo mas reciente arriba). "
+                        "Toca 'Refrescar datos' en la barra lateral para ver llegadas nuevas.")
+            sqld = """
+                SELECT transaccion, hora_e, patente_chasis, conductor, chofer,
+                       producto, producto_base, corriente, procedencia, destino,
+                       (peso_neto * -1) AS peso_neto, evaluado, lab_calidad, _synced_at
+                FROM produccion.v_transacciones_limpias
+                WHERE fecha_entrada = %s
+                ORDER BY hora_e DESC NULLS LAST, transaccion DESC
+            """
+            try:
+                df_d = cat(sqld, (dia_sel.isoformat(),))
+            except Exception as e:
+                st.exception(e); df_d = pd.DataFrame()
 
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Transacciones", len(df_p))
-        k2.metric("Patentes distintas", df_p["patente_chasis"].nunique() if not df_p.empty else 0)
-        if not df_p.empty:
-            tot = pd.to_numeric(df_p["peso_neto"], errors="coerce").sum()
-            avg = pd.to_numeric(df_p["peso_neto"], errors="coerce").mean()
-            k3.metric("Peso neto total (kg)", f"{int(tot):,}".replace(",", "."))
-            k4.metric("Peso neto promedio", f"{int(avg or 0):,}".replace(",", "."))
-            st.markdown("**Transacciones por día**")
-            by_day = df_p.dropna(subset=["fecha_entrada"]).groupby("fecha_entrada").size().reset_index(name="cantidad")
-            st.line_chart(by_day, x="fecha_entrada", y="cantidad", use_container_width=True)
-            st.markdown("**Peso neto total por producto base (top 15)**")
-            prod_sum = (df_p.dropna(subset=["producto_base"])
-                            .assign(peso=pd.to_numeric(df_p["peso_neto"], errors="coerce"))
-                            .groupby("producto_base")["peso"].sum()
-                            .sort_values(ascending=False).head(15).reset_index())
-            st.bar_chart(prod_sum, x="producto_base", y="peso", use_container_width=True)
+            kd1, kd2, kd3, kd4 = st.columns(4)
+            kd1.metric("Camiones hoy", len(df_d))
+            if not df_d.empty:
+                kg_tot = pd.to_numeric(df_d["peso_neto"], errors="coerce").sum()
+                kd2.metric("Kg netos del dia", f"{int(kg_tot):,}".replace(",", "."))
+                n_eval = int((df_d["evaluado"]=="SI").sum())
+                kd3.metric("Evaluados", f"{n_eval}/{len(df_d)}")
+                kd4.metric("% evaluado", f"{(n_eval/len(df_d)*100):.0f}%")
 
-            st.markdown("**Peso neto total por corriente**")
-            corr_sum = (df_p.dropna(subset=["corriente"])
-                            .assign(peso=pd.to_numeric(df_p["peso_neto"], errors="coerce"))
-                            .groupby("corriente")["peso"].sum()
-                            .sort_values(ascending=False).reset_index())
-            st.bar_chart(corr_sum, x="corriente", y="peso", use_container_width=True)
-            st.dataframe(df_p, use_container_width=True, hide_index=True, height=420)
-            st.download_button("⬇️ Descargar CSV", df_p.to_csv(index=False).encode("utf-8"),
-                               file_name=f"transacciones_{fmin}_{fmax}.csv", mime="text/csv")
-        else:
-            st.info("Sin datos en el rango.")
+                # Linea por hora (cantidad por franja horaria)
+                st.markdown("**Llegadas por hora**")
+                hr = df_d.copy()
+                hr["hh"] = hr["hora_e"].astype(str).str.slice(0,2)
+                by_hr = hr.groupby("hh").size().reset_index(name="camiones").sort_values("hh")
+                st.bar_chart(by_hr, x="hh", y="camiones", use_container_width=True)
+
+                # Tabla "permeable": cada camion con su estado evaluado
+                st.markdown("**Detalle de llegadas**")
+                df_show = df_d.copy()
+                df_show["evaluado"] = df_show["evaluado"].map({"SI":"\u2705 SI","NO":"\u26a0\ufe0f NO"}).fillna(df_show["evaluado"])
+                st.dataframe(
+                    df_show[["hora_e","patente_chasis","conductor","producto_base","corriente",
+                             "peso_neto","evaluado","lab_calidad","procedencia","destino"]],
+                    use_container_width=True, hide_index=True, height=460
+                )
+                st.download_button("\u2b07\ufe0f Descargar CSV del dia",
+                                   df_d.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"porteria_{dia_sel}.csv", mime="text/csv")
+            else:
+                st.info("Todavia no entro ningun camion en la fecha elegida.")
+
+        # ---------------- REVISION HISTORICA ----------------
+        with sub_hist:
+            with st.expander("Filtros", expanded=True):
+                c1, c2, c3 = st.columns(3)
+                fmin = c1.date_input("Desde", value=(date.today()-_td(days=30)), key="ph_fmin")
+                fmax = c2.date_input("Hasta", value=date.today(), key="ph_fmax")
+                limit_p = c3.number_input("Limite filas", 100, 200000, 20000, step=1000, key="ph_lim")
+                try:
+                    prods_base = cat("SELECT DISTINCT producto_base FROM produccion.v_transacciones_limpias WHERE producto_base IS NOT NULL ORDER BY 1 LIMIT 500")["producto_base"].tolist()
+                except Exception: prods_base = []
+                try:
+                    corrientes_p = cat("SELECT DISTINCT corriente FROM produccion.v_transacciones_limpias WHERE corriente IS NOT NULL ORDER BY 1")["corriente"].tolist()
+                except Exception: corrientes_p = []
+                try:
+                    proc_p = cat("SELECT DISTINCT procedencia FROM produccion.v_transacciones_limpias WHERE procedencia IS NOT NULL ORDER BY 1 LIMIT 500")["procedencia"].tolist()
+                except Exception: proc_p = []
+                c4, c5, c6 = st.columns(3)
+                sel_pb = c4.multiselect("Producto base", prods_base, key="ph_pb")
+                sel_co = c5.multiselect("Corriente", corrientes_p, key="ph_co")
+                sel_pr = c6.multiselect("Procedencia", proc_p, key="ph_pr")
+                c7, c8 = st.columns(2)
+                eval_filt = c7.radio("Evaluado", ["Todos","SI","NO"], horizontal=True, key="ph_eval")
+                pat = c8.text_input("Patente chasis contiene", key="ph_pat")
+
+            where = ["fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
+            params = [fmin.isoformat(), fmax.isoformat()]
+            if sel_pb: where.append("producto_base = ANY(%s)"); params.append(sel_pb)
+            if sel_co: where.append("corriente = ANY(%s)"); params.append(sel_co)
+            if sel_pr: where.append("procedencia = ANY(%s)"); params.append(sel_pr)
+            if eval_filt != "Todos": where.append("evaluado = %s"); params.append(eval_filt)
+            if pat.strip(): where.append("patente_chasis ILIKE %s"); params.append(f"%{pat.strip()}%")
+            wsql = " AND ".join(where)
+
+            sql_p = f"""
+                SELECT id, transaccion, fecha_entrada, hora_e,
+                       usuario, conductor, patente_chasis,
+                       producto, producto_base, corriente, evaluado,
+                       procedencia, destino,
+                       (peso_neto * -1) AS peso_neto,
+                       lab_calidad, lab_color, lab_prc_acidez, lab_prc_agua,
+                       lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
+                       lab_empleado, lab_rechazado, lab_num_muestra, lab_fecha,
+                       observaciones, _synced_at
+                FROM produccion.v_transacciones_limpias
+                WHERE {wsql}
+                ORDER BY fecha_entrada DESC NULLS LAST, id DESC
+                LIMIT {int(limit_p)}
+            """
+            try:
+                df_p = cat(sql_p, tuple(params))
+            except Exception as e:
+                st.exception(e); df_p = pd.DataFrame()
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Transacciones", len(df_p))
+            k2.metric("Patentes distintas", df_p["patente_chasis"].nunique() if not df_p.empty else 0)
+            if not df_p.empty:
+                tot = pd.to_numeric(df_p["peso_neto"], errors="coerce").sum()
+                n_ev = int((df_p["evaluado"]=="SI").sum())
+                k3.metric("Kg netos total", f"{int(tot):,}".replace(",", "."))
+                k4.metric("% evaluado", f"{(n_ev/len(df_p)*100):.0f}%")
+
+                st.markdown("**Transacciones por dia**")
+                by_day = df_p.dropna(subset=["fecha_entrada"]).groupby("fecha_entrada").size().reset_index(name="cantidad")
+                st.line_chart(by_day, x="fecha_entrada", y="cantidad", use_container_width=True)
+
+                st.markdown("**Kg netos por corriente**")
+                corr_sum = (df_p.dropna(subset=["corriente"])
+                                .assign(peso=pd.to_numeric(df_p["peso_neto"], errors="coerce"))
+                                .groupby("corriente")["peso"].sum()
+                                .sort_values(ascending=False).reset_index())
+                st.bar_chart(corr_sum, x="corriente", y="peso", use_container_width=True)
+
+                # ----- Evaluado vs no evaluado -----
+                st.markdown("### Cobertura de evaluacion (lab)")
+                st.caption("Cuanto de lo que entra esta pasando por laboratorio.")
+
+                ev_corr = (df_p.groupby(["corriente","evaluado"]).size()
+                               .reset_index(name="cant")
+                               .pivot(index="corriente", columns="evaluado", values="cant")
+                               .fillna(0))
+                for col in ("SI","NO"):
+                    if col not in ev_corr.columns: ev_corr[col] = 0
+                ev_corr["total"] = ev_corr["SI"] + ev_corr["NO"]
+                ev_corr["% evaluado"] = (ev_corr["SI"]/ev_corr["total"]*100).round(1)
+                st.markdown("**Por corriente (animal / vegetal / insumo / ...)**")
+                st.bar_chart(ev_corr[["SI","NO"]], use_container_width=True)
+                st.dataframe(ev_corr.reset_index()[["corriente","SI","NO","total","% evaluado"]],
+                             use_container_width=True, hide_index=True)
+
+                ev_prod = (df_p.groupby(["producto_base","evaluado"]).size()
+                               .reset_index(name="cant")
+                               .pivot(index="producto_base", columns="evaluado", values="cant")
+                               .fillna(0))
+                for col in ("SI","NO"):
+                    if col not in ev_prod.columns: ev_prod[col] = 0
+                ev_prod["total"] = ev_prod["SI"] + ev_prod["NO"]
+                ev_prod["% evaluado"] = (ev_prod["SI"]/ev_prod["total"]*100).round(1)
+                ev_prod = ev_prod.sort_values("total", ascending=False).head(20)
+                st.markdown("**Por producto base (top 20 por volumen de llegadas)**")
+                st.bar_chart(ev_prod[["SI","NO"]], use_container_width=True)
+                st.dataframe(ev_prod.reset_index()[["producto_base","SI","NO","total","% evaluado"]],
+                             use_container_width=True, hide_index=True)
+
+                st.markdown("### Detalle")
+                st.dataframe(df_p, use_container_width=True, hide_index=True, height=420)
+                st.download_button("\u2b07\ufe0f Descargar CSV", df_p.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"porteria_hist_{fmin}_{fmax}.csv", mime="text/csv")
+            else:
+                st.info("Sin datos en el rango.")
+
     st.stop()
 
 # A partir de acá: SECCIÓN CARGAS (todo el flujo histórico)
