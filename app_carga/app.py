@@ -204,6 +204,14 @@ calidades = cat("SELECT codigo, descripcion FROM dic_calidad WHERE activo ORDER 
 turnos = cat("SELECT codigo FROM dic_turno WHERE activo")
 insumos_cat = cat("SELECT codigo, descripcion, unidad FROM dic_insumo WHERE activo ORDER BY codigo")
 
+# Corrientes evaluables (editable desde Supabase: dic_corriente_config)
+try:
+    _ce = cat("SELECT corriente FROM produccion.dic_corriente_config WHERE evaluable")
+    CORR_EVAL = _ce["corriente"].tolist() if not _ce.empty else ["vegetal","animal","efluente_liquido","insumo"]
+except Exception:
+    CORR_EVAL = ["vegetal","animal","efluente_liquido","insumo"]
+CORR_EVAL_SQL = "(" + ",".join("'" + c.replace("'", "''") + "'" for c in CORR_EVAL) + ")" if CORR_EVAL else "('')"
+
 
 # ============================================================================
 # Si NO es la sección CARGAS, mostramos LAB o PORT y cortamos acá
@@ -349,7 +357,6 @@ if st.session_state.section != "CARGAS":
             except Exception as e:
                 st.exception(e); df_d = pd.DataFrame()
 
-            CORR_EVAL = ["vegetal","animal","efluente_liquido","insumo"]
             kd1, kd2, kd3, kd4 = st.columns(4)
             kd1.metric("Camiones hoy", len(df_d))
             if not df_d.empty:
@@ -464,7 +471,6 @@ if st.session_state.section != "CARGAS":
                            "Solo corrientes vegetal / animal / efluente_liquido / insumo "
                            "(el resto -solido, sin_declarar- no se evalua).")
 
-                CORR_EVAL = ["vegetal", "animal", "efluente_liquido", "insumo"]
                 df_eval = df_p[df_p["corriente"].isin(CORR_EVAL)].copy()
                 if df_eval.empty:
                     st.info("No hay llegadas de corrientes evaluables en el rango.")
@@ -504,7 +510,7 @@ if st.session_state.section != "CARGAS":
                 st.markdown("### Detalle")
                 df_pd = df_p.copy()
                 df_pd["eval_estado"] = df_pd.apply(
-                    lambda r: ("no corresponde" if r["corriente"] not in ["vegetal","animal","efluente_liquido","insumo"] else r["evaluado"]), axis=1)
+                    lambda r: ("no corresponde" if r["corriente"] not in CORR_EVAL else r["evaluado"]), axis=1)
                 _front = ["transaccion","fecha_entrada","eval_estado","producto_base","corriente","peso_neto","procedencia"]
                 _rest = [c for c in df_pd.columns if c not in _front]
                 st.dataframe(df_pd[_front + _rest], use_container_width=True, hide_index=True, height=420)
@@ -648,7 +654,7 @@ if st.session_state.section != "CARGAS":
                 pbs = cat(f"""
                     SELECT DISTINCT producto_base FROM produccion.v_transacciones_limpias
                     WHERE evaluado='SI' AND {param_sel} IS NOT NULL AND producto_base IS NOT NULL
-                      AND corriente IN ('vegetal','animal','efluente_liquido','insumo')
+                      AND corriente IN {CORR_EVAL_SQL}
                     ORDER BY 1
                 """)["producto_base"].tolist()
             except Exception: pbs = []
@@ -665,7 +671,7 @@ if st.session_state.section != "CARGAS":
 
             where = ["evaluado = 'SI'", f"{param_sel} IS NOT NULL", "procedencia IS NOT NULL",
                      "producto_base IS NOT NULL",
-                     "corriente IN ('vegetal','animal','efluente_liquido','insumo')",
+                     f"corriente IN {CORR_EVAL_SQL}",
                      "fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
             params = [lab_desde.isoformat(), lab_hasta.isoformat()]
             if sel_pbs:

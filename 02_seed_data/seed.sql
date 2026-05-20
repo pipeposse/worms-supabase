@@ -577,6 +577,18 @@ CROSS JOIN generate_series(1,3) etapa_n
 WHERE b.sector='REACTORES' AND b.observaciones='[DEMO]';
 
 -- ===========================================================================
+-- CONFIG DE CORRIENTES EVALUABLES (editable desde Supabase, no destructivo)
+-- ===========================================================================
+INSERT INTO dic_corriente_config(corriente, evaluable) VALUES
+ ('vegetal', TRUE),
+ ('animal', TRUE),
+ ('efluente_liquido', TRUE),
+ ('insumo', TRUE),
+ ('solido', FALSE),
+ ('sin_declarar', FALSE)
+ON CONFLICT (corriente) DO NOTHING;
+
+-- ===========================================================================
 -- PORTERIA / LIMPIEZA · catálogo de alias de productos crudos → producto_base + corriente
 -- Idempotente. ON CONFLICT DO NOTHING preserva ediciones manuales.
 -- ===========================================================================
