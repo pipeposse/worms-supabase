@@ -318,7 +318,9 @@ if st.session_state.section != "CARGAS":
     elif st.session_state.section == "PORT":
         # =================== PORTERIA ===================
         st.title("\U0001f69b Porteria")
-        sub_dia, sub_hist = st.tabs(["\U0001f4c5 Entrada diaria", "\U0001f4ca Revision historica"])
+        sub_dia, sub_hist, sub_eflu, sub_labcmp = st.tabs([
+            "\U0001f4c5 Entrada diaria", "\U0001f4ca Revision historica",
+            "\U0001f4a7 Efluentes liquidos", "\U0001f9ea Lab por cliente"])
 
         # ---------------- ENTRADA DIARIA ----------------
         with sub_dia:
@@ -445,34 +447,46 @@ if st.session_state.section != "CARGAS":
 
                 # ----- Evaluado vs no evaluado -----
                 st.markdown("### Cobertura de evaluacion (lab)")
-                st.caption("Cuanto de lo que entra esta pasando por laboratorio.")
+                st.caption("Cuanto de lo EVALUABLE esta pasando por laboratorio. "
+                           "Solo corrientes vegetal / animal / efluente_liquido / insumo "
+                           "(el resto -solido, sin_declarar- no se evalua).")
 
-                ev_corr = (df_p.groupby(["corriente","evaluado"]).size()
-                               .reset_index(name="cant")
-                               .pivot(index="corriente", columns="evaluado", values="cant")
-                               .fillna(0))
-                for col in ("SI","NO"):
-                    if col not in ev_corr.columns: ev_corr[col] = 0
-                ev_corr["total"] = ev_corr["SI"] + ev_corr["NO"]
-                ev_corr["% evaluado"] = (ev_corr["SI"]/ev_corr["total"]*100).round(1)
-                st.markdown("**Por corriente (animal / vegetal / insumo / ...)**")
-                st.bar_chart(ev_corr[["SI","NO"]], use_container_width=True)
-                st.dataframe(ev_corr.reset_index()[["corriente","SI","NO","total","% evaluado"]],
-                             use_container_width=True, hide_index=True)
+                CORR_EVAL = ["vegetal", "animal", "efluente_liquido", "insumo"]
+                df_eval = df_p[df_p["corriente"].isin(CORR_EVAL)].copy()
+                if df_eval.empty:
+                    st.info("No hay llegadas de corrientes evaluables en el rango.")
+                else:
+                    n_ev2 = int((df_eval["evaluado"]=="SI").sum())
+                    st.metric("% evaluado (solo corrientes evaluables)",
+                              f"{(n_ev2/len(df_eval)*100):.0f}%",
+                              help=f"{n_ev2} de {len(df_eval)} llegadas evaluables")
 
-                ev_prod = (df_p.groupby(["producto_base","evaluado"]).size()
-                               .reset_index(name="cant")
-                               .pivot(index="producto_base", columns="evaluado", values="cant")
-                               .fillna(0))
-                for col in ("SI","NO"):
-                    if col not in ev_prod.columns: ev_prod[col] = 0
-                ev_prod["total"] = ev_prod["SI"] + ev_prod["NO"]
-                ev_prod["% evaluado"] = (ev_prod["SI"]/ev_prod["total"]*100).round(1)
-                ev_prod = ev_prod.sort_values("total", ascending=False).head(20)
-                st.markdown("**Por producto base (top 20 por volumen de llegadas)**")
-                st.bar_chart(ev_prod[["SI","NO"]], use_container_width=True)
-                st.dataframe(ev_prod.reset_index()[["producto_base","SI","NO","total","% evaluado"]],
-                             use_container_width=True, hide_index=True)
+                    ev_corr = (df_eval.groupby(["corriente","evaluado"]).size()
+                                   .reset_index(name="cant")
+                                   .pivot(index="corriente", columns="evaluado", values="cant")
+                                   .fillna(0))
+                    for col in ("SI","NO"):
+                        if col not in ev_corr.columns: ev_corr[col] = 0
+                    ev_corr["total"] = ev_corr["SI"] + ev_corr["NO"]
+                    ev_corr["% evaluado"] = (ev_corr["SI"]/ev_corr["total"]*100).round(1)
+                    st.markdown("**Por corriente (vegetal / animal / efluente_liquido / insumo)**")
+                    st.bar_chart(ev_corr[["SI","NO"]], use_container_width=True)
+                    st.dataframe(ev_corr.reset_index()[["corriente","SI","NO","total","% evaluado"]],
+                                 use_container_width=True, hide_index=True)
+
+                    ev_prod = (df_eval.groupby(["producto_base","evaluado"]).size()
+                                   .reset_index(name="cant")
+                                   .pivot(index="producto_base", columns="evaluado", values="cant")
+                                   .fillna(0))
+                    for col in ("SI","NO"):
+                        if col not in ev_prod.columns: ev_prod[col] = 0
+                    ev_prod["total"] = ev_prod["SI"] + ev_prod["NO"]
+                    ev_prod["% evaluado"] = (ev_prod["SI"]/ev_prod["total"]*100).round(1)
+                    ev_prod = ev_prod.sort_values("total", ascending=False).head(20)
+                    st.markdown("**Por producto base (top 20 por volumen de llegadas evaluables)**")
+                    st.bar_chart(ev_prod[["SI","NO"]], use_container_width=True)
+                    st.dataframe(ev_prod.reset_index()[["producto_base","SI","NO","total","% evaluado"]],
+                                 use_container_width=True, hide_index=True)
 
                 st.markdown("### Detalle")
                 st.dataframe(df_p, use_container_width=True, hide_index=True, height=420)
@@ -480,6 +494,138 @@ if st.session_state.section != "CARGAS":
                                    file_name=f"porteria_hist_{fmin}_{fmax}.csv", mime="text/csv")
             else:
                 st.info("Sin datos en el rango.")
+
+
+        # ---------------- EFLUENTES LIQUIDOS ----------------
+        with sub_eflu:
+            st.caption("Solo producto_base = EFLUENTES LIQUIDOS. Acumulados, tendencia y comparacion mensual.")
+            cE1, cE2 = st.columns(2)
+            ef_desde = cE1.date_input("Desde", value=date(date.today().year,1,1), key="ef_desde")
+            ef_hasta = cE2.date_input("Hasta", value=date.today(), key="ef_hasta")
+            sql_ef = """
+                SELECT fecha_entrada, hora_e, patente_chasis, procedencia, destino,
+                       (peso_neto * -1) AS peso_neto, evaluado
+                FROM produccion.v_transacciones_limpias
+                WHERE producto_base = 'EFLUENTES LIQUIDOS'
+                  AND fecha_entrada IS NOT NULL
+                  AND fecha_entrada >= %s AND fecha_entrada <= %s
+                ORDER BY fecha_entrada
+            """
+            try:
+                df_ef = cat(sql_ef, (ef_desde.isoformat(), ef_hasta.isoformat()))
+            except Exception as e:
+                st.exception(e); df_ef = pd.DataFrame()
+
+            if df_ef.empty:
+                st.info("No hay registros de EFLUENTES LIQUIDOS en el rango.")
+            else:
+                df_ef["peso_neto"] = pd.to_numeric(df_ef["peso_neto"], errors="coerce")
+                df_ef["fecha_entrada"] = pd.to_datetime(df_ef["fecha_entrada"])
+                total_kg = df_ef["peso_neto"].sum()
+                n_via = len(df_ef)
+                prom = df_ef["peso_neto"].mean()
+                ke1, ke2, ke3 = st.columns(3)
+                ke1.metric("Kg netos acumulados", f"{int(total_kg):,}".replace(",", "."))
+                ke2.metric("Viajes", n_via)
+                ke3.metric("Promedio por viaje", f"{int(prom or 0):,}".replace(",", "."))
+
+                # Acumulado en el tiempo
+                st.markdown("**Acumulado en el tiempo**")
+                serie = df_ef.groupby("fecha_entrada")["peso_neto"].sum().sort_index().cumsum().reset_index()
+                serie.columns = ["fecha", "acumulado_kg"]
+                st.line_chart(serie, x="fecha", y="acumulado_kg", use_container_width=True)
+
+                # Comparacion mensual: acumulado por dia-del-mes, una linea por mes
+                st.markdown("**Comparacion entre meses (acumulado dia 1 -> fin de mes)**")
+                d = df_ef.copy()
+                d["mes"] = d["fecha_entrada"].dt.to_period("M").astype(str)
+                d["dia"] = d["fecha_entrada"].dt.day
+                diario = d.groupby(["mes","dia"])["peso_neto"].sum().reset_index()
+                diario["acum"] = diario.groupby("mes")["peso_neto"].cumsum()
+                piv = diario.pivot(index="dia", columns="mes", values="acum").sort_index().ffill()
+                st.line_chart(piv, use_container_width=True)
+                st.caption("Cada linea es un mes. Eje X = dia del mes. Permite ver si este mes va arriba o abajo de los anteriores.")
+
+                # Proyeccion simple del mes corriente
+                hoy = date.today()
+                mes_actual = pd.Period(hoy, freq="M").strftime("%Y-%m")
+                d_mes = d[d["mes"] == mes_actual]
+                if not d_mes.empty:
+                    acum_actual = d_mes["peso_neto"].sum()
+                    dia_actual = hoy.day
+                    import calendar as _cal
+                    dias_mes = _cal.monthrange(hoy.year, hoy.month)[1]
+                    proy = acum_actual / dia_actual * dias_mes if dia_actual else 0
+                    cp1, cp2 = st.columns(2)
+                    cp1.metric(f"Acumulado mes {mes_actual}", f"{int(acum_actual):,}".replace(",", "."))
+                    cp2.metric("Proyeccion fin de mes", f"{int(proy):,}".replace(",", "."),
+                               help="Lineal: ritmo diario actual x dias del mes")
+
+                # Estadisticas por procedencia
+                st.markdown("**Por procedencia (cliente)**")
+                by_proc = (df_ef.dropna(subset=["procedencia"])
+                                .groupby("procedencia")
+                                .agg(viajes=("peso_neto","size"),
+                                     kg_total=("peso_neto","sum"),
+                                     kg_promedio=("peso_neto","mean"))
+                                .sort_values("kg_total", ascending=False).reset_index())
+                by_proc["kg_total"] = by_proc["kg_total"].round(0)
+                by_proc["kg_promedio"] = by_proc["kg_promedio"].round(0)
+                st.bar_chart(by_proc.head(15), x="procedencia", y="kg_total", use_container_width=True)
+                st.dataframe(by_proc, use_container_width=True, hide_index=True)
+
+                st.download_button("\u2b07\ufe0f Descargar CSV efluentes",
+                                   df_ef.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"efluentes_{ef_desde}_{ef_hasta}.csv", mime="text/csv")
+
+        # ---------------- LAB POR CLIENTE (procedencia) ----------------
+        with sub_labcmp:
+            st.caption("Compara parametros de laboratorio entre clientes (procedencia). Ignora valores nulos.")
+            cL1, cL2 = st.columns(2)
+            lab_desde = cL1.date_input("Desde", value=(date.today()-_td(days=90)), key="lc_desde")
+            lab_hasta = cL2.date_input("Hasta", value=date.today(), key="lc_hasta")
+            PARAMS = {
+                "lab_prc_acidez":  "% Acidez",
+                "lab_prc_agua":    "% Agua",
+                "lab_ppm_azufre":  "ppm Azufre",
+                "lab_ppm_fosforo": "ppm Fosforo",
+                "lab_densidad":    "Densidad",
+            }
+            param_sel = st.selectbox("Parametro a comparar", list(PARAMS.keys()),
+                                     format_func=lambda c: PARAMS[c], key="lc_param")
+            sql_lc = f"""
+                SELECT procedencia, producto_base, corriente, {param_sel} AS valor
+                FROM produccion.v_transacciones_limpias
+                WHERE evaluado = 'SI'
+                  AND {param_sel} IS NOT NULL
+                  AND procedencia IS NOT NULL
+                  AND corriente IN ('vegetal','animal','efluente_liquido','insumo')
+                  AND fecha_entrada IS NOT NULL
+                  AND fecha_entrada >= %s AND fecha_entrada <= %s
+            """
+            try:
+                df_lc = cat(sql_lc, (lab_desde.isoformat(), lab_hasta.isoformat()))
+            except Exception as e:
+                st.exception(e); df_lc = pd.DataFrame()
+
+            if df_lc.empty:
+                st.info("Sin mediciones no-nulas de ese parametro en el rango.")
+            else:
+                df_lc["valor"] = pd.to_numeric(df_lc["valor"], errors="coerce")
+                df_lc = df_lc.dropna(subset=["valor"])
+                resumen = (df_lc.groupby("procedencia")["valor"]
+                               .agg(n="size", promedio="mean", minimo="min", maximo="max")
+                               .sort_values("promedio", ascending=False).reset_index())
+                resumen["promedio"] = resumen["promedio"].round(2)
+                resumen["minimo"] = resumen["minimo"].round(2)
+                resumen["maximo"] = resumen["maximo"].round(2)
+                st.markdown(f"**{PARAMS[param_sel]} promedio por cliente (procedencia)**")
+                st.bar_chart(resumen.head(20), x="procedencia", y="promedio", use_container_width=True)
+                st.dataframe(resumen, use_container_width=True, hide_index=True)
+                st.caption("n = cantidad de mediciones validas. Sirve para ver quien manda materia mas/menos acida, mas humeda, etc.")
+                st.download_button("\u2b07\ufe0f Descargar CSV",
+                                   df_lc.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"lab_por_cliente_{param_sel}.csv", mime="text/csv")
 
     st.stop()
 
@@ -1525,17 +1671,4 @@ with tab_objs[1]:
                         em = etapa_emoji.get(row["etapa_actual"], "❔")
                         cerrado = (row["etapa_actual"] == "EN_TANQUE")
                         color_bg = "#0f172a" if not cerrado else "#064e3b"
-                        st.markdown(
-                            f"""
-<div style="background:{color_bg};padding:12px;border-radius:10px;border:1px solid #1f2937">
-  <div style="font-size:13px;color:#cbd5e1">#{int(row['id_batch'])} · <b>{row['ticket'] or '—'}</b></div>
-  <div style="font-size:20px;margin:4px 0">{em} {row['etapa_actual'] or '—'}</div>
-  <div style="font-size:13px;color:#e2e8f0">{row['tipo_proceso']} · {row['reactor'] or '—'}</div>
-  <hr style="border-color:#1f2937;margin:8px 0">
-  <div style="font-size:12px;color:#94a3b8">🎯 {row['buscado'] or '—'} · cal {row['calidad_buscada'] or '—'}</div>
-  <div style="font-size:12px;color:#94a3b8">📦 {row['obtenido'] or '—'} · {int(row['kg_obtenido']) if pd.notna(row['kg_obtenido']) else '—'} kg · cal {row['calidad_final'] or '—'}</div>
-  <div style="font-size:12px;color:#94a3b8">📅 {row['fecha']}</div>
-</div>
-""",
-                            unsafe_allow_html=True
-                        )
+    
