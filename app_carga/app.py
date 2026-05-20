@@ -389,6 +389,64 @@ if st.session_state.section != "CARGAS":
                 st.download_button("\u2b07\ufe0f Descargar CSV del dia",
                                    df_d.to_csv(index=False).encode("utf-8"),
                                    file_name=f"porteria_{dia_sel}.csv", mime="text/csv")
+
+                # ----- Comprobante de pesaje por transaccion -----
+                st.divider()
+                st.markdown("**\U0001f9fe Comprobante de pesaje**")
+                tickets = df_d["transaccion"].dropna().astype(int).tolist()
+                if tickets:
+                    tk = st.selectbox("Ver comprobante de transaccion N\u00b0", tickets, key="cp_tk")
+                    rowc = cat("SELECT * FROM produccion.transacciones WHERE transaccion=%s ORDER BY id DESC LIMIT 1", (tk,))
+                    if not rowc.empty:
+                        rr = rowc.iloc[0]
+                        def g(c):
+                            v = rr.get(c)
+                            return "" if (v is None or (isinstance(v,float) and pd.isna(v))) else str(v)
+                        peso_e = g("pesoentr"); peso_s = g("pesosal"); peso_n = g("pesoneto")
+                        comp_html = f"""
+<div id="comprob" style="font-family:Arial,Helvetica,sans-serif;color:#000;background:#fff;padding:24px;max-width:760px;border:1px solid #ccc">
+  <div style="font-style:italic;font-weight:bold;font-size:18px;margin-bottom:20px">EMPRESA {g('empresa')}</div>
+  <div style="text-align:center;font-style:italic;font-weight:bold;font-size:16px;margin-bottom:18px">COMPROBANTE DE PESAJE</div>
+  <table style="font-size:13px;width:100%;border-collapse:collapse">
+    <tr>
+      <td style="padding:2px 8px"><b>Entrada:</b></td><td>{g('fecha_e')} {g('hora_e')}</td>
+      <td style="padding:2px 8px"><b>Operador:</b></td><td>{g('usuario')}</td>
+      <td style="padding:2px 8px"><b>TICKET NRO:</b></td><td style="font-size:16px"><b>{g('transaccion')}</b></td>
+    </tr>
+    <tr>
+      <td style="padding:2px 8px"><b>Salida:</b></td><td>{g('fecha_s')} {g('hora_s')}</td>
+      <td style="padding:2px 8px"><b>Balanza:</b></td><td>{g('vacio24')}</td>
+      <td></td><td></td>
+    </tr>
+    <tr><td style="padding:2px 8px"><b>Producto:</b></td><td><b>{g('producto')}</b></td>
+        <td style="padding:2px 8px"><b>Conductor:</b></td><td>{g('conductor')}</td><td></td><td></td></tr>
+    <tr><td style="padding:2px 8px"><b>Cliente:</b></td><td><b>{g('procedencia')}</b></td>
+        <td style="padding:2px 8px"><b>Documento:</b></td><td>{g('nrodoc')}</td><td></td><td></td></tr>
+    <tr><td style="padding:2px 8px"><b>Transporte:</b></td><td><b>{g('destino')}</b></td>
+        <td style="padding:2px 8px"><b>Patente Chasis:</b></td><td>{g('patcha')}</td><td></td><td></td></tr>
+    <tr><td style="padding:2px 8px"><b>Procedencia:</b></td><td><b>{g('chofer')}</b></td>
+        <td style="padding:2px 8px"><b>Patente Acoplado:</b></td><td>{g('patacopl')}</td><td></td><td></td></tr>
+  </table>
+  <table style="font-size:13px;width:100%;margin-top:14px;border-collapse:collapse">
+    <tr><td style="padding:2px 8px"><b>Tipo y Nro. de Comprobante:</b></td><td>{g('tipodoc')} {g('comprnum1')}</td></tr>
+    <tr><td style="padding:2px 8px"><b>Procedencia/Destino:</b></td><td>{g('procdest')}</td></tr>
+    <tr><td style="padding:2px 8px"><b>Contenedor N\u00b0:</b></td><td>{g('proc_contenedor')}</td></tr>
+    <tr><td style="padding:2px 8px"><b>Observaciones:</b></td><td>{g('observaciones')}</td></tr>
+  </table>
+  <table style="font-size:18px;width:100%;margin-top:18px;border-collapse:collapse">
+    <tr><td style="padding:4px 8px;text-align:right;width:60%"><b>PESO ENTRADA:</b></td><td><b>{peso_e}</b> Kg</td></tr>
+    <tr><td style="padding:4px 8px;text-align:right"><b>PESO SALIDA:</b></td><td><b>{peso_s}</b> Kg</td></tr>
+    <tr><td style="padding:4px 8px;text-align:right"><b>PESO NETO:</b></td><td><b>{peso_n}</b> Kg</td></tr>
+  </table>
+</div>
+"""
+                        st.markdown(comp_html, unsafe_allow_html=True)
+                        st.download_button(
+                            "\u2b07\ufe0f Descargar comprobante (HTML para imprimir)",
+                            ("<html><head><meta charset='utf-8'><title>Comprobante "
+                             + g('transaccion') + "</title></head><body>" + comp_html + "</body></html>").encode("utf-8"),
+                            file_name=f"comprobante_{tk}.html", mime="text/html", key="cp_dl")
+                        st.caption("Abrilo y us\u00e1 Ctrl+P para imprimir o guardar como PDF.")
             else:
                 st.info("Todavia no entro ningun camion en la fecha elegida.")
 
