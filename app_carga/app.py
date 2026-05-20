@@ -529,37 +529,68 @@ if st.session_state.section != "CARGAS":
                 ke2.metric("Viajes", n_via)
                 ke3.metric("Promedio por viaje", f"{int(prom or 0):,}".replace(",", "."))
 
-                # Acumulado en el tiempo
-                st.markdown("**Acumulado en el tiempo**")
-                serie = df_ef.groupby("fecha_entrada")["peso_neto"].sum().sort_index().cumsum().reset_index()
-                serie.columns = ["fecha", "acumulado_kg"]
-                st.line_chart(serie, x="fecha", y="acumulado_kg", use_container_width=True)
+                # Total por mes (barras)
+                dm = df_ef.copy()
+                dm["mes"] = dm["fecha_entrada"].dt.to_period("M").astype(str)
+                tot_mes = dm.groupby("mes")["peso_neto"].sum().reset_index()
+                tot_mes.columns = ["mes", "kg_netos"]
+                st.markdown("**Total de kg netos por mes**")
+                st.bar_chart(tot_mes, x="mes", y="kg_netos", use_container_width=True)
 
                 # Comparacion mensual: acumulado por dia-del-mes, una linea por mes
                 st.markdown("**Comparacion entre meses (acumulado dia 1 -> fin de mes)**")
+                import calendar as _cal
+                import altair as alt
                 d = df_ef.copy()
                 d["mes"] = d["fecha_entrada"].dt.to_period("M").astype(str)
                 d["dia"] = d["fecha_entrada"].dt.day
-                diario = d.groupby(["mes","dia"])["peso_neto"].sum().reset_index()
-                diario["acum"] = diario.groupby("mes")["peso_neto"].cumsum()
-                piv = diario.pivot(index="dia", columns="mes", values="acum").sort_index().ffill()
-                st.line_chart(piv, use_container_width=True)
-                st.caption("Cada linea es un mes. Eje X = dia del mes. Permite ver si este mes va arriba o abajo de los anteriores.")
-
-                # Proyeccion simple del mes corriente
+                meses_disp = sorted(d["mes"].unique())
                 hoy = date.today()
                 mes_actual = pd.Period(hoy, freq="M").strftime("%Y-%m")
-                d_mes = d[d["mes"] == mes_actual]
-                if not d_mes.empty:
-                    acum_actual = d_mes["peso_neto"].sum()
-                    dia_actual = hoy.day
-                    import calendar as _cal
-                    dias_mes = _cal.monthrange(hoy.year, hoy.month)[1]
-                    proy = acum_actual / dia_actual * dias_mes if dia_actual else 0
-                    cp1, cp2 = st.columns(2)
-                    cp1.metric(f"Acumulado mes {mes_actual}", f"{int(acum_actual):,}".replace(",", "."))
-                    cp2.metric("Proyeccion fin de mes", f"{int(proy):,}".replace(",", "."),
-                               help="Lineal: ritmo diario actual x dias del mes")
+                default_meses = meses_disp[-4:] if len(meses_disp) > 4 else meses_disp
+                meses_sel = st.multiselect("Meses a comparar (año-mes)", meses_disp,
+                                           default=default_meses, key="ef_meses")
+                if not meses_sel:
+                    st.info("Elegí al menos un mes.")
+                else:
+                    d2 = d[d["mes"].isin(meses_sel)]
+                    diario = d2.groupby(["mes","dia"])["peso_neto"].sum().reset_index()
+                    diario["acum"] = diario.groupby("mes")["peso_neto"].cumsum()
+                    diario["tipo"] = "real"
+
+                    # Proyeccion del mes actual (si está seleccionado): linea punteada
+                    proy_rows = []
+                    if mes_actual in meses_sel:
+                        dm = diario[diario["mes"]==mes_actual].sort_values("dia")
+                        if not dm.empty:
+                            acum_hoy = float(dm["acum"].iloc[-1])
+                            dia_hoy  = int(dm["dia"].iloc[-1])
+                            dias_mes = _cal.monthrange(hoy.year, hoy.month)[1]
+                            ritmo = acum_hoy / dia_hoy if dia_hoy else 0
+                            # punto de arranque de la proyeccion = ultimo real
+                            proy_rows.append({"mes": f"{mes_actual} (proy)", "dia": dia_hoy, "acum": acum_hoy, "tipo": "proyeccion"})
+                            for dd in range(dia_hoy+1, dias_mes+1):
+                                proy_rows.append({"mes": f"{mes_actual} (proy)", "dia": dd,
+                                                  "acum": ritmo*dd, "tipo": "proyeccion"})
+
+                    plot_df = pd.concat([diario, pd.DataFrame(proy_rows)], ignore_index=True) if proy_rows else diario
+
+                    chart = alt.Chart(plot_df).mark_line(point=False).encode(
+                        x=alt.X("dia:Q", title="día del mes"),
+                        y=alt.Y("acum:Q", title="kg netos acumulados"),
+                        color=alt.Color("mes:N", title="mes"),
+                        strokeDash=alt.StrokeDash("tipo:N", title="",
+                                   scale=alt.Scale(domain=["real","proyeccion"], range=[[1,0],[6,4]])),
+                    ).properties(height=380)
+                    st.altair_chart(chart, use_container_width=True)
+                    st.caption("Línea sólida = real. Línea punteada = proyección del mes corriente según el ritmo diario actual.")
+
+                    if mes_actual in meses_sel and proy_rows:
+                        proy_total = proy_rows[-1]["acum"]
+                        cp1, cp2 = st.columns(2)
+                        cp1.metric(f"Acumulado {mes_actual} a hoy", f"{int(acum_hoy):,}".replace(",", "."))
+                        cp2.metric("Proyección fin de mes", f"{int(proy_total):,}".replace(",", "."),
+                                   help="Ritmo diario actual × días del mes")
 
                 # Estadisticas por procedencia
                 st.markdown("**Por procedencia (cliente)**")
@@ -1633,35 +1664,55 @@ with tab_objs[1]:
         else:
             st.dataframe(df_ins, use_container_width=True, hide_index=True)
 
-        # ===== Vista visual de reacciones (tarjetas con estado) =====
+        # ===== Plan vs Real (REACTORES con estimados cargados) =====
+        st.markdown("**🎯 Plan vs Real (reactores)**")
+        df_pvr = cat(f"""
+            SELECT
+              b.id_batch, b.identificador_unidad AS ticket, b.fecha,
+              b.q_ag_planeado_kg, b.kg_inicial AS q_ag_real_kg,
+              b.estimado_glicerina_kg, b.estimado_naoh_kg, b.estimado_potasio_kg,
+              b.estimado_fuel_kg, b.estimado_are_kg, b.kg_obtenido AS are_real_kg,
+              (b.insumos->>'GLICERINA')::numeric  AS gli_real_kg,
+              (b.insumos->>'soda_kg')::numeric    AS naoh_real_kg,
+              (b.insumos->>'POTASIO')::numeric    AS potasio_real_kg,
+              (b.insumos->>'FUEL')::numeric       AS fuel_real_kg
+            FROM fact_batch_proceso b
+            WHERE NOT b.anulado AND b.sector='REACTORES'
+              AND b.estimado_are_kg IS NOT NULL
+              AND b.creado_en >= NOW() - INTERVAL %s
+            ORDER BY b.fecha DESC, b.id_batch DESC LIMIT 50
+        """, (f"{int(rango_dias)} days",))
+        if df_pvr.empty:
+            st.caption("Aún no hay reacciones con estimado cargado en este período.")
+        else:
+            def _desv(real, est):
+                if est is None or est == 0 or pd.isna(est) or pd.isna(real): return None
+                return round((real - est)/est*100, 1)
+            df_pvr["desv_ARE_%"]     = df_pvr.apply(lambda r: _desv(r["are_real_kg"], r["estimado_are_kg"]), axis=1)
+            df_pvr["desv_Glice_%"]   = df_pvr.apply(lambda r: _desv(r["gli_real_kg"], r["estimado_glicerina_kg"]), axis=1)
+            df_pvr["desv_NaOH_%"]    = df_pvr.apply(lambda r: _desv(r["naoh_real_kg"], r["estimado_naoh_kg"]), axis=1)
+            df_pvr["desv_Fuel_%"]    = df_pvr.apply(lambda r: _desv(r["fuel_real_kg"], r["estimado_fuel_kg"]), axis=1)
+            st.dataframe(df_pvr, use_container_width=True, hide_index=True)
+
+        # ===== Vista visual de reacciones (tarjetas) =====
         st.divider()
         st.markdown("### 🧪 Reacciones recientes (vista visual)")
         df_cards = cat("""
-            SELECT
-              b.id_batch, b.identificador_unidad AS ticket,
-              b.fecha, b.tipo_proceso, b.etapa_actual,
-              bu.nombre_ui AS reactor,
-              pb.codigo_producto AS buscado, b.calidad_buscada,
-              p.codigo_producto  AS obtenido, b.kg_obtenido, b.calidad_final,
-              b.kg_inicial, b.estimado_are_kg,
-              b.inicio_ts, b.fin_ts,
-              u.nombre AS cargado_por
+            SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha,
+                   b.tipo_proceso, b.etapa_actual, bu.nombre_ui AS reactor,
+                   pb.codigo_producto AS buscado, b.calidad_buscada,
+                   p.codigo_producto  AS obtenido, b.kg_obtenido, b.calidad_final
             FROM fact_batch_proceso b
             LEFT JOIN dim_producto p   ON p.id_producto  = b.id_producto_obtenido
             LEFT JOIN dim_producto pb  ON pb.id_producto = b.id_producto_buscado
             LEFT JOIN dim_bien_uso bu  ON bu.id_bien_uso = b.id_bien_uso
-            LEFT JOIN dim_usuario u    ON u.id_usuario   = b.id_usuario_carga
             WHERE NOT b.anulado AND b.sector='REACTORES'
-            ORDER BY b.creado_en DESC
-            LIMIT 24
+            ORDER BY b.creado_en DESC LIMIT 24
         """)
         if df_cards.empty:
             st.caption("No hay reacciones todavía.")
         else:
-            etapa_emoji = {
-                "ARMADO":"🧱", "REACCION":"🔥", "REPOSANDO":"⏸️",
-                "DECANTACION":"💧", "EN_TANQUE":"🪣"
-            }
+            etapa_emoji = {"ARMADO":"🧱","REACCION":"🔥","REPOSANDO":"⏸️","DECANTACION":"💧","EN_TANQUE":"🪣"}
             ncols = 3
             chunks = [df_cards.iloc[i:i+ncols] for i in range(0, len(df_cards), ncols)]
             for chunk in chunks:
@@ -1671,4 +1722,17 @@ with tab_objs[1]:
                         em = etapa_emoji.get(row["etapa_actual"], "❔")
                         cerrado = (row["etapa_actual"] == "EN_TANQUE")
                         color_bg = "#0f172a" if not cerrado else "#064e3b"
-    
+                        st.markdown(
+                            f"""
+<div style="background:{color_bg};padding:12px;border-radius:10px;border:1px solid #1f2937">
+  <div style="font-size:13px;color:#cbd5e1">#{int(row['id_batch'])} · <b>{row['ticket'] or '—'}</b></div>
+  <div style="font-size:20px;margin:4px 0">{em} {row['etapa_actual'] or '—'}</div>
+  <div style="font-size:13px;color:#e2e8f0">{row['tipo_proceso']} · {row['reactor'] or '—'}</div>
+  <hr style="border-color:#1f2937;margin:8px 0">
+  <div style="font-size:12px;color:#94a3b8">🎯 {row['buscado'] or '—'} · cal {row['calidad_buscada'] or '—'}</div>
+  <div style="font-size:12px;color:#94a3b8">📦 {row['obtenido'] or '—'} · {int(row['kg_obtenido']) if pd.notna(row['kg_obtenido']) else '—'} kg · cal {row['calidad_final'] or '—'}</div>
+  <div style="font-size:12px;color:#94a3b8">📅 {row['fecha']}</div>
+</div>
+""",
+                            unsafe_allow_html=True
+                        )
