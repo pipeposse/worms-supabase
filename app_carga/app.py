@@ -619,10 +619,8 @@ if st.session_state.section != "CARGAS":
 
         # ---------------- LAB POR CLIENTE (procedencia) ----------------
         with sub_labcmp:
-            st.caption("Compara parametros de laboratorio entre clientes (procedencia). Ignora valores nulos.")
-            cL1, cL2 = st.columns(2)
-            lab_desde = cL1.date_input("Desde", value=(date.today()-_td(days=90)), key="lc_desde")
-            lab_hasta = cL2.date_input("Hasta", value=date.today(), key="lc_hasta")
+            st.caption("Compara parametros de laboratorio entre clientes (procedencia), "
+                       "**dentro de cada producto_base** (comparar acidez de AFE-S vs ARE no tiene sentido). Ignora nulos.")
             PARAMS = {
                 "lab_prc_acidez":  "% Acidez",
                 "lab_prc_agua":    "% Agua",
@@ -630,20 +628,38 @@ if st.session_state.section != "CARGAS":
                 "lab_ppm_fosforo": "ppm Fosforo",
                 "lab_densidad":    "Densidad",
             }
-            param_sel = st.selectbox("Parametro a comparar", list(PARAMS.keys()),
-                                     format_func=lambda c: PARAMS[c], key="lc_param")
+            cL1, cL2, cL3 = st.columns(3)
+            lab_desde = cL1.date_input("Desde", value=(date.today()-_td(days=90)), key="lc_desde")
+            lab_hasta = cL2.date_input("Hasta", value=date.today(), key="lc_hasta")
+            param_sel = cL3.selectbox("Parametro", list(PARAMS.keys()),
+                                      format_func=lambda c: PARAMS[c], key="lc_param")
+            # productos disponibles para ese parametro
+            try:
+                pbs = cat(f"""
+                    SELECT DISTINCT producto_base FROM produccion.v_transacciones_limpias
+                    WHERE evaluado='SI' AND {param_sel} IS NOT NULL AND producto_base IS NOT NULL
+                      AND corriente IN ('vegetal','animal','efluente_liquido','insumo')
+                    ORDER BY 1
+                """)["producto_base"].tolist()
+            except Exception: pbs = []
+            cF1, cF2 = st.columns(2)
+            sel_pbs = cF1.multiselect("Producto base (vacio = todos)", pbs, key="lc_pbs")
+            min_n = cF2.number_input("Minimo de mediciones por grupo", 1, 100, 1, key="lc_minn")
+
+            where = ["evaluado = 'SI'", f"{param_sel} IS NOT NULL", "procedencia IS NOT NULL",
+                     "producto_base IS NOT NULL",
+                     "corriente IN ('vegetal','animal','efluente_liquido','insumo')",
+                     "fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
+            params = [lab_desde.isoformat(), lab_hasta.isoformat()]
+            if sel_pbs:
+                where.append("producto_base = ANY(%s)"); params.append(sel_pbs)
             sql_lc = f"""
-                SELECT procedencia, producto_base, corriente, {param_sel} AS valor
+                SELECT producto_base, procedencia, corriente, {param_sel} AS valor
                 FROM produccion.v_transacciones_limpias
-                WHERE evaluado = 'SI'
-                  AND {param_sel} IS NOT NULL
-                  AND procedencia IS NOT NULL
-                  AND corriente IN ('vegetal','animal','efluente_liquido','insumo')
-                  AND fecha_entrada IS NOT NULL
-                  AND fecha_entrada >= %s AND fecha_entrada <= %s
+                WHERE {' AND '.join(where)}
             """
             try:
-                df_lc = cat(sql_lc, (lab_desde.isoformat(), lab_hasta.isoformat()))
+                df_lc = cat(sql_lc, tuple(params))
             except Exception as e:
                 st.exception(e); df_lc = pd.DataFrame()
 
@@ -652,18 +668,34 @@ if st.session_state.section != "CARGAS":
             else:
                 df_lc["valor"] = pd.to_numeric(df_lc["valor"], errors="coerce")
                 df_lc = df_lc.dropna(subset=["valor"])
-                resumen = (df_lc.groupby("procedencia")["valor"]
-                               .agg(n="size", promedio="mean", minimo="min", maximo="max")
-                               .sort_values("promedio", ascending=False).reset_index())
-                resumen["promedio"] = resumen["promedio"].round(2)
-                resumen["minimo"] = resumen["minimo"].round(2)
-                resumen["maximo"] = resumen["maximo"].round(2)
-                st.markdown(f"**{PARAMS[param_sel]} promedio por cliente (procedencia)**")
-                st.bar_chart(resumen.head(20), x="procedencia", y="promedio", use_container_width=True)
-                st.dataframe(resumen, use_container_width=True, hide_index=True)
-                st.caption("n = cantidad de mediciones validas. Sirve para ver quien manda materia mas/menos acida, mas humeda, etc.")
+                # Agrupado por producto_base + procedencia
+                resumen = (df_lc.groupby(["producto_base","procedencia"])["valor"]
+                               .agg(n="size", promedio="mean", minimo="min", maximo="max", desvio="std")
+                               .reset_index())
+                resumen = resumen[resumen["n"] >= int(min_n)]
+                for c in ("promedio","minimo","maximo","desvio"):
+                    resumen[c] = resumen[c].round(2)
+                resumen = resumen.sort_values(["producto_base","promedio"], ascending=[True, False])
+
+                st.markdown(f"### {PARAMS[param_sel]} por producto base y cliente")
+
+                # Si eligio 1 solo producto: chart limpio por procedencia
+                if len(sel_pbs) == 1:
+                    sub = resumen[resumen["producto_base"]==sel_pbs[0]]
+                    st.markdown(f"**{sel_pbs[0]} \u2014 promedio por cliente**")
+                    st.bar_chart(sub, x="procedencia", y="promedio", use_container_width=True)
+                else:
+                    # vista por producto: tabla pivote (filas producto_base, columnas procedencia)
+                    piv = resumen.pivot_table(index="producto_base", columns="procedencia",
+                                              values="promedio", aggfunc="mean")
+                    st.markdown("**Promedio por producto_base (filas) x cliente (columnas)**")
+                    st.dataframe(piv, use_container_width=True)
+
+                st.markdown("**Detalle (producto_base + cliente)**")
+                st.dataframe(resumen, use_container_width=True, hide_index=True, height=420)
+                st.caption("n = mediciones validas \u00b7 desvio = desviacion estandar (consistencia del cliente).")
                 st.download_button("\u2b07\ufe0f Descargar CSV",
-                                   df_lc.to_csv(index=False).encode("utf-8"),
+                                   resumen.to_csv(index=False).encode("utf-8"),
                                    file_name=f"lab_por_cliente_{param_sel}.csv", mime="text/csv")
 
     elif st.session_state.section == "ADMIN":
