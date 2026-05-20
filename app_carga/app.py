@@ -403,7 +403,16 @@ if st.session_state.section != "CARGAS":
                         def g(c):
                             v = rr.get(c)
                             return "" if (v is None or (isinstance(v,float) and pd.isna(v))) else str(v)
-                        peso_e = g("pesoentr"); peso_s = g("pesosal"); peso_n = g("pesoneto")
+                        def gnum(c):
+                            v = rr.get(c)
+                            if v is None or (isinstance(v,float) and pd.isna(v)): return ""
+                            try:
+                                f = float(v)
+                                return str(int(f)) if f == int(f) else f"{f:g}"
+                            except Exception:
+                                return str(v)
+                        peso_e = gnum("pesoentr"); peso_s = gnum("pesosal"); peso_n = gnum("pesoneto")
+                        pendiente = str(rr.get("pendiente") or "").lower() == "si"
                         comp_html = f"""
 <div id="comprob" style="font-family:Arial,Helvetica,sans-serif;color:#000;background:#fff;padding:24px;max-width:760px;border:1px solid #ccc">
   <div style="font-style:italic;font-weight:bold;font-size:18px;margin-bottom:20px">EMPRESA {g('empresa')}</div>
@@ -412,7 +421,7 @@ if st.session_state.section != "CARGAS":
     <tr>
       <td style="padding:2px 8px"><b>Entrada:</b></td><td>{g('fecha_e')} {g('hora_e')}</td>
       <td style="padding:2px 8px"><b>Operador:</b></td><td>{g('usuario')}</td>
-      <td style="padding:2px 8px"><b>TICKET NRO:</b></td><td style="font-size:16px"><b>{g('transaccion')}</b></td>
+      <td style="padding:2px 8px"><b>TICKET NRO:</b></td><td style="font-size:16px"><b>{gnum('transaccion')}</b></td>
     </tr>
     <tr>
       <td style="padding:2px 8px"><b>Salida:</b></td><td>{g('fecha_s')} {g('hora_s')}</td>
@@ -436,9 +445,10 @@ if st.session_state.section != "CARGAS":
   </table>
   <table style="font-size:18px;width:100%;margin-top:18px;border-collapse:collapse">
     <tr><td style="padding:4px 8px;text-align:right;width:60%"><b>PESO ENTRADA:</b></td><td><b>{peso_e}</b> Kg</td></tr>
-    <tr><td style="padding:4px 8px;text-align:right"><b>PESO SALIDA:</b></td><td><b>{peso_s}</b> Kg</td></tr>
-    <tr><td style="padding:4px 8px;text-align:right"><b>PESO NETO:</b></td><td><b>{peso_n}</b> Kg</td></tr>
+    <tr><td style="padding:4px 8px;text-align:right"><b>PESO SALIDA:</b></td><td><b>{peso_s or ('PENDIENTE' if pendiente else '')}</b> {'' if (not peso_s and pendiente) else 'Kg'}</td></tr>
+    <tr><td style="padding:4px 8px;text-align:right"><b>PESO NETO:</b></td><td><b>{peso_n or ('PENDIENTE' if pendiente else '')}</b> {'' if (not peso_n and pendiente) else 'Kg'}</td></tr>
   </table>
+  {f'<div style="margin-top:10px;color:#b45309;font-size:13px"><b>⚠ Camion pendiente de salida</b> — peso de salida y neto se completan cuando se pesa al salir.</div>' if pendiente else ''}
 </div>
 """
                         st.markdown(comp_html, unsafe_allow_html=True)
