@@ -85,7 +85,7 @@ if st.session_state.section is None:
     cA, cB, cC = st.columns(3)
     with cA:
         st.markdown("### 🏭 Cargas")
-        st.write("Carga de producción, anulaciones, observación, auditoría y admin.")
+        st.write("Carga de producción, anulaciones, observación y auditoría.")
         if st.button("Entrar a Cargas", type="primary", use_container_width=True, key="land_cargas"):
             go_to("CARGAS")
     with cB:
@@ -98,6 +98,14 @@ if st.session_state.section is None:
         st.write("Vista de v_transacciones_limpias: filtros, peso por producto, descarga.")
         if st.button("Entrar a Portería", use_container_width=True, key="land_port"):
             go_to("PORT")
+    if USR["rol"] == "ADMIN":
+        st.divider()
+        cAd, _, _ = st.columns(3)
+        with cAd:
+            st.markdown("### ⚙️ Admin")
+            st.write("Gestión de usuarios: alta, roles, sectores, reset PIN, activar/desactivar.")
+            if st.button("Entrar a Admin", use_container_width=True, key="land_admin"):
+                go_to("ADMIN")
     st.stop()
 
 with st.sidebar:
@@ -658,6 +666,105 @@ if st.session_state.section != "CARGAS":
                                    df_lc.to_csv(index=False).encode("utf-8"),
                                    file_name=f"lab_por_cliente_{param_sel}.csv", mime="text/csv")
 
+    elif st.session_state.section == "ADMIN":
+        # =================== ADMIN ===================
+        st.title("\u2699\ufe0f Gestion de usuarios")
+        if USR["rol"] != "ADMIN":
+            st.error("Solo ADMIN puede entrar a esta seccion.")
+        else:
+            with st.expander("\u2795 Crear nuevo usuario", expanded=False):
+                with st.form("form_user_new"):
+                    c1, c2 = st.columns(2)
+                    n_nombre = c1.text_input("Usuario (login) *", max_chars=30, placeholder="ej. sosa")
+                    n_full = c2.text_input("Nombre completo *", max_chars=80, placeholder="ej. Jose Sosa")
+                    c3, c4 = st.columns(2)
+                    n_pin = c3.text_input("PIN (4-6 digitos) *", type="password", max_chars=6)
+                    n_rol = c4.selectbox("Rol *", ["OPERADOR", "SUPERVISOR", "ADMIN"])
+                    n_sector = st.selectbox(
+                        "Sector default", [""] + sectores["codigo"].tolist(),
+                        format_func=lambda c: "(ninguno)" if c=="" else sectores[sectores["codigo"]==c].iloc[0]["nombre_ui"]
+                    )
+                    n_sectores = st.multiselect(
+                        "Sectores asignados (vacio = todos)",
+                        options=sectores["codigo"].tolist(),
+                        format_func=lambda c: sectores[sectores["codigo"]==c].iloc[0]["nombre_ui"]
+                    )
+                    crear = st.form_submit_button("Crear usuario", type="primary")
+                if crear:
+                    if not n_nombre or not n_full or not n_pin:
+                        st.error("Completa los campos obligatorios.")
+                    elif not n_pin.isdigit() or not (4 <= len(n_pin) <= 6):
+                        st.error("El PIN debe ser numerico de 4 a 6 digitos.")
+                    else:
+                        try:
+                            nid = crear_usuario(USR["id_usuario"], n_nombre.lower().strip(),
+                                                 n_full, n_pin, n_rol, n_sector or None)
+                            if n_sectores:
+                                cambiar_sectores(USR["id_usuario"], nid, n_sectores)
+                            st.success(f"Usuario '{n_nombre}' creado (id #{nid}).")
+                            cat.clear()
+                        except Exception as e:
+                            st.error(str(e))
+
+            st.divider()
+            df_u = cat("SELECT id_usuario, nombre, nombre_full, rol, sector, activo, ultimo_login "
+                       "FROM produccion.dim_usuario ORDER BY activo DESC, nombre")
+            st.dataframe(df_u, use_container_width=True, hide_index=True)
+
+            st.markdown("**Acciones por usuario:**")
+            sel_user = st.selectbox(
+                "Seleccionar usuario",
+                df_u.apply(lambda r: f"{r['nombre_full']} ({r['nombre']}) [{'activo' if r['activo'] else 'inactivo'}]", axis=1).tolist()
+            )
+            u_idx = df_u.apply(lambda r: f"{r['nombre_full']} ({r['nombre']}) [{'activo' if r['activo'] else 'inactivo'}]", axis=1).tolist().index(sel_user)
+            u_row = df_u.iloc[u_idx]; u_id = int(u_row["id_usuario"])
+            ac1, ac2, ac3 = st.columns(3)
+            with ac1:
+                st.markdown("**Estado**")
+                if u_row["activo"]:
+                    if st.button("\U0001f6ab Desactivar usuario", key=f"deact_{u_id}", use_container_width=True):
+                        try: set_activo(USR["id_usuario"], u_id, False); st.success("Desactivado."); cat.clear(); st.rerun()
+                        except Exception as e: st.error(str(e))
+                else:
+                    if st.button("\u2705 Reactivar usuario", key=f"act_{u_id}", use_container_width=True):
+                        try: set_activo(USR["id_usuario"], u_id, True); st.success("Reactivado."); cat.clear(); st.rerun()
+                        except Exception as e: st.error(str(e))
+            with ac2:
+                st.markdown("**Reset PIN**")
+                with st.form(f"form_resetpin_{u_id}"):
+                    npin = st.text_input("PIN nuevo (4-6 digitos)", type="password", max_chars=6, key=f"npin_{u_id}")
+                    if st.form_submit_button("\U0001f511 Resetear PIN", use_container_width=True):
+                        if not npin.isdigit() or not (4 <= len(npin) <= 6):
+                            st.error("PIN invalido.")
+                        else:
+                            try: reset_pin(USR["id_usuario"], u_id, npin); st.success(f"PIN reseteado para {u_row['nombre']}.")
+                            except Exception as e: st.error(str(e))
+            with ac3:
+                st.markdown("**Rol / Sector**")
+                with st.form(f"form_rol_{u_id}"):
+                    nrol = st.selectbox("Rol", ["OPERADOR","SUPERVISOR","ADMIN"],
+                                         index=["OPERADOR","SUPERVISOR","ADMIN"].index(u_row["rol"]),
+                                         key=f"nr_{u_id}")
+                    opciones_sec = [""] + sectores["codigo"].tolist()
+                    idx_sec = opciones_sec.index(u_row["sector"]) if u_row["sector"] in opciones_sec else 0
+                    nsec = st.selectbox("Sector default", opciones_sec, index=idx_sec, key=f"ns_{u_id}")
+                    df_usr = cat(f"SELECT sectores FROM produccion.dim_usuario WHERE id_usuario={u_id}")
+                    actuales = list(df_usr.iloc[0]["sectores"]) if not df_usr.empty and df_usr.iloc[0]["sectores"] else []
+                    sectores_mult = st.multiselect(
+                        "Sectores asignados (vacio = todos)",
+                        options=sectores["codigo"].tolist(), default=actuales,
+                        format_func=lambda c: sectores[sectores["codigo"]==c].iloc[0]["nombre_ui"],
+                        key=f"nss_{u_id}"
+                    )
+                    if st.form_submit_button("\U0001f4be Aplicar cambios", use_container_width=True):
+                        try:
+                            if nrol != u_row["rol"]: cambiar_rol(USR["id_usuario"], u_id, nrol)
+                            if (nsec or None) != u_row["sector"]: cambiar_sector(USR["id_usuario"], u_id, nsec or None)
+                            if sorted(sectores_mult) != sorted(actuales):
+                                cambiar_sectores(USR["id_usuario"], u_id, sectores_mult)
+                            st.success("Cambios aplicados."); cat.clear(); st.rerun()
+                        except Exception as e: st.error(str(e))
+
     st.stop()
 
 # A partir de acá: SECCIÓN CARGAS (todo el flujo histórico)
@@ -665,8 +772,6 @@ _header_sync()
 st.divider()
 
 tabs = ["🏭 Producción", "📊 Observación", "✏️ Mis cargas", "🕒 Audit"]
-if USR["rol"] == "ADMIN":
-    tabs.append("⚙️ Admin")
 tab_objs = st.tabs(tabs)
 
 
@@ -1770,3 +1875,77 @@ with tab_objs[1]:
 """,
                             unsafe_allow_html=True
                         )
+
+# =========================================================================
+# TAB MIS CARGAS (anular registros)  ·  tab_objs[2]
+# =========================================================================
+with tab_objs[2]:
+    st.subheader("✏️ Mis cargas · anular registros")
+    rol = USR["rol"]
+    if rol == "OPERADOR":
+        st.caption("Ves SOLO tus cargas. Podés anular dentro de las **24 h**.")
+        dias = 7
+    elif rol == "SUPERVISOR":
+        st.caption("Ves cargas de TODOS. Podés anular dentro de **7 días**.")
+        dias = 30
+    else:
+        st.caption("Ves TODAS las cargas. Podés anular sin límite.")
+        dias = 60
+    dias = st.slider("Días hacia atrás a mostrar", 1, 60, dias, key="mc_dias")
+    try:
+        rows = listar_mis_cargas(USR["id_usuario"], rol, dias)
+    except Exception as e:
+        st.exception(e); rows = []
+    if not rows:
+        st.info("No hay cargas en el rango seleccionado.")
+    else:
+        df = pd.DataFrame(rows, columns=["tipo","id","fecha","sector","detalle","valor","anulado","creado_en","cargado_por"])
+        df["estado"] = df["anulado"].apply(lambda x: "🚫 ANULADO" if x else "✅ activo")
+        st.dataframe(df[["tipo","id","fecha","cargado_por","sector","detalle","valor","creado_en","estado"]],
+                     use_container_width=True, hide_index=True)
+        st.divider()
+        activos = [r for r in rows if not r[6]]
+        if not activos:
+            st.info("No hay registros activos para anular.")
+        else:
+            opciones = {f"#{r[1]} · {r[0]} · {r[2]} · {r[8]} · {r[4] or '—'}": r for r in activos}
+            sel = st.selectbox("Registro a anular", list(opciones.keys()), key="mc_sel")
+            r_sel = opciones[sel]
+            tabla_sel = "fact_batch_proceso"
+            propio = (r_sel[8] == USR["nombre"])
+            ok, motivo_check = puede_anular(rol, propio, r_sel[7])
+            (st.success if ok else st.error)(("✅ Podés anular: " if ok else "❌ No podés: ") + motivo_check)
+            with st.form("form_anular"):
+                motivo = st.text_input("Motivo (min 5 caracteres)", max_chars=200)
+                conf = st.checkbox("Confirmo que quiero anular este registro")
+                submit_a = st.form_submit_button("🚫 Anular registro", type="primary", disabled=not ok)
+            if submit_a:
+                if not conf:
+                    st.error("Marcá la confirmación.")
+                elif len(motivo.strip()) < 5:
+                    st.error("Motivo demasiado corto.")
+                else:
+                    try:
+                        anular_registro(USR["id_usuario"], tabla_sel, r_sel[1], motivo)
+                        st.success(f"Registro #{r_sel[1]} anulado."); st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+# =========================================================================
+# TAB AUDIT  ·  tab_objs[3]
+# =========================================================================
+with tab_objs[3]:
+    st.subheader("🕒 Auditoría · últimos 100 eventos")
+    try:
+        df_aud = cat(
+            "SELECT e.ts, u.nombre AS usuario, u.nombre_full, e.operacion, e.tabla, e.pk_valor, e.cambios "
+            "FROM produccion.aud_eventos e "
+            "JOIN produccion.dim_usuario u ON u.id_usuario = e.id_usuario "
+            "ORDER BY e.ts DESC LIMIT 100"
+        )
+        if df_aud.empty:
+            st.info("Sin eventos de auditoría todavía.")
+        else:
+            st.dataframe(df_aud, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.exception(e)
