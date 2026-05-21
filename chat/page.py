@@ -70,13 +70,13 @@ def render(usr: dict):
     cols = st.columns(2)
     for i, s in enumerate(SUGERENCIAS):
         if cols[i % 2].button(s, use_container_width=True, key=f"chat_ej_{i}"):
-            st.session_state["chat_pregunta"] = s
+            # escribir directo en el input (mismo key) antes de crear el widget
+            st.session_state["chat_input"] = s
 
     ver_sql = st.toggle("Mostrar el SQL generado", value=False, key="chat_ver_sql")
 
     pregunta = st.text_input(
         "Tu pregunta",
-        value=st.session_state.get("chat_pregunta", ""),
         placeholder="¿Cuántos camiones entraron ayer y de qué categorías?",
         key="chat_input",
     )
