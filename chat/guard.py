@@ -1,8 +1,6 @@
-"""Guardia SQL: defensa en profundidad sobre el rol read-only.
-Solo permite UNA sentencia y solo SELECT / WITH...SELECT.
-Bloquea DML/DDL aunque el modelo lo genere por error."""
+"""Guardia SQL (sin dependencias externas): defensa en profundidad sobre el rol
+read-only. Solo permite UNA sentencia y solo SELECT / WITH...SELECT."""
 import re
-import sqlparse
 
 _FORBIDDEN = {
     "insert", "update", "delete", "drop", "alter", "create", "truncate",
@@ -16,15 +14,21 @@ class UnsafeSQLError(ValueError):
     pass
 
 
+def _strip_comments(sql: str) -> str:
+    sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)   # /* ... */
+    sql = re.sub(r"--[^\n]*", " ", sql)                # -- ...
+    return sql
+
+
 def is_select_only(sql: str) -> bool:
     if not sql or not sql.strip():
         return False
-    cleaned = sqlparse.format(sql, strip_comments=True).strip().rstrip(";").strip()
+    cleaned = _strip_comments(sql).strip().rstrip(";").strip()
     if not cleaned:
         return False
-    statements = [s for s in sqlparse.parse(cleaned) if str(s).strip()]
-    if len(statements) != 1:
-        return False  # nada de múltiples sentencias
+    # una sola sentencia: no puede quedar ';' en el medio
+    if ";" in cleaned:
+        return False
     first = cleaned.lstrip().split(None, 1)[0].lower()
     if first not in ("select", "with"):
         return False

@@ -167,6 +167,7 @@ GEMINI_MODEL    = "gemini-2.0-flash"
 ### Notas
 - El rol `ai_readonly` y las vistas `reporting.v_camiones` / `reporting.v_laboratorio`
   ya están creados en Supabase (migraciones aplicadas).
-- El entrenamiento (esquema + ejemplos) se rehace solo en cada arranque en frío.
+- Motor liviano: Gemini recibe el esquema (con comentarios) + ejemplos en el prompt.
+  No usa Vanna ni ChromaDB → instala rápido y no pesa en el free tier.
 - Para mejorar respuestas: editar `chat/contexto/business_context.md` y
   `chat/contexto/training_examples.json` y volver a pushear.

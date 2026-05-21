@@ -1,9 +1,10 @@
 """UI del chat de consultas. Se renderiza como una sección más de la app.
 Acceso restringido a SUPERVISOR y ADMIN."""
+import pandas as pd
 import streamlit as st
 
 from . import config_chat as cfg
-from .engine import get_vanna, is_select_only
+from .engine import generate_sql, run_sql_readonly, is_select_only
 
 SUGERENCIAS = [
     "¿Cuántos camiones entraron ayer y de qué categorías?",
@@ -15,32 +16,44 @@ SUGERENCIAS = [
 ]
 
 
+def _auto_chart(df: pd.DataFrame):
+    """Gráfico simple cuando el resultado se presta (sin dependencias extra)."""
+    if df is None or len(df) < 2 or df.shape[1] < 2:
+        return
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    cat_cols = [c for c in df.columns if c not in num_cols]
+    if not num_cols or not cat_cols:
+        return
+    x = cat_cols[0]
+    y = num_cols[:3]
+    try:
+        primera = str(x).lower()
+        if "fecha" in primera or "dia" in primera or "mes" in primera:
+            st.line_chart(df.set_index(x)[y], use_container_width=True)
+        else:
+            st.bar_chart(df.set_index(x)[y], use_container_width=True)
+    except Exception:
+        pass
+
+
 def render(usr: dict):
     st.title("🤖 Consultas IA")
     st.caption("Preguntá en lenguaje natural sobre camiones y laboratorio. Solo lectura.")
 
-    # ── gate por rol (defensa en profundidad; la tarjeta del landing ya se oculta) ──
+    # gate por rol (defensa en profundidad; la tarjeta del landing ya se oculta)
     if usr.get("rol") not in cfg.ROLES_PERMITIDOS:
         st.warning("Esta sección está disponible solo para SUPERVISOR y ADMIN.")
         return
 
-    # ── secretos presentes ──
     miss = cfg.faltantes()
     if miss:
         st.error(
             "Falta configurar: **" + ", ".join(miss) + "**.\n\n"
-            "Agregalos en *Settings → Secrets* (Streamlit Cloud) o en `.env` local. "
+            "Agregalos en *Settings → Secrets* (Streamlit Cloud). "
             "Ver `.streamlit/secrets.toml.example`."
         )
         return
 
-    try:
-        vn = get_vanna()
-    except Exception as e:
-        st.error(f"No se pudo inicializar el asistente: {e}")
-        return
-
-    # ── ejemplos ──
     st.write("**Ejemplos** (tocá uno o escribí tu pregunta):")
     cols = st.columns(2)
     for i, s in enumerate(SUGERENCIAS):
@@ -60,14 +73,14 @@ def render(usr: dict):
 
     with st.spinner("Generando la consulta…"):
         try:
-            sql = vn.generate_sql(pregunta)
+            sql = generate_sql(pregunta)
         except Exception as e:
             st.error(f"No pude generar la consulta: {e}")
             return
 
     if not is_select_only(sql):
         st.error("La consulta generada no es de solo lectura. Reformulá la pregunta.")
-        if ver_sql:
+        if ver_sql and sql:
             st.code(sql, language="sql")
         return
 
@@ -76,7 +89,7 @@ def render(usr: dict):
 
     with st.spinner("Consultando la base…"):
         try:
-            df = vn.run_sql(sql)
+            df = run_sql_readonly(sql)
         except Exception as e:
             st.error(f"Error al ejecutar la consulta: {e}")
             return
@@ -93,12 +106,4 @@ def render(usr: dict):
         mime="text/csv",
         key="chat_dl",
     )
-
-    # gráfico automático (si falla, queda solo la tabla)
-    if len(df) > 1:
-        try:
-            code = vn.generate_plotly_code(question=pregunta, sql=sql, df=df)
-            fig = vn.get_plotly_figure(plotly_code=code, df=df)
-            st.plotly_chart(fig, use_container_width=True)
-        except Exception:
-            pass
+    _auto_chart(df)

@@ -1,18 +1,9 @@
-"""Motor del chat: Vanna (Gemini + ChromaDB) para generar SQL, ejecutado SIEMPRE
-con el rol read-only (ai_readonly) y validado por el guardia SELECT-only."""
-
-# ── Fix ChromaDB en Streamlit Community Cloud: su sqlite3 del sistema es viejo.
-#    Reemplaza sqlite3 por pysqlite3 ANTES de importar chromadb. (No-op en local.)
-try:
-    __import__("pysqlite3")
-    import sys
-    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
-except Exception:
-    pass
-
+"""Motor liviano del chat: Gemini (google-generativeai) traduce la pregunta a SQL,
+que se ejecuta SIEMPRE con el rol read-only (ai_readonly) y se valida con el guardia
+SELECT-only. Sin Vanna ni ChromaDB → liviano y robusto en Streamlit Cloud."""
 import os
 import json
-import tempfile
+import re
 
 import pandas as pd
 import psycopg2
@@ -42,71 +33,87 @@ def run_sql_readonly(sql: str) -> pd.DataFrame:
         conn.close()
 
 
-# ──────────────────────── construcción de Vanna ────────────────────────
-@st.cache_resource(show_spinner="Inicializando el asistente de consultas…")
-def get_vanna():
-    from vanna.chromadb import ChromaDB_VectorStore
-    from vanna.google import GoogleGeminiChat
-
-    class _V(ChromaDB_VectorStore, GoogleGeminiChat):
-        def __init__(self, config=None):
-            ChromaDB_VectorStore.__init__(self, config=config)
-            GoogleGeminiChat.__init__(self, config=config)
-
-    vn = _V(config={
-        "api_key": cfg.GEMINI_API_KEY,
-        "model": cfg.GEMINI_MODEL,
-        # FS efímero en Cloud: el entrenamiento se rehace en cada arranque (rápido).
-        "path": os.path.join(tempfile.gettempdir(), "chroma_worms_reporting"),
-    })
-
-    # Vanna ejecuta SQL a través de esta función (read-only + guardia).
-    vn.run_sql = run_sql_readonly
-    vn.run_sql_is_set = True
-
-    _ensure_trained(vn)
-    return vn
+# ──────────────────────── contexto (esquema + ejemplos) ────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def _schema_context() -> str:
+    """Lista columnas + comentarios de las vistas de reporting (leído de la BD)."""
+    df = run_sql_readonly("""
+        SELECT c.relname AS vista, a.attname AS columna,
+               format_type(a.atttypid, a.atttypmod) AS tipo,
+               col_description(c.oid, a.attnum) AS comentario
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+        WHERE n.nspname = 'reporting' AND c.relkind IN ('v','m','r')
+        ORDER BY c.relname, a.attnum
+    """)
+    lineas = []
+    for vista, grp in df.groupby("vista"):
+        lineas.append(f"\nVista reporting.{vista}:")
+        for r in grp.itertuples():
+            com = f"  -- {r.comentario}" if r.comentario else ""
+            lineas.append(f"  - {r.columna} ({r.tipo}){com}")
+    return "\n".join(lineas)
 
 
-def _ensure_trained(vn):
-    """Entrena DDL + contexto + ejemplos una sola vez (si está vacío)."""
-    try:
-        td = vn.get_training_data()
-        if td is not None and len(td) > 0:
-            return
-    except Exception:
-        pass
-
-    # 1) DDL de las vistas del esquema reporting
-    try:
-        df = run_sql_readonly("""
-            SELECT table_name, column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = 'reporting'
-            ORDER BY table_name, ordinal_position
-        """)
-        if df is not None and not df.empty:
-            for table, grp in df.groupby("table_name"):
-                cols = ",\n  ".join(f"{r.column_name} {r.data_type}" for r in grp.itertuples())
-                vn.train(ddl=f"CREATE TABLE reporting.{table} (\n  {cols}\n);")
-    except Exception:
-        pass
-
-    # 2) documentación de negocio
-    doc = os.path.join(CONTEXTO_DIR, "business_context.md")
-    if os.path.exists(doc):
-        with open(doc, encoding="utf-8") as f:
-            text = f.read().strip()
-        if text:
-            vn.train(documentation=text)
-
-    # 3) ejemplos pregunta -> SQL
-    ex = os.path.join(CONTEXTO_DIR, "training_examples.json")
-    if os.path.exists(ex):
-        with open(ex, encoding="utf-8") as f:
-            for e in json.load(f):
-                vn.train(question=e["question"], sql=e["sql"])
+def _doc_negocio() -> str:
+    p = os.path.join(CONTEXTO_DIR, "business_context.md")
+    return open(p, encoding="utf-8").read().strip() if os.path.exists(p) else ""
 
 
-# expone el guardia por conveniencia
-__all__ = ["get_vanna", "run_sql_readonly", "is_select_only"]
+def _ejemplos() -> str:
+    p = os.path.join(CONTEXTO_DIR, "training_examples.json")
+    if not os.path.exists(p):
+        return ""
+    out = []
+    for e in json.load(open(p, encoding="utf-8")):
+        out.append(f"P: {e['question']}\nSQL: {e['sql']}")
+    return "\n\n".join(out)
+
+
+def _prompt(pregunta: str) -> str:
+    return f"""Sos un asistente que traduce preguntas a UNA consulta SQL de PostgreSQL
+para un dashboard de producción de una planta.
+
+REGLAS ESTRICTAS:
+- Devolvé UNA sola sentencia SELECT (o WITH ... SELECT). NUNCA INSERT/UPDATE/DELETE/DDL.
+- Usá SOLO las vistas del esquema `reporting` descritas abajo. Calificá siempre con `reporting.`.
+- "ayer" = current_date - 1, "hoy" = current_date, "este mes" = date_trunc('month', fecha)=date_trunc('month', current_date).
+- Respondé ÚNICAMENTE con el SQL. Sin explicaciones, sin markdown, sin ```.
+
+ESQUEMA DISPONIBLE:
+{_schema_context()}
+
+CONTEXTO DE NEGOCIO:
+{_doc_negocio()}
+
+EJEMPLOS:
+{_ejemplos()}
+
+Pregunta: {pregunta}
+SQL:"""
+
+
+# ──────────────────────── generación con Gemini ────────────────────────
+@st.cache_resource(show_spinner=False)
+def _model():
+    import google.generativeai as genai
+    genai.configure(api_key=cfg.GEMINI_API_KEY)
+    return genai.GenerativeModel(cfg.GEMINI_MODEL)
+
+
+def _extraer_sql(texto: str) -> str:
+    t = (texto or "").strip()
+    m = re.search(r"```(?:sql)?\s*(.*?)```", t, re.S | re.I)
+    if m:
+        t = m.group(1).strip()
+    t = re.sub(r"^\s*sql\s*:\s*", "", t, flags=re.I)
+    return t.strip().rstrip(";").strip()
+
+
+def generate_sql(pregunta: str) -> str:
+    resp = _model().generate_content(_prompt(pregunta))
+    return _extraer_sql(getattr(resp, "text", ""))
+
+
+__all__ = ["generate_sql", "run_sql_readonly", "is_select_only"]
