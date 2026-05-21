@@ -1,9 +1,11 @@
-"""Motor liviano del chat: Gemini (google-generativeai) traduce la pregunta a SQL,
-que se ejecuta SIEMPRE con el rol read-only (ai_readonly) y se valida con el guardia
-SELECT-only. Sin Vanna ni ChromaDB → liviano y robusto en Streamlit Cloud."""
+"""Motor liviano del chat: traduce la pregunta a SQL con Gemini (vía HTTPS directo,
+urllib de la stdlib — SIN dependencias nuevas) y la ejecuta SIEMPRE con el rol
+read-only (ai_readonly), validada por el guardia SELECT-only."""
 import os
-import json
 import re
+import json
+import urllib.request
+import urllib.error
 
 import pandas as pd
 import psycopg2
@@ -13,6 +15,7 @@ from . import config_chat as cfg
 from .guard import assert_safe, is_select_only
 
 CONTEXTO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "contexto")
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 
 
 # ──────────────────────── ejecución read-only ────────────────────────
@@ -94,12 +97,24 @@ Pregunta: {pregunta}
 SQL:"""
 
 
-# ──────────────────────── generación con Gemini ────────────────────────
-@st.cache_resource(show_spinner=False)
-def _model():
-    import google.generativeai as genai
-    genai.configure(api_key=cfg.GEMINI_API_KEY)
-    return genai.GenerativeModel(cfg.GEMINI_MODEL)
+# ──────────────────────── generación con Gemini (HTTPS directo) ────────────────────────
+def _gemini(prompt: str) -> str:
+    url = _GEMINI_URL.format(model=cfg.GEMINI_MODEL, key=cfg.GEMINI_API_KEY)
+    body = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 1024},
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detalle = e.read().decode("utf-8", "ignore")[:300]
+        raise RuntimeError(f"Gemini respondió {e.code}: {detalle}")
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        raise RuntimeError(f"Respuesta inesperada de Gemini: {str(data)[:300]}")
 
 
 def _extraer_sql(texto: str) -> str:
@@ -112,8 +127,7 @@ def _extraer_sql(texto: str) -> str:
 
 
 def generate_sql(pregunta: str) -> str:
-    resp = _model().generate_content(_prompt(pregunta))
-    return _extraer_sql(getattr(resp, "text", ""))
+    return _extraer_sql(_gemini(_prompt(pregunta)))
 
 
 __all__ = ["generate_sql", "run_sql_readonly", "is_select_only"]
