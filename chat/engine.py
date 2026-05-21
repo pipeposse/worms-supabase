@@ -98,23 +98,77 @@ SQL:"""
 
 
 # ──────────────────────── generación con Gemini (HTTPS directo) ────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def _modelos_disponibles():
+    """Le pregunta a la API qué modelos soporta TU key (no hardcodea nombres → a prueba
+    de deprecaciones). Devuelve los que soportan generateContent."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={cfg.GEMINI_API_KEY}"
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return []
+    out = []
+    for m in data.get("models", []):
+        if "generateContent" in m.get("supportedGenerationMethods", []):
+            nombre = m.get("name", "").split("/")[-1]
+            if nombre:
+                out.append(nombre)
+    return out
+
+
+def _orden_modelos():
+    """Orden de preferencia: el configurado (si existe), luego flash-lite, luego flash,
+    evitando 'pro' (caro) y 'preview/exp'. Si ListModels falla, usa nombres de respaldo."""
+    disp = _modelos_disponibles()
+    if not disp:
+        disp = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-latest", cfg.GEMINI_MODEL]
+
+    def rank(m):
+        s = 0
+        if m == cfg.GEMINI_MODEL: s -= 100
+        if "flash-lite" in m:     s -= 40
+        elif "flash" in m:        s -= 30
+        if "latest" in m:         s -= 5
+        if "pro" in m:            s += 50
+        if "preview" in m or "exp" in m: s += 20
+        return s
+
+    vistos, orden = set(), []
+    for m in sorted([d for d in disp if d], key=rank):
+        if m not in vistos:
+            vistos.add(m)
+            orden.append(m)
+    return orden
+
+
 def _gemini(prompt: str) -> str:
-    url = _GEMINI_URL.format(model=cfg.GEMINI_MODEL, key=cfg.GEMINI_API_KEY)
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0, "maxOutputTokens": 1024},
     }).encode("utf-8")
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detalle = e.read().decode("utf-8", "ignore")[:300]
-        raise RuntimeError(f"Gemini respondió {e.code}: {detalle}")
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError):
-        raise RuntimeError(f"Respuesta inesperada de Gemini: {str(data)[:300]}")
+    sin_cuota = []
+    for modelo in _orden_modelos():
+        url = _GEMINI_URL.format(model=modelo, key=cfg.GEMINI_API_KEY)
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 404):   # sin cuota o modelo no disponible → probar el siguiente
+                sin_cuota.append(f"{modelo}({e.code})")
+                continue
+            detalle = e.read().decode("utf-8", "ignore")[:300]
+            raise RuntimeError(f"Gemini ({modelo}) respondió {e.code}: {detalle}")
+        try:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError):
+            raise RuntimeError(f"Respuesta inesperada de Gemini: {str(data)[:200]}")
+    raise RuntimeError(
+        "Se agotó la cuota gratis de Gemini en todos los modelos probados "
+        f"({', '.join(sin_cuota)}). Esperá unos minutos, o activá facturación "
+        "en la API key (es la solución definitiva)."
+    )
 
 
 def _extraer_sql(texto: str) -> str:

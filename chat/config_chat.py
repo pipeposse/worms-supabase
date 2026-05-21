@@ -9,7 +9,8 @@ except Exception:
     pass
 
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL    = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+# Preferencia de modelo. Si no está disponible, el motor detecta uno válido solo.
+GEMINI_MODEL    = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # Rol Postgres SOLO LECTURA (ai_readonly). NUNCA el DATABASE_URL de escritura.
 DATABASE_URL_RO = os.getenv("DATABASE_URL_RO")
