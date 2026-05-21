@@ -6,6 +6,18 @@ import streamlit as st
 from . import config_chat as cfg
 from .engine import generate_sql, run_sql_readonly, is_select_only
 
+
+@st.cache_data(show_spinner=False, ttl=900)
+def _sql_cacheado(pregunta: str) -> str:
+    """Genera el SQL una vez por pregunta. Evita re-llamar a Gemini en cada rerun."""
+    return generate_sql(pregunta)
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _df_cacheado(sql: str) -> pd.DataFrame:
+    """Ejecuta el SQL una vez por consulta (cache corto). Evita re-pegarle a la BD en cada rerun."""
+    return run_sql_readonly(sql)
+
 SUGERENCIAS = [
     "¿Cuántos camiones entraron ayer y de qué categorías?",
     "Comparar camiones entre ARROYO SECO y ALVEAR en los últimos 30 días",
@@ -73,7 +85,7 @@ def render(usr: dict):
 
     with st.spinner("Generando la consulta…"):
         try:
-            sql = generate_sql(pregunta)
+            sql = _sql_cacheado(pregunta)
         except Exception as e:
             st.error(f"No pude generar la consulta: {e}")
             return
@@ -89,7 +101,7 @@ def render(usr: dict):
 
     with st.spinner("Consultando la base…"):
         try:
-            df = run_sql_readonly(sql)
+            df = _df_cacheado(sql)
         except Exception as e:
             st.error(f"Error al ejecutar la consulta: {e}")
             return
