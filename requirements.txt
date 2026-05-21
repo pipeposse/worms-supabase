@@ -2,3 +2,11 @@ streamlit>=1.32
 pandas>=2.1
 openpyxl>=3.1
 psycopg2-binary>=2.9
+
+# ── Consultas IA (paquete chat/) ──────────────────────────────
+vanna>=0.7
+chromadb>=0.5
+pysqlite3-binary; sys_platform == "linux"   # solo Linux/Streamlit Cloud (fix sqlite3 viejo de ChromaDB). En Windows se saltea.
+google-generativeai>=0.8
+sqlparse>=0.5
+plotly>=5.22

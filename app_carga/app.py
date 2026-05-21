@@ -98,6 +98,14 @@ if st.session_state.section is None:
         st.write("Vista de v_transacciones_limpias: filtros, peso por producto, descarga.")
         if st.button("Entrar a Portería", use_container_width=True, key="land_port"):
             go_to("PORT")
+    if USR["rol"] in ("SUPERVISOR", "ADMIN"):
+        st.divider()
+        cCh, _, _ = st.columns(3)
+        with cCh:
+            st.markdown("### 🤖 Consultas IA")
+            st.write("Preguntá en lenguaje natural sobre camiones y laboratorio (solo lectura).")
+            if st.button("Entrar a Consultas IA", use_container_width=True, key="land_chat"):
+                go_to("CHAT")
     if USR["rol"] == "ADMIN":
         st.divider()
         cAd, _, _ = st.columns(3)
@@ -488,9 +496,22 @@ if st.session_state.section != "CARGAS":
                 c7, c8 = st.columns(2)
                 eval_filt = c7.radio("Evaluado", ["Todos","SI","NO"], horizontal=True, key="ph_eval")
                 pat = c8.text_input("Patente chasis contiene", key="ph_pat")
+                tx_raw = st.text_area(
+                    "Buscar N° de transacción (uno por línea o separados por coma/espacio) — ignora el rango de fechas",
+                    key="ph_tx", height=80, placeholder="69596\\n69597\\n4676 ...")
 
-            where = ["fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
-            params = [fmin.isoformat(), fmax.isoformat()]
+            # parsear lista de transacciones
+            import re as _re
+            tx_list = [int(x) for x in _re.findall(r"\\d+", tx_raw or "")]
+
+            params = []
+            if tx_list:
+                # busca SOLO esas transacciones, sin filtro de fecha
+                where = ["transaccion = ANY(%s)"]
+                params.append(tx_list)
+            else:
+                where = ["fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
+                params = [fmin.isoformat(), fmax.isoformat()]
             if sel_pb: where.append("producto_base = ANY(%s)"); params.append(sel_pb)
             if sel_co: where.append("corriente = ANY(%s)"); params.append(sel_co)
             if sel_pr: where.append("cliente = ANY(%s)"); params.append(sel_pr)
@@ -895,6 +916,16 @@ if st.session_state.section != "CARGAS":
                                 cambiar_sectores(USR["id_usuario"], u_id, sectores_mult)
                             st.success("Cambios aplicados."); cat.clear(); st.rerun()
                         except Exception as e: st.error(str(e))
+
+    elif st.session_state.section == "CHAT":
+        # =================== CONSULTAS IA (chat, solo lectura) ===================
+        # Import lazy y aislado: si el módulo chat o sus deps fallan, el resto
+        # de la app no se ve afectado.
+        try:
+            from chat import render as _render_chat
+            _render_chat(USR)
+        except Exception as _e:
+            st.error(f"No se pudo cargar Consultas IA: {_e}")
 
     st.stop()
 
@@ -2061,7 +2092,6 @@ with tab_objs[2]:
                         st.success(f"Registro #{r_sel[1]} anulado."); st.rerun()
                     except Exception as e:
                         st.error(str(e))
-
 # =========================================================================
 # TAB AUDIT  ·  tab_objs[3]
 # =========================================================================

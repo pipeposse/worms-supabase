@@ -144,3 +144,29 @@ notepad .env   :: pegar URI
 | App dice "Falta DATABASE_URL" | secret no está cargado. Settings → Secrets → guardar de nuevo. |
 | Push falla con "permission denied" | falta auth GitHub. `gh auth login` o reconectar. |
 | App lenta primera vez del día | hibernation. Es normal, ~30 s y carga. |
+| "No se pudo cargar Consultas IA" | falta `DATABASE_URL_RO` o `GEMINI_API_KEY` en Secrets, o falta una dep en `requirements.txt`. |
+
+---
+
+## 12. Consultas IA (sección Chat · solo lectura)
+
+La sección **🤖 Consultas IA** (visible solo para SUPERVISOR y ADMIN) deja preguntar
+en lenguaje natural sobre camiones y laboratorio. Genera SQL con Gemini y lo ejecuta
+con un rol Postgres **de solo lectura** (`ai_readonly`), distinto del `DATABASE_URL`
+de escritura. No puede modificar datos bajo ninguna circunstancia.
+
+### Secrets adicionales
+En *Settings → Secrets*, además de `DATABASE_URL`, agregá:
+
+```toml
+DATABASE_URL_RO = "postgresql://ai_readonly.svgmmfcmifsafmdnvhzf:PASSWORD_READONLY@aws-1-us-east-2.pooler.supabase.com:6543/postgres"
+GEMINI_API_KEY  = "tu_api_key_de_gemini"   # gratis: https://aistudio.google.com/apikey
+GEMINI_MODEL    = "gemini-2.0-flash"
+```
+
+### Notas
+- El rol `ai_readonly` y las vistas `reporting.v_camiones` / `reporting.v_laboratorio`
+  ya están creados en Supabase (migraciones aplicadas).
+- El entrenamiento (esquema + ejemplos) se rehace solo en cada arranque en frío.
+- Para mejorar respuestas: editar `chat/contexto/business_context.md` y
+  `chat/contexto/training_examples.json` y volver a pushear.

@@ -1,0 +1,34 @@
+[
+  {
+    "question": "¿Cuántos camiones entraron ayer y de qué categorías?",
+    "sql": "SELECT producto_base AS categoria, COUNT(*) AS camiones\nFROM reporting.v_camiones\nWHERE fecha_entrada = current_date - 1\nGROUP BY producto_base\nORDER BY camiones DESC;"
+  },
+  {
+    "question": "Comparar la cantidad de camiones entre ARROYO SECO y ALVEAR en los últimos 30 días",
+    "sql": "SELECT procedencia, COUNT(*) AS camiones, SUM(peso_neto_kg) AS kg_total\nFROM reporting.v_camiones\nWHERE fecha_entrada >= current_date - 30\n  AND procedencia IN ('ARROYO SECO', 'ALVEAR')\nGROUP BY procedencia\nORDER BY camiones DESC;"
+  },
+  {
+    "question": "Top 10 procedencias por cantidad de camiones este mes",
+    "sql": "SELECT procedencia, COUNT(*) AS camiones\nFROM reporting.v_camiones\nWHERE date_trunc('month', fecha_entrada) = date_trunc('month', current_date)\n  AND procedencia IS NOT NULL\nGROUP BY procedencia\nORDER BY camiones DESC\nLIMIT 10;"
+  },
+  {
+    "question": "Kg netos ingresados por día en la última semana",
+    "sql": "SELECT fecha_entrada, SUM(peso_neto_kg) AS kg_ingresados, COUNT(*) AS camiones\nFROM reporting.v_camiones\nWHERE sentido = 'ENTRADA' AND fecha_entrada >= current_date - 7\nGROUP BY fecha_entrada\nORDER BY fecha_entrada;"
+  },
+  {
+    "question": "Camiones y kg por corriente VEGETAL vs ANIMAL este mes",
+    "sql": "SELECT corriente, COUNT(*) AS camiones, SUM(peso_neto_kg) AS kg_total\nFROM reporting.v_camiones\nWHERE date_trunc('month', fecha_entrada) = date_trunc('month', current_date)\n  AND corriente IN ('VEGETAL', 'ANIMAL')\nGROUP BY corriente\nORDER BY camiones DESC;"
+  },
+  {
+    "question": "¿Cuántas muestras de laboratorio se rechazaron este mes por producto?",
+    "sql": "SELECT producto,\n       COUNT(*) FILTER (WHERE estado = 'RECHAZADO')  AS rechazadas,\n       COUNT(*) FILTER (WHERE estado = 'REMUESTREO') AS remuestreos,\n       COUNT(*) AS total\nFROM reporting.v_laboratorio\nWHERE date_trunc('month', fecha) = date_trunc('month', current_date)\nGROUP BY producto\nORDER BY rechazadas DESC;"
+  },
+  {
+    "question": "Acidez y agua promedio de AFE por día en la última semana",
+    "sql": "SELECT fecha,\n       ROUND(AVG(prc_acidez)::numeric, 3) AS acidez_prom,\n       ROUND(AVG(prc_agua)::numeric, 3)   AS agua_prom\nFROM reporting.v_laboratorio\nWHERE producto = 'AFE' AND fecha >= current_date - 7\nGROUP BY fecha\nORDER BY fecha;"
+  },
+  {
+    "question": "Ranking de analistas por cantidad de muestras este mes",
+    "sql": "SELECT empleado, COUNT(*) AS muestras\nFROM reporting.v_laboratorio\nWHERE date_trunc('month', fecha) = date_trunc('month', current_date)\nGROUP BY empleado\nORDER BY muestras DESC;"
+  }
+]
