@@ -485,7 +485,7 @@ DELETE FROM dic_parametro_proceso WHERE codigo IN ('acidez_inicial','acidez_fina
 INSERT INTO dic_parametro_proceso(codigo, descripcion, unidad, aplica_a) VALUES
  ('acidez',            'Acidez',              '%',   '["PRODUCCION_ARE","DESGOMADO_ACUOSO"]'),
  ('temperatura',       'Temperatura',         '°C',  '["PRODUCCION_ARE","DESGOMADO_ACUOSO"]'),
- ('ppm_fosforo',       'ppm Fósforo',         'ppm', '["DESGOMADO_ACUOSO"]'),
+ ('ppm_fosforo',       'ppm Fósforo',         'ppm', '["PRODUCCION_ARE","DESGOMADO_ACUOSO"]'),
  ('prc_goma',          '% Goma',              '%',   '["DESGOMADO_ACUOSO"]'),
  ('q_merma_kg',        'Merma',               'kg',  '["PRODUCCION_ARE","DESGOMADO_ACUOSO"]')
 ON CONFLICT (codigo) DO NOTHING;

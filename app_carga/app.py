@@ -168,11 +168,20 @@ def cat(query, params=None):
 
 productos = cat(
     "SELECT id_producto, codigo_producto, corriente, tipo_producto, "
-    "rango_kg_min, rango_kg_max, "
+    "rango_kg_min, rango_kg_max, COALESCE(densidad_g_ml, 0.91) AS densidad_g_ml, "
     "usa_reactor, usa_bachas, usa_piletas, es_exportacion "
     "FROM dim_producto "
     "WHERE activo AND tipo_producto IN ('MP','FINAL') ORDER BY codigo_producto"
 )
+
+def densidad_de(cod):
+    """kg/L del producto (g/ml = kg/L). Default 0.91 si falta."""
+    r = productos[productos["codigo_producto"] == cod]
+    try:
+        d = float(r.iloc[0]["densidad_g_ml"]) if not r.empty else 0.91
+        return d if d and d > 0 else 0.91
+    except Exception:
+        return 0.91
 
 def productos_de_sector(sec):
     """Devuelve (productos_mp, productos_obt) filtrados por flag de sector."""
@@ -233,7 +242,23 @@ bienes_uso_full = cat("SELECT id_bien_uso, codigo, nombre_ui, capacidad_max_l, c
 sectores = cat("SELECT codigo, nombre_ui FROM dic_sector WHERE activo ORDER BY codigo")
 calidades = cat("SELECT codigo, descripcion FROM dic_calidad WHERE activo ORDER BY orden")
 turnos = cat("SELECT codigo FROM dic_turno WHERE activo")
-insumos_cat = cat("SELECT codigo, descripcion, unidad FROM dic_insumo WHERE activo ORDER BY codigo")
+insumos_cat = cat("SELECT codigo, descripcion, unidad, COALESCE(evaluable,FALSE) AS evaluable FROM dic_insumo WHERE activo ORDER BY codigo")
+
+# Catalizadores: genera_glicerina_recup / reduce_glicerina (editable en dic_catalizador)
+try:
+    catalizadores = cat("SELECT codigo, descripcion, genera_glicerina_recup, reduce_glicerina, nota FROM dic_catalizador")
+except Exception:
+    catalizadores = pd.DataFrame(columns=["codigo","descripcion","genera_glicerina_recup","reduce_glicerina","nota"])
+def catalizador_genera_glicerina(cod):
+    r = catalizadores[catalizadores["codigo"]==cod]
+    return bool(r.iloc[0]["genera_glicerina_recup"]) if not r.empty else True
+# Decantaciones permitidas por proceso (dic_decantacion_proceso)
+try:
+    decant_proc = cat("SELECT proceso_key, tipo_salida, label, codigo_producto FROM dic_decantacion_proceso")
+except Exception:
+    decant_proc = pd.DataFrame(columns=["proceso_key","tipo_salida","label","codigo_producto"])
+def decantaciones_de(pkey):
+    return decant_proc[decant_proc["proceso_key"]==pkey]
 
 # Reglas de carga (editables desde Supabase)
 try:
@@ -437,7 +462,7 @@ if st.session_state.section != "CARGAS":
             kd1.metric("Camiones hoy", len(df_d))
             if not df_d.empty:
                 kg_tot = pd.to_numeric(df_d["peso_neto"], errors="coerce").sum()
-                kd2.metric("Kg netos del dia", f"{int(kg_tot):,}".replace(",", "."))
+                kd2.metric("TN netas del día", f"{kg_tot/1000:,.2f}")
                 df_d["eval_estado"] = df_d.apply(
                     lambda r: ("no corresponde" if r["corriente"] not in CORR_EVAL else r["evaluado"]), axis=1)
                 df_evbl = df_d[df_d["corriente"].isin(CORR_EVAL)]
@@ -612,7 +637,7 @@ if st.session_state.section != "CARGAS":
             if not df_p.empty:
                 tot = pd.to_numeric(df_p["peso_neto"], errors="coerce").sum()
                 n_ev = int((df_p["evaluado"]=="SI").sum())
-                k3.metric("Kg netos total", f"{int(tot):,}".replace(",", "."))
+                k3.metric("TN netas total", f"{tot/1000:,.2f}")
                 k4.metric("% evaluado", f"{(n_ev/len(df_p)*100):.0f}%")
 
                 st.markdown("**Transacciones por dia**")
@@ -710,9 +735,9 @@ if st.session_state.section != "CARGAS":
                 n_via = len(df_ef)
                 prom = df_ef["peso_neto"].mean()
                 ke1, ke2, ke3 = st.columns(3)
-                ke1.metric("Kg netos acumulados", f"{int(total_kg):,}".replace(",", "."))
+                ke1.metric("TN netas acumuladas", f"{total_kg/1000:,.2f}")
                 ke2.metric("Viajes", n_via)
-                ke3.metric("Promedio por viaje", f"{int(prom or 0):,}".replace(",", "."))
+                ke3.metric("TN promedio por viaje", f"{(prom or 0)/1000:,.2f}")
 
                 # Total por mes (barras)
                 dm = df_ef.copy()
@@ -1008,7 +1033,7 @@ tab_objs = st.tabs(tabs)
 # =========================================================================
 with tab_objs[0]:
     st.subheader("🏭 Carga de producción")
-    sub_nueva, sub_edit, sub_eval, sub_dec, sub_gasto = st.tabs(["➕ Nueva carga", "✏️ Avanzar etapa", "\U0001f9ea Evaluación interna", "\U0001f4a7 Salida de decantación", "\u26a0\ufe0f Gasto extraordinario"])
+    sub_nueva, sub_edit, sub_eval, sub_dec, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "✏️ Avanzar etapa", "\U0001f9ea Evaluación interna", "\U0001f4a7 Salida de decantación", "\u26a0\ufe0f Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
 
     # ---------- SUB-TAB: NUEVA CARGA ----------
     with sub_nueva:
@@ -1038,6 +1063,12 @@ with tab_objs[0]:
             st.info("Modo recuperación: no se carga materia prima.")
 
         es_reactor = (sector == "REACTORES")
+        # REACTORES y BACHAS se cargan en LITROS (kg derivado por densidad).
+        usa_litros = sector in ("REACTORES", "BACHAS")
+        ver_kg = False
+        if usa_litros:
+            ver_kg = st.toggle("⚖️ Mostrar también el equivalente en kg", value=False, key="b_ver_kg",
+                               help="Cargás en litros; activá esto para ver el mismo número convertido a kg (litros × densidad).")
         productos_mp, productos_obt = productos_de_sector(sector)
         if (not es_recup) and productos_mp.empty:
             st.warning(f"⚠️ No hay productos de tipo MP marcados para el sector {sector}. Revisá `dim_producto.usa_*` en Supabase.")
@@ -1260,6 +1291,9 @@ with tab_objs[0]:
         # En REACTORES: solo se completan al llegar a EN_TANQUE. En otros sectores: ahora.
         p_obt = None
         kg_obt = 0.0
+        litros_obt = None
+        litros_ini = None
+        ticket_porteria_v = None
         calidad_b = ""
         rmin = rmax = None
         fuera_rango = False
@@ -1313,7 +1347,16 @@ with tab_objs[0]:
                 "Producto obtenido *", opciones_obt, key="b_po",
                 format_func=lambda c: f"{c} {'⭐' if (not productos_obt[productos_obt['codigo_producto']==c].empty and productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL') else ''}"
             )
-            kg_obt = cOB2.number_input("Kg obtenido *", min_value=0, max_value=1_000_000, step=100, value=0, key="b_ko")
+            if usa_litros:
+                _dens_o = densidad_de(p_obt)
+                litros_obt = cOB2.number_input("Litros obtenido *", min_value=0, max_value=2_000_000, step=100, value=0, key="b_lo")
+                kg_obt = (litros_obt or 0) * _dens_o
+                if ver_kg:
+                    cOB2.caption(f"⚖️ = {kg_obt:,.0f} kg  ·  {kg_obt/1000:,.2f} TN  (densidad {_dens_o:g} kg/L)")
+                else:
+                    cOB2.caption(f"densidad {_dens_o:g} kg/L → {kg_obt/1000:,.2f} TN")
+            else:
+                kg_obt = cOB2.number_input("Kg obtenido *", min_value=0, max_value=1_000_000, step=100, value=0, key="b_ko")
             _fp = productos_obt[productos_obt["codigo_producto"] == p_obt]
             rmin = rmax = None
             if not _fp.empty:
@@ -1365,12 +1408,26 @@ with tab_objs[0]:
                 if i == 0 and tipo_proceso_sel == "DESGOMADO_ACUOSO":
                     cod = cMP1.text_input(f"Producto inicial #{i+1} *", value="AFE-SG", disabled=True, key=f"b_pi_{i}")
                 else:
+                    # En PRODUCCION_ARE la MP siempre es AG-C → preseleccionado (sino no se puede grabar)
                     default_idx = 0
+                    if tipo_proceso_sel == "PRODUCCION_ARE" and "AG-C" in opts_mp:
+                        default_idx = opts_mp.index("AG-C")
                     cod = cMP1.selectbox(
                         f"Producto inicial #{i+1} *", opts_mp, index=default_idx,
                         key=f"b_pi_{i}"
                     )
-                kg = cMP2.number_input(f"Kg inicial #{i+1} *", min_value=0, max_value=1_000_000, step=100, value=0, key=f"b_ki_{i}")
+                if usa_litros:
+                    _dens_i = densidad_de(cod)
+                    lts_i = cMP2.number_input(f"Litros inicial #{i+1} *", min_value=0, max_value=2_000_000, step=100, value=0, key=f"b_li_{i}")
+                    kg = (lts_i or 0) * _dens_i
+                    if ver_kg:
+                        cMP2.caption(f"⚖️ = {kg:,.0f} kg · {kg/1000:,.2f} TN (dens {_dens_i:g} kg/L)")
+                    else:
+                        cMP2.caption(f"dens {_dens_i:g} kg/L → {kg/1000:,.2f} TN")
+                    if i == 0:
+                        litros_ini = lts_i or 0
+                else:
+                    kg = cMP2.number_input(f"Kg inicial #{i+1} *", min_value=0, max_value=1_000_000, step=100, value=0, key=f"b_ki_{i}")
                 if cod and kg > 0:
                     mps_ingresadas.append((cod, float(kg)))
             if mps_ingresadas:
@@ -1379,6 +1436,13 @@ with tab_objs[0]:
                 p_ini, kg_ini = "", 0.0
         else:
             p_ini, kg_ini = "", 0.0
+
+        # Bachas: ~70% de la borra es agua de descarte → efluentes líquidos
+        if sector == "BACHAS" and mps_ingresadas:
+            _pct_w = K("bachas_pct_agua", 70) or 70
+            _kg_in = sum(k for _, k in mps_ingresadas)
+            _agua_tn = _kg_in * _pct_w / 100 / 1000
+            st.info(f"💧 Estimado: ~{_pct_w:g}% de la borra es agua → **{_agua_tn:,.2f} TN** a efluentes líquidos (de {_kg_in/1000:,.2f} TN cargadas).")
 
         # Bloque GLICERINA (solo PRODUCCION_ARE)
         # Inputs: kg + % glicerol (fresca y recuperada). L se calcula con densidad.
@@ -1391,8 +1455,15 @@ with tab_objs[0]:
             cG1, cG2, cG3, cG4 = st.columns(4)
             gli_fk         = cG1.number_input("Fresca (kg)",       min_value=0, max_value=100000, step=100, value=0, key="b_glfk")
             gli_fresca_pct = cG2.number_input("% glicerol fresca", 0.0, 100.0, step=0.1, value=99.5, key="b_glfpct")
-            gli_rk         = cG3.number_input("Recuperada (kg)",   min_value=0, max_value=100000, step=100, value=0, key="b_glrk")
-            gli_pct        = cG4.number_input("% glicerol recup.", 0.0, 100.0, step=0.1, value=80.0, key="b_glpct")
+            # Con potasio (KOH) NO se genera glicerina recuperada (regla dic_catalizador)
+            _genera_recup = catalizador_genera_glicerina(catalizador_tipo) if catalizador_tipo else True
+            if _genera_recup:
+                gli_rk     = cG3.number_input("Recuperada (kg)",   min_value=0, max_value=100000, step=100, value=0, key="b_glrk")
+                gli_pct    = cG4.number_input("% glicerol recup.", 0.0, 100.0, step=0.1, value=80.0, key="b_glpct")
+            else:
+                gli_rk = 0; gli_pct = 0.0
+                cG3.metric("Recuperada", "— no aplica")
+                cG4.caption("🧪 Con **potasio (KOH)** no se genera glicerina recuperada.")
 
             # Cálculos derivados (en vivo)
             gli_fl = (gli_fk / D_GLI) if gli_fk else 0.0
@@ -1424,11 +1495,20 @@ with tab_objs[0]:
             elif est_glicerol_puro_kg:
                 st.caption(f"💡 Para esta corrida se necesitan **{est_glicerol_puro_kg:,.0f} kg de glicerol puro** según la fórmula.")
 
-        # Bloque AGUA (solo DESGOMADO_ACUOSO)
+        # Bloque AGUA + ticket porteria (solo DESGOMADO_ACUOSO)
         agua_lts_v = None
         if tipo_proceso_sel == "DESGOMADO_ACUOSO":
-            st.markdown("**Agua de proceso**")
-            agua_lts_v = st.number_input("Cantidad de agua (L)", min_value=0, max_value=100000, step=100, value=0, key="b_agua")
+            _pct_agua = K("desgomado_pct_agua", 5) or 5
+            _temp = K("desgomado_temp_c", 85) or 85
+            _base_lts = (litros_ini or 0)
+            _agua_sug = int(round(_base_lts * _pct_agua / 100)) if _base_lts else 0
+            st.markdown(f"**Agua de proceso** · sugerido {_pct_agua:g}% del material (~{_agua_sug:,} L) · calentar a {_temp:g}°C 3–4 h, recircular y reposar al día siguiente.")
+            cAg1, cAg2 = st.columns(2)
+            agua_lts_v = cAg1.number_input("Cantidad de agua (L)", min_value=0, max_value=100000, step=50, value=_agua_sug, key="b_agua")
+            ticket_porteria_v = cAg2.text_input(
+                "Ticket portería (peso exportación→proceso)", max_chars=40, key="b_tkport",
+                help="El AFE-SG se pesa al moverlo de exportación a proceso. Vinculá ese ticket si lo tenés."
+            ) or None
 
         # Insumos
         st.markdown("**Insumos**")
@@ -1558,7 +1638,7 @@ with tab_objs[0]:
                                 "  gli_fresca_lts, gli_fresca_kg, gli_fresca_pct,"
                                 "  gli_recup_lts, gli_recup_kg, gli_pct_real,"
                                 "  gli_pura_total_kg,"
-                                "  agua_lts,"
+                                "  agua_lts, litros_inicial, litros_obtenido, ticket_porteria,"
                                 "  observaciones, fuera_de_rango, motivo_fuera_rango"
                                 ") VALUES ("
                                 "  %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,"
@@ -1571,7 +1651,7 @@ with tab_objs[0]:
                                 "  %s,%s,%s,"
                                 "  %s,%s,%s,"
                                 "  %s,"
-                                "  %s,"
+                                "  %s,%s,%s,%s,"
                                 "  %s,%s,%s"
                                 ") RETURNING id_batch",
                                 (fecha_b.isoformat(), sector, turno, int(USR["id_usuario"]), tipo_op,
@@ -1601,6 +1681,9 @@ with tab_objs[0]:
                                  (float(gli_pct) if gli_pct else None),
                                  (float(gli_pura_total) if gli_pura_total else None),
                                  agua_lts_v or None,
+                                 (float(litros_ini) if litros_ini else None),
+                                 (float(litros_obt) if litros_obt else None),
+                                 (ticket_porteria_v or None),
                                  obs or None, bool(fuera_rango), motivo_rango or None)
                             )
                             id_b = cur.fetchone()[0]
@@ -1739,8 +1822,19 @@ with tab_objs[0]:
                 else:
                     st.warning(f"⚠️ {dur_min_in} min vs target {tgt_min} min ({desv:+.0f}%) · fuera de lo esperado.")
 
+            # Reposo mínimo (constante editable: reposo_min_horas_reactor)
+            _reposo_min = int((K("reposo_min_horas_reactor", 4) or 4) * 60)
+            if etapa_actual_cod == "REPOSANDO":
+                if dur_min_in and dur_min_in < _reposo_min:
+                    st.error(f"⛔ Reposo mínimo {_reposo_min} min ({_reposo_min/60:g} h). No se puede cerrar con menos.")
+                else:
+                    st.caption(f"⏳ Reposo mínimo requerido: {_reposo_min} min ({_reposo_min/60:g} h).")
+
             obs_etapa = st.text_input("Observaciones (opcional)", max_chars=200, key="e_obs_etapa")
             if st.button(f"💾 Cerrar '{etapa_actual_desc}' y pasar a la nueva", use_container_width=True, type="primary", key="e_save"):
+                if etapa_actual_cod == "REPOSANDO" and dur_min_in and dur_min_in < _reposo_min:
+                    st.error(f"⛔ No se puede cerrar el reposo con {dur_min_in} min: el mínimo es {_reposo_min} min ({_reposo_min/60:g} h).")
+                    st.stop()
                 try:
                     with conectar(USR["id_usuario"]) as (conn, audit):
                         with conn.cursor() as cur:
@@ -1771,25 +1865,27 @@ with tab_objs[0]:
 
     # ---------- SUB-TAB: CARGAR MUESTRA INTERMEDIA ----------
     with sub_eval:
-        st.caption("Durante la reacción podés tomar muestras y cargar las mediciones (acidez, ppm, % goma).")
+        st.caption("Evaluaciones internas **solo en Producción de ARE**: medís en distintas etapas para bajar la acidez de ~60 a 10 (especificación comercial). Parámetros: acidez, temperatura, fósforo.")
         df_rec2 = cat("""
             SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha,
                    b.tipo_proceso, b.etapa_actual
             FROM fact_batch_proceso b
-            WHERE NOT b.anulado AND b.sector='REACTORES'
+            WHERE NOT b.anulado AND b.sector='REACTORES' AND b.tipo_proceso='PRODUCCION_ARE'
             ORDER BY b.creado_en DESC LIMIT 100
         """)
         if df_rec2.empty:
-            st.info("Sin cargas en REACTORES todavía.")
+            st.info("Sin reacciones de Producción ARE todavía. Las evaluaciones internas solo aplican a ARE.")
         else:
             opt2 = df_rec2.apply(lambda r: f"#{r['id_batch']} · {r['ticket'] or '—'} · {r['tipo_proceso']}", axis=1).tolist()
             sel2 = st.selectbox("Reacción / ticket", opt2, key="m_sel")
             r2 = df_rec2.iloc[opt2.index(sel2)]
             tipo_actual = r2["tipo_proceso"]
 
+            _et_eval = etapas_de_proceso("PRODUCCION_ARE")
+            _et_eval_codes = _et_eval["etapa"].tolist()
             etapa_m = st.selectbox(
-                "Etapa de la muestra", etapas_proc["codigo"].tolist(),
-                format_func=lambda c: etapas_proc[etapas_proc["codigo"]==c].iloc[0]["descripcion"],
+                "Etapa de la muestra", _et_eval_codes,
+                format_func=lambda c: (_et_eval[_et_eval["etapa"]==c].iloc[0]["descripcion"] if not _et_eval[_et_eval["etapa"]==c].empty else c),
                 key="m_etapa"
             )
             aplicables_m = params_proceso[params_proceso["aplica_a"].apply(
@@ -1834,28 +1930,33 @@ with tab_objs[0]:
     with sub_dec:
         st.caption("Al decantar pueden salir varios subproductos a la vez: glicerina recuperada, fondo de tanque, agua, etc.")
         df_dec = cat("""
-            SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha, b.tipo_proceso
+            SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha, b.tipo_proceso, b.sector
             FROM fact_batch_proceso b
-            WHERE NOT b.anulado AND b.sector='REACTORES'
+            WHERE NOT b.anulado AND b.sector IN ('REACTORES','BACHAS')
             ORDER BY b.creado_en DESC LIMIT 100
         """)
         if df_dec.empty:
-            st.info("Sin cargas en REACTORES.")
+            st.info("Sin cargas en REACTORES/BACHAS.")
         else:
-            optd = df_dec.apply(lambda r: f"#{r['id_batch']} · {r['ticket'] or '—'} · {r['tipo_proceso']}", axis=1).tolist()
+            optd = df_dec.apply(lambda r: f"#{r['id_batch']} · {r['ticket'] or '—'} · {r['sector']}/{r['tipo_proceso'] or '—'}", axis=1).tolist()
             seld = st.selectbox("Reacción", optd, key="d_sel")
             rd = df_dec.iloc[optd.index(seld)]
             tipo_actual_dec = rd["tipo_proceso"]
 
-            # Lista de productos plausibles según proceso
-            if tipo_actual_dec == "PRODUCCION_ARE":
-                opciones_decant = ["GLICERINA","GLICERINA-FE","FONDO-TK","AGUA-PROC"]
-            elif tipo_actual_dec == "DESGOMADO_ACUOSO":
-                opciones_decant = ["FONDO-TK","AGUA-PROC","BORRA-A","BORRA-B"]
-            else:
+            # Decantaciones esperadas según dic_decantacion_proceso (glicerina ARE, fondo desgomado, agua bachas)
+            pkey_dec = proceso_key_de(rd["sector"], rd["tipo_proceso"])
+            _dec_cfg = decantaciones_de(pkey_dec)
+            if not _dec_cfg.empty:
+                st.caption("Decantaciones esperadas para **" + str(pkey_dec) + "**: " + ", ".join(_dec_cfg["label"].tolist()))
+            _tipos = _dec_cfg["tipo_salida"].tolist()
+            sugeridos = [c for c in _dec_cfg["codigo_producto"].tolist() if pd.notna(c) and c]
+            if "GLICERINA_RECUP" in _tipos:
+                sugeridos += ["GLICERINA", "GLICERINA-FE"]
+            if "AGUA_PROCESO" in _tipos:
+                sugeridos += ["AGUA-PROC"]
+            opciones_decant = [c for c in dict.fromkeys(sugeridos) if c in productos["codigo_producto"].tolist()]
+            if not opciones_decant:
                 opciones_decant = productos["codigo_producto"].tolist()
-            # Filtrar a los que realmente existan en dim_producto
-            opciones_decant = [c for c in opciones_decant if c in productos["codigo_producto"].tolist()]
 
             n_sal = st.number_input("Cantidad de subproductos a registrar", 1, 5, value=1, key="d_n")
             salidas = []
@@ -1956,6 +2057,117 @@ with tab_objs[0]:
                     except Exception as e:
                         st.exception(e)
 
+    # ---------- SUB-TAB: EDITOR DE ETAPAS / TIEMPOS POR PROCESO ----------
+    with sub_etapas:
+        st.caption("Editá las etapas y los tiempos estimados (minutos) de cada proceso. Se guarda en `dic_proceso_etapa`.")
+        if USR["rol"] not in ("ADMIN", "SUPERVISOR"):
+            st.info("Solo ADMIN o SUPERVISOR pueden editar las etapas.")
+        else:
+            _procs = sorted(set(proc_etapa["proceso_key"].tolist()) |
+                            {"PRODUCCION_ARE", "DESGOMADO_ACUOSO", "RECUPERACION", "BACHAS"})
+            pk_sel = st.selectbox("Proceso", _procs, key="ed_pk")
+            _cur = (proc_etapa[proc_etapa["proceso_key"] == pk_sel]
+                    .sort_values("orden")[["etapa", "orden", "duracion_target_min", "duracion_min_min", "duracion_max_min"]]
+                    .reset_index(drop=True))
+            st.markdown("**Etapas del proceso** — podés agregar/quitar filas y cambiar tiempos.")
+            edited = st.data_editor(
+                _cur, num_rows="dynamic", use_container_width=True, key="ed_tab",
+                column_config={
+                    "etapa": st.column_config.SelectboxColumn("Etapa", options=etapas_proc["codigo"].tolist(), required=True),
+                    "orden": st.column_config.NumberColumn("Orden", min_value=1, step=1, required=True),
+                    "duracion_target_min": st.column_config.NumberColumn("Target (min)", min_value=0, step=1),
+                    "duracion_min_min": st.column_config.NumberColumn("Mín (min)", min_value=0, step=1),
+                    "duracion_max_min": st.column_config.NumberColumn("Máx (min)", min_value=0, step=1),
+                },
+            )
+            if st.button(f"💾 Guardar etapas de {pk_sel}", type="primary", key="ed_save"):
+                try:
+                    rows_e, seen = [], set()
+                    for _, er in edited.iterrows():
+                        et = er.get("etapa")
+                        et = et.strip() if isinstance(et, str) else et
+                        if not et or et in seen:
+                            continue
+                        seen.add(et)
+                        rows_e.append((
+                            pk_sel, et,
+                            int(er["orden"]) if pd.notna(er.get("orden")) else 1,
+                            int(er["duracion_target_min"]) if pd.notna(er.get("duracion_target_min")) else None,
+                            int(er["duracion_min_min"]) if pd.notna(er.get("duracion_min_min")) else None,
+                            int(er["duracion_max_min"]) if pd.notna(er.get("duracion_max_min")) else None,
+                        ))
+                    if not rows_e:
+                        st.error("Definí al menos una etapa válida.")
+                    else:
+                        with conectar(USR["id_usuario"]) as (conn, audit):
+                            with conn.cursor() as cur:
+                                cur.execute("DELETE FROM dic_proceso_etapa WHERE proceso_key=%s", (pk_sel,))
+                                for re_ in rows_e:
+                                    cur.execute(
+                                        "INSERT INTO dic_proceso_etapa (proceso_key, etapa, orden, "
+                                        "duracion_target_min, duracion_min_min, duracion_max_min) "
+                                        "VALUES (%s,%s,%s,%s,%s,%s)", re_)
+                            audit.log("U", "dic_proceso_etapa", pk_sel, {"n_etapas": len(rows_e)})
+                        st.success(f"Etapas de {pk_sel} guardadas ({len(rows_e)}).")
+                        cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
+
+    # ---------- SUB-TAB: EVALUAR INSUMO ----------
+    with sub_evins:
+        st.caption("Cargá evaluaciones de laboratorio de insumos (ácido sulfúrico, soda cáustica, gasoil, etc.).")
+        _ins_eval = insumos_cat[insumos_cat["evaluable"] == True]
+        if _ins_eval.empty:
+            st.info("No hay insumos marcados como evaluables. Marcá `dic_insumo.evaluable=TRUE` en Supabase.")
+        else:
+            cI1, cI2 = st.columns(2)
+            ins_e = cI1.selectbox(
+                "Insumo", _ins_eval["codigo"].tolist(), key="ei_ins",
+                format_func=lambda c: f"{_ins_eval[_ins_eval['codigo']==c].iloc[0]['descripcion']} ({c})"
+            )
+            fecha_ei = cI2.date_input("Fecha", date.today(), key="ei_fecha")
+            st.markdown("**Mediciones** (dejá en 0 lo que no midas)")
+            cM1, cM2, cM3 = st.columns(3)
+            m_conc = cM1.number_input("Concentración / pureza (%)", 0.0, 100.0, step=0.1, value=0.0, key="ei_conc")
+            m_dens = cM2.number_input("Densidad (kg/L)", 0.0, 5.0, step=0.001, value=0.0, key="ei_dens")
+            m_ph   = cM3.number_input("pH", 0.0, 14.0, step=0.1, value=0.0, key="ei_ph")
+            obs_ei = st.text_input("Observaciones", max_chars=200, key="ei_obs")
+            if st.button("🧪 Guardar evaluación de insumo", type="primary", use_container_width=True, key="ei_save"):
+                med_e = {}
+                if m_conc > 0: med_e["concentracion_pct"] = float(m_conc)
+                if m_dens > 0: med_e["densidad_kg_l"] = float(m_dens)
+                if m_ph   > 0: med_e["ph"] = float(m_ph)
+                if not med_e:
+                    st.error("Ingresá al menos una medición.")
+                else:
+                    try:
+                        with conectar(USR["id_usuario"]) as (conn, audit):
+                            with conn.cursor() as cur:
+                                cur.execute("""
+                                    INSERT INTO fact_evaluacion_insumo
+                                    (codigo_insumo, fecha, mediciones, observaciones, id_usuario)
+                                    VALUES (%s,%s,%s::jsonb,%s,%s) RETURNING id_eval_insumo
+                                """, (ins_e, fecha_ei.isoformat(), json.dumps(med_e), obs_ei or None, int(USR["id_usuario"])))
+                                id_ei = cur.fetchone()[0]
+                            audit.insert("fact_evaluacion_insumo", id_ei, {"insumo": ins_e, "med": med_e})
+                        st.success(f"Evaluación de insumo #{id_ei} guardada.")
+                    except Exception as e:
+                        st.exception(e)
+            st.divider()
+            st.markdown("**Últimas evaluaciones de insumos**")
+            df_ei = cat("""
+                SELECT ei.fecha, ei.codigo_insumo, i.descripcion, ei.mediciones, ei.observaciones, u.nombre AS usuario
+                FROM produccion.fact_evaluacion_insumo ei
+                JOIN produccion.dic_insumo i ON i.codigo = ei.codigo_insumo
+                LEFT JOIN produccion.dim_usuario u ON u.id_usuario = ei.id_usuario
+                WHERE NOT ei.anulado
+                ORDER BY ei.fecha DESC, ei.id_eval_insumo DESC LIMIT 50
+            """)
+            if df_ei.empty:
+                st.caption("Sin evaluaciones todavía.")
+            else:
+                st.dataframe(df_ei, use_container_width=True, hide_index=True)
+
 
 # =========================================================================
 # TAB OBSERVACIÓN · resumen visual de cargas
@@ -1996,8 +2208,8 @@ with tab_objs[1]:
     # KPIs
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Cargas", len(df_obs))
-    k2.metric("Kg obtenidos", f"{df_obs['kg_obtenido'].sum():,.0f}" if not df_obs.empty else "0")
-    k3.metric("Kg MP", f"{df_obs['kg_inicial'].fillna(0).sum():,.0f}" if not df_obs.empty else "0")
+    k2.metric("TN obtenidas", f"{df_obs['kg_obtenido'].sum()/1000:,.2f}" if not df_obs.empty else "0,00")
+    k3.metric("TN MP", f"{df_obs['kg_inicial'].fillna(0).sum()/1000:,.2f}" if not df_obs.empty else "0,00")
     k4.metric("Fuera de rango", int(df_obs["fuera_de_rango"].sum()) if not df_obs.empty else 0)
 
     st.markdown("**Cargas en el rango seleccionado**")
