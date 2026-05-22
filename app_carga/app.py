@@ -275,9 +275,9 @@ except Exception:
     consumo_sector = pd.DataFrame(columns=["sector","codigo_insumo","consumo_por_tn","unidad_consumo"])
 
 def _match_patron(codigo, patron):
-    """LIKE simple: % es comodín al final/medio."""
+    """LIKE simple: % es comodín. Escapa cada parte literal y une con .* (robusto a re.escape)."""
     import re as _re2
-    rgx = "^" + _re2.escape(patron).replace("\\%", ".*") + "$"
+    rgx = "^" + ".*".join(_re2.escape(p) for p in (patron or "").split("%")) + "$"
     return bool(_re2.match(rgx, codigo or ""))
 
 def productos_permitidos(sector, tipo_proceso, tipo_operacion, rol, universo=None):
@@ -386,30 +386,47 @@ if st.session_state.section != "CARGAS":
             try:
                 emps_lab = cat("SELECT DISTINCT empleado FROM produccion.procesos_lab WHERE empleado IS NOT NULL ORDER BY 1")["empleado"].tolist()
             except Exception: emps_lab = []
-            c4, c5 = st.columns(2)
+            c4, c5, c6 = st.columns(3)
             sel_prod = c4.multiselect("Producto", prods_lab, key="lab_prods")
             sel_emp  = c5.multiselect("Empleado", emps_lab, key="lab_emps")
+            sel_corr = c6.multiselect("Corriente", CORR_EVAL, default=CORR_EVAL, key="lab_corr",
+                                      help="Solo corrientes que se evalúan (vegetal, animal, insumo, efluente).")
 
-        where = ["fecha >= %s", "fecha < %s"]
+        where = ["pl.fecha >= %s", "pl.fecha < %s"]
         params = [fmin.isoformat(), (fmax + _td(days=1)).isoformat()]
         if sel_prod:
-            where.append("producto_lab = ANY(%s)"); params.append(sel_prod)
+            where.append("pl.producto_lab = ANY(%s)"); params.append(sel_prod)
         if sel_emp:
-            where.append("empleado = ANY(%s)"); params.append(sel_emp)
+            where.append("pl.empleado = ANY(%s)"); params.append(sel_emp)
+        # corriente derivada de producto_lab (vía porteria_limpieza), fallback a la propia
         sql_lab = f"""
-            SELECT id, fecha, ticket, producto_lab, calidad_final_lab, color,
-                   prc_acidez, prc_agua, prc_producto, ppm_azufre, ppm_fosforo,
-                   densidad__g_ml, temp_celcius, empleado, rechazado,
-                   patente_chasis, _synced_at
-            FROM produccion.procesos_lab
+            SELECT pl.*,
+                   COALESCE(NULLIF(lower(pl.corriente),''), m.corriente) AS corriente_eval
+            FROM produccion.procesos_lab pl
+            LEFT JOIN (
+                SELECT UPPER(TRIM(producto_base)) AS base,
+                       MODE() WITHIN GROUP (ORDER BY corriente) AS corriente
+                FROM produccion.porteria_limpieza WHERE corriente IS NOT NULL GROUP BY 1
+            ) m ON m.base = CASE UPPER(TRIM(pl.producto_lab))
+                     WHEN 'EFLUENTE'           THEN 'EFLUENTES LIQUIDOS'
+                     WHEN 'ACIDO SULFURICO'    THEN 'ACIDO_KG'
+                     WHEN 'HIDROXIDO DE SODIO' THEN 'SODA_KG'
+                     WHEN 'FONDO DE TK'        THEN 'FONDO_TK'
+                     ELSE UPPER(TRIM(pl.producto_lab)) END
             WHERE {' AND '.join(where)}
-            ORDER BY fecha DESC NULLS LAST
+            ORDER BY pl.fecha DESC NULLS LAST
             LIMIT {int(limit_lab)}
         """
         try:
             df_l = cat(sql_lab, tuple(params))
         except Exception as e:
             st.exception(e); df_l = pd.DataFrame()
+        # corriente final (derivada) + filtro por corriente evaluable
+        if not df_l.empty and "corriente_eval" in df_l.columns:
+            df_l["corriente"] = df_l["corriente_eval"]
+            df_l = df_l.drop(columns=["corriente_eval"])
+            if sel_corr:
+                df_l = df_l[df_l["corriente"].isin(sel_corr)]
 
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Filas", len(df_l))
@@ -425,8 +442,10 @@ if st.session_state.section != "CARGAS":
             by_prod = df_l["producto_lab"].value_counts().reset_index()
             by_prod.columns = ["producto_lab","cantidad"]
             st.bar_chart(by_prod, x="producto_lab", y="cantidad", use_container_width=True)
-            st.dataframe(df_l, use_container_width=True, hide_index=True, height=380)
-            st.download_button("⬇️ Descargar CSV", df_l.to_csv(index=False).encode("utf-8"),
+            df_show = df_l.dropna(axis=1, how="all")
+            st.caption(f"Mostrando {df_show.shape[1]} columnas con datos (se ocultan {df_l.shape[1]-df_show.shape[1]} columnas 100% vacías).")
+            st.dataframe(df_show, use_container_width=True, hide_index=True, height=380)
+            st.download_button("⬇️ Descargar CSV", df_show.to_csv(index=False).encode("utf-8"),
                                file_name=f"procesos_lab_{fmin}_{fmax}.csv", mime="text/csv")
         else:
             st.info("Sin datos en el rango.")
@@ -488,7 +507,7 @@ if st.session_state.section != "CARGAS":
                     use_container_width=True, hide_index=True, height=460
                 )
                 st.download_button("\u2b07\ufe0f Descargar CSV del dia",
-                                   df_d.to_csv(index=False).encode("utf-8"),
+                                   df_d.dropna(axis=1, how="all").to_csv(index=False).encode("utf-8"),
                                    file_name=f"porteria_{dia_sel}.csv", mime="text/csv")
 
                 # ----- Comprobante de pesaje (por id unico; transaccion puede repetirse) -----
@@ -697,10 +716,14 @@ if st.session_state.section != "CARGAS":
                 df_pd = df_p.copy()
                 df_pd["eval_estado"] = df_pd.apply(
                     lambda r: ("no corresponde" if r["corriente"] not in CORR_EVAL else r["evaluado"]), axis=1)
-                _front = ["transaccion","fecha_entrada","eval_estado","producto_base","corriente","peso_neto","cliente"]
+                # ocultar columnas 100% vac\u00edas
+                df_pd = df_pd.dropna(axis=1, how="all")
+                _front = [c for c in ["transaccion","fecha_entrada","eval_estado","producto_base","corriente","peso_neto","cliente"] if c in df_pd.columns]
                 _rest = [c for c in df_pd.columns if c not in _front]
-                st.dataframe(df_pd[_front + _rest], use_container_width=True, hide_index=True, height=420)
-                st.download_button("\u2b07\ufe0f Descargar CSV", df_p.to_csv(index=False).encode("utf-8"),
+                df_pd = df_pd[_front + _rest]
+                st.caption(f"Mostrando {df_pd.shape[1]} columnas con datos (se ocultan las 100% vac\u00edas).")
+                st.dataframe(df_pd, use_container_width=True, hide_index=True, height=420)
+                st.download_button("\u2b07\ufe0f Descargar CSV", df_pd.to_csv(index=False).encode("utf-8"),
                                    file_name=f"porteria_hist_{fmin}_{fmax}.csv", mime="text/csv")
             else:
                 st.info("Sin datos en el rango.")
@@ -1309,19 +1332,20 @@ with tab_objs[0]:
                 calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
                 st.caption("🔒 DESGOMADO_ACUOSO va siempre de **AFE-SG** → **AFE-S**.")
             elif tipo_proceso_sel == "PRODUCCION_ARE":
-                # FINAL permitidos según reglas (dic_proceso_producto): ARE-*
-                _perm = productos_permitidos(sector, tipo_proceso_sel, tipo_op, "FINAL")
-                if _perm is not None:
-                    opt_obj = [c for c in opt_obj if c in _perm]
-                if not opt_obj:
-                    st.error("No hay productos permitidos (FINAL) para PRODUCCION_ARE. Revisá dic_proceso_producto.")
+                # El producto siempre es ARE; el operario solo elige la calidad.
+                _perm = productos_permitidos(sector, tipo_proceso_sel, tipo_op, "FINAL") or []
+                _are_vars = sorted([c for c in (_perm or opt_obj) if str(c).startswith("ARE-")])
+                _cal_opts = [c[len("ARE-"):] for c in _are_vars] or ["A", "B", "A-ANIMAL"]
+                _cal_lbl = {"A": "A", "B": "B", "A-ANIMAL": "Animal (A-ANIMAL)"}
                 cTG1, cTG2 = st.columns(2)
-                p_buscado = cTG1.selectbox(
-                    "Producto buscado *", opt_obj, index=0, key="b_pbusc",
-                    format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
+                cTG1.text_input("Producto buscado *", value="ARE", disabled=True, key="b_pbusc_disp")
+                _cal_sel = cTG2.selectbox(
+                    "Calidad buscada *", _cal_opts, key="b_calbusc",
+                    format_func=lambda c: _cal_lbl.get(c, c)
                 )
-                calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
-                st.caption("🔒 PRODUCCION_ARE solo admite productos de la familia **ARE-***.")
+                p_buscado = f"ARE-{_cal_sel}"
+                calidad_buscada = _cal_sel
+                st.caption(f"🔒 PRODUCCIÓN ARE: el producto es **ARE**, elegís la calidad → se busca **{p_buscado}**.")
             else:
                 cTG1, cTG2 = st.columns(2)
                 p_buscado = cTG1.selectbox(
@@ -1390,7 +1414,7 @@ with tab_objs[0]:
         # Materia prima
         mps_ingresadas = []
         if not es_recup:
-            st.markdown("**Materia prima**")
+            st.markdown("**Materia prima** — se carga en el **ARMADO** (en el resto de las etapas no se agrega MP ni insumos)")
             permite_multi = (p_obt == "AG-E") or (sector == "EXPO")
             max_mp = 5 if permite_multi else 1
             n_mp = 1 if not permite_multi else st.number_input(
@@ -1407,13 +1431,12 @@ with tab_objs[0]:
                 # DESGOMADO_ACUOSO siempre arranca de AFE-SG
                 if i == 0 and tipo_proceso_sel == "DESGOMADO_ACUOSO":
                     cod = cMP1.text_input(f"Producto inicial #{i+1} *", value="AFE-SG", disabled=True, key=f"b_pi_{i}")
+                # PRODUCCION_ARE: la MP siempre es AG-C → fija (el operario solo carga los litros)
+                elif i == 0 and tipo_proceso_sel == "PRODUCCION_ARE":
+                    cod = cMP1.text_input(f"Producto inicial #{i+1} *", value="AG-C", disabled=True, key=f"b_pi_{i}")
                 else:
-                    # En PRODUCCION_ARE la MP siempre es AG-C → preseleccionado (sino no se puede grabar)
-                    default_idx = 0
-                    if tipo_proceso_sel == "PRODUCCION_ARE" and "AG-C" in opts_mp:
-                        default_idx = opts_mp.index("AG-C")
                     cod = cMP1.selectbox(
-                        f"Producto inicial #{i+1} *", opts_mp, index=default_idx,
+                        f"Producto inicial #{i+1} *", opts_mp, index=0,
                         key=f"b_pi_{i}"
                     )
                 if usa_litros:
@@ -1511,7 +1534,7 @@ with tab_objs[0]:
             ) or None
 
         # Insumos
-        st.markdown("**Insumos**")
+        st.markdown("**Insumos** — solo se usan en el **ARMADO** (mezcla de insumos)")
         n_ins = st.number_input("Cantidad de insumos", 0, 10, value=0, key="b_n_ins")
         insumos_dict = {}
         for i in range(int(n_ins)):
