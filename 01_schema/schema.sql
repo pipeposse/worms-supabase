@@ -648,3 +648,44 @@ DROP TABLE IF EXISTS fact_efluente CASCADE;
 ALTER TABLE fact_produccion_diaria
   DROP COLUMN IF EXISTS cant_efluentes_procesados,
   DROP COLUMN IF EXISTS ph_promedio_efluentes;
+
+-- ===========================================================================
+-- LITROS (REACTORES/BACHAS van en litros, kg derivado) + ticket porteria +
+-- insumos evaluables + tipo de salida en decantacion + catalizador/decantacion
+-- ===========================================================================
+ALTER TABLE fact_batch_proceso ADD COLUMN IF NOT EXISTS litros_inicial   NUMERIC;
+ALTER TABLE fact_batch_proceso ADD COLUMN IF NOT EXISTS litros_obtenido  NUMERIC;
+ALTER TABLE fact_batch_proceso ADD COLUMN IF NOT EXISTS ticket_porteria  TEXT;  -- desgomado: peso de exportacion->proceso
+ALTER TABLE dic_insumo              ADD COLUMN IF NOT EXISTS evaluable    BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE fact_salida_decantacion ADD COLUMN IF NOT EXISTS tipo_salida  TEXT;  -- GLICERINA_RECUP / FONDO_TANQUE / AGUA_PROCESO
+
+-- Catalizadores: NAOH genera glicerina recuperada; POTASIO (KOH) no, y reduce uso de glicerina
+CREATE TABLE IF NOT EXISTS dic_catalizador (
+    codigo                 TEXT PRIMARY KEY,
+    descripcion            TEXT NOT NULL,
+    genera_glicerina_recup BOOLEAN NOT NULL DEFAULT TRUE,
+    reduce_glicerina       BOOLEAN NOT NULL DEFAULT FALSE,
+    nota                   TEXT
+);
+
+-- Decantaciones permitidas por proceso (glicerina recup solo ARE, fondo solo desgomado, agua bachas)
+CREATE TABLE IF NOT EXISTS dic_decantacion_proceso (
+    proceso_key     TEXT NOT NULL,
+    tipo_salida     TEXT NOT NULL,
+    label           TEXT NOT NULL,
+    codigo_producto TEXT,
+    PRIMARY KEY (proceso_key, tipo_salida)
+);
+
+-- Evaluaciones de insumos (acido sulfurico, soda caustica, gasoil, etc.)
+CREATE TABLE IF NOT EXISTS fact_evaluacion_insumo (
+    id_eval_insumo BIGSERIAL PRIMARY KEY,
+    codigo_insumo  TEXT NOT NULL REFERENCES dic_insumo(codigo),
+    fecha          DATE NOT NULL DEFAULT CURRENT_DATE,
+    mediciones     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    observaciones  TEXT,
+    id_usuario     BIGINT REFERENCES dim_usuario(id_usuario),
+    creado_en      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    anulado        BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS ix_eval_insumo ON fact_evaluacion_insumo(codigo_insumo, fecha);

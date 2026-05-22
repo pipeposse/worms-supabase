@@ -69,6 +69,14 @@ INSERT INTO dic_insumo(codigo,descripcion,unidad) VALUES
  ('fuel_l','Fuel','L')
 ON CONFLICT DO NOTHING;
 
+-- Insumos extra: potasa caustica (como figura en porteria) + gasoil
+INSERT INTO dic_insumo(codigo,descripcion,unidad) VALUES
+ ('POTASA-CAUSTICA','Potasa cáustica (KOH comercial)','KG'),
+ ('GASOIL','Gasoil','L')
+ON CONFLICT DO NOTHING;
+-- Insumos evaluables por laboratorio (acido sulfurico, soda caustica, gasoil)
+UPDATE dic_insumo SET evaluable=TRUE WHERE codigo IN ('acido_kg','soda_kg','GASOIL');
+
 -- CONVERSIONES
 INSERT INTO ref_conversion_unidades(unidad_origen,unidad_destino,factor,contexto,notas) VALUES
  ('KG','TN', 0.001, 'GLOBAL','1 kg = 0.001 tn'),
@@ -352,7 +360,12 @@ INSERT INTO dic_constante_proceso(codigo, descripcion, valor, unidad) VALUES
  ('PMg',                 'Peso molecular glicerina',              92,    'g/mol'),
  ('densidad_glicerina',  'Densidad glicerina',                    1.25,  'kg/L'),
  ('densidad_aagg',       'Densidad ácidos grasos',                0.90,  'kg/L'),
- ('factor_exceso_gli',   'Factor de exceso de glicerina',         1.10,  'ratio')
+ ('factor_exceso_gli',   'Factor de exceso de glicerina',         1.10,  'ratio'),
+ ('recup_rango_factor',  'Factor permisivo de rango kg en RECUPERACION (rmin/f, rmax*f)', 4.0, 'ratio'),
+ ('reposo_min_horas_reactor','Tiempo mínimo de reposo en reactores',      4,  'h'),
+ ('desgomado_pct_agua',      'Agua de proceso en desgomado acuoso',        5,  '%'),
+ ('desgomado_temp_c',        'Temperatura objetivo desgomado acuoso',      85, '°C'),
+ ('bachas_pct_agua',         '% de agua en borra (descarte a efluentes)',  70, '%')
 ON CONFLICT (codigo) DO NOTHING;
 
 -- Procesos principales (solo 2)
@@ -391,12 +404,13 @@ ON CONFLICT (codigo) DO UPDATE SET
 
 -- Etapas POR proceso (estimativo · editable a mano en Supabase, NO se pisa en re-seed).
 INSERT INTO dic_proceso_etapa(proceso_key, etapa, orden, duracion_target_min, duracion_min_min, duracion_max_min) VALUES
- -- PRODUCCION_ARE (reactores)
- ('PRODUCCION_ARE',  'ARMADO',       1, 45, 30, 60),
- ('PRODUCCION_ARE',  'REACCION',     2, 75, 60, 90),
- ('PRODUCCION_ARE',  'REPOSANDO',    3, 75, 60, 90),
- ('PRODUCCION_ARE',  'DECANTACION',  4, 45, 30, 60),
- ('PRODUCCION_ARE',  'EN_TANQUE',    5, 45, 30, 60),
+ -- PRODUCCION_ARE: carga, armado, reaccion/calentamiento, reposo (min 4h), decantacion, tanque
+ ('PRODUCCION_ARE',  'CARGA',        1, 30,  15,  60),
+ ('PRODUCCION_ARE',  'ARMADO',       2, 45,  30,  60),
+ ('PRODUCCION_ARE',  'REACCION',     3, 75,  60,  90),
+ ('PRODUCCION_ARE',  'REPOSANDO',    4, 240, 240, 600),
+ ('PRODUCCION_ARE',  'DECANTACION',  5, 45,  30,  60),
+ ('PRODUCCION_ARE',  'EN_TANQUE',    6, 45,  30,  60),
  -- DESGOMADO_ACUOSO (reactores)
  ('DESGOMADO_ACUOSO','ARMADO',       1, 2,  1,  3),
  ('DESGOMADO_ACUOSO','REACCION',     2, 4,  2,  6),
@@ -648,9 +662,22 @@ INSERT INTO dic_proceso_producto(sector, tipo_proceso, tipo_operacion, rol, patr
  ('BACHAS', NULL, 'NORMAL', 'FINAL', 'AFE-S'),
  ('BACHAS', NULL, 'NORMAL', 'FINAL', 'AG-C'),
  ('BACHAS', NULL, 'NORMAL', 'FINAL', 'SEBO%'),
- -- PILETAS (RECUPERACION): salida solo AG-C / AG-D (sin MP)
- ('RECUPERACION', NULL, 'RECUPERACION', 'FINAL', 'AG-C'),
- ('RECUPERACION', NULL, 'RECUPERACION', 'FINAL', 'AG-D');
+ -- PILETAS (RECUPERACION): salida solo familia AG (con su calidad) + EMULSION; nunca AFE
+ ('RECUPERACION', NULL, 'RECUPERACION', 'FINAL', 'AG-%'),
+ ('RECUPERACION', NULL, 'RECUPERACION', 'FINAL', 'EMULSION');
+
+-- Catalizadores: NAOH genera glicerina recuperada; POTASIO (KOH) no, y reduce uso de glicerina
+INSERT INTO dic_catalizador(codigo, descripcion, genera_glicerina_recup, reduce_glicerina, nota) VALUES
+ ('NAOH',    'Soda cáustica (NaOH)',            TRUE,  FALSE, 'Genera glicerina recuperada.'),
+ ('POTASIO', 'Potasio / potasa cáustica (KOH)', FALSE, TRUE,  'Permite usar menos glicerina y conversión casi 100%. No genera glicerina recuperada.')
+ON CONFLICT (codigo) DO NOTHING;
+
+-- Decantaciones por proceso: glicerina recup (solo ARE), fondo tanque (solo desgomado), agua proceso (bachas)
+INSERT INTO dic_decantacion_proceso(proceso_key, tipo_salida, label, codigo_producto) VALUES
+ ('PRODUCCION_ARE',  'GLICERINA_RECUP','Glicerina recuperada',                    NULL),
+ ('DESGOMADO_ACUOSO','FONDO_TANQUE',   'Fondo de tanque (descarte)',              'FONDO-TK'),
+ ('BACHAS',          'AGUA_PROCESO',   'Agua de proceso (→ efluentes líquidos)',  NULL)
+ON CONFLICT (proceso_key, tipo_salida) DO NOTHING;
 
 -- Consumos de BACHAS por TN producida: fuel 30, cloruro de sodio 2
 INSERT INTO dic_consumo_sector(sector, codigo_insumo, consumo_por_tn, unidad_consumo, nota) VALUES

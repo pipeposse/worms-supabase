@@ -255,8 +255,9 @@ def _match_patron(codigo, patron):
     rgx = "^" + _re2.escape(patron).replace("\\%", ".*") + "$"
     return bool(_re2.match(rgx, codigo or ""))
 
-def productos_permitidos(sector, tipo_proceso, tipo_operacion, rol):
-    """Devuelve lista de codigo_producto permitidos según las reglas. Si no hay regla, None (sin restriccion)."""
+def productos_permitidos(sector, tipo_proceso, tipo_operacion, rol, universo=None):
+    """Devuelve lista de codigo_producto permitidos según las reglas. Si no hay regla, None (sin restriccion).
+    universo: lista de códigos a filtrar; si es None usa el catálogo completo de productos."""
     if proc_prod.empty:
         return None
     f = proc_prod[(proc_prod["sector"]==sector) & (proc_prod["rol"]==rol)]
@@ -267,7 +268,7 @@ def productos_permitidos(sector, tipo_proceso, tipo_operacion, rol):
     if f.empty:
         return None
     patrones = f["patron"].tolist()
-    todos = productos["codigo_producto"].tolist()
+    todos = universo if universo is not None else productos["codigo_producto"].tolist()
     return [c for c in todos if any(_match_patron(c, p) for p in patrones)]
 
 def modos_permitidos(sector):
@@ -1299,15 +1300,33 @@ with tab_objs[0]:
             st.markdown("**Producto obtenido**")
             cOB1, cOB2 = st.columns(2)
             opciones_obt = productos_obt["codigo_producto"].tolist()
+            # Restringir según reglas (dic_proceso_producto · rol FINAL).
+            # Ej. RECUPERACION: solo AG-* y EMULSION; nunca AFE-*.
+            _perm_obt = productos_permitidos(sector, tipo_proceso_sel, tipo_op, "FINAL",
+                                             universo=opciones_obt)
+            if _perm_obt is not None:
+                opciones_obt = _perm_obt
+            if not opciones_obt:
+                st.error("No hay productos permitidos para este sector/modo. Revisá `dic_proceso_producto`.")
+                opciones_obt = [""]
             p_obt = cOB1.selectbox(
                 "Producto obtenido *", opciones_obt, key="b_po",
-                format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
+                format_func=lambda c: f"{c} {'⭐' if (not productos_obt[productos_obt['codigo_producto']==c].empty and productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL') else ''}"
             )
             kg_obt = cOB2.number_input("Kg obtenido *", min_value=0, max_value=1_000_000, step=100, value=0, key="b_ko")
-            fila_p = productos_obt[productos_obt["codigo_producto"] == p_obt].iloc[0]
-            rmin, rmax = fila_p["rango_kg_min"], fila_p["rango_kg_max"]
+            _fp = productos_obt[productos_obt["codigo_producto"] == p_obt]
+            rmin = rmax = None
+            if not _fp.empty:
+                rmin, rmax = _fp.iloc[0]["rango_kg_min"], _fp.iloc[0]["rango_kg_max"]
             if pd.notna(rmin) and pd.notna(rmax):
-                st.caption(f"\U0001f4cf Rango habitual: {int(rmin):,} – {int(rmax):,} kg")
+                if es_recup:
+                    # En recuperación lo extraído varía mucho → rango mucho más permisivo.
+                    # Factor editable en Supabase: dic_constante_proceso.recup_rango_factor
+                    _f = K("recup_rango_factor", 4.0) or 4.0
+                    rmin, rmax = rmin / _f, rmax * _f
+                    st.caption(f"\U0001f4cf Rango recuperación (permisivo ×{_f:g}): {int(rmin):,} – {int(rmax):,} kg")
+                else:
+                    st.caption(f"\U0001f4cf Rango habitual: {int(rmin):,} – {int(rmax):,} kg")
             if pd.notna(rmin) and pd.notna(rmax) and kg_obt > 0:
                 fuera_rango = bool((kg_obt < rmin) or (kg_obt > rmax))
             calidad_b = st.selectbox("Calidad final", [""] + calidades["codigo"].tolist(), key="b_cal")
