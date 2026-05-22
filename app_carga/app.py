@@ -192,6 +192,29 @@ def productos_de_sector(sec):
 
 tipos_proceso  = cat("SELECT codigo, descripcion FROM dic_tipo_proceso WHERE activo ORDER BY codigo")
 etapas_proc    = cat("SELECT codigo, descripcion, orden FROM dic_etapa_proceso WHERE activo ORDER BY orden")
+try:
+    proc_etapa = cat("""
+        SELECT pe.proceso_key, pe.etapa, pe.orden,
+               pe.duracion_target_min, pe.duracion_min_min, pe.duracion_max_min,
+               e.descripcion
+        FROM dic_proceso_etapa pe
+        JOIN dic_etapa_proceso e ON e.codigo = pe.etapa
+        ORDER BY pe.proceso_key, pe.orden
+    """)
+except Exception:
+    proc_etapa = pd.DataFrame(columns=["proceso_key","etapa","orden","duracion_target_min","duracion_min_min","duracion_max_min","descripcion"])
+
+def proceso_key_de(sector, tipo_proceso):
+    """clave de proceso: tipo_proceso si es reactores, si no el sector."""
+    return tipo_proceso if (sector == "REACTORES" and tipo_proceso) else sector
+
+def etapas_de_proceso(pkey):
+    """DataFrame de etapas (etapa, descripcion, orden, duraciones) para ese proceso, ordenadas."""
+    df = proc_etapa[proc_etapa["proceso_key"] == pkey].sort_values("orden")
+    if df.empty:
+        # fallback: lista plana
+        return etapas_proc.rename(columns={"codigo":"etapa"})[["etapa","descripcion","orden"]]
+    return df
 params_proceso = cat("SELECT codigo, descripcion, unidad, aplica_a FROM dic_parametro_proceso WHERE activo ORDER BY codigo")
 duraciones_etapa = cat("""
     SELECT sector, tipo_proceso, etapa, duracion_target_min, duracion_min_min, duracion_max_min
@@ -1052,9 +1075,11 @@ with tab_objs[0]:
                 "Proceso *", tipos_proceso["codigo"].tolist(), key="b_tproc",
                 format_func=lambda c: tipos_proceso[tipos_proceso["codigo"]==c].iloc[0]["descripcion"]
             )
+            _et_proc = etapas_de_proceso(proceso_key_de(sector, tipo_proceso_sel))
+            _et_codes = _et_proc["etapa"].tolist()
             etapa_sel = cR3.selectbox(
-                "Etapa actual *", etapas_proc["codigo"].tolist(), key="b_etapa",
-                format_func=lambda c: etapas_proc[etapas_proc["codigo"]==c].iloc[0]["descripcion"]
+                "Etapa actual *", _et_codes, key="b_etapa",
+                format_func=lambda c: _et_proc[_et_proc["etapa"]==c].iloc[0]["descripcion"]
             )
 
             st.caption(f"🔧 Capacidad: {int(fila_bien['capacidad_max_l'] or 0):,} L  ·  Fuel {fila_bien['consumo_fuel_kg_x_tn']:.1f} kg/TN  ·  NaOH {fila_bien['consumo_naoh_kg_x_tn']:.1f} kg/TN  ·  K {fila_bien['consumo_potasio_kg_x_tn']:.3f} kg/TN")
@@ -1648,17 +1673,27 @@ with tab_objs[0]:
                 st.caption("No hay eventos de etapa registrados para esta reacción todavía.")
 
             st.divider()
-            etapas_codigos = etapas_proc["codigo"].tolist()
+            # etapas atadas al proceso de esta reacción (no la lista plana)
+            _et_proc_av = etapas_de_proceso(proceso_key_de("REACTORES", r["tipo_proceso"]))
+            etapas_codigos = _et_proc_av["etapa"].tolist()
+            def _desc_et(c):
+                _m = _et_proc_av[_et_proc_av["etapa"]==c]
+                return _m.iloc[0]["descripcion"] if not _m.empty else (c or "—")
             etapa_actual_cod = r["etapa_actual"]
-            etapa_actual_desc = (etapas_proc[etapas_proc["codigo"]==etapa_actual_cod].iloc[0]["descripcion"]
-                                 if etapa_actual_cod in etapas_codigos else (etapa_actual_cod or "—"))
-            # target de duración de la etapa actual (si existe)
-            dur_tgt = duraciones_etapa[
-                (duraciones_etapa["sector"]=="REACTORES") &
-                (duraciones_etapa["tipo_proceso"]==r["tipo_proceso"]) &
-                (duraciones_etapa["etapa"]==etapa_actual_cod)
-            ]
-            tgt_min = int(dur_tgt.iloc[0]["duracion_target_min"]) if not dur_tgt.empty else None
+            etapa_actual_desc = _desc_et(etapa_actual_cod) if etapa_actual_cod in etapas_codigos else (etapa_actual_cod or "—")
+            # target de duración de la etapa actual: 1° la dimensión etapas-por-proceso, 2° dic_etapa_duracion
+            tgt_min = None
+            _row_tgt = _et_proc_av[_et_proc_av["etapa"]==etapa_actual_cod]
+            if (not _row_tgt.empty and "duracion_target_min" in _row_tgt.columns
+                    and pd.notna(_row_tgt.iloc[0].get("duracion_target_min"))):
+                tgt_min = int(_row_tgt.iloc[0]["duracion_target_min"])
+            else:
+                dur_tgt = duraciones_etapa[
+                    (duraciones_etapa["sector"]=="REACTORES") &
+                    (duraciones_etapa["tipo_proceso"]==r["tipo_proceso"]) &
+                    (duraciones_etapa["etapa"]==etapa_actual_cod)
+                ]
+                tgt_min = int(dur_tgt.iloc[0]["duracion_target_min"]) if not dur_tgt.empty else None
 
             st.markdown(f"### Cerrar etapa actual: **{etapa_actual_desc}**")
             st.caption(f"Estás cerrando la etapa **{etapa_actual_cod}**. Indicá cuántos minutos duró y a qué etapa pasás.")
@@ -1671,10 +1706,10 @@ with tab_objs[0]:
                 value=(tgt_min or 0), step=1, key="e_durmin", help=dur_help
             )
             idx_actual = etapas_codigos.index(etapa_actual_cod) if etapa_actual_cod in etapas_codigos else 0
-            idx_nueva = min(idx_actual + 1, len(etapas_codigos)-1)
+            idx_nueva = min(idx_actual + 1, len(etapas_codigos)-1) if etapas_codigos else 0
             nueva_etapa = cE2.selectbox(
                 "Pasar a la etapa", etapas_codigos, index=idx_nueva,
-                format_func=lambda c: etapas_proc[etapas_proc["codigo"]==c].iloc[0]["descripcion"],
+                format_func=_desc_et,
                 key="e_etapa"
             )
             # feedback de desvío vs target en vivo

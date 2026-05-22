@@ -375,14 +375,46 @@ UPDATE dic_etapa_proceso SET orden=4 WHERE codigo='DECANTACION';
 UPDATE dic_etapa_proceso SET orden=5 WHERE codigo='EN_TANQUE';
 
 INSERT INTO dic_etapa_proceso(codigo, descripcion, orden) VALUES
- ('ARMADO',      'Armado · mezcla de insumos',               1),
- ('REACCION',    'Reacción · fuel, calor',                   2),
- ('REPOSANDO',   'Producto reposando',                       3),
- ('DECANTACION', 'Decantación · salen finales y paralelos',  4),
- ('EN_TANQUE',   'Producto final en tanque (a laboratorio)', 5)
+ ('ARMADO',        'Armado · mezcla de insumos',               1),
+ ('REACCION',      'Reacción · fuel, calor',                   2),
+ ('REPOSANDO',     'Producto reposando',                       3),
+ ('DECANTACION',   'Decantación · salen finales y paralelos',  4),
+ ('EN_TANQUE',     'Producto final en tanque (a laboratorio)', 5),
+ -- etapas extra para recuperacion / bachas
+ ('CARGA',         'Carga de material a la pileta',            6),
+ ('FLOCULADO',     'Floculado / tratamiento',                  7),
+ ('EXTRACCION',    'Extracción del producto recuperado',       8),
+ ('CALENTAMIENTO', 'Calentamiento',                            9)
 ON CONFLICT (codigo) DO UPDATE SET
   descripcion = EXCLUDED.descripcion,
   orden       = EXCLUDED.orden;
+
+-- Etapas POR proceso (estimativo · editable a mano en Supabase, NO se pisa en re-seed).
+INSERT INTO dic_proceso_etapa(proceso_key, etapa, orden, duracion_target_min, duracion_min_min, duracion_max_min) VALUES
+ -- PRODUCCION_ARE (reactores)
+ ('PRODUCCION_ARE',  'ARMADO',       1, 45, 30, 60),
+ ('PRODUCCION_ARE',  'REACCION',     2, 75, 60, 90),
+ ('PRODUCCION_ARE',  'REPOSANDO',    3, 75, 60, 90),
+ ('PRODUCCION_ARE',  'DECANTACION',  4, 45, 30, 60),
+ ('PRODUCCION_ARE',  'EN_TANQUE',    5, 45, 30, 60),
+ -- DESGOMADO_ACUOSO (reactores)
+ ('DESGOMADO_ACUOSO','ARMADO',       1, 2,  1,  3),
+ ('DESGOMADO_ACUOSO','REACCION',     2, 4,  2,  6),
+ ('DESGOMADO_ACUOSO','REPOSANDO',    3, 2,  1,  3),
+ ('DESGOMADO_ACUOSO','DECANTACION',  4, 1,  1,  2),
+ ('DESGOMADO_ACUOSO','EN_TANQUE',    5, 1,  1,  2),
+ -- RECUPERACION (piletas)
+ ('RECUPERACION',    'CARGA',        1, 60,  30, 120),
+ ('RECUPERACION',    'FLOCULADO',    2, 30,  15, 60),
+ ('RECUPERACION',    'REPOSANDO',    3, 120, 60, 240),
+ ('RECUPERACION',    'EXTRACCION',   4, 60,  30, 120),
+ ('RECUPERACION',    'EN_TANQUE',    5, 30,  15, 60),
+ -- BACHAS
+ ('BACHAS',          'ARMADO',       1, 30,  15, 60),
+ ('BACHAS',          'CALENTAMIENTO',2, 60,  30, 120),
+ ('BACHAS',          'DECANTACION',  3, 45,  30, 90),
+ ('BACHAS',          'EN_TANQUE',    4, 30,  15, 60)
+ON CONFLICT (proceso_key, etapa) DO NOTHING;
 
 -- Asegurar que FUEL/POTASIO/AGUA/HORAS existan antes de los consumos (orden de FKs)
 -- 'unidad' tiene que existir en dic_unidad

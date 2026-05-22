@@ -411,6 +411,19 @@ CREATE TABLE IF NOT EXISTS dic_etapa_proceso (
     activo      BOOLEAN NOT NULL DEFAULT TRUE
 );
 
+-- Etapas POR proceso: cada proceso (PRODUCCION_ARE, DESGOMADO_ACUOSO,
+-- RECUPERACION, BACHAS, ...) tiene su propia secuencia de etapas, orden y
+-- duración estimada. proceso_key = tipo_proceso (reactores) o sector (resto).
+CREATE TABLE IF NOT EXISTS dic_proceso_etapa (
+    proceso_key          TEXT NOT NULL,
+    etapa                TEXT NOT NULL REFERENCES dic_etapa_proceso(codigo),
+    orden                SMALLINT NOT NULL,
+    duracion_target_min  INTEGER,
+    duracion_min_min     INTEGER,
+    duracion_max_min     INTEGER,
+    PRIMARY KEY (proceso_key, etapa)
+);
+
 -- Duración estimada por (sector, proceso, etapa)
 -- Permite saber si una corrida tardó más o menos de lo esperado.
 CREATE TABLE IF NOT EXISTS dic_etapa_duracion (
