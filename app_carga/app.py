@@ -1056,7 +1056,7 @@ tab_objs = st.tabs(tabs)
 # =========================================================================
 with tab_objs[0]:
     st.subheader("🏭 Carga de producción")
-    sub_nueva, sub_edit, sub_eval, sub_dec, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "✏️ Avanzar etapa", "\U0001f9ea Evaluación interna", "\U0001f4a7 Salida de decantación", "\u26a0\ufe0f Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
+    sub_nueva, sub_edit, sub_pfinal, sub_eval, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "✏️ Avanzar etapa", "\U0001f3c1 Producto final", "\U0001f9ea Evaluación interna", "\u26a0\ufe0f Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
 
     # ---------- SUB-TAB: NUEVA CARGA ----------
     with sub_nueva:
@@ -1130,12 +1130,11 @@ with tab_objs[0]:
                 "Proceso *", tipos_proceso["codigo"].tolist(), key="b_tproc",
                 format_func=lambda c: tipos_proceso[tipos_proceso["codigo"]==c].iloc[0]["descripcion"]
             )
+            # Una carga nueva SIEMPRE arranca en ARMADO; las demás etapas se avanzan en "Avanzar etapa".
             _et_proc = etapas_de_proceso(proceso_key_de(sector, tipo_proceso_sel))
             _et_codes = _et_proc["etapa"].tolist()
-            etapa_sel = cR3.selectbox(
-                "Etapa actual *", _et_codes, key="b_etapa",
-                format_func=lambda c: _et_proc[_et_proc["etapa"]==c].iloc[0]["descripcion"]
-            )
+            etapa_sel = "ARMADO" if "ARMADO" in _et_codes else (_et_codes[0] if _et_codes else "ARMADO")
+            cR3.text_input("Etapa actual *", value="ARMADO (mezcla de insumos)", disabled=True, key="b_etapa_disp")
 
             st.caption(f"🔧 Capacidad: {int(fila_bien['capacidad_max_l'] or 0):,} L  ·  Fuel {fila_bien['consumo_fuel_kg_x_tn']:.1f} kg/TN  ·  NaOH {fila_bien['consumo_naoh_kg_x_tn']:.1f} kg/TN  ·  K {fila_bien['consumo_potasio_kg_x_tn']:.3f} kg/TN")
 
@@ -1310,6 +1309,18 @@ with tab_objs[0]:
             if fin_dt < inicio_dt:
                 st.error("Fecha/hora de fin anterior al inicio.")
 
+        elif sector == "BACHAS":
+            # BACHAS también usa el flujo de etapas: la carga arranca en ARMADO.
+            etapa_sel = "ARMADO"
+            st.markdown("**Etapa + inicio**")
+            cBe1, cBe2, cBe3 = st.columns(3)
+            cBe1.text_input("Etapa actual *", value="ARMADO (carga de borra + mezcla)", disabled=True, key="b_etapa_disp_b")
+            f_ini = cBe2.date_input("Fecha inicio", date.today(), key="b_fini")
+            h_ini = cBe3.time_input("Hora inicio", key="b_hini")
+            from datetime import datetime as _dtb
+            inicio_dt = _dtb.combine(f_ini, h_ini)
+            st.caption("ℹ️ Avanzás las etapas (calentamiento → decantación → tanque) desde **Avanzar etapa**.")
+
         # Producto obtenido / kg / calidad
         # En REACTORES: solo se completan al llegar a EN_TANQUE. En otros sectores: ahora.
         p_obt = None
@@ -1354,6 +1365,16 @@ with tab_objs[0]:
                 )
                 calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
             st.caption("ℹ️ El producto **obtenido real** y su calidad se cargan al cerrar la reacción en la etapa EN_TANQUE.")
+        elif sector == "BACHAS":
+            st.markdown("**Producto buscado (target)** — qué se espera obtener (el real va en 'Producto final')")
+            _permb = productos_permitidos(sector, None, tipo_op, "FINAL")
+            opt_b = productos_obt["codigo_producto"].tolist()
+            if _permb is not None:
+                opt_b = [c for c in opt_b if c in _permb] or _permb
+            cBb1, cBb2 = st.columns(2)
+            p_buscado = cBb1.selectbox("Producto buscado *", opt_b, key="b_pbusc")
+            calidad_buscada = cBb2.selectbox("Calidad buscada", [""] + calidades["codigo"].tolist(), key="b_calbusc")
+            st.caption("ℹ️ El producto final real (cuánto se obtuvo + a qué tanque) se carga al cerrar, en la pestaña **Producto final**.")
         else:
             st.markdown("**Producto obtenido**")
             cOB1, cOB2 = st.columns(2)
@@ -1460,12 +1481,17 @@ with tab_objs[0]:
         else:
             p_ini, kg_ini = "", 0.0
 
-        # Bachas: ~70% de la borra es agua de descarte → efluentes líquidos
+        # Bachas: ~70% de la borra es agua de descarte → efluentes líquidos.
+        # Estimado de producto final (lo no-agua) se calcula acá, en el ARMADO.
         if sector == "BACHAS" and mps_ingresadas:
             _pct_w = K("bachas_pct_agua", 70) or 70
             _kg_in = sum(k for _, k in mps_ingresadas)
             _agua_tn = _kg_in * _pct_w / 100 / 1000
-            st.info(f"💧 Estimado: ~{_pct_w:g}% de la borra es agua → **{_agua_tn:,.2f} TN** a efluentes líquidos (de {_kg_in/1000:,.2f} TN cargadas).")
+            est_are_kg = _kg_in * (1 - _pct_w/100)   # estimado producto final
+            q_ag_kg_ref = _kg_in
+            st.info(f"💧 ~{_pct_w:g}% de la borra es agua → **{_agua_tn:,.2f} TN** a efluentes. "
+                    f"Producto final **estimado ≈ {est_are_kg/1000:,.2f} TN** (de {_kg_in/1000:,.2f} TN cargadas). "
+                    f"El real se carga en 'Producto final'.")
 
         # Bloque GLICERINA (solo PRODUCCION_ARE)
         # Inputs: kg + % glicerol (fresca y recuperada). L se calcula con densidad.
@@ -1618,7 +1644,8 @@ with tab_objs[0]:
 
         if submit_b:
             errs = []
-            if not es_reactor and kg_obt <= 0:
+            # REACTORES y BACHAS no cargan producto final al crear (va en 'Producto final')
+            if sector not in ("REACTORES", "BACHAS") and kg_obt <= 0:
                 errs.append("Kg obtenido > 0.")
             if not es_recup and (not p_ini or kg_ini <= 0):
                 errs.append("En NORMAL la materia prima es obligatoria.")
@@ -1738,11 +1765,11 @@ with tab_objs[0]:
             FROM fact_batch_proceso b
             LEFT JOIN dim_producto p  ON p.id_producto  = b.id_producto_obtenido
             LEFT JOIN dim_producto pb ON pb.id_producto = b.id_producto_buscado
-            WHERE NOT b.anulado AND b.sector='REACTORES'
+            WHERE NOT b.anulado AND b.sector IN ('REACTORES','BACHAS')
             ORDER BY b.creado_en DESC LIMIT 100
         """)
         if df_rec.empty:
-            st.info("Sin cargas en REACTORES todavía.")
+            st.info("Sin cargas en REACTORES/BACHAS todavía.")
         else:
             opt = df_rec.apply(lambda r: f"#{r['id_batch']} · {r['ticket'] or '—'} · {r['fecha']} · {r['tipo_proceso']} · etapa {r['etapa_actual']}", axis=1).tolist()
             sel = st.selectbox("Seleccionar ticket", opt, key="e_sel")
@@ -1799,7 +1826,7 @@ with tab_objs[0]:
 
             st.divider()
             # etapas atadas al proceso de esta reacción (no la lista plana)
-            _et_proc_av = etapas_de_proceso(proceso_key_de("REACTORES", r["tipo_proceso"]))
+            _et_proc_av = etapas_de_proceso(proceso_key_de(r["sector"], r["tipo_proceso"]))
             etapas_codigos = _et_proc_av["etapa"].tolist()
             def _desc_et(c):
                 _m = _et_proc_av[_et_proc_av["etapa"]==c]
@@ -1886,6 +1913,135 @@ with tab_objs[0]:
                 except Exception as e:
                     st.exception(e)
 
+    # ---------- SUB-TAB: PRODUCTO FINAL (real + tanque destino + estimado vs real + decantación) ----------
+    with sub_pfinal:
+        st.caption("Al cerrar la reacción/bacha: cuánto se obtuvo realmente, a qué tanque fue, y la decantación. Se compara con lo estimado en el armado.")
+        df_pf = cat("""
+            SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha, b.sector,
+                   b.tipo_proceso, b.etapa_actual,
+                   pb.codigo_producto AS buscado, b.calidad_buscada,
+                   b.estimado_are_kg,
+                   p.codigo_producto AS obtenido, b.kg_obtenido, b.litros_obtenido,
+                   b.calidad_final, b.tanque_destino
+            FROM fact_batch_proceso b
+            LEFT JOIN dim_producto p  ON p.id_producto  = b.id_producto_obtenido
+            LEFT JOIN dim_producto pb ON pb.id_producto = b.id_producto_buscado
+            WHERE NOT b.anulado AND b.sector IN ('REACTORES','BACHAS')
+            ORDER BY b.creado_en DESC LIMIT 100
+        """)
+        if df_pf.empty:
+            st.info("Sin reacciones/bachas para cerrar.")
+        else:
+            optpf = df_pf.apply(lambda r: f"#{r['id_batch']} · {r['ticket'] or '—'} · {r['sector']} · busca {r['buscado'] or '—'} · etapa {r['etapa_actual'] or '—'}", axis=1).tolist()
+            selpf = st.selectbox("Reacción / bacha", optpf, key="pf_sel")
+            rpf = df_pf.iloc[optpf.index(selpf)]
+            id_pf = int(rpf["id_batch"])
+            _sector_pf = rpf["sector"]
+            _usa_litros_pf = _sector_pf in ("REACTORES", "BACHAS")
+
+            est_kg = float(rpf["estimado_are_kg"]) if pd.notna(rpf["estimado_are_kg"]) else None
+            if est_kg:
+                st.caption(f"🎯 Estimado en armado: **{est_kg/1000:,.2f} TN** ({est_kg:,.0f} kg) · buscado {rpf['buscado'] or '—'}")
+
+            st.markdown("**Producto final real**")
+            cF1, cF2, cF3 = st.columns(3)
+            _finales = productos_permitidos(_sector_pf, rpf["tipo_proceso"], None, "FINAL") or productos[productos["tipo_producto"]=="FINAL"]["codigo_producto"].tolist()
+            _opts_pf = sorted(set(_finales) | ({rpf["buscado"]} if rpf["buscado"] else set()))
+            _idx_def = _opts_pf.index(rpf["buscado"]) if (rpf["buscado"] in _opts_pf) else 0
+            p_obt_pf = cF1.selectbox("Producto obtenido *", _opts_pf, index=_idx_def, key="pf_prod")
+            if _usa_litros_pf:
+                _dpf = densidad_de(p_obt_pf)
+                # Pre-carga con lo estimado en el armado (casi siempre coincide); editable.
+                _def_lts = int(rpf["litros_obtenido"]) if pd.notna(rpf["litros_obtenido"]) else (int(round(est_kg/_dpf)) if est_kg else 0)
+                lts_pf = cF2.number_input("Litros obtenido *", min_value=0, max_value=2_000_000, step=100,
+                                          value=_def_lts, key=f"pf_lts_{id_pf}",
+                                          help="Pre-cargado con el estimado del armado; ajustá si difiere.")
+                kg_pf = (lts_pf or 0) * _dpf
+                cF2.caption(f"= {kg_pf:,.0f} kg · {kg_pf/1000:,.2f} TN" + (f" · estimado armado {est_kg/_dpf:,.0f} L" if est_kg else ""))
+            else:
+                _def_kg = int(rpf["kg_obtenido"]) if pd.notna(rpf["kg_obtenido"]) else (int(round(est_kg)) if est_kg else 0)
+                kg_pf = cF2.number_input("Kg obtenido *", min_value=0, max_value=2_000_000, step=100,
+                                         value=_def_kg, key=f"pf_kg_{id_pf}",
+                                         help="Pre-cargado con el estimado del armado; ajustá si difiere.")
+                lts_pf = None
+                if est_kg:
+                    cF2.caption(f"estimado armado {est_kg:,.0f} kg")
+            cal_pf = cF3.selectbox("Calidad final", [""] + calidades["codigo"].tolist(), key="pf_cal")
+            tanque_pf = st.text_input("Tanque destino", value=(rpf["tanque_destino"] or ""), max_chars=40, key="pf_tk",
+                                      placeholder="ej. TK-12")
+
+            if est_kg and kg_pf and kg_pf > 0:
+                desv = (kg_pf - est_kg) / est_kg * 100
+                msg = f"Real **{kg_pf/1000:,.2f} TN** vs estimado **{est_kg/1000:,.2f} TN** → desvío **{desv:+.1f}%**"
+                (st.success if abs(desv) <= 10 else st.warning)(("✅ " if abs(desv) <= 10 else "⚠️ ") + msg)
+
+            if st.button("💾 Guardar producto final", type="primary", use_container_width=True, key="pf_save"):
+                if kg_pf <= 0:
+                    st.error("Cargá cuánto se obtuvo (litros/kg).")
+                else:
+                    try:
+                        with conectar(USR["id_usuario"]) as (conn, audit):
+                            with conn.cursor() as cur:
+                                cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s", (p_obt_pf,))
+                                _row = cur.fetchone(); pid_pf = _row[0] if _row else None
+                                cur.execute("""
+                                    UPDATE fact_batch_proceso
+                                       SET id_producto_obtenido=%s, kg_obtenido=%s, litros_obtenido=%s,
+                                           calidad_final=COALESCE(NULLIF(%s,''), calidad_final),
+                                           tanque_destino=COALESCE(NULLIF(%s,''), tanque_destino),
+                                           etapa_actual='EN_TANQUE'
+                                     WHERE id_batch=%s
+                                """, (pid_pf, float(kg_pf), (float(lts_pf) if lts_pf else None),
+                                      cal_pf, tanque_pf, id_pf))
+                            audit.log("U", "fact_batch_proceso", id_pf,
+                                      {"producto_final": p_obt_pf, "kg": kg_pf, "tanque": tanque_pf})
+                        st.success(f"Producto final de #{id_pf} guardado."); cat.clear(); st.rerun()
+                    except Exception as e:
+                        st.exception(e)
+
+            # ----- Decantación (debajo) -----
+            st.divider()
+            st.markdown("### 💧 Decantación")
+            pkey_pf = proceso_key_de(_sector_pf, rpf["tipo_proceso"])
+            _dec_pf = decantaciones_de(pkey_pf)
+            if not _dec_pf.empty:
+                st.caption("Salidas esperadas para este proceso: " + ", ".join(_dec_pf["label"].tolist()))
+            _tipos_pf = _dec_pf["tipo_salida"].tolist()
+            _sug_pf = [c for c in _dec_pf["codigo_producto"].tolist() if pd.notna(c) and c]
+            if "GLICERINA_RECUP" in _tipos_pf: _sug_pf += ["GLICERINA", "GLICERINA-FE"]
+            if "AGUA_PROCESO" in _tipos_pf: _sug_pf += ["AGUA-PROC"]
+            _opt_dec_pf = [c for c in dict.fromkeys(_sug_pf) if c in productos["codigo_producto"].tolist()]
+            if _opt_dec_pf:
+                n_sal_pf = st.number_input("Salidas a registrar", 0, 5, value=0, key="pf_ndec")
+                sal_pf = []
+                for i in range(int(n_sal_pf)):
+                    d1, d2, d3 = st.columns(3)
+                    cd = d1.selectbox(f"Producto #{i+1}", _opt_dec_pf, key=f"pf_dprod_{i}")
+                    kgd = d2.number_input(f"kg #{i+1}", min_value=0, max_value=200000, step=50, value=0, key=f"pf_dkg_{i}")
+                    destd = d3.text_input(f"Destino #{i+1}", max_chars=40, key=f"pf_ddst_{i}")
+                    if kgd > 0:
+                        sal_pf.append((cd, float(kgd), destd or None))
+                if sal_pf and st.button("💾 Guardar decantación", key="pf_dsave", use_container_width=True):
+                    try:
+                        with conectar(USR["id_usuario"]) as (conn, audit):
+                            with conn.cursor() as cur:
+                                for cd, kgd, destd in sal_pf:
+                                    cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s", (cd,))
+                                    _r = cur.fetchone()
+                                    if not _r:
+                                        continue
+                                    cur.execute("""
+                                        INSERT INTO fact_salida_decantacion
+                                        (id_batch, id_producto, kg, destino_tanque, id_usuario)
+                                        VALUES (%s,%s,%s,%s,%s)
+                                    """, (id_pf, _r[0], kgd, destd, int(USR["id_usuario"])))
+                            audit.log("I", "fact_salida_decantacion", id_pf, {"n": len(sal_pf)})
+                        st.success("Decantación registrada.")
+                    except Exception as e:
+                        st.exception(e)
+            else:
+                st.caption("Este proceso no tiene decantaciones configuradas.")
+
     # ---------- SUB-TAB: CARGAR MUESTRA INTERMEDIA ----------
     with sub_eval:
         st.caption("Evaluaciones internas **solo en Producción de ARE**: medís en distintas etapas para bajar la acidez de ~60 a 10 (especificación comercial). Parámetros: acidez, temperatura, fósforo.")
@@ -1948,91 +2104,6 @@ with tab_objs[0]:
 
 
 
-
-    # ---------- SUB-TAB: SALIDA DE DECANTACIÓN ----------
-    with sub_dec:
-        st.caption("Al decantar pueden salir varios subproductos a la vez: glicerina recuperada, fondo de tanque, agua, etc.")
-        df_dec = cat("""
-            SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha, b.tipo_proceso, b.sector
-            FROM fact_batch_proceso b
-            WHERE NOT b.anulado AND b.sector IN ('REACTORES','BACHAS')
-            ORDER BY b.creado_en DESC LIMIT 100
-        """)
-        if df_dec.empty:
-            st.info("Sin cargas en REACTORES/BACHAS.")
-        else:
-            optd = df_dec.apply(lambda r: f"#{r['id_batch']} · {r['ticket'] or '—'} · {r['sector']}/{r['tipo_proceso'] or '—'}", axis=1).tolist()
-            seld = st.selectbox("Reacción", optd, key="d_sel")
-            rd = df_dec.iloc[optd.index(seld)]
-            tipo_actual_dec = rd["tipo_proceso"]
-
-            # Decantaciones esperadas según dic_decantacion_proceso (glicerina ARE, fondo desgomado, agua bachas)
-            pkey_dec = proceso_key_de(rd["sector"], rd["tipo_proceso"])
-            _dec_cfg = decantaciones_de(pkey_dec)
-            if not _dec_cfg.empty:
-                st.caption("Decantaciones esperadas para **" + str(pkey_dec) + "**: " + ", ".join(_dec_cfg["label"].tolist()))
-            _tipos = _dec_cfg["tipo_salida"].tolist()
-            sugeridos = [c for c in _dec_cfg["codigo_producto"].tolist() if pd.notna(c) and c]
-            if "GLICERINA_RECUP" in _tipos:
-                sugeridos += ["GLICERINA", "GLICERINA-FE"]
-            if "AGUA_PROCESO" in _tipos:
-                sugeridos += ["AGUA-PROC"]
-            opciones_decant = [c for c in dict.fromkeys(sugeridos) if c in productos["codigo_producto"].tolist()]
-            if not opciones_decant:
-                opciones_decant = productos["codigo_producto"].tolist()
-
-            n_sal = st.number_input("Cantidad de subproductos a registrar", 1, 5, value=1, key="d_n")
-            salidas = []
-            for i in range(int(n_sal)):
-                st.markdown(f"**Salida #{i+1}**")
-                cD1, cD2 = st.columns(2)
-                cod_sal = cD1.selectbox(
-                    f"Producto #{i+1}", opciones_decant, key=f"d_prod_{i}"
-                )
-                destino_i = cD2.text_input(f"Destino (tanque/sector) #{i+1}", max_chars=40, key=f"d_dest_{i}")
-                cD3, cD4, cD5 = st.columns(3)
-                kg_i  = cD3.number_input(f"kg #{i+1}", min_value=0, max_value=100000, step=100, value=0, key=f"d_kg_{i}")
-                # L calculado por densidad del producto si existe; si no, manual
-                fila_p = productos[productos["codigo_producto"]==cod_sal].iloc[0] if cod_sal in productos["codigo_producto"].tolist() else None
-                dens = float(fila_p["densidad_g_ml"]) if (fila_p is not None and pd.notna(fila_p.get("densidad_g_ml"))) else None
-                if dens:
-                    lts_i = (kg_i/dens) if kg_i else 0
-                    cD4.metric("L (calc)", f"{lts_i:,.0f}")
-                else:
-                    lts_i = cD4.number_input(f"L #{i+1}", min_value=0, max_value=100000, step=100, value=0, key=f"d_l_{i}")
-                gpct_i = cD5.number_input(f"% glicerol #{i+1} (si glicerina)", 0.0, 100.0, step=0.1, value=0.0, key=f"d_gpct_{i}")
-                obs_i  = st.text_input(f"Obs. #{i+1}", max_chars=200, key=f"d_obs_{i}")
-                if kg_i > 0 or (lts_i and lts_i > 0):
-                    salidas.append({
-                        "cod": cod_sal, "destino": destino_i,
-                        "kg": int(kg_i) if kg_i else None,
-                        "lts": float(lts_i) if lts_i else None,
-                        "gpct": float(gpct_i) if gpct_i else None,
-                        "obs": obs_i or None,
-                    })
-
-            if st.button("\U0001f4be Guardar salidas", type="primary", use_container_width=True, key="d_save"):
-                if not salidas:
-                    st.error("Cargá al menos una salida con kg o L > 0.")
-                else:
-                    try:
-                        with conectar(USR["id_usuario"]) as (conn, audit):
-                            with conn.cursor() as cur:
-                                ids = []
-                                for s in salidas:
-                                    cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s",(s["cod"],))
-                                    pid = cur.fetchone()[0]
-                                    cur.execute("""
-                                        INSERT INTO fact_salida_decantacion
-                                        (id_batch, id_producto, kg, lts, glicerol_pct, destino_tanque, observaciones, id_usuario)
-                                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id_salida
-                                    """, (int(rd["id_batch"]), pid, s["kg"], s["lts"], s["gpct"], s["destino"], s["obs"], int(USR["id_usuario"])))
-                                    ids.append(cur.fetchone()[0])
-                            audit.log("I","fact_salida_decantacion",str(rd["id_batch"]),
-                                      {"salidas": [{"prod": s["cod"], "kg": s["kg"], "destino": s["destino"]} for s in salidas]})
-                        st.success(f"✅ {len(ids)} salida(s) registrada(s) (#{', #'.join(map(str,ids))}).")
-                    except Exception as e:
-                        st.exception(e)
 
     # ---------- SUB-TAB: GASTO EXTRAORDINARIO ----------
     with sub_gasto:
@@ -2361,7 +2432,7 @@ with tab_objs[1]:
             LEFT JOIN dim_producto p   ON p.id_producto  = b.id_producto_obtenido
             LEFT JOIN dim_producto pb  ON pb.id_producto = b.id_producto_buscado
             LEFT JOIN dim_bien_uso bu  ON bu.id_bien_uso = b.id_bien_uso
-            WHERE NOT b.anulado AND b.sector='REACTORES'
+            WHERE NOT b.anulado AND b.sector IN ('REACTORES','BACHAS')
             ORDER BY b.creado_en DESC LIMIT 24
         """)
         if df_cards.empty:

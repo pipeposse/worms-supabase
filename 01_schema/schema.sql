@@ -656,6 +656,7 @@ ALTER TABLE fact_produccion_diaria
 ALTER TABLE fact_batch_proceso ADD COLUMN IF NOT EXISTS litros_inicial   NUMERIC;
 ALTER TABLE fact_batch_proceso ADD COLUMN IF NOT EXISTS litros_obtenido  NUMERIC;
 ALTER TABLE fact_batch_proceso ADD COLUMN IF NOT EXISTS ticket_porteria  TEXT;  -- desgomado: peso de exportacion->proceso
+ALTER TABLE fact_batch_proceso ADD COLUMN IF NOT EXISTS tanque_destino   TEXT;  -- a qué tanque fue el producto final
 ALTER TABLE dic_insumo              ADD COLUMN IF NOT EXISTS evaluable    BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE fact_salida_decantacion ADD COLUMN IF NOT EXISTS tipo_salida  TEXT;  -- GLICERINA_RECUP / FONDO_TANQUE / AGUA_PROCESO
 
