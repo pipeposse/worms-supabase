@@ -423,6 +423,25 @@ CREATE TABLE IF NOT EXISTS dic_etapa_duracion (
     PRIMARY KEY (sector, tipo_proceso, etapa)
 );
 
+-- Reglas por sector: qué modos de operación admite.
+CREATE TABLE IF NOT EXISTS dic_sector_config (
+    sector               TEXT PRIMARY KEY REFERENCES dic_sector(codigo),
+    permite_normal       BOOLEAN NOT NULL DEFAULT TRUE,
+    permite_recuperacion BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+-- Productos permitidos por (sector, proceso, modo, rol) usando patrón LIKE.
+-- rol = 'MP' (entrada) | 'FINAL' (salida).
+CREATE TABLE IF NOT EXISTS dic_proceso_producto (
+    id              BIGSERIAL PRIMARY KEY,
+    sector          TEXT NOT NULL REFERENCES dic_sector(codigo),
+    tipo_proceso    TEXT,            -- NULL si el sector no usa proceso (ej. BACHAS)
+    tipo_operacion  TEXT,            -- 'NORMAL' | 'RECUPERACION' | NULL (cualquiera)
+    rol             TEXT NOT NULL CHECK (rol IN ('MP','FINAL')),
+    patron          TEXT NOT NULL    -- ej. 'ARE-%', 'AG-%', 'SEBO%', 'AFE-S'
+);
+CREATE INDEX IF NOT EXISTS ix_proc_prod ON dic_proceso_producto(sector, tipo_proceso, rol);
+
 -- Consumos teóricos de insumos por TN según (proceso, insumo).
 -- Para PRODUCCION_ARE vienen del Excel; DESGOMADO_ACUOSO es bajo (~8.7 L fuel/TN).
 -- base_referencia = AG_INPUT (TN de materia prima) o PRODUCTO_OUTPUT (TN de producto generado)
@@ -434,6 +453,16 @@ CREATE TABLE IF NOT EXISTS dic_consumo_proceso (
     base_referencia  TEXT NOT NULL DEFAULT 'AG_INPUT',
     nota             TEXT,
     PRIMARY KEY (tipo_proceso, codigo_insumo)
+);
+
+-- Consumos por SECTOR (para sectores sin proceso, ej. BACHAS).
+CREATE TABLE IF NOT EXISTS dic_consumo_sector (
+    sector           TEXT NOT NULL REFERENCES dic_sector(codigo),
+    codigo_insumo    TEXT NOT NULL REFERENCES dic_insumo(codigo),
+    consumo_por_tn   DOUBLE PRECISION NOT NULL CHECK (consumo_por_tn > 0),
+    unidad_consumo   TEXT NOT NULL DEFAULT 'kg',
+    nota             TEXT,
+    PRIMARY KEY (sector, codigo_insumo)
 );
 
 -- Catálogo de parámetros (acidez, temperatura, ppm fósforo, etc.)

@@ -212,6 +212,48 @@ calidades = cat("SELECT codigo, descripcion FROM dic_calidad WHERE activo ORDER 
 turnos = cat("SELECT codigo FROM dic_turno WHERE activo")
 insumos_cat = cat("SELECT codigo, descripcion, unidad FROM dic_insumo WHERE activo ORDER BY codigo")
 
+# Reglas de carga (editables desde Supabase)
+try:
+    sector_cfg = cat("SELECT sector, permite_normal, permite_recuperacion FROM dic_sector_config")
+except Exception:
+    sector_cfg = pd.DataFrame(columns=["sector","permite_normal","permite_recuperacion"])
+try:
+    proc_prod = cat("SELECT sector, tipo_proceso, tipo_operacion, rol, patron FROM dic_proceso_producto")
+except Exception:
+    proc_prod = pd.DataFrame(columns=["sector","tipo_proceso","tipo_operacion","rol","patron"])
+try:
+    consumo_sector = cat("SELECT sector, codigo_insumo, consumo_por_tn, unidad_consumo FROM dic_consumo_sector")
+except Exception:
+    consumo_sector = pd.DataFrame(columns=["sector","codigo_insumo","consumo_por_tn","unidad_consumo"])
+
+def _match_patron(codigo, patron):
+    """LIKE simple: % es comodín al final/medio."""
+    import re as _re2
+    rgx = "^" + _re2.escape(patron).replace("\\%", ".*") + "$"
+    return bool(_re2.match(rgx, codigo or ""))
+
+def productos_permitidos(sector, tipo_proceso, tipo_operacion, rol):
+    """Devuelve lista de codigo_producto permitidos según las reglas. Si no hay regla, None (sin restriccion)."""
+    if proc_prod.empty:
+        return None
+    f = proc_prod[(proc_prod["sector"]==sector) & (proc_prod["rol"]==rol)]
+    if tipo_proceso is not None:
+        f = f[(f["tipo_proceso"]==tipo_proceso) | (f["tipo_proceso"].isna())]
+    if tipo_operacion is not None:
+        f = f[(f["tipo_operacion"]==tipo_operacion) | (f["tipo_operacion"].isna())]
+    if f.empty:
+        return None
+    patrones = f["patron"].tolist()
+    todos = productos["codigo_producto"].tolist()
+    return [c for c in todos if any(_match_patron(c, p) for p in patrones)]
+
+def modos_permitidos(sector):
+    """(permite_normal, permite_recuperacion) para el sector."""
+    r = sector_cfg[sector_cfg["sector"]==sector]
+    if r.empty:
+        return True, False  # default: solo normal
+    return bool(r.iloc[0]["permite_normal"]), bool(r.iloc[0]["permite_recuperacion"])
+
 # Corrientes evaluables (editable desde Supabase: dic_corriente_config)
 try:
     _ce = cat("SELECT corriente FROM produccion.dic_corriente_config WHERE evaluable")
@@ -946,17 +988,6 @@ with tab_objs[0]:
 
     # ---------- SUB-TAB: NUEVA CARGA ----------
     with sub_nueva:
-        tipo_op = st.radio(
-            "Tipo de operación",
-            options=["NORMAL", "RECUPERACION"],
-            format_func=lambda x: "🏭 Normal (consume MP)" if x == "NORMAL"
-                                  else "♻️ Recuperación (sin MP)",
-            horizontal=True, key="b_tipo",
-        )
-        es_recup = (tipo_op == "RECUPERACION")
-        if es_recup:
-            st.info("Modo recuperación: no se carga materia prima.")
-
         c1, c2, c3 = st.columns(3)
         fecha_b = c1.date_input("Fecha *", date.today(), max_value=date.today(), key="b_f")
         sector_codigos = sectores["codigo"].tolist()
@@ -967,9 +998,24 @@ with tab_objs[0]:
         )
         turno = c3.selectbox("Turno", turnos["codigo"], key="b_t")
 
+        # Modo de operación LIMITADO por reglas del sector
+        permite_norm, permite_recup = modos_permitidos(sector)
+        modos = ([ "NORMAL"] if permite_norm else []) + (["RECUPERACION"] if permite_recup else [])
+        if not modos:
+            modos = ["NORMAL"]
+        _fmt_modo = lambda x: "🏭 Normal (consume MP)" if x == "NORMAL" else "♻️ Recuperación (sin MP)"
+        if len(modos) == 1:
+            tipo_op = modos[0]
+            st.caption(f"Modo: **{_fmt_modo(tipo_op)}** (único permitido para {sector})")
+        else:
+            tipo_op = st.radio("Tipo de operación", modos, format_func=_fmt_modo, horizontal=True, key="b_tipo")
+        es_recup = (tipo_op == "RECUPERACION")
+        if es_recup:
+            st.info("Modo recuperación: no se carga materia prima.")
+
         es_reactor = (sector == "REACTORES")
         productos_mp, productos_obt = productos_de_sector(sector)
-        if productos_mp.empty:
+        if (not es_recup) and productos_mp.empty:
             st.warning(f"⚠️ No hay productos de tipo MP marcados para el sector {sector}. Revisá `dim_producto.usa_*` en Supabase.")
 
         label_id = {
@@ -1203,10 +1249,12 @@ with tab_objs[0]:
                 calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
                 st.caption("🔒 DESGOMADO_ACUOSO va siempre de **AFE-SG** → **AFE-S**.")
             elif tipo_proceso_sel == "PRODUCCION_ARE":
-                # Solo productos que empiezan con ARE (familia biodiesel)
-                opt_obj = [c for c in opt_obj if c.startswith("ARE")]
+                # FINAL permitidos según reglas (dic_proceso_producto): ARE-*
+                _perm = productos_permitidos(sector, tipo_proceso_sel, tipo_op, "FINAL")
+                if _perm is not None:
+                    opt_obj = [c for c in opt_obj if c in _perm]
                 if not opt_obj:
-                    st.error("No hay productos ARE-* activos en dim_producto.")
+                    st.error("No hay productos permitidos (FINAL) para PRODUCCION_ARE. Revisá dic_proceso_producto.")
                 cTG1, cTG2 = st.columns(2)
                 p_buscado = cTG1.selectbox(
                     "Producto buscado *", opt_obj, index=0, key="b_pbusc",
@@ -1239,6 +1287,19 @@ with tab_objs[0]:
                 fuera_rango = bool((kg_obt < rmin) or (kg_obt > rmax))
             calidad_b = st.selectbox("Calidad final", [""] + calidades["codigo"].tolist(), key="b_cal")
 
+            # Consumos recomendados por sector (ej. BACHAS: fuel 30/TN, cloruro_sodio 2/TN)
+            cs = consumo_sector[consumo_sector["sector"]==sector]
+            if not cs.empty and kg_obt > 0:
+                tn_obt = kg_obt / 1000.0
+                st.markdown("**🧮 Consumos estimados (por TN producida)**")
+                ccols = st.columns(len(cs))
+                for j, (_, cr) in enumerate(cs.iterrows()):
+                    desc = insumos_cat[insumos_cat["codigo"]==cr["codigo_insumo"]]
+                    nom = desc.iloc[0]["descripcion"] if not desc.empty else cr["codigo_insumo"]
+                    est = tn_obt * float(cr["consumo_por_tn"])
+                    ccols[j].metric(f"{nom}", f"{est:,.1f} {cr['unidad_consumo']}",
+                                    f"{cr['consumo_por_tn']:g} {cr['unidad_consumo']}/TN")
+
         # Materia prima
         mps_ingresadas = []
         if not es_recup:
@@ -1249,9 +1310,13 @@ with tab_objs[0]:
                 "Cantidad de materias primas", 1, max_mp,
                 value=2 if permite_multi else 1, key="b_n_mp"
             )
+            # MP permitidas según reglas (dic_proceso_producto). Si hay regla, restringe.
+            opts_mp = productos_mp["codigo_producto"].tolist()
+            _perm_mp = productos_permitidos(sector, tipo_proceso_sel, tipo_op, "MP")
+            if _perm_mp is not None:
+                opts_mp = [c for c in productos["codigo_producto"].tolist() if c in _perm_mp]
             for i in range(int(n_mp)):
                 cMP1, cMP2 = st.columns(2)
-                opts_mp = productos_mp["codigo_producto"].tolist()
                 # DESGOMADO_ACUOSO siempre arranca de AFE-SG
                 if i == 0 and tipo_proceso_sel == "DESGOMADO_ACUOSO":
                     cod = cMP1.text_input(f"Producto inicial #{i+1} *", value="AFE-SG", disabled=True, key=f"b_pi_{i}")
@@ -2092,6 +2157,7 @@ with tab_objs[2]:
                         st.success(f"Registro #{r_sel[1]} anulado."); st.rerun()
                     except Exception as e:
                         st.error(str(e))
+
 # =========================================================================
 # TAB AUDIT  ·  tab_objs[3]
 # =========================================================================

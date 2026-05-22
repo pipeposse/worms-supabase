@@ -577,6 +577,56 @@ CROSS JOIN generate_series(1,3) etapa_n
 WHERE b.sector='REACTORES' AND b.observaciones='[DEMO]';
 
 -- ===========================================================================
+-- REGLAS DE CARGA (editable desde Supabase, no destructivo)
+-- ===========================================================================
+
+-- Insumos faltantes
+INSERT INTO dic_unidad(codigo, descripcion, magnitud, es_estandar) VALUES
+ ('L','Litros','VOLUMEN',TRUE)
+ON CONFLICT (codigo) DO NOTHING;
+INSERT INTO dic_insumo(codigo, descripcion, unidad) VALUES
+ ('cloruro_sodio','Cloruro de sodio (NaCl)','KG')
+ON CONFLICT (codigo) DO NOTHING;
+
+-- Modos permitidos por sector: RECUPERACION solo en PILETAS; NORMAL en el resto.
+INSERT INTO dic_sector_config(sector, permite_normal, permite_recuperacion) VALUES
+ ('RECUPERACION', FALSE, TRUE),    -- PILETAS: solo recuperacion
+ ('BACHAS',       TRUE,  FALSE),
+ ('REACTORES',    TRUE,  FALSE),
+ ('EXPO',         TRUE,  FALSE),
+ ('LABORATORIO',  TRUE,  FALSE)
+ON CONFLICT (sector) DO NOTHING;
+
+-- Productos permitidos por (sector, proceso, modo, rol)
+DELETE FROM dic_proceso_producto;  -- idempotente: reglas siempre consistentes
+INSERT INTO dic_proceso_producto(sector, tipo_proceso, tipo_operacion, rol, patron) VALUES
+ -- REACTORES · PRODUCCION_ARE: MP = AG-* o SEBO*, FINAL = ARE-*
+ ('REACTORES','PRODUCCION_ARE',  NULL, 'MP',    'AG-%'),
+ ('REACTORES','PRODUCCION_ARE',  NULL, 'MP',    'SEBO%'),
+ ('REACTORES','PRODUCCION_ARE',  NULL, 'FINAL', 'ARE-%'),
+ -- REACTORES · DESGOMADO_ACUOSO: AFE-SG -> AFE-S
+ ('REACTORES','DESGOMADO_ACUOSO',NULL, 'MP',    'AFE-SG'),
+ ('REACTORES','DESGOMADO_ACUOSO',NULL, 'FINAL', 'AFE-S'),
+ -- BACHAS (NORMAL): MP = AFE/BORRA/FONDO_TK/AG/EMULSION ; FINAL = AFE-S/AG-C/SEBO
+ ('BACHAS', NULL, 'NORMAL', 'MP',    'AFE%'),
+ ('BACHAS', NULL, 'NORMAL', 'MP',    'BORRA%'),
+ ('BACHAS', NULL, 'NORMAL', 'MP',    'FONDO-TK'),
+ ('BACHAS', NULL, 'NORMAL', 'MP',    'AG-%'),
+ ('BACHAS', NULL, 'NORMAL', 'MP',    'EMULSION'),
+ ('BACHAS', NULL, 'NORMAL', 'FINAL', 'AFE-S'),
+ ('BACHAS', NULL, 'NORMAL', 'FINAL', 'AG-C'),
+ ('BACHAS', NULL, 'NORMAL', 'FINAL', 'SEBO%'),
+ -- PILETAS (RECUPERACION): salida solo AG-C / AG-D (sin MP)
+ ('RECUPERACION', NULL, 'RECUPERACION', 'FINAL', 'AG-C'),
+ ('RECUPERACION', NULL, 'RECUPERACION', 'FINAL', 'AG-D');
+
+-- Consumos de BACHAS por TN producida: fuel 30, cloruro de sodio 2
+INSERT INTO dic_consumo_sector(sector, codigo_insumo, consumo_por_tn, unidad_consumo, nota) VALUES
+ ('BACHAS','FUEL',          30, 'kg', 'Promedio por TN producida en bachas'),
+ ('BACHAS','cloruro_sodio', 2,  'kg', 'Promedio por TN producida en bachas')
+ON CONFLICT (sector, codigo_insumo) DO NOTHING;
+
+-- ===========================================================================
 -- CONFIG DE CORRIENTES EVALUABLES (editable desde Supabase, no destructivo)
 -- ===========================================================================
 INSERT INTO dic_corriente_config(corriente, evaluable) VALUES
