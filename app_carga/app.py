@@ -1337,10 +1337,11 @@ with tab_objs[0]:
             st.markdown("**Producto buscado (target)** — lo que se quiere obtener con la reacción")
             opt_obj = productos_obt["codigo_producto"].tolist()
             if tipo_proceso_sel == "DESGOMADO_ACUOSO":
-                # Flujo fijo: AFE-SG → AFE-S
+                # Flujo fijo: AFE-SG → AFE-S (cod fijo + key propia para no pisar otros procesos)
                 cTG1, cTG2 = st.columns(2)
-                p_buscado = cTG1.text_input("Producto buscado *", value="AFE-S", disabled=True, key="b_pbusc")
-                calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
+                p_buscado = "AFE-S"
+                cTG1.text_input("Producto buscado *", value="AFE-S", disabled=True, key="b_pbusc_des")
+                calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc_des")
                 st.caption("🔒 DESGOMADO_ACUOSO va siempre de **AFE-SG** → **AFE-S**.")
             elif tipo_proceso_sel == "PRODUCCION_ARE":
                 # El producto siempre es ARE; el operario solo elige la calidad.
@@ -1351,7 +1352,7 @@ with tab_objs[0]:
                 cTG1, cTG2 = st.columns(2)
                 cTG1.text_input("Producto buscado *", value="ARE", disabled=True, key="b_pbusc_disp")
                 _cal_sel = cTG2.selectbox(
-                    "Calidad buscada *", _cal_opts, key="b_calbusc",
+                    "Calidad buscada *", _cal_opts, key="b_calbusc_are",
                     format_func=lambda c: _cal_lbl.get(c, c)
                 )
                 p_buscado = f"ARE-{_cal_sel}"
@@ -1360,10 +1361,10 @@ with tab_objs[0]:
             else:
                 cTG1, cTG2 = st.columns(2)
                 p_buscado = cTG1.selectbox(
-                    "Producto buscado *", opt_obj, index=0, key="b_pbusc",
+                    "Producto buscado *", opt_obj, index=0, key="b_pbusc_sel",
                     format_func=lambda c: f"{c} {'⭐' if productos_obt[productos_obt['codigo_producto']==c].iloc[0]['tipo_producto']=='FINAL' else ''}"
                 )
-                calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc")
+                calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc_sel")
             st.caption("ℹ️ El producto **obtenido real** y su calidad se cargan al cerrar la reacción en la etapa EN_TANQUE.")
         elif sector == "BACHAS":
             st.markdown("**Producto buscado (target)** — qué se espera obtener (el real va en 'Producto final')")
@@ -1449,16 +1450,18 @@ with tab_objs[0]:
                 opts_mp = [c for c in productos["codigo_producto"].tolist() if c in _perm_mp]
             for i in range(int(n_mp)):
                 cMP1, cMP2 = st.columns(2)
-                # DESGOMADO_ACUOSO siempre arranca de AFE-SG
+                # DESGOMADO_ACUOSO siempre arranca de AFE-SG (cod fijo + key propia para no pisar el de ARE)
                 if i == 0 and tipo_proceso_sel == "DESGOMADO_ACUOSO":
-                    cod = cMP1.text_input(f"Producto inicial #{i+1} *", value="AFE-SG", disabled=True, key=f"b_pi_{i}")
+                    cod = "AFE-SG"
+                    cMP1.text_input(f"Producto inicial #{i+1} *", value="AFE-SG", disabled=True, key=f"b_pi_des_{i}")
                 # PRODUCCION_ARE: la MP siempre es AG-C → fija (el operario solo carga los litros)
                 elif i == 0 and tipo_proceso_sel == "PRODUCCION_ARE":
-                    cod = cMP1.text_input(f"Producto inicial #{i+1} *", value="AG-C", disabled=True, key=f"b_pi_{i}")
+                    cod = "AG-C"
+                    cMP1.text_input(f"Producto inicial #{i+1} *", value="AG-C", disabled=True, key=f"b_pi_are_{i}")
                 else:
                     cod = cMP1.selectbox(
                         f"Producto inicial #{i+1} *", opts_mp, index=0,
-                        key=f"b_pi_{i}"
+                        key=f"b_pi_sel_{i}"
                     )
                 if usa_litros:
                     _dens_i = densidad_de(cod)
