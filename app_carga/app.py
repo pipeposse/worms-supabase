@@ -1594,17 +1594,29 @@ with tab_objs[0]:
         if tipicos:
             st.caption("🔧 Insumos típicos de este proceso — sugeridos por la fórmula. Ajustá si hace falta.")
             for c, sug, ulbl in tipicos:
+                _u = ulbl or _unidad_ins(c)
                 cc1, cc2 = st.columns([2, 1])
                 cc1.text_input("Insumo", value=f"{_desc_ins(c)} ({c})", disabled=True, key=f"b_inst_lbl_{c}")
                 # La clave incluye el sugerido para que el campo siga el estimado en vivo (si no lo editaron).
                 val = cc2.number_input(
-                    f"Cantidad ({ulbl or _unidad_ins(c)})",
+                    f"Cantidad ({_u})",
                     min_value=0.0, max_value=1_000_000.0,
                     value=round(float(sug), 2), step=1.0,
                     key=f"b_inst_q_{c}_{round(float(sug),1)}"
                 )
                 if val and val > 0:
                     insumos_dict[c] = float(val)
+                # Submensaje debajo de la celda: estimado por parámetros + desvío en vivo.
+                if sug > 0:
+                    if val and val > 0:
+                        _d = val - sug
+                        _dp = (_d / sug * 100) if sug else 0.0
+                        _ico = "✅" if abs(_dp) <= 5 else "⚠️"
+                        cc2.caption(f"{_ico} estimado **{sug:,.1f} {_u}** · cargás {val:,.1f} ({_dp:+.0f}%)")
+                    else:
+                        cc2.caption(f"📐 estimado por parámetros: **{sug:,.1f} {_u}**")
+                else:
+                    cc2.caption("📐 cargá acidez / Q AG / litros para ver el estimado")
         else:
             st.caption("Este proceso no tiene insumos típicos precargados. Agregá los que correspondan abajo.")
 
@@ -1662,26 +1674,26 @@ with tab_objs[0]:
             else:
                 st.warning("⚠️ " + txt + " · **fuera** del estándar (falta para llegar al estimado).")
 
-        if tipo_proceso_sel == "PRODUCCION_ARE" and insumos_dict:
-            st.markdown("**🚨 Plan vs real (insumos)**")
-            real_fuel    = float(insumos_dict.get("FUEL", 0.0) or 0)
-            real_naoh    = float(insumos_dict.get("soda_kg", 0.0) or 0)
-            real_potasio = float(insumos_dict.get("POTASIO", 0.0) or 0)
-            _alarma_consumo("Fuel", real_fuel, est_fuel_kg, unidad="kg")
-            if catalizador_tipo == "NAOH":
-                _alarma_consumo("NaOH", real_naoh, est_naoh_kg, unidad="kg")
-                if real_potasio > 0:
-                    st.warning(f"⚠️ Cargaste {real_potasio:.2f} kg de Potasio pero el catalizador elegido era NaOH.")
-            elif catalizador_tipo == "POTASIO":
-                _alarma_consumo("Potasio", real_potasio, est_potasio_kg, unidad="kg")
-                if real_naoh > 0:
-                    st.warning(f"⚠️ Cargaste {real_naoh:.2f} kg de NaOH pero el catalizador elegido era Potasio.")
-
-        if tipo_proceso_sel == "DESGOMADO_ACUOSO" and insumos_dict:
-            st.markdown("**🚨 Plan vs real (insumos)**")
-            real_fuel = float(insumos_dict.get("FUEL", 0.0) or 0)
-            # est_fuel_kg para DESGOMADO se computó en L (8.7 L/TN)
-            _alarma_consumo("Fuel", real_fuel, est_fuel_kg, unidad="L")
+        # Plan vs real agrupado como info agregada (colapsado, por si lo quieren ver).
+        if insumos_dict and tipo_proceso_sel in ("PRODUCCION_ARE", "DESGOMADO_ACUOSO"):
+            with st.expander("📊 Plan vs real (insumos) — info agregada", expanded=False):
+                if tipo_proceso_sel == "PRODUCCION_ARE":
+                    real_fuel    = float(insumos_dict.get("FUEL", 0.0) or 0)
+                    real_naoh    = float(insumos_dict.get("soda_kg", 0.0) or 0)
+                    real_potasio = float(insumos_dict.get("POTASIO", 0.0) or 0)
+                    _alarma_consumo("Fuel", real_fuel, est_fuel_kg, unidad="kg")
+                    if catalizador_tipo == "NAOH":
+                        _alarma_consumo("NaOH", real_naoh, est_naoh_kg, unidad="kg")
+                        if real_potasio > 0:
+                            st.warning(f"⚠️ Cargaste {real_potasio:.2f} kg de Potasio pero el catalizador elegido era NaOH.")
+                    elif catalizador_tipo == "POTASIO":
+                        _alarma_consumo("Potasio", real_potasio, est_potasio_kg, unidad="kg")
+                        if real_naoh > 0:
+                            st.warning(f"⚠️ Cargaste {real_naoh:.2f} kg de NaOH pero el catalizador elegido era Potasio.")
+                elif tipo_proceso_sel == "DESGOMADO_ACUOSO":
+                    real_fuel = float(insumos_dict.get("FUEL", 0.0) or 0)
+                    # est_fuel_kg para DESGOMADO se computó en L (8.7 L/TN)
+                    _alarma_consumo("Fuel", real_fuel, est_fuel_kg, unidad="L")
 
         motivo_rango = ""
         if fuera_rango:
