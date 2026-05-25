@@ -1165,16 +1165,16 @@ with tab_objs[0]:
                 cap_l = float(fila_bien["capacidad_max_l"] or 0)
                 q_ag_max_kg = cap_l * D_AG
 
-                st.markdown("**📐 Fórmulas de carga (PRODUCCION_ARE)**")
-                st.code(
-                    "Q_glicerina (kg) = Q_AG × (acidez/100) × (PMg / (PMa × 2)) × (1 / (glicerol/100)) × factor_exceso\n"
-                    f"                 = Q_AG × (acidez/100) × ({PMg}/({PMa}×2)) × (1/(glicerol/100)) × {FE}\n\n"
-                    f"NaOH (kg)        = (Q_AG / 1000) × {fila_bien['consumo_naoh_kg_x_tn']} kg/TN\n"
-                    f"Potasio (kg)     = (Q_AG / 1000) × {fila_bien['consumo_potasio_kg_x_tn']} kg/TN\n"
-                    f"Fuel (kg)        = (Q_AG / 1000) × {fila_bien['consumo_fuel_kg_x_tn']} kg/TN",
-                    language="text"
-                )
-                st.caption(f"🛢️ Capacidad del reactor: **{int(cap_l):,} L** → hasta **{int(q_ag_max_kg):,} kg** de AG (~{q_ag_max_kg/1000:.1f} TN). Densidad AG = {D_AG} kg/L.")
+                with st.expander("📐 Fórmulas de carga y capacidad (referencia)", expanded=False):
+                    st.code(
+                        "Q_glicerina (kg) = Q_AG × (acidez/100) × (PMg / (PMa × 2)) × (1 / (glicerol/100)) × factor_exceso\n"
+                        f"                 = Q_AG × (acidez/100) × ({PMg}/({PMa}×2)) × (1/(glicerol/100)) × {FE}\n\n"
+                        f"NaOH (kg)        = (Q_AG / 1000) × {fila_bien['consumo_naoh_kg_x_tn']} kg/TN\n"
+                        f"Potasio (kg)     = (Q_AG / 1000) × {fila_bien['consumo_potasio_kg_x_tn']} kg/TN\n"
+                        f"Fuel (kg)        = (Q_AG / 1000) × {fila_bien['consumo_fuel_kg_x_tn']} kg/TN",
+                        language="text"
+                    )
+                    st.caption(f"🛢️ Capacidad del reactor: **{int(cap_l):,} L** → hasta **{int(q_ag_max_kg):,} kg** de AG (~{q_ag_max_kg/1000:.1f} TN). Densidad AG = {D_AG} kg/L.")
 
                 st.markdown("**Inputs iniciales (dispara los estimados)**")
                 cF1, cF2, cF3 = st.columns(3)
@@ -1231,16 +1231,17 @@ with tab_objs[0]:
                                    f"alternativa: {tn*rate_naoh:.1f} kg NaOH")
                     cE4.metric("Fuel", f"{est_fuel_kg:,.0f} kg")
 
-                    st.caption(
-                        f"💡 Glicerol **puro** necesario = **{est_glicerol_puro_kg:,.0f} kg**. "
-                        f"Como la glicerina tiene {glicerol_v:.0f}% de glicerol, hay que cargar "
-                        f"**{est_glice_kg:,.0f} kg** de glicerina ({mas_por_impureza:,.0f} kg extra por la impureza)."
-                    )
-                    st.caption(
-                        f"🧪 Catalizador elegido: **{('NaOH' if catalizador_tipo=='NAOH' else 'Potasio (KOH)')}**. "
-                        f"Si cambiaras al otro: {('NaOH' if catalizador_tipo=='POTASIO' else 'Potasio')} → "
-                        f"{(tn*rate_naoh) if catalizador_tipo=='POTASIO' else (tn*rate_potasio):,.2f} kg."
-                    )
+                    with st.expander("💡 Detalle del cálculo (glicerol y catalizador)", expanded=False):
+                        st.caption(
+                            f"💡 Glicerol **puro** necesario = **{est_glicerol_puro_kg:,.0f} kg**. "
+                            f"Como la glicerina tiene {glicerol_v:.0f}% de glicerol, hay que cargar "
+                            f"**{est_glice_kg:,.0f} kg** de glicerina ({mas_por_impureza:,.0f} kg extra por la impureza)."
+                        )
+                        st.caption(
+                            f"🧪 Catalizador elegido: **{('NaOH' if catalizador_tipo=='NAOH' else 'Potasio (KOH)')}**. "
+                            f"Si cambiaras al otro: {('NaOH' if catalizador_tipo=='POTASIO' else 'Potasio')} → "
+                            f"{(tn*rate_naoh) if catalizador_tipo=='POTASIO' else (tn*rate_potasio):,.2f} kg."
+                        )
 
                     st.markdown("**🎯 Producto final esperado**")
                     st.metric("ARE estimado", f"{est_are_kg:,.0f} kg", f"~{est_are_kg/1000:.1f} TN")
@@ -1562,20 +1563,65 @@ with tab_objs[0]:
                 help="El AFE-SG se pesa al moverlo de exportación a proceso. Vinculá ese ticket si lo tenés."
             ) or None
 
-        # Insumos
-        st.markdown("**Insumos** — solo se usan en el **ARMADO** (mezcla de insumos)")
-        n_ins = st.number_input("Cantidad de insumos", 0, 10, value=0, key="b_n_ins")
+        # Insumos — los típicos del proceso vienen precargados; se pueden agregar otros.
+        st.markdown("**Insumos** — los típicos del proceso ya vienen cargados (ajustá la cantidad). Solo se usan en el **ARMADO**.")
         insumos_dict = {}
-        for i in range(int(n_ins)):
-            ic1, ic2 = st.columns([2, 1])
-            ins_cod = ic1.selectbox(
-                f"Insumo #{i+1}", insumos_cat["codigo"].tolist(), key=f"b_ins_{i}",
-                format_func=lambda c: f"{insumos_cat[insumos_cat['codigo']==c].iloc[0]['descripcion']} ({c})",
-            )
-            ins_unidad = insumos_cat[insumos_cat["codigo"] == ins_cod].iloc[0]["unidad"]
-            ins_cant = ic2.number_input(f"Cantidad ({ins_unidad})", 0.0, 100000.0, key=f"b_cant_{i}")
-            if ins_cant > 0:
-                insumos_dict[ins_cod] = float(ins_cant)
+
+        def _desc_ins(c):
+            f = insumos_cat[insumos_cat["codigo"] == c]
+            return f.iloc[0]["descripcion"] if not f.empty else c
+        def _unidad_ins(c):
+            f = insumos_cat[insumos_cat["codigo"] == c]
+            return f.iloc[0]["unidad"] if not f.empty else ""
+
+        # 1) Insumos TÍPICOS del proceso/sector (FUEL siempre en REACTORES y BACHAS).
+        #    Cantidad sugerida = estimado por la fórmula; el operario solo confirma/corrige.
+        tipicos = []   # (codigo, cantidad_sugerida, unidad_label)
+        if tipo_proceso_sel == "PRODUCCION_ARE":
+            tipicos.append(("FUEL", float(est_fuel_kg or 0.0), "kg"))
+            if catalizador_tipo == "POTASIO":
+                tipicos.append(("POTASIO", float(est_potasio_kg or 0.0), "kg"))
+            else:
+                tipicos.append(("soda_kg", float(est_naoh_kg or 0.0), "kg"))
+        elif tipo_proceso_sel == "DESGOMADO_ACUOSO":
+            tipicos.append(("FUEL", float(est_fuel_kg or 0.0), "L"))
+        elif sector == "BACHAS":
+            _base_tn = float(est_are_kg or 0.0) / 1000.0
+            for _, _cr in consumo_sector[consumo_sector["sector"] == "BACHAS"].iterrows():
+                tipicos.append((_cr["codigo_insumo"], _base_tn * float(_cr["consumo_por_tn"]), _cr["unidad_consumo"]))
+
+        codigos_tipicos = [c for c, _, _ in tipicos]
+        if tipicos:
+            st.caption("🔧 Insumos típicos de este proceso — sugeridos por la fórmula. Ajustá si hace falta.")
+            for c, sug, ulbl in tipicos:
+                cc1, cc2 = st.columns([2, 1])
+                cc1.text_input("Insumo", value=f"{_desc_ins(c)} ({c})", disabled=True, key=f"b_inst_lbl_{c}")
+                # La clave incluye el sugerido para que el campo siga el estimado en vivo (si no lo editaron).
+                val = cc2.number_input(
+                    f"Cantidad ({ulbl or _unidad_ins(c)})",
+                    min_value=0.0, max_value=1_000_000.0,
+                    value=round(float(sug), 2), step=1.0,
+                    key=f"b_inst_q_{c}_{round(float(sug),1)}"
+                )
+                if val and val > 0:
+                    insumos_dict[c] = float(val)
+        else:
+            st.caption("Este proceso no tiene insumos típicos precargados. Agregá los que correspondan abajo.")
+
+        # 2) Insumos EXTRA (no listados arriba) — opción siempre disponible.
+        opts_extra = [c for c in insumos_cat["codigo"].tolist() if c not in codigos_tipicos]
+        with st.expander("➕ Agregar otro insumo (no listado arriba)", expanded=False):
+            n_extra = st.number_input("¿Cuántos insumos extra?", 0, 10, value=0, key="b_n_ins_extra")
+            for i in range(int(n_extra)):
+                ie1, ie2 = st.columns([2, 1])
+                ins_cod = ie1.selectbox(
+                    f"Insumo extra #{i+1}", opts_extra, key=f"b_insx_{i}",
+                    format_func=lambda c: f"{_desc_ins(c)} ({c})",
+                )
+                ins_unidad = _unidad_ins(ins_cod)
+                ins_cant = ie2.number_input(f"Cantidad ({ins_unidad})", 0.0, 1_000_000.0, key=f"b_cantx_{i}")
+                if ins_cod and ins_cant > 0:
+                    insumos_dict[ins_cod] = float(ins_cant)
 
         # Parámetros de proceso (aplicables al tipo seleccionado)
         parametros_dict = {}
@@ -1643,6 +1689,24 @@ with tab_objs[0]:
             motivo_rango = st.text_input("Motivo fuera de rango * (≥5 chars)", max_chars=200, key="b_motivo_rng")
 
         obs = st.text_input("Observaciones", max_chars=200, key="b_obs")
+
+        # Resumen compacto antes de guardar (reduce errores de carga).
+        with st.container(border=True):
+            st.markdown("**📋 Revisá antes de guardar**")
+            _mp_txt = ", ".join(f"{c} {k/1000:,.2f} TN" for c, k in mps_ingresadas) if mps_ingresadas else ("— (recuperación)" if es_recup else "—")
+            _obj_txt = (f"{p_buscado or '—'}" + (f" · {calidad_buscada}" if calidad_buscada else "")) \
+                       if (es_reactor or sector == "BACHAS") else f"{p_obt or '—'} · {kg_obt/1000:,.2f} TN"
+            _ins_txt = ", ".join(f"{k}: {v:g}" for k, v in insumos_dict.items()) if insumos_dict else "—"
+            rs1, rs2, rs3 = st.columns(3)
+            rs1.caption(f"**Sector / Proceso**\n\n{sectores[sectores['codigo']==sector].iloc[0]['nombre_ui']}"
+                        + (f" · {tipo_proceso_sel}" if tipo_proceso_sel else ""))
+            rs1.caption(f"**Ticket / ID:** {identificador or '—'}")
+            rs2.caption(f"**Materia prima**\n\n{_mp_txt}")
+            rs2.caption(f"**Insumos:** {_ins_txt}")
+            rs3.caption(f"**Objetivo**\n\n{_obj_txt}")
+            if est_are_kg:
+                rs3.caption(f"**Estimado final:** {est_are_kg/1000:,.2f} TN")
+
         submit_b = st.button("✅ Guardar carga", type="primary", use_container_width=True, key="b_submit")
 
         if submit_b:
