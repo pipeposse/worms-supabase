@@ -484,7 +484,11 @@ if st.session_state.section != "CARGAS":
                        producto, producto_base, corriente,
                        cliente, transporte, procedencia,
                        peso_entrada, peso_salida,
-                       (peso_neto * -1) AS peso_neto, evaluado, lab_calidad, _synced_at
+                       (peso_neto * -1) AS peso_neto, evaluado, lab_calidad,
+                       lab_prc_acidez, lab_prc_agua, lab_prc_producto,
+                       lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
+                       lab_color, lab_empleado, lab_rechazado, lab_fecha, lab_num_muestra,
+                       _synced_at
                 FROM produccion.v_transacciones_limpias
                 WHERE fecha_entrada = %s
                 ORDER BY hora_e DESC NULLS LAST, transaccion DESC
@@ -518,14 +522,48 @@ if st.session_state.section != "CARGAS":
                 st.markdown("**Detalle de llegadas**")
                 df_show = df_d.copy()
                 df_show["evaluado"] = df_show["eval_estado"].map({"SI":"\u2705 SI","NO":"\u26a0\ufe0f NO","no corresponde":"\u2014 no corresponde"}).fillna(df_show["eval_estado"])
-                st.dataframe(
-                    df_show[["transaccion","hora_e","patente_chasis","conductor","producto_base","corriente",
-                             "peso_entrada","peso_salida","peso_neto","evaluado","lab_calidad","cliente","transporte","procedencia"]],
-                    use_container_width=True, hide_index=True, height=460
-                )
+                # Orden preestablecido: producto_base -> lab_calidad -> corriente juntas y al frente.
+                _orden = ["transaccion","hora_e","producto_base","lab_calidad","corriente","evaluado",
+                          "peso_neto","peso_entrada","peso_salida","patente_chasis","conductor",
+                          "cliente","transporte","procedencia","lab_prc_acidez","lab_prc_agua",
+                          "lab_ppm_fosforo","lab_densidad"]
+                _orden = [c for c in _orden if c in df_show.columns]
+                _def = [c for c in ["transaccion","hora_e","producto_base","lab_calidad","corriente",
+                                    "evaluado","peso_neto","cliente"] if c in df_show.columns]
+                _sel = st.multiselect("Columnas a mostrar (se reordenan autom\u00e1ticamente)", _orden, default=_def, key="pd_cols")
+                _cols = [c for c in _orden if c in _sel] or _orden
+                st.dataframe(df_show[_cols], use_container_width=True, hide_index=True, height=460)
+                st.caption("Clic en el encabezado de una columna para ordenar (\u25b2/\u25bc). Eleg\u00ed o quit\u00e1 columnas arriba.")
                 st.download_button("\u2b07\ufe0f Descargar CSV del dia",
                                    df_d.dropna(axis=1, how="all").to_csv(index=False).encode("utf-8"),
                                    file_name=f"porteria_{dia_sel}.csv", mime="text/csv")
+
+                # ----- Ver qu\u00e9 evalu\u00f3 laboratorio, por ticket -----
+                ev = df_d[df_d["evaluado"] == "SI"] if "evaluado" in df_d.columns else df_d.iloc[0:0]
+                if not ev.empty:
+                    with st.expander("Ver evaluaci\u00f3n de laboratorio por ticket", expanded=False):
+                        def _lv(x, dec=2):
+                            return f"{float(x):,.{dec}f}" if pd.notna(x) else "\u2014"
+                        _tk = st.selectbox("Ticket evaluado", ev["transaccion"].tolist(),
+                                           format_func=lambda x: f"Ticket {int(x)}", key="pd_lab_tk")
+                        _r = ev[ev["transaccion"] == _tk].iloc[0]
+                        lc = st.columns(4)
+                        lc[0].metric("Calidad", _r.get("lab_calidad") or "\u2014")
+                        lc[1].metric("Acidez %", _lv(_r.get("lab_prc_acidez")))
+                        lc[2].metric("Agua %", _lv(_r.get("lab_prc_agua")))
+                        lc[3].metric("Producto %", _lv(_r.get("lab_prc_producto")))
+                        lc2 = st.columns(4)
+                        lc2[0].metric("Azufre ppm", _lv(_r.get("lab_ppm_azufre")))
+                        lc2[1].metric("F\u00f3sforo ppm", _lv(_r.get("lab_ppm_fosforo")))
+                        lc2[2].metric("Densidad g/ml", _lv(_r.get("lab_densidad"), 3))
+                        lc2[3].metric("Rechazado", str(_r.get("lab_rechazado") or "\u2014"))
+                        _pb = _r.get("producto_base") or "\u2014"
+                        _col = _r.get("lab_color") or "\u2014"
+                        _mu = _r.get("lab_num_muestra")
+                        _mu = int(_mu) if pd.notna(_mu) else "\u2014"
+                        _emp = _r.get("lab_empleado") or "\u2014"
+                        _flab = _r.get("lab_fecha") or "\u2014"
+                        st.caption(f"Producto: {_pb} \u00b7 Color: {_col} \u00b7 Muestra #{_mu} \u00b7 Analista: {_emp} \u00b7 Fecha lab: {_flab}")
 
                 # ----- Comprobante de pesaje (por id unico; transaccion puede repetirse) -----
                 st.divider()
@@ -736,11 +774,16 @@ if st.session_state.section != "CARGAS":
                     lambda r: ("no corresponde" if r["corriente"] not in CORR_EVAL else r["evaluado"]), axis=1)
                 # ocultar columnas 100% vac\u00edas
                 df_pd = df_pd.dropna(axis=1, how="all")
-                _front = [c for c in ["transaccion","fecha_entrada","eval_estado","producto_base","corriente","peso_neto","cliente"] if c in df_pd.columns]
+                _front = [c for c in ["transaccion","fecha_entrada","producto_base","lab_calidad","corriente",
+                                      "eval_estado","peso_neto","cliente"] if c in df_pd.columns]
                 _rest = [c for c in df_pd.columns if c not in _front]
-                df_pd = df_pd[_front + _rest]
-                st.caption(f"Mostrando {df_pd.shape[1]} columnas con datos (se ocultan las 100% vac\u00edas).")
-                st.dataframe(df_pd, use_container_width=True, hide_index=True, height=420)
+                _orden_h = _front + _rest
+                df_pd = df_pd[_orden_h]
+                _sel_h = st.multiselect("Columnas a mostrar (se reordenan autom\u00e1ticamente)", _orden_h,
+                                        default=_front, key="ph_cols")
+                _cols_h = [c for c in _orden_h if c in _sel_h] or _orden_h
+                st.caption(f"{len(df_pd)} filas \u00b7 {len(_cols_h)} columnas. Clic en el encabezado para ordenar (\u25b2/\u25bc); eleg\u00ed/quit\u00e1 columnas arriba.")
+                st.dataframe(df_pd[_cols_h], use_container_width=True, hide_index=True, height=420)
                 st.download_button("\u2b07\ufe0f Descargar CSV", df_pd.to_csv(index=False).encode("utf-8"),
                                    file_name=f"porteria_hist_{fmin}_{fmax}.csv", mime="text/csv")
             else:
