@@ -850,3 +850,7 @@ INSERT INTO porteria_limpieza(producto, producto_base, corriente) VALUES
  ('ARE-V (B)','ARE-B','vegetal'),
  ('AFE(AL)','AFE-AL','animal')
 ON CONFLICT (producto) DO NOTHING;
+
+-- Densidad de insumos líquidos (kg/L) para convertir litros<->kg. No destructivo. Editable.
+UPDATE dic_insumo SET densidad_g_ml = 1.33 WHERE codigo = 'soda_kg'         AND densidad_g_ml IS NULL;  -- NaOH solución (default, confirmar)
+UPDATE dic_insumo SET densidad_g_ml = 0.95 WHERE codigo IN ('FUEL','fuel_l') AND densidad_g_ml IS NULL;  -- fuel oil aprox

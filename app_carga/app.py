@@ -80,40 +80,37 @@ def go_to(sec):
     st.rerun()
 
 if st.session_state.section is None:
-    st.title("WORMS · Elegí qué querés hacer")
-    st.caption(f"Sesión: **{USR['nombre_full']}** (rol {USR['rol']})")
-    cA, cB, cC = st.columns(3)
-    with cA:
-        st.markdown("### 🏭 Cargas")
-        st.write("Carga de producción, anulaciones, observación y auditoría.")
-        if st.button("Entrar a Cargas", type="primary", use_container_width=True, key="land_cargas"):
-            go_to("CARGAS")
-    with cB:
-        st.markdown("### 🧪 Laboratorio")
-        st.write("Vista de procesos_lab: filtros, estadísticas, descarga CSV.")
-        if st.button("Entrar a Laboratorio", use_container_width=True, key="land_lab"):
-            go_to("LAB")
-    with cC:
-        st.markdown("### 🚛 Portería")
-        st.write("Vista de v_transacciones_limpias: filtros, peso por producto, descarga.")
-        if st.button("Entrar a Portería", use_container_width=True, key="land_port"):
-            go_to("PORT")
+    st.markdown("""
+    <style>
+      .block-container{max-width:1100px;padding-top:2.4rem;}
+      [data-testid="stVerticalBlockBorderWrapper"]{transition:border-color .15s;}
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown("## 🏭 WORMS · Panel de producción")
+    st.caption(f"Sesión: **{USR['nombre_full']}** · rol **{USR['rol']}**")
+    st.write("")
+
+    tiles = [
+        ("🏭", "Cargas", "Carga de producción: armado, etapas, producto final y anulaciones.", "CARGAS", "land_cargas", True),
+        ("📊", "Vistas de producción", "Producción, consumos y tiempos por sector + informe mensual (kg/L/TN).", "VISTAS", "land_vistas", True),
+        ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
+        ("🚛", "Portería", "Pesajes de portería: filtros, peso por producto y descarga.", "PORT", "land_port", False),
+    ]
     if USR["rol"] in ("SUPERVISOR", "ADMIN"):
-        st.divider()
-        cCh, _, _ = st.columns(3)
-        with cCh:
-            st.markdown("### 🤖 Consultas IA")
-            st.write("Preguntá en lenguaje natural sobre camiones y laboratorio (solo lectura).")
-            if st.button("Entrar a Consultas IA", use_container_width=True, key="land_chat"):
-                go_to("CHAT")
+        tiles.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
     if USR["rol"] == "ADMIN":
-        st.divider()
-        cAd, _, _ = st.columns(3)
-        with cAd:
-            st.markdown("### ⚙️ Admin")
-            st.write("Gestión de usuarios: alta, roles, sectores, reset PIN, activar/desactivar.")
-            if st.button("Entrar a Admin", use_container_width=True, key="land_admin"):
-                go_to("ADMIN")
+        tiles.append(("⚙️", "Admin", "Gestión de usuarios: alta, roles, sectores, reset PIN.", "ADMIN", "land_admin", False))
+
+    for i in range(0, len(tiles), 3):
+        cols = st.columns(3)
+        for col, (icon, tit, desc, sec, key, prim) in zip(cols, tiles[i:i+3]):
+            with col:
+                with st.container(border=True):
+                    st.markdown(f"#### {icon} {tit}")
+                    st.caption(desc)
+                    if st.button("Entrar", type=("primary" if prim else "secondary"),
+                                 use_container_width=True, key=key):
+                        go_to(sec)
     st.stop()
 
 with st.sidebar:
@@ -132,7 +129,19 @@ with st.sidebar:
     st.divider()
     st.caption("Base: Supabase")
 
-st.title("Carga de datos · WORMS")
+# ---- estilo global (look más profesional) ----
+st.markdown("""
+<style>
+  .block-container{padding-top:2rem; max-width:1180px;}
+  [data-testid="stMetric"]{background:#10151c;border:1px solid #222c38;border-radius:12px;padding:10px 14px;}
+  [data-testid="stMetricValue"]{font-size:1.45rem;}
+  [data-testid="stMetricLabel"] p{color:#93a1b0;font-size:.78rem;}
+  section[data-testid="stSidebar"]{border-right:1px solid #222c38;}
+  div[data-testid="stExpander"] details{border-radius:12px;border-color:#222c38;}
+  .stTabs [data-baseweb="tab-list"]{gap:2px;}
+  h1{font-size:1.7rem;} h2{font-size:1.3rem;}
+</style>
+""", unsafe_allow_html=True)
 
 if st.session_state.get("show_chg_pin"):
     with st.expander("🔑 Cambiar mi PIN", expanded=True):
@@ -242,7 +251,13 @@ bienes_uso_full = cat("SELECT id_bien_uso, codigo, nombre_ui, capacidad_max_l, c
 sectores = cat("SELECT codigo, nombre_ui FROM dic_sector WHERE activo ORDER BY codigo")
 calidades = cat("SELECT codigo, descripcion FROM dic_calidad WHERE activo ORDER BY orden")
 turnos = cat("SELECT codigo FROM dic_turno WHERE activo")
-insumos_cat = cat("SELECT codigo, descripcion, unidad, COALESCE(evaluable,FALSE) AS evaluable FROM dic_insumo WHERE activo ORDER BY codigo")
+insumos_cat = cat("SELECT codigo, descripcion, unidad, COALESCE(evaluable,FALSE) AS evaluable, densidad_g_ml FROM dic_insumo WHERE activo ORDER BY codigo")
+def densidad_insumo(cod, default=None):
+    """Densidad kg/L (=g/ml) de un insumo para convertir litros<->kg. Editable en dic_insumo."""
+    r = insumos_cat[insumos_cat["codigo"] == cod]
+    if not r.empty and pd.notna(r.iloc[0]["densidad_g_ml"]):
+        return float(r.iloc[0]["densidad_g_ml"])
+    return default
 
 # Catalizadores: genera_glicerina_recup / reduce_glicerina (editable en dic_catalizador)
 try:
@@ -369,8 +384,9 @@ def _header_sync():
 
 
 if st.session_state.section != "CARGAS":
-    _header_sync()
-    st.divider()
+    if st.session_state.section in ("LAB", "PORT"):
+        _header_sync()
+        st.divider()
     from datetime import timedelta as _td
     if st.session_state.section == "LAB":
         # =================== LABORATORIO ===================
@@ -932,6 +948,107 @@ if st.session_state.section != "CARGAS":
                                    resumen.to_csv(index=False).encode("utf-8"),
                                    file_name=f"lab_por_cliente_{param_sel}.csv", mime="text/csv")
 
+    elif st.session_state.section == "VISTAS":
+        # =================== VISTAS DE PRODUCCI\u00d3N ===================
+        st.title("\ud83d\udcca Vistas de producci\u00f3n")
+        try:
+            secs_v = cat("SELECT DISTINCT sector FROM produccion.v_reacciones_lkg WHERE sector IS NOT NULL ORDER BY 1")["sector"].tolist()
+        except Exception as e:
+            st.exception(e); secs_v = []
+        if not secs_v:
+            st.info("Todav\u00eda no hay producci\u00f3n cargada para mostrar.")
+        else:
+            with st.expander("Filtros", expanded=True):
+                cf1, cf2, cf3, cf4 = st.columns([1.3, 1, 1, 1.4])
+                sector_v = cf1.selectbox("Sector", secs_v, key="vp_sector")
+                fmin_v = cf2.date_input("Desde", date.today().replace(day=1), key="vp_fmin")
+                fmax_v = cf3.date_input("Hasta", date.today(), key="vp_fmax")
+                unidad_v = cf4.radio("Unidad", ["kg", "litros", "TN"], horizontal=True, key="vp_unidad")
+
+            dfv = cat("""
+                SELECT * FROM produccion.v_reacciones_lkg
+                WHERE sector=%s AND fecha BETWEEN %s AND %s
+                ORDER BY fecha
+            """, (sector_v, fmin_v.isoformat(), fmax_v.isoformat()))
+
+            if dfv.empty:
+                st.info("Sin reacciones en el sector/rango elegido.")
+            else:
+                u = unidad_v
+                def _conv(col_kg, col_lts):
+                    if u == "litros":
+                        return pd.to_numeric(dfv[col_lts], errors="coerce")
+                    v = pd.to_numeric(dfv[col_kg], errors="coerce")
+                    return (v / 1000.0) if u == "TN" else v
+                dfv["_ag"]   = _conv("ag_kg", "ag_lts")
+                dfv["_are"]  = _conv("are_kg", "are_lts")
+                dfv["_fuel"] = _conv("fuel_kg", "fuel_lts")
+                dfv["_naoh"] = _conv("naoh_kg", "naoh_lts")
+                dfv["_gli"]  = _conv("gli_fresca_kg", "gli_fresca_lts").fillna(0) + _conv("gli_recup_kg", "gli_recup_lts").fillna(0)
+                dfv["_dia"]  = pd.to_datetime(dfv["fecha"]).dt.date
+                _hrs = pd.to_numeric(dfv["horas"], errors="coerce")
+                _ag_kg_tot = pd.to_numeric(dfv["ag_kg"], errors="coerce").sum()
+                _are_kg_tot = pd.to_numeric(dfv["are_kg"], errors="coerce").sum()
+
+                # ---- KPIs ----
+                st.markdown("#### Resumen del per\u00edodo")
+                k = st.columns(5)
+                k[0].metric("Reacciones", f"{len(dfv)}")
+                k[1].metric(f"AG procesado ({u})", f"{dfv['_ag'].sum():,.2f}")
+                k[2].metric(f"ARE obtenido ({u})", f"{dfv['_are'].sum():,.2f}")
+                k[3].metric("Rendimiento", f"{(_are_kg_tot/_ag_kg_tot*100):,.1f}%" if _ag_kg_tot else "\u2014")
+                k[4].metric("Horas prom.", f"{_hrs.mean():,.1f} h" if _hrs.notna().any() else "\u2014")
+
+                # ---- Producci\u00f3n por d\u00eda ----
+                st.markdown(f"#### Producci\u00f3n por d\u00eda \u00b7 {u}")
+                prod_dia = dfv.groupby("_dia").agg(AG=("_ag", "sum"), ARE=("_are", "sum")).reset_index()
+                st.bar_chart(prod_dia, x="_dia", y=["AG", "ARE"], color=["#60a5fa", "#2dd4bf"], use_container_width=True)
+
+                # ---- Consumos por d\u00eda ----
+                st.markdown(f"#### Consumos por d\u00eda \u00b7 {u}")
+                cons_dia = dfv.groupby("_dia").agg(Fuel=("_fuel", "sum"), NaOH=("_naoh", "sum"), Glicerina=("_gli", "sum")).reset_index()
+                st.bar_chart(cons_dia, x="_dia", y=["Fuel", "NaOH", "Glicerina"], color=["#f5b94a", "#c084fc", "#34d399"], use_container_width=True)
+
+                # ---- Tiempos ----
+                if _hrs.notna().any():
+                    st.markdown("#### Tiempos por reacci\u00f3n (horas)")
+                    t = dfv.loc[_hrs.notna(), ["ticket", "horas"]].copy()
+                    st.bar_chart(t, x="ticket", y="horas", color="#fbbf24", use_container_width=True)
+
+                # ---- Informe mensual ----
+                st.markdown("#### Informe mensual (todo en kg, litros y TN)")
+                dfv["_mes"] = pd.to_datetime(dfv["fecha"]).dt.to_period("M").astype(str)
+                g = dfv.groupby("_mes")
+                rep = g.agg(
+                    reacciones=("id_batch", "count"),
+                    AG_kg=("ag_kg", "sum"), AG_lts=("ag_lts", "sum"),
+                    ARE_kg=("are_kg", "sum"), ARE_lts=("are_lts", "sum"),
+                    Fuel_lts=("fuel_lts", "sum"), NaOH_kg=("naoh_kg", "sum"),
+                    NaOH_lts=("naoh_lts", "sum"), horas=("horas", "sum"),
+                ).reset_index().rename(columns={"_mes": "mes"})
+                rep["rinde_%"] = (rep["ARE_kg"] / rep["AG_kg"] * 100).round(1)
+                rep["AG_TN"] = (rep["AG_kg"] / 1000).round(2)
+                rep["ARE_TN"] = (rep["ARE_kg"] / 1000).round(2)
+                rep = rep.round(2)
+                st.dataframe(rep, use_container_width=True, hide_index=True)
+                st.download_button("\u2b07\ufe0f Descargar informe (CSV)", rep.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"informe_{sector_v}_{fmin_v}_{fmax_v}.csv", mime="text/csv")
+
+                # ---- Detalle reacci\u00f3n por reacci\u00f3n ----
+                with st.expander("Detalle reacci\u00f3n por reacci\u00f3n (litros y kg)"):
+                    cols_show = ["fecha", "ticket", "reactor", "corriente",
+                                 "ag_kg", "ag_lts", "are_kg", "are_lts",
+                                 "naoh_kg", "naoh_lts", "fuel_lts",
+                                 "gli_fresca_kg", "gli_recup_kg",
+                                 "acidez_inicial", "acidez_final_pct", "densidad_final", "porc_ays",
+                                 "horas", "etapa_actual"]
+                    cols_show = [c for c in cols_show if c in dfv.columns]
+                    _det = dfv[cols_show].dropna(axis=1, how="all")
+                    st.dataframe(_det, use_container_width=True, hide_index=True, height=420)
+                    st.download_button("\u2b07\ufe0f Descargar detalle (CSV)", _det.to_csv(index=False).encode("utf-8"),
+                                       file_name=f"detalle_{sector_v}_{fmin_v}_{fmax_v}.csv", mime="text/csv",
+                                       key="vp_det_csv")
+
     elif st.session_state.section == "ADMIN":
         # =================== ADMIN ===================
         st.title("\u2699\ufe0f Gestion de usuarios")
@@ -1104,6 +1221,15 @@ with tab_objs[0]:
         }.get(sector, "Identificador")
         identificador = st.text_input(label_id, max_chars=20, key="b_id",
                                       placeholder="ej. T-2026-04-001 / B-12 / P-3")
+
+        # Corriente (Vegetal/Animal) — se define al inicio del armado. Obligatoria en REACTORES/BACHAS.
+        corriente_v = None
+        if sector in ("REACTORES", "BACHAS"):
+            corriente_v = st.radio(
+                "Corriente *", ["VEGETAL", "ANIMAL"], horizontal=True, key="b_corriente",
+                format_func=lambda c: "🌱 Vegetal" if c == "VEGETAL" else "🐄 Animal",
+                help="Origen del material. Define si la producción es vegetal o animal."
+            )
 
         # Bloque REACTORES
         id_bien_sel = None
@@ -1548,6 +1674,28 @@ with tab_objs[0]:
             elif est_glicerol_puro_kg:
                 st.caption(f"💡 Para esta corrida se necesitan **{est_glicerol_puro_kg:,.0f} kg de glicerol puro** según la fórmula.")
 
+        # Bloque NaOH (catalizador en PRODUCCION_ARE) — se carga en L o kg; se guardan SIEMPRE ambos.
+        naoh_lts_v = naoh_kg_v = None
+        if tipo_proceso_sel == "PRODUCCION_ARE" and catalizador_tipo == "NAOH":
+            _d_soda = densidad_insumo("soda_kg", 1.33)
+            st.markdown("**NaOH (catalizador)** — cargá en litros **o** kg; guardamos los dos")
+            cN1, cN2 = st.columns([1, 2])
+            _modo_naoh = cN1.radio("Unidad de carga", ["Litros", "Kg"], horizontal=True, key="b_naoh_modo")
+            if _modo_naoh == "Litros":
+                _def_l = round(float(est_naoh_kg / _d_soda), 1) if (est_naoh_kg and _d_soda) else 0.0
+                naoh_lts_v = cN2.number_input("NaOH (L) *", min_value=0.0, max_value=100000.0, step=1.0,
+                                              value=_def_l, key="b_naoh_l")
+                naoh_kg_v = round((naoh_lts_v or 0.0) * _d_soda, 2)
+                cN2.caption(f"⚖️ = **{naoh_kg_v:,.1f} kg** (densidad {_d_soda:g} kg/L)" +
+                            (f" · estimado {est_naoh_kg:,.1f} kg" if est_naoh_kg else ""))
+            else:
+                _def_k = round(float(est_naoh_kg), 1) if est_naoh_kg else 0.0
+                naoh_kg_v = cN2.number_input("NaOH (kg) *", min_value=0.0, max_value=100000.0, step=1.0,
+                                             value=_def_k, key="b_naoh_k")
+                naoh_lts_v = round((naoh_kg_v or 0.0) / _d_soda, 2) if _d_soda else None
+                cN2.caption(f"⚖️ = **{naoh_lts_v:,.1f} L** (densidad {_d_soda:g} kg/L)" +
+                            (f" · estimado {est_naoh_kg:,.1f} kg" if est_naoh_kg else ""))
+
         # Bloque AGUA + ticket porteria (solo DESGOMADO_ACUOSO)
         agua_lts_v = None
         if tipo_proceso_sel == "DESGOMADO_ACUOSO":
@@ -1581,8 +1729,7 @@ with tab_objs[0]:
             tipicos.append(("FUEL", float(est_fuel_kg or 0.0), "kg"))
             if catalizador_tipo == "POTASIO":
                 tipicos.append(("POTASIO", float(est_potasio_kg or 0.0), "kg"))
-            else:
-                tipicos.append(("soda_kg", float(est_naoh_kg or 0.0), "kg"))
+            # NaOH (soda) se carga aparte en su bloque dedicado (L/kg) → no se duplica acá.
         elif tipo_proceso_sel == "DESGOMADO_ACUOSO":
             tipicos.append(("FUEL", float(est_fuel_kg or 0.0), "L"))
         elif sector == "BACHAS":
@@ -1675,11 +1822,11 @@ with tab_objs[0]:
                 st.warning("⚠️ " + txt + " · **fuera** del estándar (falta para llegar al estimado).")
 
         # Plan vs real agrupado como info agregada (colapsado, por si lo quieren ver).
-        if insumos_dict and tipo_proceso_sel in ("PRODUCCION_ARE", "DESGOMADO_ACUOSO"):
+        if tipo_proceso_sel in ("PRODUCCION_ARE", "DESGOMADO_ACUOSO") and (insumos_dict or naoh_kg_v):
             with st.expander("📊 Plan vs real (insumos) — info agregada", expanded=False):
                 if tipo_proceso_sel == "PRODUCCION_ARE":
                     real_fuel    = float(insumos_dict.get("FUEL", 0.0) or 0)
-                    real_naoh    = float(insumos_dict.get("soda_kg", 0.0) or 0)
+                    real_naoh    = float(naoh_kg_v or 0)   # del bloque NaOH dedicado (kg)
                     real_potasio = float(insumos_dict.get("POTASIO", 0.0) or 0)
                     _alarma_consumo("Fuel", real_fuel, est_fuel_kg, unidad="kg")
                     if catalizador_tipo == "NAOH":
@@ -1732,6 +1879,10 @@ with tab_objs[0]:
                 errs.append("Motivo fuera de rango obligatorio (≥5).")
             if es_reactor and (not tipo_proceso_sel or not etapa_sel):
                 errs.append("REACTORES requiere proceso y etapa.")
+            if sector in ("REACTORES", "BACHAS") and not corriente_v:
+                errs.append("Definí la corriente (Vegetal/Animal).")
+            if tipo_proceso_sel == "PRODUCCION_ARE" and catalizador_tipo == "NAOH" and not (naoh_kg_v and naoh_kg_v > 0):
+                errs.append("Cargá el NaOH (litros o kg).")
             if errs:
                 for e in errs: st.error(e)
             else:
@@ -1768,7 +1919,8 @@ with tab_objs[0]:
                                 "  gli_recup_lts, gli_recup_kg, gli_pct_real,"
                                 "  gli_pura_total_kg,"
                                 "  agua_lts, litros_inicial, litros_obtenido, ticket_porteria,"
-                                "  observaciones, fuera_de_rango, motivo_fuera_rango"
+                                "  observaciones, fuera_de_rango, motivo_fuera_rango,"
+                                "  corriente, naoh_lts, naoh_kg"
                                 ") VALUES ("
                                 "  %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,"
                                 "  %s,%s,%s,%s,%s,%s,%s::jsonb,"
@@ -1781,6 +1933,7 @@ with tab_objs[0]:
                                 "  %s,%s,%s,"
                                 "  %s,"
                                 "  %s,%s,%s,%s,"
+                                "  %s,%s,%s,"
                                 "  %s,%s,%s"
                                 ") RETURNING id_batch",
                                 (fecha_b.isoformat(), sector, turno, int(USR["id_usuario"]), tipo_op,
@@ -1813,7 +1966,10 @@ with tab_objs[0]:
                                  (float(litros_ini) if litros_ini else None),
                                  (float(litros_obt) if litros_obt else None),
                                  (ticket_porteria_v or None),
-                                 obs or None, bool(fuera_rango), motivo_rango or None)
+                                 obs or None, bool(fuera_rango), motivo_rango or None,
+                                 (corriente_v or None),
+                                 (float(naoh_lts_v) if naoh_lts_v else None),
+                                 (float(naoh_kg_v) if naoh_kg_v else None))
                             )
                             id_b = cur.fetchone()[0]
                             # Insertar primer evento de etapa (abre el ARMADO o etapa seleccionada)
@@ -2008,6 +2164,15 @@ with tab_objs[0]:
             WHERE NOT b.anulado AND b.sector IN ('REACTORES','BACHAS')
             ORDER BY b.creado_en DESC LIMIT 100
         """)
+        # Anti-huérfanos: reacciones/bachas abiertas (sin producto final) que hay que cerrar.
+        if not df_pf.empty:
+            _abiertas = df_pf[df_pf["etapa_actual"].fillna("") != "EN_TANQUE"]
+            if not _abiertas.empty:
+                st.warning(
+                    f"⏳ Hay **{len(_abiertas)}** reacción/es abierta/s sin producto final (etapa ≠ EN_TANQUE). "
+                    "Cerralas para que no queden cargas incompletas: "
+                    + ", ".join(f"#{int(r['id_batch'])}·{r['ticket'] or '—'}" for _, r in _abiertas.head(12).iterrows())
+                )
         if df_pf.empty:
             st.info("Sin reacciones/bachas para cerrar.")
         else:
@@ -2049,6 +2214,14 @@ with tab_objs[0]:
             tanque_pf = st.text_input("Tanque destino", value=(rpf["tanque_destino"] or ""), max_chars=40, key="pf_tk",
                                       placeholder="ej. TK-12")
 
+            # Parámetros finales (los define laboratorio; se dejan asentados acá) + comentarios.
+            st.markdown("**Parámetros finales** · los define laboratorio (opcionales, 0 = no cargar)")
+            cP1, cP2, cP3 = st.columns(3)
+            acidez_fin_pf = cP1.number_input("Acidez final (%)", 0.0, 100.0, step=0.1, value=0.0, key=f"pf_acidez_{id_pf}")
+            dens_fin_pf   = cP2.number_input("Densidad final (gr/cm³)", 0.0, 2.0, step=0.01, value=0.0, key=f"pf_dens_{id_pf}")
+            ays_pf        = cP3.number_input("% A y S", 0.0, 100.0, step=0.1, value=0.0, key=f"pf_ays_{id_pf}")
+            obs_pf = st.text_input("Observaciones / comentarios", max_chars=300, key=f"pf_obs_{id_pf}")
+
             if est_kg and kg_pf and kg_pf > 0:
                 desv = (kg_pf - est_kg) / est_kg * 100
                 msg = f"Real **{kg_pf/1000:,.2f} TN** vs estimado **{est_kg/1000:,.2f} TN** → desvío **{desv:+.1f}%**"
@@ -2068,10 +2241,16 @@ with tab_objs[0]:
                                        SET id_producto_obtenido=%s, kg_obtenido=%s, litros_obtenido=%s,
                                            calidad_final=COALESCE(NULLIF(%s,''), calidad_final),
                                            tanque_destino=COALESCE(NULLIF(%s,''), tanque_destino),
+                                           acidez_final_pct=COALESCE(NULLIF(%s,0), acidez_final_pct),
+                                           densidad_final=COALESCE(NULLIF(%s,0), densidad_final),
+                                           porc_ays=COALESCE(NULLIF(%s,0), porc_ays),
+                                           observaciones=CASE WHEN %s <> '' THEN COALESCE(observaciones||' | ','') || %s ELSE observaciones END,
                                            etapa_actual='EN_TANQUE'
                                      WHERE id_batch=%s
                                 """, (pid_pf, float(kg_pf), (float(lts_pf) if lts_pf else None),
-                                      cal_pf, tanque_pf, id_pf))
+                                      cal_pf, tanque_pf,
+                                      float(acidez_fin_pf), float(dens_fin_pf), float(ays_pf),
+                                      obs_pf, obs_pf, id_pf))
                             audit.log("U", "fact_batch_proceso", id_pf,
                                       {"producto_final": p_obt_pf, "kg": kg_pf, "tanque": tanque_pf})
                         st.success(f"Producto final de #{id_pf} guardado."); cat.clear(); st.rerun()

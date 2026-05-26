@@ -690,3 +690,71 @@ CREATE TABLE IF NOT EXISTS fact_evaluacion_insumo (
     anulado        BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE INDEX IF NOT EXISTS ix_eval_insumo ON fact_evaluacion_insumo(codigo_insumo, fecha);
+
+-- ===========================================================================
+--  Import procesos ARE + carga futura íntegra (corriente, params finales, NaOH L/kg)
+-- ===========================================================================
+ALTER TABLE fact_batch_proceso
+  ADD COLUMN IF NOT EXISTS corriente        TEXT,                 -- VEGETAL / ANIMAL (al inicio del armado)
+  ADD COLUMN IF NOT EXISTS acidez_final_pct DOUBLE PRECISION,     -- lo define laboratorio; queda en el batch
+  ADD COLUMN IF NOT EXISTS densidad_final   DOUBLE PRECISION,     -- gr/cm3 final
+  ADD COLUMN IF NOT EXISTS porc_ays         DOUBLE PRECISION,     -- % Agua y Sedimentos
+  ADD COLUMN IF NOT EXISTS naoh_lts         DOUBLE PRECISION,     -- NaOH en litros
+  ADD COLUMN IF NOT EXISTS naoh_kg          DOUBLE PRECISION;     -- NaOH en kg (= lts * densidad soda)
+
+ALTER TABLE dic_insumo
+  ADD COLUMN IF NOT EXISTS densidad_g_ml DOUBLE PRECISION;        -- kg/L para convertir litros<->kg
+
+-- Vista de reacciones con cada líquido en litros Y kg (conversión por densidad).
+CREATE OR REPLACE VIEW v_reacciones_lkg AS
+SELECT
+  b.id_batch, b.identificador_unidad AS ticket, b.fecha, b.sector, b.tipo_proceso, b.corriente,
+  bu.nombre_ui AS reactor,
+  pi.codigo_producto AS producto_inicial, po.codigo_producto AS producto_obtenido, b.calidad_final,
+  COALESCE(b.kg_inicial,     b.litros_inicial * pi.densidad_g_ml)        AS ag_kg,
+  COALESCE(b.litros_inicial, b.kg_inicial / NULLIF(pi.densidad_g_ml,0))  AS ag_lts,
+  COALESCE(b.kg_obtenido,    b.litros_obtenido * po.densidad_g_ml)        AS are_kg,
+  COALESCE(b.litros_obtenido, b.kg_obtenido / NULLIF(po.densidad_g_ml,0)) AS are_lts,
+  COALESCE(b.gli_fresca_kg,  b.gli_fresca_lts * 1.25) AS gli_fresca_kg,
+  COALESCE(b.gli_fresca_lts, b.gli_fresca_kg / 1.25)  AS gli_fresca_lts,
+  COALESCE(b.gli_recup_kg,   b.gli_recup_lts * 1.25)  AS gli_recup_kg,
+  COALESCE(b.gli_recup_lts,  b.gli_recup_kg / 1.25)   AS gli_recup_lts,
+  b.naoh_kg, b.naoh_lts,
+  NULLIF((b.insumos->>'fuel_l'),'')::numeric                  AS fuel_lts,
+  round((NULLIF((b.insumos->>'fuel_l'),'')::numeric)*0.95, 2) AS fuel_kg,
+  b.acidez_oleico_pct AS acidez_inicial, b.acidez_final_pct, b.densidad_final, b.porc_ays,
+  b.tiempo_estimado_horas AS horas, b.inicio_ts, b.fin_ts, b.etapa_actual,
+  round((COALESCE(b.kg_obtenido,0)/1000.0)::numeric,2) AS tn_are,
+  round((COALESCE(b.kg_inicial,0)/1000.0)::numeric,2)  AS tn_ag
+FROM fact_batch_proceso b
+LEFT JOIN dim_producto pi ON pi.id_producto = b.id_producto_inicial
+LEFT JOIN dim_producto po ON po.id_producto = b.id_producto_obtenido
+LEFT JOIN dim_bien_uso  bu ON bu.id_bien_uso = b.id_bien_uso
+WHERE NOT b.anulado AND b.sector IN ('REACTORES','BACHAS');
+
+-- ===========================================================================
+--  Limpieza de tablas/vistas/columnas OBSOLETAS o DUPLICADAS (idempotente).
+--  Se ejecuta al final para dejar el esquema en el estado vigente aunque los
+--  CREATE de arriba sigan presentes por histórico. NO toca transacciones / procesos_lab.
+-- ===========================================================================
+DROP VIEW  IF EXISTS v_batch_activo          CASCADE;
+DROP VIEW  IF EXISTS v_kpi_produccion_diaria CASCADE;
+DROP VIEW  IF EXISTS v_alertas_lab           CASCADE;
+ALTER TABLE fact_batch_proceso DROP COLUMN IF EXISTS id_reactor;
+ALTER TABLE fact_batch_proceso DROP COLUMN IF EXISTS id_tanque;
+-- modelo viejo de laboratorio normalizado (hoy: procesos_lab raw + fact_evaluacion_interna)
+DROP TABLE IF EXISTS fact_parametro_valor   CASCADE;
+DROP TABLE IF EXISTS fact_analisis_lab      CASCADE;
+DROP TABLE IF EXISTS dim_parametro_lab      CASCADE;
+DROP TABLE IF EXISTS dic_tipo_parametro     CASCADE;
+DROP TABLE IF EXISTS dic_estado_analisis    CASCADE;
+-- portería vieja (hoy: transacciones raw)
+DROP TABLE IF EXISTS dim_camion             CASCADE;
+-- agregados/metas viejos nunca usados
+DROP TABLE IF EXISTS fact_produccion_diaria CASCADE;
+DROP TABLE IF EXISTS ref_meta_produccion    CASCADE;
+-- muestras viejas (hoy: fact_evaluacion_interna)
+DROP TABLE IF EXISTS fact_muestra_proceso   CASCADE;
+-- dimensiones duplicadas
+DROP TABLE IF EXISTS dim_reactor            CASCADE;  -- duplica dim_bien_uso
+DROP TABLE IF EXISTS dim_tanque             CASCADE;  -- la app usa tanque_destino (texto)
