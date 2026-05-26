@@ -176,6 +176,44 @@ def cat(query, params=None):
         conn.close()
 
 
+# ---- Preferencias de UI por usuario (persisten en dim_usuario.prefs JSONB) ----
+def _load_prefs():
+    """Lee las prefs del usuario una vez por sesión y las cachea en session_state."""
+    if "_prefs" not in st.session_state:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            with conn.cursor() as cur:
+                cur.execute("SET search_path TO produccion, public")
+                cur.execute("SELECT COALESCE(prefs,'{}'::jsonb) FROM dim_usuario WHERE id_usuario=%s",
+                            (USR["id_usuario"],))
+                row = cur.fetchone()
+            conn.close()
+            st.session_state["_prefs"] = (row[0] if row and row[0] else {}) or {}
+        except Exception:
+            st.session_state["_prefs"] = {}
+    return st.session_state["_prefs"]
+
+def get_pref(key, default=None):
+    return _load_prefs().get(key, default)
+
+def set_pref(key, value):
+    """Persiste una preferencia (merge en el JSONB) y actualiza la copia en sesión."""
+    prefs = _load_prefs()
+    if prefs.get(key) == value:
+        return
+    prefs[key] = value
+    st.session_state["_prefs"] = prefs
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        with conn.cursor() as cur:
+            cur.execute("SET search_path TO produccion, public")
+            cur.execute("UPDATE dim_usuario SET prefs = COALESCE(prefs,'{}'::jsonb) || %s::jsonb WHERE id_usuario=%s",
+                        (json.dumps({key: value}), USR["id_usuario"]))
+        conn.commit(); conn.close()
+    except Exception:
+        pass
+
+
 productos = cat(
     "SELECT id_producto, codigo_producto, corriente, tipo_producto, "
     "rango_kg_min, rango_kg_max, COALESCE(densidad_g_ml, 0.91) AS densidad_g_ml, "
@@ -530,8 +568,12 @@ if st.session_state.section != "CARGAS":
                 _orden = [c for c in _orden if c in df_show.columns]
                 _def = [c for c in ["transaccion","hora_e","producto_base","lab_calidad","corriente",
                                     "evaluado","peso_neto","cliente"] if c in df_show.columns]
-                _sel = st.multiselect("Columnas a mostrar (se reordenan autom\u00e1ticamente)", _orden, default=_def, key="pd_cols")
+                _saved = get_pref("porteria_dia_cols", None)
+                _default = [c for c in _saved if c in _orden] if _saved else _def
+                _sel = st.multiselect("Columnas a mostrar (se reordenan autom\u00e1ticamente \u00b7 se guardan por usuario)", _orden, default=_default, key="pd_cols")
                 _cols = [c for c in _orden if c in _sel] or _orden
+                if _cols != _saved:
+                    set_pref("porteria_dia_cols", _cols)
                 st.dataframe(df_show[_cols], use_container_width=True, hide_index=True, height=460)
                 st.caption("Clic en el encabezado de una columna para ordenar (\u25b2/\u25bc). Eleg\u00ed o quit\u00e1 columnas arriba.")
                 st.download_button("\u2b07\ufe0f Descargar CSV del dia",
@@ -779,9 +821,13 @@ if st.session_state.section != "CARGAS":
                 _rest = [c for c in df_pd.columns if c not in _front]
                 _orden_h = _front + _rest
                 df_pd = df_pd[_orden_h]
-                _sel_h = st.multiselect("Columnas a mostrar (se reordenan autom\u00e1ticamente)", _orden_h,
-                                        default=_front, key="ph_cols")
+                _saved_h = get_pref("porteria_hist_cols", None)
+                _default_h = [c for c in _saved_h if c in _orden_h] if _saved_h else _front
+                _sel_h = st.multiselect("Columnas a mostrar (se reordenan autom\u00e1ticamente \u00b7 se guardan por usuario)", _orden_h,
+                                        default=_default_h, key="ph_cols")
                 _cols_h = [c for c in _orden_h if c in _sel_h] or _orden_h
+                if _cols_h != _saved_h:
+                    set_pref("porteria_hist_cols", _cols_h)
                 st.caption(f"{len(df_pd)} filas \u00b7 {len(_cols_h)} columnas. Clic en el encabezado para ordenar (\u25b2/\u25bc); eleg\u00ed/quit\u00e1 columnas arriba.")
                 st.dataframe(df_pd[_cols_h], use_container_width=True, hide_index=True, height=420)
                 st.download_button("\u2b07\ufe0f Descargar CSV", df_pd.to_csv(index=False).encode("utf-8"),

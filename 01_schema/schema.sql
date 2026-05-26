@@ -705,6 +705,10 @@ ALTER TABLE fact_batch_proceso
 ALTER TABLE dic_insumo
   ADD COLUMN IF NOT EXISTS densidad_g_ml DOUBLE PRECISION;        -- kg/L para convertir litros<->kg
 
+-- Preferencias de UI por usuario (columnas visibles por tabla, etc.)
+ALTER TABLE dim_usuario
+  ADD COLUMN IF NOT EXISTS prefs JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 -- Vista de reacciones con cada líquido en litros Y kg (conversión por densidad).
 CREATE OR REPLACE VIEW v_reacciones_lkg AS
 SELECT
