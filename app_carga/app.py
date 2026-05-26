@@ -680,12 +680,13 @@ if st.session_state.section != "CARGAS":
                 by_day = df_p.dropna(subset=["fecha_entrada"]).groupby("fecha_entrada").size().reset_index(name="cantidad")
                 st.line_chart(by_day, x="fecha_entrada", y="cantidad", use_container_width=True)
 
-                st.markdown("**Kg netos por corriente**")
+                st.markdown("**TN netas por corriente**")
                 corr_sum = (df_p.dropna(subset=["corriente"])
                                 .assign(peso=pd.to_numeric(df_p["peso_neto"], errors="coerce"))
                                 .groupby("corriente")["peso"].sum()
                                 .sort_values(ascending=False).reset_index())
-                st.bar_chart(corr_sum, x="corriente", y="peso", use_container_width=True)
+                corr_sum["TN"] = (corr_sum["peso"] / 1000).round(2)
+                st.bar_chart(corr_sum, x="corriente", y="TN", use_container_width=True)
 
                 # ----- Evaluado vs no evaluado -----
                 st.markdown("### Cobertura de evaluacion (lab)")
@@ -784,8 +785,9 @@ if st.session_state.section != "CARGAS":
                 dm["mes"] = dm["fecha_entrada"].dt.to_period("M").astype(str)
                 tot_mes = dm.groupby("mes")["peso_neto"].sum().reset_index()
                 tot_mes.columns = ["mes", "kg_netos"]
-                st.markdown("**Total de kg netos por mes**")
-                st.bar_chart(tot_mes, x="mes", y="kg_netos", use_container_width=True)
+                tot_mes["TN"] = (tot_mes["kg_netos"] / 1000).round(2)
+                st.markdown("**Total de TN netas por mes**")
+                st.bar_chart(tot_mes, x="mes", y="TN", use_container_width=True)
 
                 # Comparacion mensual: acumulado por dia-del-mes, una linea por mes
                 st.markdown("**Comparacion entre meses (acumulado dia 1 -> fin de mes)**")
@@ -824,10 +826,12 @@ if st.session_state.section != "CARGAS":
                                                   "acum": ritmo*dd, "tipo": "proyeccion"})
 
                     plot_df = pd.concat([diario, pd.DataFrame(proy_rows)], ignore_index=True) if proy_rows else diario
+                    plot_df = plot_df.copy()
+                    plot_df["acum_tn"] = plot_df["acum"] / 1000.0
 
                     chart = alt.Chart(plot_df).mark_line(point=False).encode(
                         x=alt.X("dia:Q", title="día del mes"),
-                        y=alt.Y("acum:Q", title="kg netos acumulados"),
+                        y=alt.Y("acum_tn:Q", title="TN netas acumuladas"),
                         color=alt.Color("mes:N", title="mes"),
                         strokeDash=alt.StrokeDash("tipo:N", title="",
                                    scale=alt.Scale(domain=["real","proyeccion"], range=[[1,0],[6,4]])),
@@ -838,8 +842,8 @@ if st.session_state.section != "CARGAS":
                     if mes_actual in meses_sel and proy_rows:
                         proy_total = proy_rows[-1]["acum"]
                         cp1, cp2 = st.columns(2)
-                        cp1.metric(f"Acumulado {mes_actual} a hoy", f"{int(acum_hoy):,}".replace(",", "."))
-                        cp2.metric("Proyección fin de mes", f"{int(proy_total):,}".replace(",", "."),
+                        cp1.metric(f"Acumulado {mes_actual} a hoy (TN)", f"{acum_hoy/1000:,.2f}")
+                        cp2.metric("Proyección fin de mes (TN)", f"{proy_total/1000:,.2f}",
                                    help="Ritmo diario actual × días del mes")
 
                 # Estadisticas por procedencia
@@ -850,9 +854,10 @@ if st.session_state.section != "CARGAS":
                                      kg_total=("peso_neto","sum"),
                                      kg_promedio=("peso_neto","mean"))
                                 .sort_values("kg_total", ascending=False).reset_index())
-                by_proc["kg_total"] = by_proc["kg_total"].round(0)
-                by_proc["kg_promedio"] = by_proc["kg_promedio"].round(0)
-                st.bar_chart(by_proc.head(15), x="cliente", y="kg_total", use_container_width=True)
+                by_proc["TN_total"] = (by_proc["kg_total"] / 1000).round(2)
+                by_proc["TN_promedio"] = (by_proc["kg_promedio"] / 1000).round(2)
+                by_proc = by_proc.drop(columns=["kg_total", "kg_promedio"])
+                st.bar_chart(by_proc.head(15), x="cliente", y="TN_total", use_container_width=True)
                 st.dataframe(by_proc, use_container_width=True, hide_index=True)
 
                 st.download_button("\u2b07\ufe0f Descargar CSV efluentes",
@@ -969,7 +974,7 @@ if st.session_state.section != "CARGAS":
                 proceso_v = cf2.selectbox("Proceso", ["Todos"] + procs_v, key="vp_proc")
                 fmin_v = cf3.date_input("Desde", date.today().replace(day=1), key="vp_fmin")
                 fmax_v = cf4.date_input("Hasta", date.today(), key="vp_fmax")
-                unidad_v = cf5.radio("Unidad", ["kg", "litros", "TN"], horizontal=True, key="vp_unidad")
+                unidad_v = cf5.radio("Unidad", ["TN", "kg", "litros"], horizontal=True, key="vp_unidad")
 
             _params = [sector_v, fmin_v.isoformat(), fmax_v.isoformat()]
             _wproc = ""
@@ -2593,9 +2598,10 @@ with tab_objs[1]:
         st.dataframe(df_obs, use_container_width=True, hide_index=True)
 
         # Producción final por producto
-        st.markdown("**Producción por producto (kg)**")
+        st.markdown("**Producción por producto (TN)**")
         prod_x_prod = df_obs.groupby("obtenido", as_index=False)["kg_obtenido"].sum().sort_values("kg_obtenido", ascending=False)
-        st.bar_chart(prod_x_prod, x="obtenido", y="kg_obtenido")
+        prod_x_prod["TN"] = (prod_x_prod["kg_obtenido"] / 1000).round(2)
+        st.bar_chart(prod_x_prod, x="obtenido", y="TN")
 
         # ----- Plan vs Real (REACTORES con estimados cargados) -----
         st.markdown("**🎯 Plan vs Real (reactores)**")
