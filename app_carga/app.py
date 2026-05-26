@@ -950,7 +950,7 @@ if st.session_state.section != "CARGAS":
 
     elif st.session_state.section == "VISTAS":
         # =================== VISTAS DE PRODUCCI\u00d3N ===================
-        st.title("\ud83d\udcca Vistas de producci\u00f3n")
+        st.title("\U0001F4CA Vistas de producci\u00f3n")
         try:
             secs_v = cat("SELECT DISTINCT sector FROM produccion.v_reacciones_lkg WHERE sector IS NOT NULL ORDER BY 1")["sector"].tolist()
         except Exception as e:
