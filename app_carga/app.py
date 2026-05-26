@@ -133,11 +133,12 @@ with st.sidebar:
 st.markdown("""
 <style>
   .block-container{padding-top:2rem; max-width:1180px;}
-  [data-testid="stMetric"]{background:#10151c;border:1px solid #222c38;border-radius:12px;padding:10px 14px;}
-  [data-testid="stMetricValue"]{font-size:1.45rem;}
-  [data-testid="stMetricLabel"] p{color:#93a1b0;font-size:.78rem;}
-  section[data-testid="stSidebar"]{border-right:1px solid #222c38;}
-  div[data-testid="stExpander"] details{border-radius:12px;border-color:#222c38;}
+  /* tarjeta de metrica neutra: funciona en tema claro y oscuro (sin forzar colores de texto) */
+  [data-testid="stMetric"]{border:1px solid rgba(130,140,150,.28);border-radius:12px;padding:12px 14px;}
+  [data-testid="stMetricValue"]{font-size:1.5rem;font-weight:700;}
+  [data-testid="stMetricLabel"]{opacity:.8;}
+  section[data-testid="stSidebar"]{border-right:1px solid rgba(130,140,150,.2);}
+  div[data-testid="stExpander"] details{border-radius:12px;}
   .stTabs [data-baseweb="tab-list"]{gap:2px;}
   h1{font-size:1.7rem;} h2{font-size:1.3rem;}
 </style>
@@ -959,17 +960,33 @@ if st.session_state.section != "CARGAS":
             st.info("Todav\u00eda no hay producci\u00f3n cargada para mostrar.")
         else:
             with st.expander("Filtros", expanded=True):
-                cf1, cf2, cf3, cf4 = st.columns([1.3, 1, 1, 1.4])
+                cf1, cf2, cf3, cf4, cf5 = st.columns([1.2, 1.2, 1, 1, 1.2])
                 sector_v = cf1.selectbox("Sector", secs_v, key="vp_sector")
-                fmin_v = cf2.date_input("Desde", date.today().replace(day=1), key="vp_fmin")
-                fmax_v = cf3.date_input("Hasta", date.today(), key="vp_fmax")
-                unidad_v = cf4.radio("Unidad", ["kg", "litros", "TN"], horizontal=True, key="vp_unidad")
+                try:
+                    procs_v = cat("SELECT DISTINCT tipo_proceso FROM produccion.v_reacciones_lkg WHERE sector=%s AND tipo_proceso IS NOT NULL ORDER BY 1", (sector_v,))["tipo_proceso"].tolist()
+                except Exception:
+                    procs_v = []
+                proceso_v = cf2.selectbox("Proceso", ["Todos"] + procs_v, key="vp_proc")
+                fmin_v = cf3.date_input("Desde", date.today().replace(day=1), key="vp_fmin")
+                fmax_v = cf4.date_input("Hasta", date.today(), key="vp_fmax")
+                unidad_v = cf5.radio("Unidad", ["kg", "litros", "TN"], horizontal=True, key="vp_unidad")
 
-            dfv = cat("""
+            _params = [sector_v, fmin_v.isoformat(), fmax_v.isoformat()]
+            _wproc = ""
+            if proceso_v != "Todos":
+                _wproc = " AND tipo_proceso=%s"; _params.append(proceso_v)
+            dfv = cat(f"""
                 SELECT * FROM produccion.v_reacciones_lkg
-                WHERE sector=%s AND fecha BETWEEN %s AND %s
+                WHERE sector=%s AND fecha BETWEEN %s AND %s{_wproc}
                 ORDER BY fecha
-            """, (sector_v, fmin_v.isoformat(), fmax_v.isoformat()))
+            """, tuple(_params))
+
+            # Aclaración de cobertura (qué proceso se está viendo)
+            if sector_v == "REACTORES":
+                _txt = "Reactores: estás viendo **PRODUCCIÓN ARE**."
+                if "DESGOMADO_ACUOSO" not in procs_v:
+                    _txt += " Todavía **no se cargó Desgomado acuoso**."
+                st.caption("Nota — " + _txt + " El **AG-C es la materia prima (insumo)**, no un producto.")
 
             if dfv.empty:
                 st.info("Sin reacciones en el sector/rango elegido.")
@@ -994,15 +1011,20 @@ if st.session_state.section != "CARGAS":
                 st.markdown("#### Resumen del per\u00edodo")
                 k = st.columns(5)
                 k[0].metric("Reacciones", f"{len(dfv)}")
-                k[1].metric(f"AG procesado ({u})", f"{dfv['_ag'].sum():,.2f}")
-                k[2].metric(f"ARE obtenido ({u})", f"{dfv['_are'].sum():,.2f}")
+                k[1].metric(f"AG-C procesado · insumo ({u})", f"{dfv['_ag'].sum():,.2f}")
+                k[2].metric(f"ARE producido ({u})", f"{dfv['_are'].sum():,.2f}")
                 k[3].metric("Rendimiento", f"{(_are_kg_tot/_ag_kg_tot*100):,.1f}%" if _ag_kg_tot else "\u2014")
                 k[4].metric("Horas prom.", f"{_hrs.mean():,.1f} h" if _hrs.notna().any() else "\u2014")
 
-                # ---- Producci\u00f3n por d\u00eda ----
-                st.markdown(f"#### Producci\u00f3n por d\u00eda \u00b7 {u}")
-                prod_dia = dfv.groupby("_dia").agg(AG=("_ag", "sum"), ARE=("_are", "sum")).reset_index()
-                st.bar_chart(prod_dia, x="_dia", y=["AG", "ARE"], color=["#60a5fa", "#2dd4bf"], use_container_width=True)
+                # ---- Producci\u00f3n de ARE por d\u00eda (producto obtenido) ----
+                st.markdown(f"#### Producci\u00f3n de ARE por d\u00eda \u00b7 {u}")
+                prod_dia = dfv.groupby("_dia").agg(ARE=("_are", "sum")).reset_index()
+                st.bar_chart(prod_dia, x="_dia", y="ARE", color="#2dd4bf", use_container_width=True)
+
+                # ---- Materia prima (AG-C) procesada por d\u00eda (insumo, no producci\u00f3n) ----
+                st.markdown(f"#### Materia prima procesada \u00b7 AG-C (insumo) \u00b7 {u}")
+                mp_dia = dfv.groupby("_dia").agg(AG=("_ag", "sum")).reset_index()
+                st.bar_chart(mp_dia, x="_dia", y="AG", color="#60a5fa", use_container_width=True)
 
                 # ---- Consumos por d\u00eda ----
                 st.markdown(f"#### Consumos por d\u00eda \u00b7 {u}")
