@@ -1918,6 +1918,13 @@ with tab_objs[0]:
             aplicables = params_proceso[params_proceso["aplica_a"].apply(
                 lambda lst: tipo_proceso_sel in (lst if isinstance(lst, list) else [])
             )]
+            # Evitar pedir DOS veces lo que ya tiene input dedicado arriba:
+            #  - temperatura  -> "Temperatura inicial"
+            #  - acidez (ARE) -> "Acidez oleico (%)"
+            _skip_par = {"temperatura"}
+            if tipo_proceso_sel == "PRODUCCION_ARE":
+                _skip_par.add("acidez")
+            aplicables = aplicables[~aplicables["codigo"].isin(_skip_par)]
             if not aplicables.empty:
                 cols_per_row = 3
                 rows = [aplicables.iloc[i:i+cols_per_row] for i in range(0, len(aplicables), cols_per_row)]
@@ -1939,6 +1946,9 @@ with tab_objs[0]:
             parametros_dict["azufre_ppm"] = float(azufre_ppm_v)
         if pct_agua_ini_v and pct_agua_ini_v > 0:
             parametros_dict["pct_agua_inicial"] = float(pct_agua_ini_v)
+        # La acidez se carga UNA sola vez ("Acidez oleico"); alimenta también el parámetro 'acidez'.
+        if acidez_oleico_v and acidez_oleico_v > 0:
+            parametros_dict.setdefault("acidez", float(acidez_oleico_v))
 
         # ----- Alarmas plan-vs-real para insumos cargados -----
         def _alarma_consumo(label, real_kg, est_kg, tol=5.0, unidad="kg"):

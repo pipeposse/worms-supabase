@@ -30,5 +30,25 @@
   {
     "question": "Ranking de analistas por cantidad de muestras este mes",
     "sql": "SELECT empleado, COUNT(*) AS muestras\nFROM reporting.v_laboratorio\nWHERE date_trunc('month', fecha) = date_trunc('month', current_date)\nGROUP BY empleado\nORDER BY muestras DESC;"
+  },
+  {
+    "question": "¿Cuántas toneladas de ARE se produjeron este mes?",
+    "sql": "SELECT ROUND(SUM(producido_tn)::numeric, 2) AS tn_are, COUNT(*) AS reacciones\nFROM reporting.v_produccion\nWHERE proceso = 'PRODUCCION_ARE'\n  AND date_trunc('month', fecha) = date_trunc('month', current_date);"
+  },
+  {
+    "question": "Rendimiento promedio del desgomado y merma total este mes",
+    "sql": "SELECT ROUND(AVG(rendimiento_pct)::numeric, 1) AS rinde_prom_pct,\n       ROUND(SUM(merma_tn)::numeric, 2) AS merma_tn\nFROM reporting.v_produccion\nWHERE proceso = 'DESGOMADO_ACUOSO'\n  AND date_trunc('month', fecha) = date_trunc('month', current_date);"
+  },
+  {
+    "question": "Producción de ARE por día en la última semana, en toneladas",
+    "sql": "SELECT fecha, ROUND(SUM(producido_tn)::numeric, 2) AS tn_are, COUNT(*) AS reacciones\nFROM reporting.v_produccion\nWHERE proceso = 'PRODUCCION_ARE' AND fecha >= current_date - 7\nGROUP BY fecha\nORDER BY fecha;"
+  },
+  {
+    "question": "Toneladas producidas por reactor este mes",
+    "sql": "SELECT reactor, ROUND(SUM(producido_tn)::numeric, 2) AS tn, COUNT(*) AS corridas\nFROM reporting.v_produccion\nWHERE date_trunc('month', fecha) = date_trunc('month', current_date)\nGROUP BY reactor\nORDER BY tn DESC;"
+  },
+  {
+    "question": "Fuel oil consumido por proceso este mes",
+    "sql": "SELECT proceso, ROUND(SUM(fuel_l)::numeric, 1) AS fuel_l, COUNT(*) AS corridas\nFROM reporting.v_produccion\nWHERE date_trunc('month', fecha) = date_trunc('month', current_date)\nGROUP BY proceso\nORDER BY fuel_l DESC;"
   }
 ]

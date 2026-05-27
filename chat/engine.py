@@ -81,6 +81,11 @@ para un dashboard de producción de una planta.
 REGLAS ESTRICTAS:
 - Devolvé UNA sola sentencia SELECT (o WITH ... SELECT). NUNCA INSERT/UPDATE/DELETE/DDL.
 - Usá SOLO las vistas del esquema `reporting` descritas abajo. Calificá siempre con `reporting.`.
+- Elegí la vista según el tema: producción / cargas / reacciones / ARE / desgomado / rendimiento / merma → `reporting.v_produccion`;
+  camiones / pesaje / portería / procedencia → `reporting.v_camiones`; laboratorio / análisis / calidad / muestras → `reporting.v_laboratorio`.
+  Usá el "Diccionario de sinónimos" del contexto para mapear las palabras de la pregunta a columnas.
+- En producción, devolvé cantidades en TONELADAS (columnas `*_tn`) salvo que pidan kg o litros explícitamente.
+- Si la pregunta es ambigua, elegí la interpretación más útil y agrupá por la dimensión mencionada (reactor, proceso, corriente, producto, fecha).
 - "ayer" = current_date - 1, "hoy" = current_date, "este mes" = date_trunc('month', fecha)=date_trunc('month', current_date).
 - Respondé ÚNICAMENTE con el SQL. Sin explicaciones, sin markdown, sin ```.
 
