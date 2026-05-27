@@ -176,6 +176,28 @@ def cat(query, params=None):
         conn.close()
 
 
+# ---- Tickets de portería (NUMÉRICOS) → peso neto desde transacciones ----
+def pesos_de_tickets(tx_str):
+    """Parsea N° de ticket numéricos y devuelve (kg_total, df_detalle, n_pedidos, faltantes).
+    El peso de portería se guarda negativo → uso ABS. Un ticket puede tener varias pesadas."""
+    import re as _re
+    nums = [int(x) for x in _re.findall(r"\d+", tx_str or "")]
+    if not nums:
+        return 0.0, pd.DataFrame(columns=["transaccion", "producto_base", "kg"]), [], []
+    try:
+        df = cat(
+            "SELECT transaccion, producto_base, ABS(peso_neto) AS kg, fecha_entrada "
+            "FROM produccion.v_transacciones_limpias WHERE transaccion = ANY(%s)",
+            (nums,),
+        )
+    except Exception:
+        df = pd.DataFrame(columns=["transaccion", "producto_base", "kg"])
+    encontrados = sorted(set(int(t) for t in df["transaccion"].tolist())) if not df.empty else []
+    faltantes = [n for n in nums if n not in encontrados]
+    total = float(pd.to_numeric(df["kg"], errors="coerce").sum()) if not df.empty else 0.0
+    return total, df, nums, faltantes
+
+
 # ---- Preferencias de UI por usuario (persisten en dim_usuario.prefs JSONB) ----
 def _load_prefs():
     """Lee las prefs del usuario una vez por sesión y las cachea en session_state."""
@@ -1289,7 +1311,7 @@ tab_objs = st.tabs(tabs)
 # =========================================================================
 with tab_objs[0]:
     st.subheader("🏭 Carga de producción")
-    sub_nueva, sub_edit, sub_pfinal, sub_eval, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "✏️ Avanzar etapa", "\U0001f3c1 Producto final", "\U0001f9ea Evaluación interna", "\u26a0\ufe0f Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
+    sub_nueva, sub_edit, sub_pfinal, sub_eval, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "✏️ Avanzar etapa", "\U0001f3c1 Acopio final", "\U0001f9ea Evaluación interna", "\u26a0\ufe0f Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
 
     # ---------- SUB-TAB: NUEVA CARGA ----------
     with sub_nueva:
@@ -1355,6 +1377,7 @@ with tab_objs[0]:
         fin_dt = None
         tiempo_est = None
         acidez_oleico_v = None; glicerol_v = None
+        azufre_ppm_v = None; pct_agua_ini_v = None; temp_ini_v = None
         est_glice_kg = est_naoh_kg = est_potasio_kg = est_fuel_kg = est_are_kg = None
         est_glicerol_puro_kg = None
         q_ag_kg_ref = 0.0
@@ -1436,6 +1459,10 @@ with tab_objs[0]:
                     format_func=lambda x: "🧪 Soda cáustica (NaOH)" if x=="NAOH" else "🧪 Potasio (KOH)",
                     horizontal=True, key="b_catalizador"
                 )
+                cFp1, cFp2, cFp3 = st.columns(3)
+                temp_ini_v     = cFp1.number_input("Temperatura inicial (C)", 0.0, 300.0, step=1.0, value=0.0, key="b_tini_are")
+                azufre_ppm_v   = cFp2.number_input("Azufre (ppm)", 0.0, 100000.0, step=1.0, value=0.0, key="b_azufre_are")
+                pct_agua_ini_v = cFp3.number_input("% agua inicial", 0.0, 100.0, step=0.1, value=0.0, key="b_pagua_are")
 
                 # variables disponibles para comparación posterior
                 est_glicerol_puro_kg = None
@@ -1493,64 +1520,25 @@ with tab_objs[0]:
 
             # Estimación específica DESGOMADO_ACUOSO (fuel + horas por TN AFE-S generado)
             if tipo_proceso_sel == "DESGOMADO_ACUOSO":
-                st.markdown("**📐 Estimación DESGOMADO_ACUOSO**")
-                cDA1, cDA2, cDA3 = st.columns(3)
-                tn_afe_target = cDA1.number_input(
-                    "TN de AFE-S a generar",
-                    min_value=0.0, max_value=100.0, step=0.5, value=10.0,
-                    key="b_tn_afe", help="Estimación de cuánto AFE-S vas a obtener (≈ AFE-SG procesado)."
+                _merma_esp = K("desgomado_merma_pct_esperada", 5) or 5
+                _pa_des = K("desgomado_pct_agua", 5) or 5
+                _t_des = K("desgomado_temp_c", 85) or 85
+                st.markdown("**Desgomado acuoso** — se calcula sobre el AFE-SG cargado más abajo (en kg)")
+                st.caption(
+                    f"Merma esperada ~{_merma_esp:g}% · agua de proceso {_pa_des:g}% del AFE-SG · "
+                    f"calentar a ~{_t_des:g} C · el fuel oil es estimado por fórmula (no se carga). "
+                    "Las TN reales de AFE-S se confirman al cerrar (Acopio final)."
                 )
-                def _rate(insumo):
-                    f = consumos_proceso[
-                        (consumos_proceso["tipo_proceso"]=="DESGOMADO_ACUOSO") &
-                        (consumos_proceso["codigo_insumo"]==insumo)
-                    ]
-                    if f.empty: return None, None
-                    return float(f.iloc[0]["consumo_por_tn"]), f.iloc[0]["unidad_consumo"]
 
-                rate_fuel, u_fuel = _rate("FUEL")
-                rate_h,    u_h    = _rate("HORAS")
-
-                if rate_fuel is not None:
-                    est_fuel_kg = tn_afe_target * rate_fuel   # se guarda en estimado_fuel_kg (valor en su unidad)
-                    cDA2.metric(f"Fuel estimado ({u_fuel})", f"{est_fuel_kg:,.1f}",
-                                f"{rate_fuel:.1f} {u_fuel}/TN AFE-S")
-                if rate_h is not None:
-                    est_horas_total = tn_afe_target * rate_h
-                    tiempo_est = est_horas_total              # se guarda en tiempo_estimado_horas
-                    cDA3.metric("Horas hombre est.", f"{est_horas_total:,.2f} h",
-                                f"{rate_h:.2f} h/TN AFE-S")
-
-                # ARE estimated lo reusamos como kg de AFE-S (interpretación: producto final esperado)
-                est_are_kg = tn_afe_target * 1000.0
-                # Q AG planeado igual al output (1:1 aprox para desgomado)
-                q_ag_kg_ref = est_are_kg
-
-                # Duración total esperada por suma de etapas (alternativa)
-                dur_d = duraciones_etapa[
-                    (duraciones_etapa["sector"]==sector) &
-                    (duraciones_etapa["tipo_proceso"]=="DESGOMADO_ACUOSO")
-                ]
-                if not dur_d.empty:
-                    total_min = int(dur_d["duracion_target_min"].sum())
-                    st.caption(f"⏱️ Duración total esperada por etapas: **~{total_min} min** "
-                               f"({total_min/60:.2f} h)")
-
-            st.markdown("**Horarios**")
-            cH1, cH2, cH3, cH4 = st.columns(4)
+            st.markdown("**Horario de inicio**")
+            cH1, cH2 = st.columns(2)
             f_ini = cH1.date_input("Fecha inicio", date.today(), key="b_fini")
             h_ini = cH2.time_input("Hora inicio",  key="b_hini")
-            f_fin = cH3.date_input("Fecha fin",    date.today(), key="b_ffin")
-            h_fin = cH4.time_input("Hora fin",     key="b_hfin")
             from datetime import datetime as _dt
             inicio_dt = _dt.combine(f_ini, h_ini)
-            fin_dt    = _dt.combine(f_fin, h_fin)
-            # T. estimado = (fin - inicio) en horas, calculado en vivo
-            delta_horas = (fin_dt - inicio_dt).total_seconds() / 3600 if fin_dt >= inicio_dt else 0
-            tiempo_est = round(delta_horas, 2)
-            st.caption(f"⏱️ Duración: **{tiempo_est:.2f} h** ({int(delta_horas*60)} min)")
-            if fin_dt < inicio_dt:
-                st.error("Fecha/hora de fin anterior al inicio.")
+            fin_dt    = None
+            tiempo_est = None
+            st.caption("El fin y la duración se cargan al cerrar (Avanzar etapa / Acopio final).")
 
         elif sector == "BACHAS":
             # BACHAS también usa el flujo de etapas: la carga arranca en ARMADO.
@@ -1580,27 +1568,25 @@ with tab_objs[0]:
             st.markdown("**Producto buscado (target)** — lo que se quiere obtener con la reacción")
             opt_obj = productos_obt["codigo_producto"].tolist()
             if tipo_proceso_sel == "DESGOMADO_ACUOSO":
-                # Flujo fijo: AFE-SG → AFE-S (cod fijo + key propia para no pisar otros procesos)
-                cTG1, cTG2 = st.columns(2)
+                # Flujo fijo AFE-SG -> AFE-S. AFE es calidad ÚNICA (no A/B/C).
                 p_buscado = "AFE-S"
-                cTG1.text_input("Producto buscado *", value="AFE-S", disabled=True, key="b_pbusc_des")
-                calidad_buscada = cTG2.selectbox("Calidad buscada *", calidades["codigo"].tolist(), key="b_calbusc_des")
-                st.caption("🔒 DESGOMADO_ACUOSO va siempre de **AFE-SG** → **AFE-S**.")
+                calidad_buscada = "UNICA"
+                st.text_input("Producto buscado *", value="AFE-S (calidad única)", disabled=True, key="b_pbusc_des")
+                st.caption("DESGOMADO_ACUOSO va siempre de AFE-SG -> AFE-S. El AFE es de calidad única.")
             elif tipo_proceso_sel == "PRODUCCION_ARE":
-                # El producto siempre es ARE; el operario solo elige la calidad.
-                _perm = productos_permitidos(sector, tipo_proceso_sel, tipo_op, "FINAL") or []
-                _are_vars = sorted([c for c in (_perm or opt_obj) if str(c).startswith("ARE-")])
-                _cal_opts = [c[len("ARE-"):] for c in _are_vars] or ["A", "B", "A-ANIMAL"]
-                _cal_lbl = {"A": "A", "B": "B", "A-ANIMAL": "Animal (A-ANIMAL)"}
+                # Producto = ARE. La calidad la define el operario (A/B). El "animal" lo define la CORRIENTE.
                 cTG1, cTG2 = st.columns(2)
                 cTG1.text_input("Producto buscado *", value="ARE", disabled=True, key="b_pbusc_disp")
-                _cal_sel = cTG2.selectbox(
-                    "Calidad buscada *", _cal_opts, key="b_calbusc_are",
-                    format_func=lambda c: _cal_lbl.get(c, c)
-                )
-                p_buscado = f"ARE-{_cal_sel}"
-                calidad_buscada = _cal_sel
-                st.caption(f"🔒 PRODUCCIÓN ARE: el producto es **ARE**, elegís la calidad → se busca **{p_buscado}**.")
+                if corriente_v == "ANIMAL":
+                    cTG2.text_input("Calidad buscada *", value="A · animal", disabled=True, key="b_calbusc_are_an")
+                    p_buscado = "ARE-A-ANIMAL"
+                    calidad_buscada = "A"
+                    st.caption("PRODUCCIÓN ARE corriente ANIMAL -> se busca ARE-A-ANIMAL (calidad A).")
+                else:
+                    _cal_sel = cTG2.selectbox("Calidad buscada *", ["A", "B"], key="b_calbusc_are")
+                    p_buscado = f"ARE-{_cal_sel}"
+                    calidad_buscada = _cal_sel
+                    st.caption(f"PRODUCCIÓN ARE (vegetal): producto ARE, calidad {_cal_sel} -> {p_buscado}.")
             else:
                 cTG1, cTG2 = st.columns(2)
                 p_buscado = cTG1.selectbox(
@@ -1678,6 +1664,7 @@ with tab_objs[0]:
 
         # Materia prima
         mps_ingresadas = []
+        _tickets_entrada_des = None   # tickets de portería del AFE-SG (solo desgomado)
         if not es_recup:
             st.markdown("**Materia prima** — se carga en el **ARMADO** (en el resto de las etapas no se agrega MP ni insumos)")
             permite_multi = (p_obt == "AG-E") or (sector == "EXPO")
@@ -1697,27 +1684,39 @@ with tab_objs[0]:
                 if i == 0 and tipo_proceso_sel == "DESGOMADO_ACUOSO":
                     cod = "AFE-SG"
                     cMP1.text_input(f"Producto inicial #{i+1} *", value="AFE-SG", disabled=True, key=f"b_pi_des_{i}")
-                # PRODUCCION_ARE: la MP siempre es AG-C → fija (el operario solo carga los litros)
+                # PRODUCCION_ARE: la MP puede ser AG-C o un SEBO (se elige). Se carga en litros.
                 elif i == 0 and tipo_proceso_sel == "PRODUCCION_ARE":
-                    cod = "AG-C"
-                    cMP1.text_input(f"Producto inicial #{i+1} *", value="AG-C", disabled=True, key=f"b_pi_are_{i}")
+                    _are_mp = [c for c in opts_mp if c == "AG-C" or str(c).startswith("SEBO-")] or (opts_mp or ["AG-C"])
+                    _idx_mp = _are_mp.index("AG-C") if "AG-C" in _are_mp else 0
+                    cod = cMP1.selectbox(f"Producto inicial #{i+1} * (AG-C o sebo)", _are_mp, index=_idx_mp, key=f"b_pi_are_{i}")
                 else:
                     cod = cMP1.selectbox(
                         f"Producto inicial #{i+1} *", opts_mp, index=0,
                         key=f"b_pi_sel_{i}"
                     )
-                if usa_litros:
+                _mp_kg = (tipo_proceso_sel == "DESGOMADO_ACUOSO")   # AFE-SG: peso desde portería (kg)
+                if _mp_kg:
+                    _tkmp = cMP2.text_input(f"Tickets portería entrada #{i+1} (n°, coma)", key=f"b_tkmp_{i}",
+                                            help="Pesadas del AFE-SG en portería (números). La app suma el peso neto.")
+                    _tot_mp, _df_mp, _nums_mp, _miss_mp = pesos_de_tickets(_tkmp)
+                    kg = _tot_mp
+                    if _nums_mp:
+                        _m = f"{len(set(_nums_mp))} ticket(s) · {kg:,.0f} kg · {kg/1000:,.2f} TN"
+                        (cMP2.warning if _miss_mp else cMP2.caption)(
+                            (f"sin pesada en portería: {_miss_mp} · " if _miss_mp else "") + _m)
+                    if i == 0:
+                        litros_ini = round(kg / densidad_de(cod), 1) if (kg and densidad_de(cod)) else None
+                        _tickets_entrada_des = _tkmp or None
+                elif usa_litros:
                     _dens_i = densidad_de(cod)
                     lts_i = cMP2.number_input(f"Litros inicial #{i+1} *", min_value=0, max_value=2_000_000, step=100, value=0, key=f"b_li_{i}")
                     kg = (lts_i or 0) * _dens_i
-                    if ver_kg:
-                        cMP2.caption(f"⚖️ = {kg:,.0f} kg · {kg/1000:,.2f} TN (dens {_dens_i:g} kg/L)")
-                    else:
-                        cMP2.caption(f"dens {_dens_i:g} kg/L → {kg/1000:,.2f} TN")
+                    cMP2.caption(f"= {kg:,.0f} kg · {kg/1000:,.2f} TN (dens {_dens_i:g} kg/L)")
                     if i == 0:
                         litros_ini = lts_i or 0
                 else:
                     kg = cMP2.number_input(f"Kg inicial #{i+1} *", min_value=0, max_value=1_000_000, step=100, value=0, key=f"b_ki_{i}")
+                    cMP2.caption(f"= {kg/1000:,.2f} TN")
                 if cod and kg > 0:
                     mps_ingresadas.append((cod, float(kg)))
             if mps_ingresadas:
@@ -1748,32 +1747,32 @@ with tab_objs[0]:
             D_GLI = K("densidad_glicerina", 1.25)
             st.markdown("**Glicerina**")
             cG1, cG2, cG3, cG4 = st.columns(4)
-            gli_fk         = cG1.number_input("Fresca (kg)",       min_value=0, max_value=100000, step=100, value=0, key="b_glfk")
+            gli_fl         = cG1.number_input("Fresca (L)",        min_value=0, max_value=100000, step=50, value=0, key="b_glfl")
             gli_fresca_pct = cG2.number_input("% glicerol fresca", 0.0, 100.0, step=0.1, value=99.5, key="b_glfpct")
             # Con potasio (KOH) NO se genera glicerina recuperada (regla dic_catalizador)
             _genera_recup = catalizador_genera_glicerina(catalizador_tipo) if catalizador_tipo else True
             if _genera_recup:
-                gli_rk     = cG3.number_input("Recuperada (kg)",   min_value=0, max_value=100000, step=100, value=0, key="b_glrk")
+                gli_rl     = cG3.number_input("Recuperada (L)",    min_value=0, max_value=100000, step=50, value=0, key="b_glrl")
                 gli_pct    = cG4.number_input("% glicerol recup.", 0.0, 100.0, step=0.1, value=80.0, key="b_glpct")
             else:
-                gli_rk = 0; gli_pct = 0.0
-                cG3.metric("Recuperada", "— no aplica")
-                cG4.caption("🧪 Con **potasio (KOH)** no se genera glicerina recuperada.")
+                gli_rl = 0; gli_pct = 0.0
+                cG3.metric("Recuperada", "no aplica")
+                cG4.caption("Con potasio (KOH) no se genera glicerina recuperada.")
 
-            # Cálculos derivados (en vivo)
-            gli_fl = (gli_fk / D_GLI) if gli_fk else 0.0
-            gli_rl = (gli_rk / D_GLI) if gli_rk else 0.0
-            glicerol_fresca = (gli_fk or 0.0) * (gli_fresca_pct or 0.0) / 100
-            glicerol_recup  = (gli_rk or 0.0) * (gli_pct or 0.0) / 100
+            # kg derivados desde litros (densidad glicerina)
+            gli_fk = (gli_fl or 0.0) * D_GLI
+            gli_rk = (gli_rl or 0.0) * D_GLI
+            glicerol_fresca = gli_fk * (gli_fresca_pct or 0.0) / 100
+            glicerol_recup  = gli_rk * (gli_pct or 0.0) / 100
             gli_pura_total = glicerol_fresca + glicerol_recup   # = glicerol total cargado
 
             cD1, cD2, cD3 = st.columns(3)
-            cD1.metric("Fresca (L calc.)",     f"{gli_fl:,.1f} L")
-            cD2.metric("Recuperada (L calc.)", f"{gli_rl:,.1f} L")
+            cD1.metric("Fresca (kg calc.)",     f"{gli_fk:,.1f} kg")
+            cD2.metric("Recuperada (kg calc.)", f"{gli_rk:,.1f} kg")
             cD3.metric("Glicerol total cargado",
                        f"{gli_pura_total:,.1f} kg",
                        f"fresca {glicerol_fresca:,.0f} + recup {glicerol_recup:,.0f}")
-            st.caption(f"ℹ️ Densidad glicerina = {D_GLI} kg/L · L = kg / {D_GLI}. Glicerol = kg × %glicerol.")
+            st.caption(f"Densidad glicerina = {D_GLI} kg/L · kg = L x {D_GLI}. Glicerol = kg x %glicerol.")
 
             # Comparación con el glicerol PURO necesario según fórmula
             if est_glicerol_puro_kg and gli_pura_total > 0:
@@ -1812,20 +1811,32 @@ with tab_objs[0]:
                 cN2.caption(f"⚖️ = **{naoh_lts_v:,.1f} L** (densidad {_d_soda:g} kg/L)" +
                             (f" · estimado {est_naoh_kg:,.1f} kg" if est_naoh_kg else ""))
 
-        # Bloque AGUA + ticket porteria (solo DESGOMADO_ACUOSO)
+        # Bloque AGUA + fuel estimado + ticket (solo DESGOMADO_ACUOSO).
+        # Todo se calcula sobre el AFE-SG cargado (kg_ini).
         agua_lts_v = None
         if tipo_proceso_sel == "DESGOMADO_ACUOSO":
             _pct_agua = K("desgomado_pct_agua", 5) or 5
             _temp = K("desgomado_temp_c", 85) or 85
-            _base_lts = (litros_ini or 0)
-            _agua_sug = int(round(_base_lts * _pct_agua / 100)) if _base_lts else 0
-            st.markdown(f"**Agua de proceso** · sugerido {_pct_agua:g}% del material (~{_agua_sug:,} L) · calentar a {_temp:g}°C 3–4 h, recircular y reposar al día siguiente.")
-            cAg1, cAg2 = st.columns(2)
-            agua_lts_v = cAg1.number_input("Cantidad de agua (L)", min_value=0, max_value=100000, step=50, value=_agua_sug, key="b_agua")
-            ticket_porteria_v = cAg2.text_input(
-                "Ticket portería (peso exportación→proceso)", max_chars=40, key="b_tkport",
-                help="El AFE-SG se pesa al moverlo de exportación a proceso. Vinculá ese ticket si lo tenés."
-            ) or None
+            _merma_esp = K("desgomado_merma_pct_esperada", 5) or 5
+            _kg_afesg = float(kg_ini or 0)
+            _agua_sug = int(round(_kg_afesg * _pct_agua / 100))  # 5% del AFE-SG (kg agua ~ L)
+            _rf = consumos_proceso[(consumos_proceso["tipo_proceso"] == "DESGOMADO_ACUOSO") &
+                                   (consumos_proceso["codigo_insumo"] == "FUEL")]
+            _rate_fuel = float(_rf.iloc[0]["consumo_por_tn"]) if not _rf.empty else 8.7
+            est_fuel_kg = round((_kg_afesg / 1000.0) * _rate_fuel, 1)        # fuel estimado (L)
+            est_are_kg = _kg_afesg * (1 - _merma_esp / 100.0)               # AFE-S esperado (merma esperada)
+            q_ag_kg_ref = _kg_afesg
+            st.markdown("**Agua de proceso + estimados**")
+            cAg1, cAg2, cAg3 = st.columns(3)
+            agua_lts_v = cAg1.number_input("Agua de proceso (L)", min_value=0, max_value=200000, step=50,
+                                           value=_agua_sug, key="b_agua",
+                                           help=f"Sugerido {_pct_agua:g}% del AFE-SG ({_kg_afesg/1000:,.2f} TN). Calentar a ~{_temp:g} C.")
+            cAg2.metric("Fuel oil estimado (L)", f"{est_fuel_kg:,.1f}", "automático · no se carga")
+            cAg3.metric("AFE-S esperado", f"{est_are_kg/1000:,.2f} TN", f"merma esp. {_merma_esp:g}%")
+            temp_ini_v = st.number_input("Temperatura inicial (C)", 0.0, 300.0, step=1.0, value=float(_temp), key="b_tini_des")
+            ticket_porteria_v = _tickets_entrada_des
+            if ticket_porteria_v:
+                st.caption(f"Peso del AFE-SG calculado desde portería · tickets de entrada: {ticket_porteria_v}")
 
         # Insumos — los típicos del proceso vienen precargados; se pueden agregar otros.
         st.markdown("**Insumos** — los típicos del proceso ya vienen cargados (ajustá la cantidad). Solo se usan en el **ARMADO**.")
@@ -1847,7 +1858,9 @@ with tab_objs[0]:
                 tipicos.append(("POTASIO", float(est_potasio_kg or 0.0), "kg"))
             # NaOH (soda) se carga aparte en su bloque dedicado (L/kg) → no se duplica acá.
         elif tipo_proceso_sel == "DESGOMADO_ACUOSO":
-            tipicos.append(("FUEL", float(est_fuel_kg or 0.0), "L"))
+            # Fuel oil es ESTIMADO automático (no se carga a mano) → se guarda solo.
+            if est_fuel_kg:
+                insumos_dict["fuel_l"] = float(est_fuel_kg)
         elif sector == "BACHAS":
             _base_tn = float(est_are_kg or 0.0) / 1000.0
             for _, _cr in consumo_sector[consumo_sector["sector"] == "BACHAS"].iterrows():
@@ -1918,6 +1931,14 @@ with tab_objs[0]:
                         )
                         if val and val > 0:
                             parametros_dict[p["codigo"]] = float(val)
+
+        # Parámetros iniciales extra (temp inicial, azufre, % agua) → parametros_proceso (jsonb)
+        if temp_ini_v and temp_ini_v > 0:
+            parametros_dict["temp_inicial_c"] = float(temp_ini_v)
+        if azufre_ppm_v and azufre_ppm_v > 0:
+            parametros_dict["azufre_ppm"] = float(azufre_ppm_v)
+        if pct_agua_ini_v and pct_agua_ini_v > 0:
+            parametros_dict["pct_agua_inicial"] = float(pct_agua_ini_v)
 
         # ----- Alarmas plan-vs-real para insumos cargados -----
         def _alarma_consumo(label, real_kg, est_kg, tol=5.0, unidad="kg"):
@@ -2051,7 +2072,26 @@ with tab_objs[0]:
                                 "  %s,%s,%s,%s,"
                                 "  %s,%s,%s,"
                                 "  %s,%s,%s"
-                                ") RETURNING id_batch",
+                                ") ON CONFLICT (identificador_unidad, tipo_proceso) WHERE (NOT anulado AND identificador_unidad IS NOT NULL) DO UPDATE SET "
+                                "  fecha=EXCLUDED.fecha, sector=EXCLUDED.sector, turno=EXCLUDED.turno, tipo_operacion=EXCLUDED.tipo_operacion,"
+                                "  id_producto_inicial=EXCLUDED.id_producto_inicial, kg_inicial=EXCLUDED.kg_inicial,"
+                                "  id_producto_obtenido=EXCLUDED.id_producto_obtenido, kg_obtenido=EXCLUDED.kg_obtenido,"
+                                "  horas_trabajadas=EXCLUDED.horas_trabajadas, calidad_final=EXCLUDED.calidad_final,"
+                                "  insumos=EXCLUDED.insumos, materias_primas_extras=EXCLUDED.materias_primas_extras, id_bien_uso=EXCLUDED.id_bien_uso,"
+                                "  inicio_ts=EXCLUDED.inicio_ts, fin_ts=EXCLUDED.fin_ts, tiempo_estimado_horas=EXCLUDED.tiempo_estimado_horas,"
+                                "  parametros_proceso=EXCLUDED.parametros_proceso, id_producto_buscado=EXCLUDED.id_producto_buscado,"
+                                "  calidad_buscada=EXCLUDED.calidad_buscada, catalizador_tipo=EXCLUDED.catalizador_tipo,"
+                                "  acidez_oleico_pct=EXCLUDED.acidez_oleico_pct, glicerol_pct=EXCLUDED.glicerol_pct,"
+                                "  estimado_glicerina_kg=EXCLUDED.estimado_glicerina_kg, estimado_naoh_kg=EXCLUDED.estimado_naoh_kg,"
+                                "  estimado_potasio_kg=EXCLUDED.estimado_potasio_kg, estimado_fuel_kg=EXCLUDED.estimado_fuel_kg,"
+                                "  estimado_are_kg=EXCLUDED.estimado_are_kg, q_ag_planeado_kg=EXCLUDED.q_ag_planeado_kg,"
+                                "  gli_fresca_lts=EXCLUDED.gli_fresca_lts, gli_fresca_kg=EXCLUDED.gli_fresca_kg, gli_fresca_pct=EXCLUDED.gli_fresca_pct,"
+                                "  gli_recup_lts=EXCLUDED.gli_recup_lts, gli_recup_kg=EXCLUDED.gli_recup_kg, gli_pct_real=EXCLUDED.gli_pct_real,"
+                                "  gli_pura_total_kg=EXCLUDED.gli_pura_total_kg, agua_lts=EXCLUDED.agua_lts,"
+                                "  litros_inicial=EXCLUDED.litros_inicial, litros_obtenido=EXCLUDED.litros_obtenido, ticket_porteria=EXCLUDED.ticket_porteria,"
+                                "  observaciones=EXCLUDED.observaciones, fuera_de_rango=EXCLUDED.fuera_de_rango, motivo_fuera_rango=EXCLUDED.motivo_fuera_rango,"
+                                "  corriente=EXCLUDED.corriente, naoh_lts=EXCLUDED.naoh_lts, naoh_kg=EXCLUDED.naoh_kg"
+                                " RETURNING id_batch",
                                 (fecha_b.isoformat(), sector, turno, int(USR["id_usuario"]), tipo_op,
                                  (identificador or None),
                                  pid_ini, float(kg_ini) if kg_ini else None, pid_obt, float(kg_obt) if kg_obt else None,
@@ -2088,15 +2128,15 @@ with tab_objs[0]:
                                  (float(naoh_kg_v) if naoh_kg_v else None))
                             )
                             id_b = cur.fetchone()[0]
-                            # Insertar primer evento de etapa (abre el ARMADO o etapa seleccionada)
+                            # Primer evento de etapa (abre el ARMADO). NOT EXISTS evita duplicar en re-upsert.
                             if es_reactor and etapa_sel:
                                 cur.execute("""
-                                    INSERT INTO fact_etapa_evento
-                                    (id_batch, etapa, inicio_ts, id_usuario)
-                                    VALUES (%s, %s, COALESCE(%s, NOW()), %s)
+                                    INSERT INTO fact_etapa_evento (id_batch, etapa, inicio_ts, id_usuario)
+                                    SELECT %s, %s, COALESCE(%s, NOW()), %s
+                                    WHERE NOT EXISTS (SELECT 1 FROM fact_etapa_evento WHERE id_batch=%s AND etapa=%s)
                                 """, (id_b, etapa_sel,
                                       inicio_dt.isoformat() if inicio_dt else None,
-                                      int(USR["id_usuario"])))
+                                      int(USR["id_usuario"]), id_b, etapa_sel))
                         audit.insert("fact_batch_proceso", id_b,
                                      {"sector": sector, "proceso": tipo_proceso_sel,
                                       "producto": p_obt, "kg": kg_obt, "fuera_rango": bool(fuera_rango)})
@@ -2198,68 +2238,75 @@ with tab_objs[0]:
                 ]
                 tgt_min = int(dur_tgt.iloc[0]["duracion_target_min"]) if not dur_tgt.empty else None
 
-            st.markdown(f"### Cerrar etapa actual: **{etapa_actual_desc}**")
-            st.caption(f"Estás cerrando la etapa **{etapa_actual_cod}**. Indicá cuántos minutos duró y a qué etapa pasás.")
-
-            cE1, cE2 = st.columns(2)
-            dur_help = f"Target sugerido: {tgt_min} min" if tgt_min else "Sin target definido"
-            dur_min_in = cE1.number_input(
-                f"Duración de '{etapa_actual_desc}' (minutos)",
-                min_value=0, max_value=100000,
-                value=(tgt_min or 0), step=1, key="e_durmin", help=dur_help
-            )
+            # ---- Stepper visual: hechas / actual / pendientes ----
+            _LBL = {"ARMADO": "Armado", "CARGA": "Carga", "REACCION": "Reacción",
+                    "CALENTAMIENTO": "Calentamiento", "REPOSANDO": "Reposo",
+                    "DECANTACION": "Decantación", "EN_TANQUE": "Acopio final"}
+            def _et_lbl(c): return _LBL.get(c, _desc_et(c))
             idx_actual = etapas_codigos.index(etapa_actual_cod) if etapa_actual_cod in etapas_codigos else 0
-            idx_nueva = min(idx_actual + 1, len(etapas_codigos)-1) if etapas_codigos else 0
-            nueva_etapa = cE2.selectbox(
-                "Pasar a la etapa", etapas_codigos, index=idx_nueva,
-                format_func=_desc_et,
-                key="e_etapa"
-            )
-            # feedback de desvío vs target en vivo
-            if tgt_min and dur_min_in > 0:
-                desv = (dur_min_in - tgt_min) / tgt_min * 100
-                if abs(desv) <= 20:
-                    st.success(f"✅ {dur_min_in} min vs target {tgt_min} min ({desv:+.0f}%) · dentro de lo esperado.")
-                else:
-                    st.warning(f"⚠️ {dur_min_in} min vs target {tgt_min} min ({desv:+.0f}%) · fuera de lo esperado.")
+            _chips = []
+            for j, c in enumerate(etapas_codigos):
+                if j < idx_actual:    _chips.append(f"✓ {_et_lbl(c)}")
+                elif j == idx_actual: _chips.append(f"► **{_et_lbl(c)}**")
+                else:                 _chips.append(f"○ {_et_lbl(c)}")
+            st.markdown("#### ¿En qué etapa está la reacción?")
+            st.markdown("  ·  ".join(_chips))
+            idx_nueva = min(idx_actual + 1, len(etapas_codigos) - 1) if etapas_codigos else 0
+            _siguiente = _et_lbl(etapas_codigos[idx_nueva]) if etapas_codigos else "—"
+            if idx_actual >= len(etapas_codigos) - 1:
+                st.info(f"Está en la última etapa (**{_et_lbl(etapa_actual_cod)}**). El cierre real se hace en **Acopio final**.")
+            else:
+                st.markdown(f"Estás en **{_et_lbl(etapa_actual_cod)}** y vas a pasar a **{_siguiente}**.")
+
+            # ¿Cuánto duró esta etapa? en HORAS + MINUTOS
+            _tgt_h, _tgt_m = ((tgt_min or 0) // 60, (tgt_min or 0) % 60)
+            cE1, cE2, cE3 = st.columns([1, 1, 1.4])
+            dur_h = cE1.number_input("¿Cuántas horas duró?", 0, 1000, value=int(_tgt_h), step=1, key="e_dur_h")
+            dur_m = cE2.number_input("y minutos", 0, 59, value=int(_tgt_m), step=5, key="e_dur_m")
+            dur_min_in = int(dur_h) * 60 + int(dur_m)
+            nueva_etapa = cE3.selectbox("Pasar a la etapa", etapas_codigos, index=idx_nueva, format_func=_et_lbl, key="e_etapa")
+            _cap = f"Duración: {int(dur_h)} h {int(dur_m)} min ({dur_min_in} min)"
+            if tgt_min:
+                _cap += f" · esperado ~{tgt_min//60} h {tgt_min%60} min"
+            st.caption(_cap)
+            temp_et = st.number_input("Temperatura al cerrar esta etapa (C) — opcional", 0.0, 300.0, step=1.0, value=0.0, key="e_temp")
 
             # Reposo mínimo (constante editable: reposo_min_horas_reactor)
             _reposo_min = int((K("reposo_min_horas_reactor", 4) or 4) * 60)
             if etapa_actual_cod == "REPOSANDO":
                 if dur_min_in and dur_min_in < _reposo_min:
-                    st.error(f"⛔ Reposo mínimo {_reposo_min} min ({_reposo_min/60:g} h). No se puede cerrar con menos.")
+                    st.error(f"Reposo mínimo {_reposo_min//60} h. No se puede cerrar con menos.")
                 else:
-                    st.caption(f"⏳ Reposo mínimo requerido: {_reposo_min} min ({_reposo_min/60:g} h).")
+                    st.caption(f"Reposo mínimo requerido: {_reposo_min//60} h.")
 
             obs_etapa = st.text_input("Observaciones (opcional)", max_chars=200, key="e_obs_etapa")
-            if st.button(f"💾 Cerrar '{etapa_actual_desc}' y pasar a la nueva", use_container_width=True, type="primary", key="e_save"):
+            if st.button(f"Cerrar '{_et_lbl(etapa_actual_cod)}' y pasar a '{_et_lbl(nueva_etapa)}'",
+                         use_container_width=True, type="primary", key="e_save"):
                 if etapa_actual_cod == "REPOSANDO" and dur_min_in and dur_min_in < _reposo_min:
-                    st.error(f"⛔ No se puede cerrar el reposo con {dur_min_in} min: el mínimo es {_reposo_min} min ({_reposo_min/60:g} h).")
+                    st.error(f"No se puede cerrar el reposo con menos de {_reposo_min//60} h.")
                     st.stop()
                 try:
                     with conectar(USR["id_usuario"]) as (conn, audit):
                         with conn.cursor() as cur:
-                            # Cerrar evento abierto: guarda duración manual en minutos
                             cur.execute("""
                                 UPDATE fact_etapa_evento
                                    SET fin_ts = NOW(),
                                        duracion_real_min = COALESCE(%s, duracion_real_min),
                                        observaciones = COALESCE(NULLIF(%s,''), observaciones)
                                  WHERE id_batch=%s AND fin_ts IS NULL
-                            """, (int(dur_min_in) if dur_min_in else None,
-                                  obs_etapa, id_batch_edit))
-                            # Abrir el nuevo evento
+                            """, (int(dur_min_in) if dur_min_in else None, obs_etapa, id_batch_edit))
                             cur.execute("""
-                                INSERT INTO fact_etapa_evento
-                                (id_batch, etapa, inicio_ts, id_usuario)
+                                INSERT INTO fact_etapa_evento (id_batch, etapa, inicio_ts, id_usuario)
                                 VALUES (%s, %s, NOW(), %s)
                             """, (id_batch_edit, nueva_etapa, int(USR["id_usuario"])))
-                            cur.execute("UPDATE fact_batch_proceso SET etapa_actual=%s WHERE id_batch=%s",
-                                        (nueva_etapa, id_batch_edit))
-                        audit.log("U","fact_batch_proceso",id_batch_edit,
+                            _tp = {f"temp_{etapa_actual_cod.lower()}_c": float(temp_et)} if (temp_et and temp_et > 0) else {}
+                            cur.execute("UPDATE fact_batch_proceso SET etapa_actual=%s, "
+                                        "parametros_proceso = COALESCE(parametros_proceso,'{}'::jsonb) || %s::jsonb WHERE id_batch=%s",
+                                        (nueva_etapa, json.dumps(_tp), id_batch_edit))
+                        audit.log("U", "fact_batch_proceso", id_batch_edit,
                                   {"cerro_etapa": etapa_actual_cod, "duracion_min": int(dur_min_in) if dur_min_in else None,
                                    "nueva_etapa": nueva_etapa})
-                    st.success(f"Cerraste **{etapa_actual_desc}** ({dur_min_in} min). Ahora en **{nueva_etapa}**.")
+                    st.success(f"Cerraste {_et_lbl(etapa_actual_cod)} ({int(dur_h)} h {int(dur_m)} min). Ahora en {_et_lbl(nueva_etapa)}.")
                     cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
@@ -2309,7 +2356,20 @@ with tab_objs[0]:
             _opts_pf = sorted(set(_finales) | ({rpf["buscado"]} if rpf["buscado"] else set()))
             _idx_def = _opts_pf.index(rpf["buscado"]) if (rpf["buscado"] in _opts_pf) else 0
             p_obt_pf = cF1.selectbox("Producto obtenido *", _opts_pf, index=_idx_def, key="pf_prod")
-            if _usa_litros_pf:
+            _es_des_pf = (rpf["tipo_proceso"] == "DESGOMADO_ACUOSO")
+            _sal_tickets = None
+            if _es_des_pf:
+                # AFE-S: peso final desde tickets de portería (varios camiones).
+                _tk_sal = cF2.text_input("Tickets portería salida (n°, coma)", key=f"pf_tksal_{id_pf}",
+                                         help="Pesadas del AFE-S en portería. La app suma el peso neto.")
+                _tot_s, _df_s, _nums_s, _miss_s = pesos_de_tickets(_tk_sal)
+                kg_pf = _tot_s
+                lts_pf = None
+                _sal_tickets = _tk_sal or None
+                if _nums_s:
+                    _ms = f"{len(set(_nums_s))} ticket(s) · {kg_pf:,.0f} kg · {kg_pf/1000:,.2f} TN"
+                    (cF2.warning if _miss_s else cF2.caption)((f"sin pesada: {_miss_s} · " if _miss_s else "") + _ms)
+            elif _usa_litros_pf:
                 _dpf = densidad_de(p_obt_pf)
                 # Pre-carga con lo estimado en el armado (casi siempre coincide); editable.
                 _def_lts = int(rpf["litros_obtenido"]) if pd.notna(rpf["litros_obtenido"]) else (int(round(est_kg/_dpf)) if est_kg else 0)
@@ -2352,6 +2412,7 @@ with tab_objs[0]:
                             with conn.cursor() as cur:
                                 cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s", (p_obt_pf,))
                                 _row = cur.fetchone(); pid_pf = _row[0] if _row else None
+                                _obs_final = (obs_pf + (f" · salida tickets: {_sal_tickets}" if _sal_tickets else "")).strip()
                                 cur.execute("""
                                     UPDATE fact_batch_proceso
                                        SET id_producto_obtenido=%s, kg_obtenido=%s, litros_obtenido=%s,
@@ -2366,7 +2427,7 @@ with tab_objs[0]:
                                 """, (pid_pf, float(kg_pf), (float(lts_pf) if lts_pf else None),
                                       cal_pf, tanque_pf,
                                       float(acidez_fin_pf), float(dens_fin_pf), float(ays_pf),
-                                      obs_pf, obs_pf, id_pf))
+                                      _obs_final, _obs_final, id_pf))
                             audit.log("U", "fact_batch_proceso", id_pf,
                                       {"producto_final": p_obt_pf, "kg": kg_pf, "tanque": tanque_pf})
                         st.success(f"Producto final de #{id_pf} guardado."); cat.clear(); st.rerun()
