@@ -95,6 +95,7 @@ if st.session_state.section is None:
         ("📊", "Vistas de producción", "Producción, consumos y tiempos por sector + informe mensual (kg/L/TN).", "VISTAS", "land_vistas", True),
         ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
         ("🚛", "Portería", "Pesajes de portería: filtros, peso por producto y descarga.", "PORT", "land_port", False),
+        ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
     ]
     if USR["rol"] in ("SUPERVISOR", "ADMIN"):
         tiles.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
@@ -1186,6 +1187,147 @@ if st.session_state.section != "CARGAS":
                     st.download_button("\u2b07\ufe0f Descargar detalle (CSV)", _det.to_csv(index=False).encode("utf-8"),
                                        file_name=f"detalle_{sector_v}_{fmin_v}_{fmax_v}.csv", mime="text/csv",
                                        key="vp_det_csv")
+
+    elif st.session_state.section == "TANQUES":
+        # =================== TANQUES / STOCK ===================
+        st.title("Tanques y stock")
+        _tq = cat("SELECT id_tanque, codigo, nombre, sector, capacidad_litros, id_producto_principal, activo "
+                  "FROM produccion.dim_tanque ORDER BY sector, nombre")
+        _prods = cat("SELECT id_producto, codigo_producto, COALESCE(densidad_g_ml,0.91) AS dens "
+                     "FROM produccion.dim_producto WHERE activo ORDER BY codigo_producto")
+        if _tq.empty:
+            st.info("No hay tanques cargados.")
+        else:
+            t_estado, t_cargar, t_editar = st.tabs(["Stock actual", "Cargar medici\u00f3n", "Editar tanque"])
+
+            # ---------- STOCK ACTUAL (\u00faltimo medido por tanque) ----------
+            with t_estado:
+                _u = st.radio("Unidad", ["TN", "kg", "litros"], horizontal=True, key="tq_u")
+                _secs = sorted(_tq["sector"].dropna().unique().tolist())
+                _selsec = st.multiselect("Sector", _secs, key="tq_sec_f")
+                df = cat("SELECT sector, nombre, capacidad_litros, producto_principal, producto_medido, "
+                         "litros, kg, medido_en, cargado_por, observaciones FROM produccion.v_stock_tanque_ultimo "
+                         "ORDER BY sector, nombre")
+                if _selsec:
+                    df = df[df["sector"].isin(_selsec)]
+                def _stk(r):
+                    if pd.isna(r["medido_en"]):
+                        return None
+                    if _u == "litros":
+                        return pd.to_numeric(r["litros"], errors="coerce")
+                    kg = pd.to_numeric(r["kg"], errors="coerce")
+                    return (kg / 1000.0) if _u == "TN" else kg
+                df["stock"] = df.apply(_stk, axis=1)
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Tanques", len(df))
+                k2.metric("Con medici\u00f3n", int(df["medido_en"].notna().sum()))
+                k3.metric(f"Stock total ({_u})", f"{pd.to_numeric(df['stock'], errors='coerce').sum():,.2f}")
+                _show = df[["sector", "nombre", "producto_medido", "producto_principal", "stock",
+                            "medido_en", "cargado_por", "observaciones"]].rename(
+                    columns={"producto_medido": "producto", "stock": f"stock_{_u}"})
+                st.dataframe(_show, use_container_width=True, hide_index=True, height=440)
+                st.caption("Cada fila = \u00faltima medici\u00f3n cargada por tanque (lo vigente). "
+                           "'producto' = lo medido; 'producto_principal' = lo que el tanque suele contener.")
+                _m = df.dropna(subset=["medido_en"]).groupby("producto_medido", as_index=False)["stock"].sum()
+                if not _m.empty:
+                    st.markdown(f"#### Stock por material ({_u})")
+                    st.bar_chart(_m.sort_values("stock", ascending=False), x="producto_medido", y="stock", use_container_width=True)
+
+            # ---------- CARGAR MEDICI\u00d3N (manual, con timestamp) ----------
+            with t_cargar:
+                _opt = _tq.apply(lambda r: f"{r['nombre']} \u00b7 {r['sector']}", axis=1).tolist()
+                _selt = st.selectbox("Tanque", _opt, key="tq_sel_c")
+                _row = _tq.iloc[_opt.index(_selt)]
+                _idt = int(_row["id_tanque"])
+                _perm = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
+                            "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
+                            "WHERE tp.id_tanque=%s ORDER BY tp.es_principal DESC, p.codigo_producto", (_idt,))
+                _plist = _perm["codigo_producto"].tolist() or _prods["codigo_producto"].tolist()
+                _ppal = _prods[_prods["id_producto"] == _row["id_producto_principal"]]["codigo_producto"].tolist()
+                _defp = _ppal[0] if (_ppal and _ppal[0] in _plist) else _plist[0]
+                c1, c2, c3 = st.columns(3)
+                _pcod = c1.selectbox("Producto medido", _plist, index=_plist.index(_defp), key="tq_prod_c")
+                _modo = c2.radio("Unidad", ["Litros", "Kg"], horizontal=True, key="tq_modo_c")
+                _dens = float(_prods[_prods["codigo_producto"] == _pcod]["dens"].iloc[0])
+                if _modo == "Litros":
+                    _lts = c3.number_input("Litros medidos", 0.0, 5_000_000.0, step=100.0, value=0.0, key="tq_lts_c")
+                    _kg = _lts * _dens
+                else:
+                    _kg = c3.number_input("Kg medidos", 0.0, 5_000_000.0, step=100.0, value=0.0, key="tq_kg_c")
+                    _lts = (_kg / _dens) if _dens else None
+                cf, ch = st.columns(2)
+                _fch = cf.date_input("Fecha medici\u00f3n", date.today(), key="tq_fch_c")
+                _hr = ch.time_input("Hora medici\u00f3n", key="tq_hr_c")
+                from datetime import datetime as _dtq
+                _medido = _dtq.combine(_fch, _hr)
+                _obs = st.text_input("Observaciones", max_chars=200, key="tq_obs_c")
+                st.caption(f"= {(_kg or 0)/1000:,.2f} TN \u00b7 {(_lts or 0):,.0f} L \u00b7 densidad {_dens:g} kg/L")
+                _ult = cat("SELECT medido_en, kg FROM produccion.fact_stock_tanque WHERE id_tanque=%s ORDER BY medido_en DESC LIMIT 1", (_idt,))
+                if not _ult.empty:
+                    _ru = _ult.iloc[0]
+                    st.caption(f"\u00daltima medici\u00f3n previa: {_ru['medido_en']} \u00b7 {(_ru['kg'] or 0)/1000:,.2f} TN")
+                if st.button("Guardar medici\u00f3n", type="primary", use_container_width=True, key="tq_save_c"):
+                    if (_kg or 0) <= 0:
+                        st.error("Carg\u00e1 una cantidad mayor a 0.")
+                    else:
+                        try:
+                            with conectar(USR["id_usuario"]) as (conn, audit):
+                                with conn.cursor() as cur:
+                                    cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s", (_pcod,))
+                                    _pid = cur.fetchone()[0]
+                                    cur.execute("INSERT INTO produccion.fact_stock_tanque "
+                                                "(id_tanque,id_producto,medido_en,litros,kg,id_usuario,observaciones) "
+                                                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                                                (_idt, _pid, _medido.isoformat(),
+                                                 (float(_lts) if _lts else None), float(_kg),
+                                                 int(USR["id_usuario"]), _obs or None))
+                                audit.log("I", "fact_stock_tanque", _idt, {"producto": _pcod, "kg": float(_kg)})
+                            st.success(f"Medici\u00f3n guardada: {_row['nombre']} \u00b7 {_pcod} \u00b7 {_kg/1000:,.2f} TN.")
+                            cat.clear()
+                        except Exception as e:
+                            st.exception(e)
+
+            # ---------- EDITAR TANQUE (contenido / capacidad / productos) ----------
+            with t_editar:
+                if USR["rol"] not in ("SUPERVISOR", "ADMIN"):
+                    st.info("Solo supervisor o admin pueden editar tanques.")
+                else:
+                    _o2 = _tq.apply(lambda r: f"{r['nombre']} \u00b7 {r['sector']}", axis=1).tolist()
+                    _s2 = st.selectbox("Tanque a editar", _o2, key="tq_sel_e")
+                    _r2 = _tq.iloc[_o2.index(_s2)]
+                    _idt2 = int(_r2["id_tanque"])
+                    _codes = _prods["codigo_producto"].tolist()
+                    _pp2 = _prods[_prods["id_producto"] == _r2["id_producto_principal"]]["codigo_producto"].tolist()
+                    ce1, ce2 = st.columns(2)
+                    _ppal_sel = ce1.selectbox("Producto que contiene (principal)", ["(sin asignar)"] + _codes,
+                                              index=(_codes.index(_pp2[0]) + 1 if _pp2 else 0), key="tq_ppal_e")
+                    _cap = ce2.number_input("Capacidad (litros)", 0.0, 5_000_000.0, step=100.0,
+                                            value=float(_r2["capacidad_litros"]) if pd.notna(_r2["capacidad_litros"]) else 0.0, key="tq_cap_e")
+                    _curp = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
+                                "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto WHERE tp.id_tanque=%s", (_idt2,))["codigo_producto"].tolist()
+                    _puede = st.multiselect("Productos que puede almacenar", _codes, default=_curp, key="tq_puede_e")
+                    _act = st.checkbox("Tanque activo (en uso)", value=bool(_r2["activo"]), key="tq_act_e")
+                    if st.button("Guardar tanque", type="primary", use_container_width=True, key="tq_save_e"):
+                        try:
+                            with conectar(USR["id_usuario"]) as (conn, audit):
+                                with conn.cursor() as cur:
+                                    _pidp = None
+                                    if _ppal_sel != "(sin asignar)":
+                                        cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s", (_ppal_sel,))
+                                        _pidp = cur.fetchone()[0]
+                                    cur.execute("UPDATE produccion.dim_tanque SET id_producto_principal=%s, capacidad_litros=%s, activo=%s WHERE id_tanque=%s",
+                                                (_pidp, (float(_cap) if _cap else None), bool(_act), _idt2))
+                                    cur.execute("DELETE FROM produccion.dim_tanque_producto WHERE id_tanque=%s", (_idt2,))
+                                    for c in _puede:
+                                        cur.execute("INSERT INTO produccion.dim_tanque_producto (id_tanque,id_producto,es_principal) "
+                                                    "SELECT %s, id_producto, %s FROM produccion.dim_producto WHERE codigo_producto=%s "
+                                                    "ON CONFLICT (id_tanque,id_producto) DO NOTHING",
+                                                    (_idt2, (c == _ppal_sel), c))
+                                audit.log("U", "dim_tanque", _idt2, {"principal": _ppal_sel, "puede": len(_puede)})
+                            st.success("Tanque actualizado.")
+                            cat.clear(); st.rerun()
+                        except Exception as e:
+                            st.exception(e)
 
     elif st.session_state.section == "ADMIN":
         # =================== ADMIN ===================

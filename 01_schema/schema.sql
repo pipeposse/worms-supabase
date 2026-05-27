@@ -761,4 +761,57 @@ DROP TABLE IF EXISTS ref_meta_produccion    CASCADE;
 DROP TABLE IF EXISTS fact_muestra_proceso   CASCADE;
 -- dimensiones duplicadas
 DROP TABLE IF EXISTS dim_reactor            CASCADE;  -- duplica dim_bien_uso
-DROP TABLE IF EXISTS dim_tanque             CASCADE;  -- la app usa tanque_destino (texto)
+
+-- ===========================================================================
+--  Tanques (stock por material). dim_tanque + M:N dim_tanque_producto.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS dim_tanque (
+  id_tanque              SERIAL PRIMARY KEY,
+  codigo                 TEXT UNIQUE NOT NULL,
+  nombre                 TEXT NOT NULL,
+  sector                 TEXT NOT NULL,
+  posee_radar            BOOLEAN NOT NULL DEFAULT FALSE,
+  variacion_nivel        TEXT,                       -- ALTA / MEDIA / BAJA
+  metodo_medicion        TEXT,                       -- Manual / Inaccesible / NULL
+  capacidad_litros       NUMERIC,
+  id_producto_principal  BIGINT REFERENCES dim_producto(id_producto),
+  producto_principal_txt TEXT,
+  otros_productos_txt    TEXT,
+  activo                 BOOLEAN NOT NULL DEFAULT TRUE,
+  creado_en              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS dim_tanque_producto (
+  id_tanque    BIGINT NOT NULL REFERENCES dim_tanque(id_tanque) ON DELETE CASCADE,
+  id_producto  BIGINT NOT NULL REFERENCES dim_producto(id_producto),
+  es_principal BOOLEAN NOT NULL DEFAULT FALSE,
+  PRIMARY KEY (id_tanque, id_producto)
+);
+
+-- Mediciones de stock por tanque (manual, con timestamp + usuario). Último = stock vigente.
+CREATE TABLE IF NOT EXISTS fact_stock_tanque (
+  id_stock      SERIAL PRIMARY KEY,
+  id_tanque     BIGINT NOT NULL REFERENCES dim_tanque(id_tanque),
+  id_producto   BIGINT REFERENCES dim_producto(id_producto),
+  medido_en     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  litros        NUMERIC,
+  kg            NUMERIC,
+  nivel_pct     NUMERIC,
+  id_usuario    BIGINT REFERENCES dim_usuario(id_usuario),
+  observaciones TEXT,
+  creado_en     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_stock_tanque_tk ON fact_stock_tanque (id_tanque, medido_en DESC);
+
+CREATE OR REPLACE VIEW v_stock_tanque_ultimo AS
+SELECT DISTINCT ON (t.id_tanque)
+  t.id_tanque, t.codigo, t.nombre, t.sector, t.capacidad_litros,
+  pp.codigo_producto AS producto_principal,
+  s.id_stock, s.medido_en, s.litros, s.kg, s.nivel_pct,
+  p.codigo_producto AS producto_medido, s.observaciones, u.nombre AS cargado_por
+FROM dim_tanque t
+LEFT JOIN dim_producto pp ON pp.id_producto = t.id_producto_principal
+LEFT JOIN fact_stock_tanque s ON s.id_tanque = t.id_tanque
+LEFT JOIN dim_producto p ON p.id_producto = s.id_producto
+LEFT JOIN dim_usuario u ON u.id_usuario = s.id_usuario
+WHERE t.activo
+ORDER BY t.id_tanque, s.medido_en DESC NULLS LAST;
