@@ -16,8 +16,16 @@
     "sql": "SELECT fecha_entrada, SUM(peso_neto_kg) AS kg_ingresados, COUNT(*) AS camiones\nFROM reporting.v_camiones\nWHERE sentido = 'ENTRADA' AND fecha_entrada >= current_date - 7\nGROUP BY fecha_entrada\nORDER BY fecha_entrada;"
   },
   {
-    "question": "Camiones y kg por corriente VEGETAL vs ANIMAL este mes",
-    "sql": "SELECT corriente, COUNT(*) AS camiones, SUM(peso_neto_kg) AS kg_total\nFROM reporting.v_camiones\nWHERE date_trunc('month', fecha_entrada) = date_trunc('month', current_date)\n  AND corriente IN ('VEGETAL', 'ANIMAL')\nGROUP BY corriente\nORDER BY camiones DESC;"
+    "question": "Camiones y kg por corriente vegetal vs animal este mes",
+    "sql": "SELECT corriente, COUNT(*) AS camiones, SUM(peso_neto_kg) AS kg_total\nFROM reporting.v_camiones\nWHERE date_trunc('month', fecha_entrada) = date_trunc('month', current_date)\n  AND corriente IN ('vegetal', 'animal')\nGROUP BY corriente\nORDER BY camiones DESC;"
+  },
+  {
+    "question": "¿Cuántos insumos entraron en mayo (camiones y kg)?",
+    "sql": "SELECT COUNT(*) AS cantidad_camiones, SUM(peso_neto_kg) AS kg_totales\nFROM reporting.v_camiones\nWHERE corriente = 'insumo'\n  AND date_trunc('month', fecha_entrada) = date_trunc('month', current_date);"
+  },
+  {
+    "question": "Qué insumos entraron este mes y cuántos kg de cada uno",
+    "sql": "SELECT producto_base AS insumo, COUNT(*) AS camiones, SUM(peso_neto_kg) AS kg\nFROM reporting.v_camiones\nWHERE corriente = 'insumo'\n  AND date_trunc('month', fecha_entrada) = date_trunc('month', current_date)\nGROUP BY producto_base\nORDER BY kg DESC;"
   },
   {
     "question": "¿Cuántas muestras de laboratorio se rechazaron este mes por producto?",

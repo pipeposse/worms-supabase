@@ -9,7 +9,10 @@
 ## reporting.v_camiones (portería / pesaje de camiones) — TIENE DATOS
 - Una fila por transacción de pesaje. Datos desde 2025-08-13, ~15.000+ filas, actualizado al día.
 - "Categoría" del camión = `producto` (detalle) o `producto_base` (agrupado, preferible para agrupar).
-- "Procedencia" = `procedencia`. Destino = `destino`. `corriente` = VEGETAL/ANIMAL.
+- "Procedencia" = `procedencia`. Destino = `destino`.
+- `corriente` (EN MINÚSCULAS, valores exactos): `vegetal`, `animal`, `insumo`, `efluente_liquido`, `solido`, `sin_declarar`. Siempre comparar en minúsculas (o usar `lower(corriente)`).
+  - **"insumos"** que entran (ácido, gasoil, glicerina, fuel, nafta, soda, metanol) → `corriente = 'insumo'`.
+  - "efluentes (líquidos)" → `corriente = 'efluente_liquido'`. "sólidos / residuos / tierra / pellets" → `corriente = 'solido'`.
 - `fecha_entrada` / `fecha_salida` son `date`.
 - `peso_neto_kg`: SIEMPRE positivo (valor absoluto). Usar este para sumar/promediar pesos.
 - `sentido`: ENTRADA o SALIDA (según el signo original del pesaje). La mayoría son ENTRADA.
