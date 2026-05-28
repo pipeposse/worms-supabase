@@ -2391,11 +2391,18 @@ with tab_objs[0]:
         gli_pura_total = None
         if tipo_proceso_sel == "PRODUCCION_ARE":
             D_GLI = K("densidad_glicerina", 1.25)
-            st.markdown("**Glicerina a cargar** _(% glicerol viene del lab, ticket seleccionado arriba)_")
+            st.markdown("**Glicerina a cargar** _(% glicerol viene del lab; los litros pre-cargan la fórmula y son editables)_")
             # gli_fresca_pct sale del mismo ticket de lab elegido (= glicerol_v)
             gli_fresca_pct = float(glicerol_v) if glicerol_v else 0.0
+            # Default fresca (L) = glicerina estimada por fórmula / densidad
+            _gli_lts_sug = int(round(float(est_glice_kg) / D_GLI)) if (est_glice_kg and D_GLI) else 0
             cG1, cG2, cG3 = st.columns(3)
-            gli_fl = cG1.number_input("Fresca (L)", min_value=0, max_value=100000, step=50, value=0, key="b_glfl")
+            gli_fl = cG1.number_input(
+                "Fresca (L)",
+                min_value=0, max_value=100000, step=50,
+                value=_gli_lts_sug, key="b_glfl",
+                help=f"Pre-cargado con la cantidad sugerida por fórmula ({_gli_lts_sug:,} L). Ajustá si vas a cargar distinto.",
+            )
             cG2.metric("% glicerol fresca (lab)", f"{gli_fresca_pct:.2f}%" if gli_fresca_pct else "—",
                        f"ticket {gli_ticket_sel}" if gli_ticket_sel else None)
             # Con potasio (KOH) NO se genera glicerina recuperada (regla dic_catalizador)
@@ -2672,6 +2679,19 @@ with tab_objs[0]:
             else:
                 if sector in ("REACTORES", "BACHAS"):
                     st.caption("🧪 _Sin parámetros de laboratorio (cargá tickets de MP para traerlos)._")
+
+            # Glicerina y glicerol (solo PRODUCCION_ARE)
+            if tipo_proceso_sel == "PRODUCCION_ARE":
+                st.markdown("**🧪 Glicerina y glicerol a guardar**")
+                _g1, _g2, _g3 = st.columns(3)
+                _g1.caption(f"**Glicerina fresca:** {(gli_fl or 0):,.0f} L · {(gli_fk or 0):,.1f} kg (densidad {D_GLI} kg/L)")
+                _g2.caption(f"**% Glicerol fresca (lab):** {(gli_fresca_pct or 0):.2f}%"
+                            + (f" · ticket {gli_ticket_sel}" if gli_ticket_sel else ""))
+                _g3.caption(f"**Glicerina recuperada:** {(gli_rl or 0):,.0f} L · {(gli_rk or 0):,.1f} kg")
+                _h1, _h2 = st.columns(2)
+                _h1.caption(f"**% Glicerol recuperada:** {(gli_pct or 0):.1f}%")
+                _h2.caption(f"**Glicerol total cargado:** {(gli_pura_total or 0):,.1f} kg"
+                            + (f" · vs requerido {est_glicerol_puro_kg:,.0f} kg" if est_glicerol_puro_kg else ""))
 
         submit_b = st.button("✅ Guardar carga", type="primary", use_container_width=True, key="b_submit")
 
