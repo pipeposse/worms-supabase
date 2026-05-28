@@ -199,6 +199,195 @@ def pesos_de_tickets(tx_str):
     return total, df, nums, faltantes
 
 
+# ===========================================================================
+# params_de_tickets_lab: mira procesos_lab para los tickets dados y calcula
+# promedio ponderado por kg de portería para cada parámetro evaluado.
+# Mapping codigo_producto → (lab_producto, lab_calidad) vía dic_producto_lab.
+# ===========================================================================
+# Métricas que extraemos del lab (col nombre real en procesos_lab → alias)
+_LAB_METRICS = [
+    ("prc_acidez",      "Acidez (%)"),
+    ("prc_agua",        "Agua (%)"),
+    ("prc_sedimentos",  "Sedimentos (%)"),
+    ("prc_producto",    "Producto (%)"),
+    ("ppm_azufre",      "Azufre (ppm)"),
+    ("ppm_fosforo",     "Fósforo (ppm)"),
+    ("densidad__g_ml",  "Densidad (g/ml)"),
+]
+
+def params_de_tickets_lab(tx_str, codigo_producto):
+    """Para una lista de tickets (números) y un codigo_producto:
+       1) Resuelve (lab_producto, lab_calidad) desde dic_producto_lab.
+       2) Trae kg de portería (v_transacciones_limpias) por ticket.
+       3) Trae params evaluados en produccion.procesos_lab por ticket
+          filtrando producto_lab y calidad_final_lab.
+       4) Mergea por ticket y calcula promedio PONDERADO por kg de cada métrica
+          (ignora NaN por métrica).
+       Devuelve: (df_detalle, avg_dict, missing_lab, missing_port, mapping_tuple).
+    """
+    import re as _re
+    nums = sorted(set(int(x) for x in _re.findall(r"\d+", tx_str or "")))
+    if not nums:
+        return pd.DataFrame(), {}, [], [], (None, None)
+
+    # 1) Mapeo producto → (lab_producto, lab_calidad)
+    lab_prod = lab_cal = None
+    if codigo_producto:
+        try:
+            mp = cat(
+                "SELECT lab_producto, lab_calidad FROM dic_producto_lab dpl "
+                "JOIN dim_producto p ON p.id_producto = dpl.id_producto "
+                "WHERE p.codigo_producto = %s",
+                (codigo_producto,),
+            )
+            if not mp.empty:
+                lab_prod = mp.iloc[0]["lab_producto"]
+                lab_cal  = mp.iloc[0]["lab_calidad"]
+        except Exception:
+            pass
+
+    # 2) Kg desde portería por ticket
+    try:
+        df_p = cat(
+            "SELECT transaccion AS ticket, ABS(peso_neto) AS kg, fecha_entrada "
+            "FROM produccion.v_transacciones_limpias WHERE transaccion = ANY(%s)",
+            (nums,),
+        )
+    except Exception:
+        df_p = pd.DataFrame(columns=["ticket", "kg", "fecha_entrada"])
+
+    # 3) Params del lab (último num_muestra por ticket que coincida producto/calidad)
+    str_nums = [str(n) for n in nums]
+    where = ["TRIM(p.ticket) = ANY(%s)"]
+    params = [str_nums]
+    if lab_prod:
+        where.append("UPPER(TRIM(p.producto_lab)) = UPPER(%s)")
+        params.append(lab_prod)
+    if lab_cal:
+        where.append("UPPER(TRIM(p.calidad_final_lab)) = UPPER(%s)")
+        params.append(lab_cal)
+    sql_lab = (
+        "SELECT DISTINCT ON (TRIM(p.ticket)) "
+        "  TRIM(p.ticket)::bigint AS ticket, p.num_muestra, p.fecha AS lab_fecha, "
+        "  p.producto_lab, p.calidad_final_lab, "
+        "  p.prc_acidez, p.prc_agua, p.prc_sedimentos, p.prc_producto, "
+        "  p.ppm_azufre, p.ppm_fosforo, p.densidad__g_ml, "
+        "  p.empleado AS lab_empleado, p.rechazado "
+        "FROM produccion.procesos_lab p "
+        "WHERE " + " AND ".join(where) + " "
+        "ORDER BY TRIM(p.ticket), p.num_muestra DESC NULLS LAST, p.fecha DESC NULLS LAST"
+    )
+    try:
+        df_l = cat(sql_lab, tuple(params))
+    except Exception:
+        df_l = pd.DataFrame()
+
+    # 4) Merge por ticket (base = lista pedida) + missing
+    det = pd.DataFrame({"ticket": nums})
+    if not df_p.empty:
+        df_p["ticket"] = pd.to_numeric(df_p["ticket"], errors="coerce").astype("Int64")
+        det = det.merge(df_p, on="ticket", how="left")
+    else:
+        det["kg"] = pd.NA; det["fecha_entrada"] = pd.NaT
+    if not df_l.empty:
+        df_l["ticket"] = pd.to_numeric(df_l["ticket"], errors="coerce").astype("Int64")
+        det = det.merge(df_l, on="ticket", how="left")
+    else:
+        for c, _ in _LAB_METRICS:
+            det[c] = pd.NA
+        det["num_muestra"] = pd.NA
+        det["lab_fecha"] = pd.NaT
+        det["producto_lab"] = pd.NA
+        det["calidad_final_lab"] = pd.NA
+        det["rechazado"] = pd.NA
+
+    missing_port = sorted(int(t) for t in det.loc[det["kg"].isna(), "ticket"].tolist())
+    _lab_cols_present = [c for c, _ in _LAB_METRICS if c in det.columns]
+    if _lab_cols_present:
+        _todos_nan = det[_lab_cols_present].isna().all(axis=1)
+        missing_lab = sorted(int(t) for t in det.loc[_todos_nan, "ticket"].tolist())
+    else:
+        missing_lab = list(nums)
+
+    # 5) Promedios ponderados por kg (cada métrica ignora sus propios NaN)
+    avg = {}
+    if "kg" in det.columns:
+        w_all = pd.to_numeric(det["kg"], errors="coerce")
+        for col, _lbl in _LAB_METRICS:
+            if col not in det.columns:
+                continue
+            v = pd.to_numeric(det[col], errors="coerce")
+            mask = v.notna() & w_all.notna() & (w_all > 0)
+            if not mask.any():
+                continue
+            num = float((v[mask] * w_all[mask]).sum())
+            den = float(w_all[mask].sum())
+            if den > 0:
+                avg[col] = num / den
+
+    return det, avg, missing_lab, missing_port, (lab_prod, lab_cal)
+
+
+def _render_tickets_lab_panel(det, avg, missing_lab, missing_port, mapping, st_container=None):
+    """UI helper: muestra detalle por ticket + promedio ponderado + faltantes."""
+    sc = st_container or st
+    lab_prod, lab_cal = mapping
+    if det is None or det.empty:
+        sc.info("Ingresá uno o más números de ticket para traer los parámetros de laboratorio.")
+        return
+    if not lab_prod:
+        sc.warning("⚠️ Este producto no tiene mapeo a laboratorio en `dic_producto_lab`. Se buscan tickets sin filtro de producto.")
+    else:
+        sc.caption(f"🔎 Buscando en laboratorio: **{lab_prod}** · calidad **{lab_cal or '—'}**")
+
+    cols_show = ["ticket", "kg"]
+    rename = {"kg": "kg portería"}
+    for col, lbl in _LAB_METRICS:
+        if col in det.columns:
+            cols_show.append(col)
+            rename[col] = lbl
+    if "num_muestra" in det.columns:
+        cols_show.append("num_muestra"); rename["num_muestra"] = "N° muestra"
+    if "rechazado" in det.columns:
+        cols_show.append("rechazado");   rename["rechazado"]   = "Rechazado"
+
+    df_show = det[cols_show].rename(columns=rename).copy()
+    if "kg portería" in df_show.columns:
+        df_show["kg portería"] = pd.to_numeric(df_show["kg portería"], errors="coerce").round(0)
+    sc.dataframe(df_show, hide_index=True, use_container_width=True)
+
+    # Promedios ponderados
+    if avg:
+        st_msg = "**Promedio ponderado por kg cargados** (ignora NaN por parámetro):\n\n"
+        bits = []
+        for col, lbl in _LAB_METRICS:
+            if col in avg:
+                v = avg[col]
+                if col.startswith("prc_"):
+                    bits.append(f"{lbl}: **{v:.3f}**")
+                elif col == "densidad__g_ml":
+                    bits.append(f"{lbl}: **{v:.3f}**")
+                else:
+                    bits.append(f"{lbl}: **{v:.1f}**")
+        st_msg += " · ".join(bits)
+        sc.success(st_msg)
+        # Fórmula didáctica
+        with sc.expander("ℹ️ ¿Cómo se calcula el promedio ponderado?", expanded=False):
+            sc.markdown(
+                "Para cada parámetro `m` se hace: "
+                "`promedio_m = Σ(valor_m × kg_ticket) / Σ(kg_ticket)`. "
+                "Si un ticket no tiene el parámetro evaluado, se excluye del cálculo de **ese** parámetro "
+                "(no se imputa cero). Los kg son los de portería (pesoneto)."
+            )
+    else:
+        sc.info("Sin parámetros evaluados en laboratorio para estos tickets.")
+
+    if missing_port:
+        sc.warning(f"🚪 Sin pesada en portería: {missing_port}")
+    if missing_lab:
+        sc.warning(f"🧪 Sin muestra de laboratorio: {missing_lab}")
+
+
 # ---- Preferencias de UI por usuario (persisten en dim_usuario.prefs JSONB) ----
 def _load_prefs():
     """Lee las prefs del usuario una vez por sesión y las cachea en session_state."""
@@ -1583,11 +1772,10 @@ with tab_objs[0]:
                     )
                     st.caption(f"🛢️ Capacidad del reactor: **{int(cap_l):,} L** → hasta **{int(q_ag_max_kg):,} kg** de AG (~{q_ag_max_kg/1000:.1f} TN). Densidad AG = {D_AG} kg/L.")
 
-                st.markdown("**Inputs iniciales (dispara los estimados)**")
+                st.markdown("**Inputs operativos** (la acidez/azufre/agua salen del laboratorio en el bloque MP de abajo)")
                 cF1, cF2, cF3 = st.columns(3)
-                acidez_oleico_v = cF1.number_input("Acidez oleico (%)", 0.0, 100.0, step=0.1, key="b_acidez_ol")
-                glicerol_v      = cF2.number_input("% Glicerol en glicerina", 0.0, 100.0, value=80.0, step=0.1, key="b_glicerol")
-                q_ag_kg_ref     = cF3.number_input(
+                glicerol_v      = cF1.number_input("% Glicerol en glicerina", 0.0, 100.0, value=80.0, step=0.1, key="b_glicerol")
+                q_ag_kg_ref     = cF2.number_input(
                     "Q AG a procesar (kg)",
                     min_value=0,
                     max_value=int(q_ag_max_kg) if q_ag_max_kg > 0 else 200000,
@@ -1595,70 +1783,14 @@ with tab_objs[0]:
                     step=100, key="b_qag_ref",
                     help=f"Sugerido por capacidad: {int(q_ag_max_kg):,} kg"
                 )
+                temp_ini_v      = cF3.number_input("Temperatura inicial (C)", 0.0, 300.0, step=1.0, value=0.0, key="b_tini_are")
                 catalizador_tipo = st.radio(
                     "Catalizador a usar",
                     options=["NAOH","POTASIO"],
                     format_func=lambda x: "🧪 Soda cáustica (NaOH)" if x=="NAOH" else "🧪 Potasio (KOH)",
                     horizontal=True, key="b_catalizador"
                 )
-                cFp1, cFp2, cFp3 = st.columns(3)
-                temp_ini_v     = cFp1.number_input("Temperatura inicial (C)", 0.0, 300.0, step=1.0, value=0.0, key="b_tini_are")
-                azufre_ppm_v   = cFp2.number_input("Azufre (ppm)", 0.0, 100000.0, step=1.0, value=0.0, key="b_azufre_are")
-                pct_agua_ini_v = cFp3.number_input("% agua inicial", 0.0, 100.0, step=0.1, value=0.0, key="b_pagua_are")
-
-                # variables disponibles para comparación posterior
-                est_glicerol_puro_kg = None
-                if q_ag_kg_ref > 0 and acidez_oleico_v > 0 and glicerol_v > 0:
-                    # Glicerol PURO necesario (química pura, sin descontar pureza)
-                    est_glicerol_puro_kg = float(q_ag_kg_ref) * (acidez_oleico_v/100) * (PMg/(PMa*2)) * FE
-                    # Glicerina total a cargar (con la pureza informada): glicerol_puro / (glicerol/100)
-                    est_glice_kg = est_glicerol_puro_kg / (glicerol_v/100)
-                    mas_por_impureza = est_glice_kg - est_glicerol_puro_kg
-
-                    tn = float(q_ag_kg_ref) / 1000.0
-                    rate_naoh    = float(fila_bien["consumo_naoh_kg_x_tn"]    or 0)
-                    rate_potasio = float(fila_bien["consumo_potasio_kg_x_tn"] or 0)
-                    rate_fuel    = float(fila_bien["consumo_fuel_kg_x_tn"]    or 0)
-                    # Solo aplica el catalizador elegido
-                    est_naoh_kg    = (tn * rate_naoh)    if catalizador_tipo == "NAOH"    else 0.0
-                    est_potasio_kg = (tn * rate_potasio) if catalizador_tipo == "POTASIO" else 0.0
-                    est_fuel_kg    = tn * rate_fuel
-                    est_are_kg     = float(q_ag_kg_ref)  # 1:1 aprox
-
-                    st.markdown("**🧮 Insumos estimados a cargar**")
-                    cE1, cE2, cE3, cE4 = st.columns(4)
-                    cE1.metric(
-                        "Glicerina a cargar",
-                        f"{est_glice_kg:,.0f} kg",
-                        f"+{mas_por_impureza:,.0f} kg por pureza {glicerol_v:.0f}%"
-                    )
-                    if catalizador_tipo == "NAOH":
-                        cE2.metric("NaOH (catalizador)", f"{est_naoh_kg:,.1f} kg",
-                                   f"alternativa: {tn*rate_potasio:.2f} kg potasio")
-                        cE3.metric("Potasio", "—", "no aplica")
-                    else:
-                        cE2.metric("NaOH", "—", "no aplica")
-                        cE3.metric("Potasio (catalizador)", f"{est_potasio_kg:,.2f} kg",
-                                   f"alternativa: {tn*rate_naoh:.1f} kg NaOH")
-                    cE4.metric("Fuel", f"{est_fuel_kg:,.0f} kg")
-
-                    with st.expander("💡 Detalle del cálculo (glicerol y catalizador)", expanded=False):
-                        st.caption(
-                            f"💡 Glicerol **puro** necesario = **{est_glicerol_puro_kg:,.0f} kg**. "
-                            f"Como la glicerina tiene {glicerol_v:.0f}% de glicerol, hay que cargar "
-                            f"**{est_glice_kg:,.0f} kg** de glicerina ({mas_por_impureza:,.0f} kg extra por la impureza)."
-                        )
-                        st.caption(
-                            f"🧪 Catalizador elegido: **{('NaOH' if catalizador_tipo=='NAOH' else 'Potasio (KOH)')}**. "
-                            f"Si cambiaras al otro: {('NaOH' if catalizador_tipo=='POTASIO' else 'Potasio')} → "
-                            f"{(tn*rate_naoh) if catalizador_tipo=='POTASIO' else (tn*rate_potasio):,.2f} kg."
-                        )
-
-                    st.markdown("**🎯 Producto final esperado**")
-                    st.metric("ARE estimado", f"{est_are_kg:,.0f} kg", f"~{est_are_kg/1000:.1f} TN")
-                    st.caption("⚠️ Aproximación 1:1 sobre la masa de AG. Cuando tengas rendimiento real de planta lo ajustamos.")
-                else:
-                    st.info("Cargá **acidez oleico**, **% glicerol** y **Q AG** para ver los estimados (glicerina, NaOH, potasio, fuel) y la producción esperada.")
+                st.caption("ℹ️ Acidez oleico, % agua y azufre se calculan automáticamente como **promedio ponderado por kg** sobre los tickets cargados en el bloque **Materia prima** más abajo.")
 
             # Estimación específica DESGOMADO_ACUOSO (fuel + horas por TN AFE-S generado)
             if tipo_proceso_sel == "DESGOMADO_ACUOSO":
@@ -1804,69 +1936,173 @@ with tab_objs[0]:
                     ccols[j].metric(f"{nom}", f"{est:,.1f} {cr['unidad_consumo']}",
                                     f"{cr['consumo_por_tn']:g} {cr['unidad_consumo']}/TN")
 
+        # ============================================================
         # Materia prima
+        # REACTORES y BACHAS → tickets de portería + parámetros desde
+        # laboratorio (promedio ponderado por kg). Para el resto de los
+        # sectores se mantiene el flujo manual (litros / kg / etc).
+        # ============================================================
         mps_ingresadas = []
-        _tickets_entrada_des = None   # tickets de portería del AFE-SG (solo desgomado)
+        _tickets_entrada_des = None   # tickets de portería (string) para auditar
+        _lab_avg_mp0 = {}             # promedios ponderados del primer MP
+
         if not es_recup:
             st.markdown("**Materia prima** — se carga en el **ARMADO** (en el resto de las etapas no se agrega MP ni insumos)")
-            permite_multi = (p_obt == "AG-E") or (sector == "EXPO")
-            max_mp = 5 if permite_multi else 1
-            n_mp = 1 if not permite_multi else st.number_input(
-                "Cantidad de materias primas", 1, max_mp,
-                value=2 if permite_multi else 1, key="b_n_mp"
-            )
-            # MP permitidas según reglas (dic_proceso_producto). Si hay regla, restringe.
             opts_mp = productos_mp["codigo_producto"].tolist()
             _perm_mp = productos_permitidos(sector, tipo_proceso_sel, tipo_op, "MP")
             if _perm_mp is not None:
                 opts_mp = [c for c in productos["codigo_producto"].tolist() if c in _perm_mp]
-            for i in range(int(n_mp)):
-                cMP1, cMP2 = st.columns(2)
-                # DESGOMADO_ACUOSO siempre arranca de AFE-SG (cod fijo + key propia para no pisar el de ARE)
-                if i == 0 and tipo_proceso_sel == "DESGOMADO_ACUOSO":
-                    cod = "AFE-SG"
-                    cMP1.text_input(f"Producto inicial #{i+1} *", value="AFE-SG", disabled=True, key=f"b_pi_des_{i}")
-                # PRODUCCION_ARE: la MP puede ser AG-C o un SEBO (se elige). Se carga en litros.
-                elif i == 0 and tipo_proceso_sel == "PRODUCCION_ARE":
-                    _are_mp = [c for c in opts_mp if c == "AG-C" or str(c).startswith("SEBO-")] or (opts_mp or ["AG-C"])
-                    _idx_mp = _are_mp.index("AG-C") if "AG-C" in _are_mp else 0
-                    cod = cMP1.selectbox(f"Producto inicial #{i+1} * (AG-C o sebo)", _are_mp, index=_idx_mp, key=f"b_pi_are_{i}")
+
+            usa_tickets_lab = sector in ("REACTORES", "BACHAS")
+            if usa_tickets_lab:
+                # Opciones según proceso/sector
+                if sector == "REACTORES" and tipo_proceso_sel == "DESGOMADO_ACUOSO":
+                    _opts_mp_tl = ["AFE-SG"]
+                    _multi_mp = False
+                elif sector == "REACTORES" and tipo_proceso_sel == "PRODUCCION_ARE":
+                    _opts_mp_tl = [c for c in opts_mp if c == "AG-C" or str(c).startswith("SEBO-")] or ["AG-C"]
+                    _multi_mp = False
+                elif sector == "BACHAS":
+                    _opts_mp_tl = [c for c in opts_mp if str(c).startswith("BORRA")] or opts_mp or ["BORRA-A"]
+                    _multi_mp = True
                 else:
+                    _opts_mp_tl = opts_mp
+                    _multi_mp = False
+
+                n_mp = 1
+                if _multi_mp:
+                    n_mp = int(st.number_input("Cantidad de materias primas", 1, 5, value=1, key="b_n_mp"))
+
+                st.caption("📥 Ingresá **N° de ticket** de portería. La app suma kg automáticamente y trae los parámetros del laboratorio (acidez, agua, sedimentos, azufre, etc.).")
+
+                for i in range(n_mp):
+                    with st.container(border=True):
+                        st.markdown(f"**MP #{i+1}**")
+                        cMP1, cMP2 = st.columns([1, 2])
+                        if len(_opts_mp_tl) == 1:
+                            cod = _opts_mp_tl[0]
+                            cMP1.text_input(f"Producto inicial #{i+1}", value=cod, disabled=True, key=f"b_pi_lab_fx_{i}")
+                        else:
+                            cod = cMP1.selectbox(f"Producto inicial #{i+1} *", _opts_mp_tl, key=f"b_pi_lab_{i}")
+                        _tkmp = cMP2.text_input(
+                            f"Tickets de portería #{i+1} (n°, coma)",
+                            key=f"b_tkmp_lab_{i}",
+                            placeholder="ej. 5063, 5048, 5028",
+                            help="Cada ticket es una pesada en portería. La app suma kg y busca los análisis en procesos_lab."
+                        )
+                        # Lookup combinado portería + lab (promedio ponderado por kg)
+                        _det, _avg, _mlab, _mport, _mapping = params_de_tickets_lab(_tkmp, cod)
+                        _kg = float(pd.to_numeric(_det["kg"], errors="coerce").sum()) if (not _det.empty and "kg" in _det.columns) else 0.0
+                        if _tkmp and _tkmp.strip():
+                            st.caption(f"Total cargado: **{_kg:,.0f} kg · {_kg/1000:,.2f} TN**")
+                            _render_tickets_lab_panel(_det, _avg, _mlab, _mport, _mapping, st_container=st)
+                        if cod and _kg > 0:
+                            mps_ingresadas.append((cod, float(_kg)))
+                            if i == 0:
+                                _lab_avg_mp0 = _avg or {}
+                                _dens0 = densidad_de(cod)
+                                litros_ini = round(_kg / _dens0, 1) if (_kg and _dens0) else None
+                                _tickets_entrada_des = _tkmp or None
+            else:
+                # Sectores no-REACTORES/BACHAS: flujo manual original
+                permite_multi = (p_obt == "AG-E") or (sector == "EXPO")
+                max_mp = 5 if permite_multi else 1
+                n_mp = 1 if not permite_multi else st.number_input(
+                    "Cantidad de materias primas", 1, max_mp,
+                    value=2 if permite_multi else 1, key="b_n_mp"
+                )
+                for i in range(int(n_mp)):
+                    cMP1, cMP2 = st.columns(2)
                     cod = cMP1.selectbox(
                         f"Producto inicial #{i+1} *", opts_mp, index=0,
                         key=f"b_pi_sel_{i}"
                     )
-                _mp_kg = (tipo_proceso_sel == "DESGOMADO_ACUOSO")   # AFE-SG: peso desde portería (kg)
-                if _mp_kg:
-                    _tkmp = cMP2.text_input(f"Tickets portería entrada #{i+1} (n°, coma)", key=f"b_tkmp_{i}",
-                                            help="Pesadas del AFE-SG en portería (números). La app suma el peso neto.")
-                    _tot_mp, _df_mp, _nums_mp, _miss_mp = pesos_de_tickets(_tkmp)
-                    kg = _tot_mp
-                    if _nums_mp:
-                        _m = f"{len(set(_nums_mp))} ticket(s) · {kg:,.0f} kg · {kg/1000:,.2f} TN"
-                        (cMP2.warning if _miss_mp else cMP2.caption)(
-                            (f"sin pesada en portería: {_miss_mp} · " if _miss_mp else "") + _m)
-                    if i == 0:
-                        litros_ini = round(kg / densidad_de(cod), 1) if (kg and densidad_de(cod)) else None
-                        _tickets_entrada_des = _tkmp or None
-                elif usa_litros:
-                    _dens_i = densidad_de(cod)
-                    lts_i = cMP2.number_input(f"Litros inicial #{i+1} *", min_value=0, max_value=2_000_000, step=100, value=0, key=f"b_li_{i}")
-                    kg = (lts_i or 0) * _dens_i
-                    cMP2.caption(f"= {kg:,.0f} kg · {kg/1000:,.2f} TN (dens {_dens_i:g} kg/L)")
-                    if i == 0:
-                        litros_ini = lts_i or 0
-                else:
-                    kg = cMP2.number_input(f"Kg inicial #{i+1} *", min_value=0, max_value=1_000_000, step=100, value=0, key=f"b_ki_{i}")
-                    cMP2.caption(f"= {kg/1000:,.2f} TN")
-                if cod and kg > 0:
-                    mps_ingresadas.append((cod, float(kg)))
+                    if usa_litros:
+                        _dens_i = densidad_de(cod)
+                        lts_i = cMP2.number_input(f"Litros inicial #{i+1} *", min_value=0, max_value=2_000_000, step=100, value=0, key=f"b_li_{i}")
+                        kg = (lts_i or 0) * _dens_i
+                        cMP2.caption(f"= {kg:,.0f} kg · {kg/1000:,.2f} TN (dens {_dens_i:g} kg/L)")
+                        if i == 0:
+                            litros_ini = lts_i or 0
+                    else:
+                        kg = cMP2.number_input(f"Kg inicial #{i+1} *", min_value=0, max_value=1_000_000, step=100, value=0, key=f"b_ki_{i}")
+                        cMP2.caption(f"= {kg/1000:,.2f} TN")
+                    if cod and kg > 0:
+                        mps_ingresadas.append((cod, float(kg)))
+
             if mps_ingresadas:
                 p_ini, kg_ini = mps_ingresadas[0]
             else:
                 p_ini, kg_ini = "", 0.0
         else:
             p_ini, kg_ini = "", 0.0
+
+        # ============================================================
+        # Override de parámetros iniciales desde el laboratorio (lab→variables)
+        # Solo se aplica si tenemos averages del primer MP (REACTORES/BACHAS).
+        # ============================================================
+        if _lab_avg_mp0:
+            if _lab_avg_mp0.get("prc_acidez") is not None:
+                acidez_oleico_v = float(_lab_avg_mp0["prc_acidez"])
+            if _lab_avg_mp0.get("ppm_azufre") is not None:
+                azufre_ppm_v = float(_lab_avg_mp0["ppm_azufre"])
+            if _lab_avg_mp0.get("prc_agua") is not None:
+                pct_agua_ini_v = float(_lab_avg_mp0["prc_agua"])
+            _bits_lab = []
+            if acidez_oleico_v is not None: _bits_lab.append(f"acidez **{acidez_oleico_v:.3f}%**")
+            if pct_agua_ini_v is not None:  _bits_lab.append(f"agua **{pct_agua_ini_v:.3f}%**")
+            if azufre_ppm_v is not None:    _bits_lab.append(f"azufre **{azufre_ppm_v:.1f} ppm**")
+            if _bits_lab:
+                st.success("🧪 Parámetros iniciales tomados del laboratorio (promedio ponderado por kg): " + " · ".join(_bits_lab))
+
+        # ============================================================
+        # Estimados ARE (glicerina, NaOH/Potasio, Fuel, ARE estimado)
+        # Se renderizan DESPUÉS del bloque MP para que acidez_oleico_v
+        # ya esté actualizada desde el laboratorio.
+        # ============================================================
+        if es_reactor and tipo_proceso_sel == "PRODUCCION_ARE":
+            est_glicerol_puro_kg = None
+            if q_ag_kg_ref and q_ag_kg_ref > 0 and acidez_oleico_v and acidez_oleico_v > 0 and glicerol_v and glicerol_v > 0:
+                est_glicerol_puro_kg = float(q_ag_kg_ref) * (acidez_oleico_v/100) * (PMg/(PMa*2)) * FE
+                est_glice_kg = est_glicerol_puro_kg / (glicerol_v/100)
+                mas_por_impureza = est_glice_kg - est_glicerol_puro_kg
+                tn = float(q_ag_kg_ref) / 1000.0
+                rate_naoh    = float(fila_bien["consumo_naoh_kg_x_tn"]    or 0)
+                rate_potasio = float(fila_bien["consumo_potasio_kg_x_tn"] or 0)
+                rate_fuel    = float(fila_bien["consumo_fuel_kg_x_tn"]    or 0)
+                est_naoh_kg    = (tn * rate_naoh)    if catalizador_tipo == "NAOH"    else 0.0
+                est_potasio_kg = (tn * rate_potasio) if catalizador_tipo == "POTASIO" else 0.0
+                est_fuel_kg    = tn * rate_fuel
+                est_are_kg     = float(q_ag_kg_ref)
+                st.markdown("**🧮 Insumos estimados a cargar** (usan la acidez del laboratorio)")
+                cE1, cE2, cE3, cE4 = st.columns(4)
+                cE1.metric("Glicerina a cargar", f"{est_glice_kg:,.0f} kg",
+                           f"+{mas_por_impureza:,.0f} kg por pureza {glicerol_v:.0f}%")
+                if catalizador_tipo == "NAOH":
+                    cE2.metric("NaOH (catalizador)", f"{est_naoh_kg:,.1f} kg",
+                               f"alternativa: {tn*rate_potasio:.2f} kg potasio")
+                    cE3.metric("Potasio", "—", "no aplica")
+                else:
+                    cE2.metric("NaOH", "—", "no aplica")
+                    cE3.metric("Potasio (catalizador)", f"{est_potasio_kg:,.2f} kg",
+                               f"alternativa: {tn*rate_naoh:.1f} kg NaOH")
+                cE4.metric("Fuel", f"{est_fuel_kg:,.0f} kg")
+                with st.expander("💡 Detalle del cálculo (glicerol y catalizador)", expanded=False):
+                    st.caption(
+                        f"💡 Glicerol **puro** necesario = **{est_glicerol_puro_kg:,.0f} kg**. "
+                        f"Como la glicerina tiene {glicerol_v:.0f}% de glicerol, hay que cargar "
+                        f"**{est_glice_kg:,.0f} kg** de glicerina ({mas_por_impureza:,.0f} kg extra por la impureza)."
+                    )
+                    st.caption(
+                        f"🧪 Catalizador elegido: **{('NaOH' if catalizador_tipo=='NAOH' else 'Potasio (KOH)')}**. "
+                        f"Si cambiaras al otro: {('NaOH' if catalizador_tipo=='POTASIO' else 'Potasio')} → "
+                        f"{(tn*rate_naoh) if catalizador_tipo=='POTASIO' else (tn*rate_potasio):,.2f} kg."
+                    )
+                st.markdown("**🎯 Producto final esperado**")
+                st.metric("ARE estimado", f"{est_are_kg:,.0f} kg", f"~{est_are_kg/1000:.1f} TN")
+                st.caption("⚠️ Aproximación 1:1 sobre la masa de AG. Cuando tengas rendimiento real de planta lo ajustamos.")
+            else:
+                st.info("Cargá los **tickets de MP** (para acidez) y elegí **% glicerol** y **Q AG** para ver los estimados.")
 
         # Bachas: ~70% de la borra es agua de descarte → efluentes líquidos.
         # Estimado de producto final (lo no-agua) se calcula acá, en el ARMADO.
@@ -2508,22 +2744,24 @@ with tab_objs[0]:
             _opts_pf = sorted(set(_finales) | ({rpf["buscado"]} if rpf["buscado"] else set()))
             _idx_def = _opts_pf.index(rpf["buscado"]) if (rpf["buscado"] in _opts_pf) else 0
             p_obt_pf = cF1.selectbox("Producto obtenido *", _opts_pf, index=_idx_def, key="pf_prod")
-            _es_des_pf = (rpf["tipo_proceso"] == "DESGOMADO_ACUOSO")
             _sal_tickets = None
-            if _es_des_pf:
-                # AFE-S: peso final desde tickets de portería (varios camiones).
+            # Para REACTORES y BACHAS el producto final SIEMPRE se carga por tickets de portería,
+            # y los parámetros finales (acidez/densidad/AyS) salen del laboratorio.
+            _usa_tickets_pf = _sector_pf in ("REACTORES", "BACHAS")
+            _lab_avg_pf = {}
+            if _usa_tickets_pf:
                 _tk_sal = cF2.text_input("Tickets portería salida (n°, coma)", key=f"pf_tksal_{id_pf}",
-                                         help="Pesadas del AFE-S en portería. La app suma el peso neto.")
-                _tot_s, _df_s, _nums_s, _miss_s = pesos_de_tickets(_tk_sal)
-                kg_pf = _tot_s
-                lts_pf = None
+                                         help="Pesadas del producto final en portería. La app suma kg y trae los parámetros del laboratorio (acidez/agua/densidad/AyS).")
                 _sal_tickets = _tk_sal or None
-                if _nums_s:
-                    _ms = f"{len(set(_nums_s))} ticket(s) · {kg_pf:,.0f} kg · {kg_pf/1000:,.2f} TN"
-                    (cF2.warning if _miss_s else cF2.caption)((f"sin pesada: {_miss_s} · " if _miss_s else "") + _ms)
+                _det_pf, _avg_pf, _mlab_pf, _mport_pf, _mapping_pf = params_de_tickets_lab(_tk_sal, p_obt_pf)
+                kg_pf = float(pd.to_numeric(_det_pf["kg"], errors="coerce").sum()) if (not _det_pf.empty and "kg" in _det_pf.columns) else 0.0
+                lts_pf = None
+                if _tk_sal and _tk_sal.strip():
+                    cF2.caption(f"= **{kg_pf:,.0f} kg · {kg_pf/1000:,.2f} TN**")
+                    _render_tickets_lab_panel(_det_pf, _avg_pf, _mlab_pf, _mport_pf, _mapping_pf, st_container=st)
+                _lab_avg_pf = _avg_pf or {}
             elif _usa_litros_pf:
                 _dpf = densidad_de(p_obt_pf)
-                # Pre-carga con lo estimado en el armado (casi siempre coincide); editable.
                 _def_lts = int(rpf["litros_obtenido"]) if pd.notna(rpf["litros_obtenido"]) else (int(round(est_kg/_dpf)) if est_kg else 0)
                 lts_pf = cF2.number_input("Litros obtenido *", min_value=0, max_value=2_000_000, step=100,
                                           value=_def_lts, key=f"pf_lts_{id_pf}",
@@ -2542,12 +2780,38 @@ with tab_objs[0]:
             tanque_pf = st.text_input("Tanque destino", value=(rpf["tanque_destino"] or ""), max_chars=40, key="pf_tk",
                                       placeholder="ej. TK-12")
 
-            # Parámetros finales (los define laboratorio; se dejan asentados acá) + comentarios.
-            st.markdown("**Parámetros finales** · los define laboratorio (opcionales, 0 = no cargar)")
-            cP1, cP2, cP3 = st.columns(3)
-            acidez_fin_pf = cP1.number_input("Acidez final (%)", 0.0, 100.0, step=0.1, value=0.0, key=f"pf_acidez_{id_pf}")
-            dens_fin_pf   = cP2.number_input("Densidad final (gr/cm³)", 0.0, 2.0, step=0.01, value=0.0, key=f"pf_dens_{id_pf}")
-            ays_pf        = cP3.number_input("% A y S", 0.0, 100.0, step=0.1, value=0.0, key=f"pf_ays_{id_pf}")
+            # Parámetros finales.
+            # REACTORES/BACHAS: salen del laboratorio (promedio ponderado por kg de los tickets de salida).
+            # Resto: se editan manualmente (los carga laboratorio).
+            if _usa_tickets_pf:
+                _acidez_lab = _lab_avg_pf.get("prc_acidez")
+                _dens_lab   = _lab_avg_pf.get("densidad__g_ml")
+                _agua_lab   = _lab_avg_pf.get("prc_agua")
+                _sed_lab    = _lab_avg_pf.get("prc_sedimentos")
+                _ays_lab = None
+                if _agua_lab is not None and _sed_lab is not None:
+                    _ays_lab = float(_agua_lab) + float(_sed_lab)
+                elif _agua_lab is not None:
+                    _ays_lab = float(_agua_lab)
+                elif _sed_lab is not None:
+                    _ays_lab = float(_sed_lab)
+                acidez_fin_pf = float(_acidez_lab) if _acidez_lab is not None else 0.0
+                dens_fin_pf   = float(_dens_lab)   if _dens_lab   is not None else 0.0
+                ays_pf        = float(_ays_lab)    if _ays_lab    is not None else 0.0
+                st.markdown("**Parámetros finales** · desde laboratorio (promedio ponderado por kg)")
+                _cP1, _cP2, _cP3 = st.columns(3)
+                _cP1.metric("Acidez final (%)",       f"{acidez_fin_pf:.3f}" if acidez_fin_pf else "—")
+                _cP2.metric("Densidad (g/ml)",        f"{dens_fin_pf:.3f}"   if dens_fin_pf   else "—")
+                _cP3.metric("% A y S",                f"{ays_pf:.3f}"        if ays_pf        else "—",
+                            help="A y S = % agua + % sedimentos del laboratorio.")
+                if not _lab_avg_pf:
+                    st.caption("Sin muestras de laboratorio aún para los tickets de salida. Se guarda con 0.")
+            else:
+                st.markdown("**Parámetros finales** · los define laboratorio (opcionales, 0 = no cargar)")
+                cP1, cP2, cP3 = st.columns(3)
+                acidez_fin_pf = cP1.number_input("Acidez final (%)", 0.0, 100.0, step=0.1, value=0.0, key=f"pf_acidez_{id_pf}")
+                dens_fin_pf   = cP2.number_input("Densidad final (gr/cm³)", 0.0, 2.0, step=0.01, value=0.0, key=f"pf_dens_{id_pf}")
+                ays_pf        = cP3.number_input("% A y S", 0.0, 100.0, step=0.1, value=0.0, key=f"pf_ays_{id_pf}")
             obs_pf = st.text_input("Observaciones / comentarios", max_chars=300, key=f"pf_obs_{id_pf}")
 
             if est_kg and kg_pf and kg_pf > 0:
