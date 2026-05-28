@@ -354,6 +354,11 @@ def _render_tickets_lab_panel(det, avg, missing_lab, missing_port, mapping, st_c
     df_show = det[cols_show].rename(columns=rename).copy()
     if "kg portería" in df_show.columns:
         df_show["kg portería"] = pd.to_numeric(df_show["kg portería"], errors="coerce").round(0)
+    # Mostrar prc_* como % (×100 con 2-3 decimales). ppm y densidad sin cambios.
+    for col, lbl in _LAB_METRICS:
+        if col.startswith("prc_") and lbl in df_show.columns:
+            df_show[lbl] = pd.to_numeric(df_show[lbl], errors="coerce") * 100
+            df_show[lbl] = df_show[lbl].round(3)
     sc.dataframe(df_show, hide_index=True, use_container_width=True)
 
     # Promedios ponderados
@@ -364,7 +369,8 @@ def _render_tickets_lab_panel(det, avg, missing_lab, missing_port, mapping, st_c
             if col in avg:
                 v = avg[col]
                 if col.startswith("prc_"):
-                    bits.append(f"{lbl}: **{v:.3f}**")
+                    # almacenado como decimal → mostrar en %
+                    bits.append(f"{lbl}: **{v*100:.3f}%**")
                 elif col == "densidad__g_ml":
                     bits.append(f"{lbl}: **{v:.3f}**")
                 else:
@@ -386,6 +392,29 @@ def _render_tickets_lab_panel(det, avg, missing_lab, missing_port, mapping, st_c
         sc.warning(f"🚪 Sin pesada en portería: {missing_port}")
     if missing_lab:
         sc.warning(f"🧪 Sin muestra de laboratorio: {missing_lab}")
+
+
+# ===========================================================================
+# ultimas_muestras_glicerina: devuelve las últimas N muestras del producto
+# GLICERINA en procesos_lab con gli_glicerol no nulo. La UI permite elegir
+# por ticket (default = última); el % glicerol pasa a la fórmula sin input
+# manual.
+# ===========================================================================
+def ultimas_muestras_glicerina(n=3):
+    try:
+        df = cat(
+            "SELECT ticket, num_muestra, fecha::date AS fecha, "
+            "       gli_glicerol, gli_humedad, gli_ays, gli_ceniza, gli_mong, "
+            "       calidad_final_lab, empleado "
+            "FROM produccion.procesos_lab "
+            "WHERE producto_lab = 'GLICERINA' AND gli_glicerol IS NOT NULL "
+            "ORDER BY fecha DESC NULLS LAST, num_muestra DESC NULLS LAST "
+            "LIMIT %s",
+            (int(n),),
+        )
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 # ---- Preferencias de UI por usuario (persisten en dim_usuario.prefs JSONB) ----
@@ -1752,14 +1781,18 @@ with tab_objs[0]:
                 st.caption(f"⏱️ Duraciones esperadas por etapa (min): {resumen}  ·  **Total target: {total_target} min** ({total_target/60:.1f} h)")
 
             # --- Inputs iniciales para formula de carga (PRODUCCION_ARE) ---
+            gli_ticket_sel = None         # ticket de la muestra GLICERINA elegida (lab)
             if tipo_proceso_sel == "PRODUCCION_ARE":
                 PMa   = K("PMa", 282)
                 PMg   = K("PMg", 92)
                 FE    = K("factor_exceso_gli", 1.1)
                 D_GLI = K("densidad_glicerina", 1.25)
-                D_AG  = K("densidad_aagg", 0.9)
                 cap_l = float(fila_bien["capacidad_max_l"] or 0)
-                q_ag_max_kg = cap_l * D_AG
+                # Densidades por MP desde dim_producto (AG-C=0.92, SEBO=0.91)
+                _d_ag   = densidad_de("AG-C") or 0.92
+                _d_sebo = densidad_de("SEBO-A-1RA") or 0.91
+                _kg_max_ag   = cap_l * _d_ag
+                _kg_max_sebo = cap_l * _d_sebo
 
                 with st.expander("📐 Fórmulas de carga y capacidad (referencia)", expanded=False):
                     st.code(
@@ -1770,27 +1803,52 @@ with tab_objs[0]:
                         f"Fuel (kg)        = (Q_AG / 1000) × {fila_bien['consumo_fuel_kg_x_tn']} kg/TN",
                         language="text"
                     )
-                    st.caption(f"🛢️ Capacidad del reactor: **{int(cap_l):,} L** → hasta **{int(q_ag_max_kg):,} kg** de AG (~{q_ag_max_kg/1000:.1f} TN). Densidad AG = {D_AG} kg/L.")
+                    st.caption(
+                        f"🛢️ Capacidad del reactor: **{int(cap_l):,} L** → "
+                        f"hasta **{int(_kg_max_ag):,} kg de AG** (dens {_d_ag} kg/L) "
+                        f"o **{int(_kg_max_sebo):,} kg de SEBO** (dens {_d_sebo} kg/L). "
+                        "El Q AG se asume = capacidad × densidad del MP elegido (se recalcula tras seleccionar el MP)."
+                    )
 
-                st.markdown("**Inputs operativos** (la acidez/azufre/agua salen del laboratorio en el bloque MP de abajo)")
-                cF1, cF2, cF3 = st.columns(3)
-                glicerol_v      = cF1.number_input("% Glicerol en glicerina", 0.0, 100.0, value=80.0, step=0.1, key="b_glicerol")
-                q_ag_kg_ref     = cF2.number_input(
-                    "Q AG a procesar (kg)",
-                    min_value=0,
-                    max_value=int(q_ag_max_kg) if q_ag_max_kg > 0 else 200000,
-                    value=int(q_ag_max_kg) if q_ag_max_kg > 0 else 0,
-                    step=100, key="b_qag_ref",
-                    help=f"Sugerido por capacidad: {int(q_ag_max_kg):,} kg"
-                )
-                temp_ini_v      = cF3.number_input("Temperatura inicial (C)", 0.0, 300.0, step=1.0, value=0.0, key="b_tini_are")
-                catalizador_tipo = st.radio(
+                # Muestras de GLICERINA (últimas 3) → el % glicerol sale del lab
+                _df_gli = ultimas_muestras_glicerina(3)
+                st.markdown("**Glicerina (lab)** — el % glicerol viene de la muestra elegida")
+                if not _df_gli.empty:
+                    _opts_gli = _df_gli.apply(
+                        lambda r: f"ticket {r['ticket']} · {r['fecha']} · glicerol {float(r['gli_glicerol'])*100:.2f}%",
+                        axis=1,
+                    ).tolist()
+                    _sel_gli = st.selectbox(
+                        "Muestra de laboratorio",
+                        _opts_gli,
+                        index=0,
+                        key="b_gli_lab_sel",
+                        help="Las últimas 3 muestras analizadas del producto GLICERINA. La más reciente queda preseleccionada.",
+                    )
+                    _row_gli = _df_gli.iloc[_opts_gli.index(_sel_gli)]
+                    glicerol_v = float(_row_gli["gli_glicerol"]) * 100   # → %
+                    gli_ticket_sel = str(_row_gli["ticket"])
+                    _cg1, _cg2, _cg3 = st.columns(3)
+                    _cg1.metric("% Glicerol",      f"{glicerol_v:.2f}%")
+                    _cg2.metric("% Humedad",       f"{float(_row_gli['gli_humedad'])*100:.2f}%" if pd.notna(_row_gli['gli_humedad']) else "—")
+                    _cg3.metric("% A y S",         f"{float(_row_gli['gli_ays'])*100:.3f}%"     if pd.notna(_row_gli['gli_ays'])     else "—")
+                    st.caption(f"Muestra del **{_row_gli['fecha']}** · analista {_row_gli['empleado'] or '—'} · calidad **{_row_gli['calidad_final_lab'] or '—'}**.")
+                else:
+                    st.warning("No hay muestras de GLICERINA con `gli_glicerol` en procesos_lab. Cargá una desde laboratorio.")
+                    glicerol_v = None
+
+                st.markdown("**Inputs operativos**")
+                cF1, cF2 = st.columns(2)
+                temp_ini_v       = cF1.number_input("Temperatura inicial (C)", 0.0, 300.0, step=1.0, value=0.0, key="b_tini_are")
+                catalizador_tipo = cF2.radio(
                     "Catalizador a usar",
                     options=["NAOH","POTASIO"],
                     format_func=lambda x: "🧪 Soda cáustica (NaOH)" if x=="NAOH" else "🧪 Potasio (KOH)",
-                    horizontal=True, key="b_catalizador"
+                    horizontal=True, key="b_catalizador",
                 )
-                st.caption("ℹ️ Acidez oleico, % agua y azufre se calculan automáticamente como **promedio ponderado por kg** sobre los tickets cargados en el bloque **Materia prima** más abajo.")
+                # q_ag_kg_ref se calculará después del bloque MP (necesita el producto inicial elegido).
+                q_ag_kg_ref = 0
+                st.caption("ℹ️ Acidez/% agua/azufre/sedimentos/fósforo/densidad vienen del laboratorio de los tickets de MP (abajo). Q AG = capacidad reactor × densidad del MP seleccionado.")
 
             # Estimación específica DESGOMADO_ACUOSO (fuel + horas por TN AFE-S generado)
             if tipo_proceso_sel == "DESGOMADO_ACUOSO":
@@ -2042,18 +2100,42 @@ with tab_objs[0]:
         # Solo se aplica si tenemos averages del primer MP (REACTORES/BACHAS).
         # ============================================================
         if _lab_avg_mp0:
+            # prc_* del lab están en DECIMAL (0.058 = 5.8%). Las variables que usan las
+            # fórmulas y los displays trabajan en % (0-100), así que multiplicamos por 100.
             if _lab_avg_mp0.get("prc_acidez") is not None:
-                acidez_oleico_v = float(_lab_avg_mp0["prc_acidez"])
+                acidez_oleico_v = float(_lab_avg_mp0["prc_acidez"]) * 100
             if _lab_avg_mp0.get("ppm_azufre") is not None:
-                azufre_ppm_v = float(_lab_avg_mp0["ppm_azufre"])
+                azufre_ppm_v = float(_lab_avg_mp0["ppm_azufre"])  # ppm queda igual
             if _lab_avg_mp0.get("prc_agua") is not None:
-                pct_agua_ini_v = float(_lab_avg_mp0["prc_agua"])
+                pct_agua_ini_v = float(_lab_avg_mp0["prc_agua"]) * 100
             _bits_lab = []
             if acidez_oleico_v is not None: _bits_lab.append(f"acidez **{acidez_oleico_v:.3f}%**")
             if pct_agua_ini_v is not None:  _bits_lab.append(f"agua **{pct_agua_ini_v:.3f}%**")
             if azufre_ppm_v is not None:    _bits_lab.append(f"azufre **{azufre_ppm_v:.1f} ppm**")
             if _bits_lab:
                 st.success("🧪 Parámetros iniciales tomados del laboratorio (promedio ponderado por kg): " + " · ".join(_bits_lab))
+
+        # ============================================================
+        # Q AG planeado: capacidad del reactor × densidad del MP elegido
+        # (asume que se usa el reactor a su máxima capacidad).
+        # Aplica solo a PRODUCCION_ARE.
+        # ============================================================
+        if es_reactor and tipo_proceso_sel == "PRODUCCION_ARE" and p_ini:
+            try:
+                _cap = float(fila_bien["capacidad_max_l"] or 0)
+                _dens_mp = densidad_de(p_ini) or 0.92
+                q_ag_kg_ref = float(_cap * _dens_mp)
+                _ar1, _ar2, _ar3 = st.columns(3)
+                _ar1.metric("Capacidad reactor", f"{int(_cap):,} L")
+                _ar2.metric(f"Densidad {p_ini}", f"{_dens_mp:.2f} kg/L")
+                _ar3.metric("Q MP máx. (kg)", f"{q_ag_kg_ref:,.0f}", f"{q_ag_kg_ref/1000:,.2f} TN")
+                if kg_ini and kg_ini > 0:
+                    _desv = (kg_ini - q_ag_kg_ref) / q_ag_kg_ref * 100 if q_ag_kg_ref else 0
+                    _msg = (f"Cargado real **{kg_ini:,.0f} kg** vs máx. teórico **{q_ag_kg_ref:,.0f} kg** "
+                            f"→ desvío **{_desv:+.1f}%**")
+                    (st.success if abs(_desv) <= 10 else st.warning)(("✅ " if abs(_desv) <= 10 else "⚠️ ") + _msg)
+            except Exception:
+                pass
 
         # ============================================================
         # Estimados ARE (glicerina, NaOH/Potasio, Fuel, ARE estimado)
@@ -2123,19 +2205,23 @@ with tab_objs[0]:
         gli_pura_total = None
         if tipo_proceso_sel == "PRODUCCION_ARE":
             D_GLI = K("densidad_glicerina", 1.25)
-            st.markdown("**Glicerina**")
-            cG1, cG2, cG3, cG4 = st.columns(4)
-            gli_fl         = cG1.number_input("Fresca (L)",        min_value=0, max_value=100000, step=50, value=0, key="b_glfl")
-            gli_fresca_pct = cG2.number_input("% glicerol fresca", 0.0, 100.0, step=0.1, value=99.5, key="b_glfpct")
+            st.markdown("**Glicerina a cargar** _(% glicerol viene del lab, ticket seleccionado arriba)_")
+            # gli_fresca_pct sale del mismo ticket de lab elegido (= glicerol_v)
+            gli_fresca_pct = float(glicerol_v) if glicerol_v else 0.0
+            cG1, cG2, cG3 = st.columns(3)
+            gli_fl = cG1.number_input("Fresca (L)", min_value=0, max_value=100000, step=50, value=0, key="b_glfl")
+            cG2.metric("% glicerol fresca (lab)", f"{gli_fresca_pct:.2f}%" if gli_fresca_pct else "—",
+                       f"ticket {gli_ticket_sel}" if gli_ticket_sel else None)
             # Con potasio (KOH) NO se genera glicerina recuperada (regla dic_catalizador)
             _genera_recup = catalizador_genera_glicerina(catalizador_tipo) if catalizador_tipo else True
             if _genera_recup:
-                gli_rl     = cG3.number_input("Recuperada (L)",    min_value=0, max_value=100000, step=50, value=0, key="b_glrl")
-                gli_pct    = cG4.number_input("% glicerol recup.", 0.0, 100.0, step=0.1, value=80.0, key="b_glpct")
+                gli_rl  = cG3.number_input("Recuperada (L)",    min_value=0, max_value=100000, step=50, value=0, key="b_glrl")
+                gli_pct = st.number_input("% glicerol recuperada",
+                                          0.0, 100.0, step=0.1, value=80.0, key="b_glpct",
+                                          help="La glicerina recuperada de etapas previas suele tener menor pureza; ajustá si conocés el valor real.")
             else:
                 gli_rl = 0; gli_pct = 0.0
-                cG3.metric("Recuperada", "no aplica")
-                cG4.caption("Con potasio (KOH) no se genera glicerina recuperada.")
+                cG3.metric("Recuperada", "no aplica", "potasio (KOH) no genera recuperada")
 
             # kg derivados desde litros (densidad glicerina)
             gli_fk = (gli_fl or 0.0) * D_GLI
@@ -2190,25 +2276,24 @@ with tab_objs[0]:
                             (f" · estimado {est_naoh_kg:,.1f} kg" if est_naoh_kg else ""))
 
         # Bloque AGUA + fuel estimado + ticket (solo DESGOMADO_ACUOSO).
-        # Todo se calcula sobre el AFE-SG cargado (kg_ini).
+        # Agua de proceso = 5% sobre los kg iniciales de AFE-SG (auto, no input manual).
         agua_lts_v = None
         if tipo_proceso_sel == "DESGOMADO_ACUOSO":
             _pct_agua = K("desgomado_pct_agua", 5) or 5
             _temp = K("desgomado_temp_c", 85) or 85
             _merma_esp = K("desgomado_merma_pct_esperada", 5) or 5
             _kg_afesg = float(kg_ini or 0)
-            _agua_sug = int(round(_kg_afesg * _pct_agua / 100))  # 5% del AFE-SG (kg agua ~ L)
+            agua_lts_v = round(_kg_afesg * _pct_agua / 100, 0)  # 5% del AFE-SG (kg agua ≈ L)
             _rf = consumos_proceso[(consumos_proceso["tipo_proceso"] == "DESGOMADO_ACUOSO") &
                                    (consumos_proceso["codigo_insumo"] == "FUEL")]
             _rate_fuel = float(_rf.iloc[0]["consumo_por_tn"]) if not _rf.empty else 8.7
             est_fuel_kg = round((_kg_afesg / 1000.0) * _rate_fuel, 1)        # fuel estimado (L)
             est_are_kg = _kg_afesg * (1 - _merma_esp / 100.0)               # AFE-S esperado (merma esperada)
             q_ag_kg_ref = _kg_afesg
-            st.markdown("**Agua de proceso + estimados**")
+            st.markdown(f"**Agua de proceso + estimados** _(agua = {_pct_agua:g}% sobre AFE-SG, automático)_")
             cAg1, cAg2, cAg3 = st.columns(3)
-            agua_lts_v = cAg1.number_input("Agua de proceso (L)", min_value=0, max_value=200000, step=50,
-                                           value=_agua_sug, key="b_agua",
-                                           help=f"Sugerido {_pct_agua:g}% del AFE-SG ({_kg_afesg/1000:,.2f} TN). Calentar a ~{_temp:g} C.")
+            cAg1.metric("Agua de proceso (L)", f"{agua_lts_v:,.0f}",
+                        f"{_pct_agua:g}% × {_kg_afesg/1000:,.2f} TN AFE-SG")
             cAg2.metric("Fuel oil estimado (L)", f"{est_fuel_kg:,.1f}", "automático · no se carga")
             cAg3.metric("AFE-S esperado", f"{est_are_kg/1000:,.2f} TN", f"merma esp. {_merma_esp:g}%")
             temp_ini_v = st.number_input("Temperatura inicial (C)", 0.0, 300.0, step=1.0, value=float(_temp), key="b_tini_des")
@@ -2301,15 +2386,16 @@ with tab_objs[0]:
         if acidez_oleico_v and acidez_oleico_v > 0:
             parametros_dict.setdefault("acidez", float(acidez_oleico_v))
         # Resto de métricas evaluadas en el laboratorio del primer MP (sedimentos, fósforo, densidad, producto)
+        # prc_* se guardan en % (×100); ppm y densidad sin tocar.
         if _lab_avg_mp0:
             if _lab_avg_mp0.get("prc_sedimentos") is not None:
-                parametros_dict["sedimentos_pct"] = float(_lab_avg_mp0["prc_sedimentos"])
+                parametros_dict["sedimentos_pct"] = float(_lab_avg_mp0["prc_sedimentos"]) * 100
             if _lab_avg_mp0.get("ppm_fosforo") is not None:
                 parametros_dict["fosforo_ppm"] = float(_lab_avg_mp0["ppm_fosforo"])
             if _lab_avg_mp0.get("densidad__g_ml") is not None:
                 parametros_dict["densidad_g_ml"] = float(_lab_avg_mp0["densidad__g_ml"])
             if _lab_avg_mp0.get("prc_producto") is not None:
-                parametros_dict["producto_pct"] = float(_lab_avg_mp0["prc_producto"])
+                parametros_dict["producto_pct"] = float(_lab_avg_mp0["prc_producto"]) * 100
 
         # ----- Alarmas plan-vs-real para insumos cargados -----
         def _alarma_consumo(label, real_kg, est_kg, tol=5.0, unidad="kg"):
@@ -2793,25 +2879,27 @@ with tab_objs[0]:
             # REACTORES/BACHAS: salen del laboratorio (promedio ponderado por kg de los tickets de salida).
             # Resto: se editan manualmente (los carga laboratorio).
             if _usa_tickets_pf:
+                # Los prc_* del lab están en decimal (0.058 = 5.8%); convertimos a % para
+                # guardar consistente con el resto de los parámetros.
                 _acidez_lab = _lab_avg_pf.get("prc_acidez")
                 _dens_lab   = _lab_avg_pf.get("densidad__g_ml")
                 _agua_lab   = _lab_avg_pf.get("prc_agua")
                 _sed_lab    = _lab_avg_pf.get("prc_sedimentos")
                 _ays_lab = None
                 if _agua_lab is not None and _sed_lab is not None:
-                    _ays_lab = float(_agua_lab) + float(_sed_lab)
+                    _ays_lab = (float(_agua_lab) + float(_sed_lab)) * 100
                 elif _agua_lab is not None:
-                    _ays_lab = float(_agua_lab)
+                    _ays_lab = float(_agua_lab) * 100
                 elif _sed_lab is not None:
-                    _ays_lab = float(_sed_lab)
-                acidez_fin_pf = float(_acidez_lab) if _acidez_lab is not None else 0.0
-                dens_fin_pf   = float(_dens_lab)   if _dens_lab   is not None else 0.0
-                ays_pf        = float(_ays_lab)    if _ays_lab    is not None else 0.0
+                    _ays_lab = float(_sed_lab) * 100
+                acidez_fin_pf = float(_acidez_lab) * 100 if _acidez_lab is not None else 0.0
+                dens_fin_pf   = float(_dens_lab)         if _dens_lab   is not None else 0.0
+                ays_pf        = float(_ays_lab)          if _ays_lab    is not None else 0.0
                 st.markdown("**Parámetros finales** · desde laboratorio (promedio ponderado por kg)")
                 _cP1, _cP2, _cP3 = st.columns(3)
-                _cP1.metric("Acidez final (%)",       f"{acidez_fin_pf:.3f}" if acidez_fin_pf else "—")
-                _cP2.metric("Densidad (g/ml)",        f"{dens_fin_pf:.3f}"   if dens_fin_pf   else "—")
-                _cP3.metric("% A y S",                f"{ays_pf:.3f}"        if ays_pf        else "—",
+                _cP1.metric("Acidez final",   f"{acidez_fin_pf:.3f}%" if acidez_fin_pf else "—")
+                _cP2.metric("Densidad (g/ml)", f"{dens_fin_pf:.3f}"   if dens_fin_pf   else "—")
+                _cP3.metric("% A y S",         f"{ays_pf:.3f}%"       if ays_pf        else "—",
                             help="A y S = % agua + % sedimentos del laboratorio.")
                 if not _lab_avg_pf:
                     st.caption("Sin muestras de laboratorio aún para los tickets de salida. Se guarda con 0.")
