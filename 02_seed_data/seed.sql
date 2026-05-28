@@ -66,7 +66,7 @@ INSERT INTO dic_insumo(codigo,descripcion,unidad) VALUES
  ('catalizador_kg','Catalizador KOH-CH3OH','KG'),
  ('floculante_kg','Floculante','KG'),
  ('kg_glicerina','Glicerina (subproducto)','KG'),
- ('fuel_l','Fuel','L')
+ ('FUEL_OIL','Fuel Oil','KG')
 ON CONFLICT DO NOTHING;
 
 -- Insumos extra: potasa caustica (como figura en porteria) + gasoil
@@ -437,19 +437,19 @@ INSERT INTO dic_unidad(codigo, descripcion, magnitud, es_estandar) VALUES
 ON CONFLICT (codigo) DO NOTHING;
 
 INSERT INTO dic_insumo(codigo, descripcion, unidad) VALUES
- ('AGUA',    'Agua proceso',           'L'),
- ('POTASIO', 'Potasio (KOH puro)',    'KG'),
- ('FUEL',    'Fuel oil',               'KG'),
- ('HORAS',   'Horas hombre',           'H')
+ ('AGUA',     'Agua proceso',           'L'),
+ ('POTASIO',  'Potasio (KOH puro)',    'KG'),
+ ('FUEL_OIL', 'Fuel Oil',               'KG'),
+ ('HORAS',    'Horas hombre',           'H')
 ON CONFLICT (codigo) DO NOTHING;
 
--- Consumos teóricos por proceso (insumo × TN)
+-- Consumos teóricos por proceso (insumo × TN). En REACTORES el combustible es siempre FUEL_OIL.
 INSERT INTO dic_consumo_proceso(tipo_proceso, codigo_insumo, consumo_por_tn, unidad_consumo, base_referencia, nota) VALUES
- ('PRODUCCION_ARE',  'FUEL',    76.9,  'kg', 'AG_INPUT',         'Excel formula_inicial'),
- ('PRODUCCION_ARE',  'soda_kg', 4.4,   'kg', 'AG_INPUT',         'NaOH por TN de AG procesado'),
- ('PRODUCCION_ARE',  'POTASIO', 3.125, 'kg', 'AG_INPUT',         'Excel formula_inicial'),
- ('DESGOMADO_ACUOSO','FUEL',    8.7,   'L',  'PRODUCTO_OUTPUT',  'Promedio L de fuel por TN de AFE-S generado'),
- ('DESGOMADO_ACUOSO','HORAS',   0.1,   'h',  'PRODUCTO_OUTPUT',  'Horas hombre estimadas por TN AFE-S')
+ ('PRODUCCION_ARE',  'FUEL_OIL', 76.9,  'kg', 'AG_INPUT',         'Excel formula_inicial'),
+ ('PRODUCCION_ARE',  'soda_kg',  4.4,   'kg', 'AG_INPUT',         'NaOH por TN de AG procesado'),
+ ('PRODUCCION_ARE',  'POTASIO',  3.125, 'kg', 'AG_INPUT',         'Excel formula_inicial'),
+ ('DESGOMADO_ACUOSO','FUEL_OIL', 8.7,   'L',  'PRODUCTO_OUTPUT',  'Promedio L de fuel oil por TN de AFE-S generado'),
+ ('DESGOMADO_ACUOSO','HORAS',    0.1,   'h',  'PRODUCTO_OUTPUT',  'Horas hombre estimadas por TN AFE-S')
 ON CONFLICT (tipo_proceso, codigo_insumo) DO NOTHING;
 
 -- Duraciones estimadas por (sector, proceso, etapa) en MINUTOS
@@ -490,11 +490,11 @@ INSERT INTO dic_parametro_proceso(codigo, descripcion, unidad, aplica_a) VALUES
  ('q_merma_kg',        'Merma',               'kg',  '["PRODUCCION_ARE","DESGOMADO_ACUOSO"]')
 ON CONFLICT (codigo) DO NOTHING;
 
--- Insumos AGUA, POTASIO, FUEL (faltaban para dic_consumo_proceso)
+-- Insumos AGUA, POTASIO, FUEL_OIL (faltaban para dic_consumo_proceso)
 INSERT INTO dic_insumo(codigo, descripcion, unidad) VALUES
- ('AGUA',    'Agua proceso',         'L'),
- ('POTASIO', 'Potasio (KOH puro)',  'KG'),
- ('FUEL',    'Fuel oil',             'KG')
+ ('AGUA',     'Agua proceso',         'L'),
+ ('POTASIO',  'Potasio (KOH puro)',  'KG'),
+ ('FUEL_OIL', 'Fuel Oil',             'KG')
 ON CONFLICT (codigo) DO NOTHING;
 
 -- Productos adicionales para salidas de decantación
@@ -679,9 +679,9 @@ INSERT INTO dic_decantacion_proceso(proceso_key, tipo_salida, label, codigo_prod
  ('BACHAS',          'AGUA_PROCESO',   'Agua de proceso (→ efluentes líquidos)',  NULL)
 ON CONFLICT (proceso_key, tipo_salida) DO NOTHING;
 
--- Consumos de BACHAS por TN producida: fuel 30, cloruro de sodio 2
+-- Consumos de BACHAS por TN producida: fuel oil 30, cloruro de sodio 2
 INSERT INTO dic_consumo_sector(sector, codigo_insumo, consumo_por_tn, unidad_consumo, nota) VALUES
- ('BACHAS','FUEL',          30, 'kg', 'Promedio por TN producida en bachas'),
+ ('BACHAS','FUEL_OIL',      30, 'kg', 'Promedio por TN producida en bachas'),
  ('BACHAS','cloruro_sodio', 2,  'kg', 'Promedio por TN producida en bachas')
 ON CONFLICT (sector, codigo_insumo) DO NOTHING;
 
@@ -853,7 +853,7 @@ ON CONFLICT (producto) DO NOTHING;
 
 -- Densidad de insumos líquidos (kg/L) para convertir litros<->kg. No destructivo. Editable.
 UPDATE dic_insumo SET densidad_g_ml = 1.33 WHERE codigo = 'soda_kg'         AND densidad_g_ml IS NULL;  -- NaOH solución (default, confirmar)
-UPDATE dic_insumo SET densidad_g_ml = 0.95 WHERE codigo IN ('FUEL','fuel_l') AND densidad_g_ml IS NULL;  -- fuel oil aprox
+UPDATE dic_insumo SET densidad_g_ml = 0.95 WHERE codigo = 'FUEL_OIL' AND densidad_g_ml IS NULL;  -- fuel oil aprox
 
 -- Calidad ÚNICA (AFE no tiene A/B/C). No destructivo.
 INSERT INTO dic_calidad (codigo, descripcion, orden, activo)

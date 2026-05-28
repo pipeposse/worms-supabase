@@ -57,6 +57,6 @@
   },
   {
     "question": "Fuel oil consumido por proceso este mes",
-    "sql": "SELECT proceso, ROUND(SUM(fuel_l)::numeric, 1) AS fuel_l, COUNT(*) AS corridas\nFROM reporting.v_produccion\nWHERE date_trunc('month', fecha) = date_trunc('month', current_date)\nGROUP BY proceso\nORDER BY fuel_l DESC;"
+    "sql": "SELECT proceso, ROUND(SUM(fuel_oil)::numeric, 1) AS fuel_oil, COUNT(*) AS corridas\nFROM reporting.v_produccion\nWHERE date_trunc('month', fecha) = date_trunc('month', current_date)\nGROUP BY proceso\nORDER BY fuel_oil DESC;"
   }
 ]

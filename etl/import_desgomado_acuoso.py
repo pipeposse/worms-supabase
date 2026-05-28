@@ -78,7 +78,7 @@ def main():
         fuel   = float(r[C["fuel"]]) if pd.notna(r[C["fuel"]]) else None
         qh     = float(r[C["qhoras"]]) if pd.notna(r[C["qhoras"]]) else None
         insumos = {}
-        if fuel and fuel > 0: insumos["fuel_l"] = round(fuel, 3)
+        if fuel and fuel > 0: insumos["FUEL_OIL"] = round(fuel, 3)
         for k_ins, c in [("GASOIL", "gasoil"), ("acido_kg", "sulf"), ("cloruro_sodio", "nacl")]:
             v = r[C[c]]
             if pd.notna(v) and float(v) > 0:

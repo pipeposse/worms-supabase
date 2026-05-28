@@ -117,7 +117,7 @@ def main():
         naoh_lt = float(r["naoh_lt"]) if pd.notna(r.get("naoh_lt")) else None
         naoh_kg = round(naoh_lt*DENS_SODA, 2) if naoh_lt is not None else None
         insumos = {}
-        if fuel is not None: insumos["fuel_l"] = round(fuel, 3)
+        if fuel is not None: insumos["FUEL_OIL"] = round(fuel, 3)
         obs = f"{MARKER} · RX {r['_rxs']} · MP {str(r['mp']).strip()} -> {str(r['obt']).strip()}"
         if r["_dup"]: obs += " · [fusion de filas duplicadas]"
         if fuel_flag: obs += f" · [{fuel_flag}]"
@@ -165,7 +165,7 @@ def main():
             decant.append({"ticket": tk, "lts": float(rg), "tk": str(r["tk"]).strip() if pd.notna(r.get("tk")) else None})
         rep.append((rx, tk, reactor, fila["kg_inicial"], fila["kg_obtenido"], fila["acidez_final_pct"],
                     naoh_lt, naoh_kg, float(rg) if pd.notna(rg) else None, horas,
-                    insumos.get("fuel_l"), r["_dup"], fuel_flag))
+                    insumos.get("FUEL_OIL"), r["_dup"], fuel_flag))
 
     # ---------- reporte ----------
     print(f"=== DRY-RUN · {len(grupos)} reacciones (de {len(df)} filas; fusionadas {len(df)-len(grupos)}) ===")

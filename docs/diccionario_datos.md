@@ -21,7 +21,7 @@
 | `dic_sector` | `ARE`, `DESGOMADO`, `BACHAS`, `RECUPERACION`, `EFLUENTES`, `LABORATORIO`, `EXPO` |
 | `dic_calidad` | `A`, `B`, `C`, `SG`, `RECH` |
 | `dic_turno` | `mañana`, `tarde`, `noche` |
-| `dic_insumo` | `acido_kg`, `soda_kg`, `metanol_kg`, `catalizador_kg`, `floculante_kg`, `kg_glicerina`, `fuel_l` |
+| `dic_insumo` | `acido_kg`, `soda_kg`, `metanol_kg`, `catalizador_kg`, `floculante_kg`, `kg_glicerina`, `FUEL_OIL`, `POTASIO`, `AGUA`, `HORAS` |
 
 ## Usuarios y auditoría
 

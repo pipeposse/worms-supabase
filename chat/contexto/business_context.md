@@ -38,7 +38,7 @@
 - Dimensiones: `proceso`, `reactor` (REACTOR 1 / REACTOR 2), `corriente` (VEGETAL/ANIMAL), `producto_inicial`, `producto_obtenido`, `calidad`, `catalizador`, `etapa`, `cargado_por`.
 - Cantidades en TN, kg y litros. **Usar `*_tn` por defecto** (mp_tn, producido_tn, merma_tn); también `mp_kg`/`mp_lts`, `producido_kg`/`producido_lts`.
 - `rendimiento_pct` = producido/mp*100 (en ARE supera 100% porque se agrega glicerina; la merma aplica sobre todo a desgomado).
-- Insumos/química: `fuel_l`, `naoh_kg`, `glicerina_fresca_lts`, `glicerina_recup_lts`, `agua_lts`.
+- Insumos/química: `fuel_oil` (combustible — en REACTORES siempre es fuel oil; ARE en kg, DESGOMADO en L), `naoh_kg`, `glicerina_fresca_lts`, `glicerina_recup_lts`, `agua_lts`.
 - Calidad/proceso: `acidez_inicial`, `acidez_final`, `densidad_final`, `pct_ays`, `horas`.
 - `etapa`: EN_TANQUE = acopio final (corrida cerrada). `fecha` es `date`.
 
@@ -47,7 +47,7 @@
 - "ARE" → `proceso='PRODUCCION_ARE'`. "desgomado" / "AFE" → `proceso='DESGOMADO_ACUOSO'`.
 - "producido / obtenido / salió / se hizo" → `producido_tn`. "procesado / materia prima / entró al reactor" → `mp_tn`.
 - "rinde / rendimiento" → `rendimiento_pct`. "merma / pérdida" → `merma_tn` o `merma_pct`.
-- "fuel / fuel oil / combustible" → `fuel_l`. "soda / NaOH" → `naoh_kg`. "glicerina" → `glicerina_fresca_lts` / `glicerina_recup_lts`.
+- "fuel / fuel oil / combustible" → `fuel_oil`. "soda / NaOH" → `naoh_kg`. "glicerina" → `glicerina_fresca_lts` / `glicerina_recup_lts`.
 - "reactor 1/2" → `reactor`. "acidez final" → `acidez_final`. "calidad" → `calidad`.
 - Ruteo de vistas: producción/cargas → `reporting.v_produccion`; camiones/pesaje/portería → `reporting.v_camiones`; análisis/calidad de laboratorio → `reporting.v_laboratorio`.
 

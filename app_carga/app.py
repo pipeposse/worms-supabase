@@ -2471,7 +2471,7 @@ with tab_objs[0]:
             _kg_afesg = float(kg_ini or 0)
             agua_lts_v = round(_kg_afesg * _pct_agua / 100, 0)  # 5% del AFE-SG (kg agua ≈ L)
             _rf = consumos_proceso[(consumos_proceso["tipo_proceso"] == "DESGOMADO_ACUOSO") &
-                                   (consumos_proceso["codigo_insumo"] == "FUEL")]
+                                   (consumos_proceso["codigo_insumo"] == "FUEL_OIL")]
             _rate_fuel = float(_rf.iloc[0]["consumo_por_tn"]) if not _rf.empty else 8.7
             est_fuel_kg = round((_kg_afesg / 1000.0) * _rate_fuel, 1)        # fuel estimado (L)
             est_are_kg = _kg_afesg * (1 - _merma_esp / 100.0)               # AFE-S esperado (merma esperada)
@@ -2498,18 +2498,19 @@ with tab_objs[0]:
             f = insumos_cat[insumos_cat["codigo"] == c]
             return f.iloc[0]["unidad"] if not f.empty else ""
 
-        # 1) Insumos TÍPICOS del proceso/sector (FUEL siempre en REACTORES y BACHAS).
+        # 1) Insumos TÍPICOS del proceso/sector (FUEL_OIL siempre en REACTORES).
         #    Cantidad sugerida = estimado por la fórmula; el operario solo confirma/corrige.
         tipicos = []   # (codigo, cantidad_sugerida, unidad_label)
         if tipo_proceso_sel == "PRODUCCION_ARE":
-            tipicos.append(("FUEL", float(est_fuel_kg or 0.0), "kg"))
+            # En REACTORES el combustible es siempre FUEL OIL.
+            tipicos.append(("FUEL_OIL", float(est_fuel_kg or 0.0), "kg"))
             if catalizador_tipo == "POTASIO":
                 tipicos.append(("POTASIO", float(est_potasio_kg or 0.0), "kg"))
             # NaOH (soda) se carga aparte en su bloque dedicado (L/kg) → no se duplica acá.
         elif tipo_proceso_sel == "DESGOMADO_ACUOSO":
-            # Fuel oil es ESTIMADO automático (no se carga a mano) → se guarda solo.
+            # Fuel oil es ESTIMADO automático (no se carga a mano) → se guarda solo bajo la key FUEL_OIL.
             if est_fuel_kg:
-                insumos_dict["fuel_l"] = float(est_fuel_kg)
+                insumos_dict["FUEL_OIL"] = float(est_fuel_kg)
         elif sector == "BACHAS":
             _base_tn = float(est_are_kg or 0.0) / 1000.0
             for _, _cr in consumo_sector[consumo_sector["sector"] == "BACHAS"].iterrows():
@@ -2605,10 +2606,10 @@ with tab_objs[0]:
         if tipo_proceso_sel in ("PRODUCCION_ARE", "DESGOMADO_ACUOSO") and (insumos_dict or naoh_kg_v):
             with st.expander("📊 Plan vs real (insumos) — info agregada", expanded=False):
                 if tipo_proceso_sel == "PRODUCCION_ARE":
-                    real_fuel    = float(insumos_dict.get("FUEL", 0.0) or 0)
+                    real_fuel    = float(insumos_dict.get("FUEL_OIL", 0.0) or 0)
                     real_naoh    = float(naoh_kg_v or 0)   # del bloque NaOH dedicado (kg)
                     real_potasio = float(insumos_dict.get("POTASIO", 0.0) or 0)
-                    _alarma_consumo("Fuel", real_fuel, est_fuel_kg, unidad="kg")
+                    _alarma_consumo("Fuel Oil", real_fuel, est_fuel_kg, unidad="kg")
                     if catalizador_tipo == "NAOH":
                         _alarma_consumo("NaOH", real_naoh, est_naoh_kg, unidad="kg")
                         if real_potasio > 0:
@@ -2618,9 +2619,9 @@ with tab_objs[0]:
                         if real_naoh > 0:
                             st.warning(f"⚠️ Cargaste {real_naoh:.2f} kg de NaOH pero el catalizador elegido era Potasio.")
                 elif tipo_proceso_sel == "DESGOMADO_ACUOSO":
-                    real_fuel = float(insumos_dict.get("FUEL", 0.0) or 0)
+                    real_fuel = float(insumos_dict.get("FUEL_OIL", 0.0) or 0)
                     # est_fuel_kg para DESGOMADO se computó en L (8.7 L/TN)
-                    _alarma_consumo("Fuel", real_fuel, est_fuel_kg, unidad="L")
+                    _alarma_consumo("Fuel Oil", real_fuel, est_fuel_kg, unidad="L")
 
         motivo_rango = ""
         if fuera_rango:
@@ -3471,7 +3472,7 @@ with tab_objs[1]:
               (b.insumos->>'GLICERINA')::numeric  AS gli_real_kg,
               (b.insumos->>'SODA')::numeric       AS naoh_real_kg,
               (b.insumos->>'POTASIO')::numeric    AS potasio_real_kg,
-              (b.insumos->>'FUEL')::numeric       AS fuel_real_kg
+              (b.insumos->>'FUEL_OIL')::numeric    AS fuel_real_kg
             FROM fact_batch_proceso b
             WHERE NOT b.anulado AND b.sector='REACTORES'
               AND b.estimado_are_kg IS NOT NULL
@@ -3536,7 +3537,7 @@ with tab_objs[1]:
               (b.insumos->>'GLICERINA')::numeric  AS gli_real_kg,
               (b.insumos->>'soda_kg')::numeric    AS naoh_real_kg,
               (b.insumos->>'POTASIO')::numeric    AS potasio_real_kg,
-              (b.insumos->>'FUEL')::numeric       AS fuel_real_kg
+              (b.insumos->>'FUEL_OIL')::numeric    AS fuel_real_kg
             FROM fact_batch_proceso b
             WHERE NOT b.anulado AND b.sector='REACTORES'
               AND b.estimado_are_kg IS NOT NULL
