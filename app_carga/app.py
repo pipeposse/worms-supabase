@@ -2289,44 +2289,27 @@ with tab_objs[0]:
                 if ins_cod and ins_cant > 0:
                     insumos_dict[ins_cod] = float(ins_cant)
 
-        # Parámetros de proceso (aplicables al tipo seleccionado)
+        # Parámetros del proceso → todos vienen del laboratorio (tickets MP) salvo temp inicial (manual).
+        # No hay inputs manuales: el resumen de abajo muestra qué se va a subir.
         parametros_dict = {}
-        if es_reactor and tipo_proceso_sel:
-            st.markdown("**Parámetros iniciales/finales del proceso**")
-            aplicables = params_proceso[params_proceso["aplica_a"].apply(
-                lambda lst: tipo_proceso_sel in (lst if isinstance(lst, list) else [])
-            )]
-            # Evitar pedir DOS veces lo que ya tiene input dedicado arriba:
-            #  - temperatura  -> "Temperatura inicial"
-            #  - acidez (ARE) -> "Acidez oleico (%)"
-            _skip_par = {"temperatura"}
-            if tipo_proceso_sel == "PRODUCCION_ARE":
-                _skip_par.add("acidez")
-            aplicables = aplicables[~aplicables["codigo"].isin(_skip_par)]
-            if not aplicables.empty:
-                cols_per_row = 3
-                rows = [aplicables.iloc[i:i+cols_per_row] for i in range(0, len(aplicables), cols_per_row)]
-                for row in rows:
-                    cs = st.columns(cols_per_row)
-                    for j, (_, p) in enumerate(row.iterrows()):
-                        val = cs[j].number_input(
-                            f"{p['descripcion']} ({p['unidad']})",
-                            min_value=0.0, max_value=1_000_000.0, step=0.1,
-                            key=f"b_par_{p['codigo']}"
-                        )
-                        if val and val > 0:
-                            parametros_dict[p["codigo"]] = float(val)
-
-        # Parámetros iniciales extra (temp inicial, azufre, % agua) → parametros_proceso (jsonb)
         if temp_ini_v and temp_ini_v > 0:
             parametros_dict["temp_inicial_c"] = float(temp_ini_v)
         if azufre_ppm_v and azufre_ppm_v > 0:
             parametros_dict["azufre_ppm"] = float(azufre_ppm_v)
         if pct_agua_ini_v and pct_agua_ini_v > 0:
             parametros_dict["pct_agua_inicial"] = float(pct_agua_ini_v)
-        # La acidez se carga UNA sola vez ("Acidez oleico"); alimenta también el parámetro 'acidez'.
         if acidez_oleico_v and acidez_oleico_v > 0:
             parametros_dict.setdefault("acidez", float(acidez_oleico_v))
+        # Resto de métricas evaluadas en el laboratorio del primer MP (sedimentos, fósforo, densidad, producto)
+        if _lab_avg_mp0:
+            if _lab_avg_mp0.get("prc_sedimentos") is not None:
+                parametros_dict["sedimentos_pct"] = float(_lab_avg_mp0["prc_sedimentos"])
+            if _lab_avg_mp0.get("ppm_fosforo") is not None:
+                parametros_dict["fosforo_ppm"] = float(_lab_avg_mp0["ppm_fosforo"])
+            if _lab_avg_mp0.get("densidad__g_ml") is not None:
+                parametros_dict["densidad_g_ml"] = float(_lab_avg_mp0["densidad__g_ml"])
+            if _lab_avg_mp0.get("prc_producto") is not None:
+                parametros_dict["producto_pct"] = float(_lab_avg_mp0["prc_producto"])
 
         # ----- Alarmas plan-vs-real para insumos cargados -----
         def _alarma_consumo(label, real_kg, est_kg, tol=5.0, unidad="kg"):
@@ -2390,6 +2373,32 @@ with tab_objs[0]:
             rs3.caption(f"**Objetivo**\n\n{_obj_txt}")
             if est_are_kg:
                 rs3.caption(f"**Estimado final:** {est_are_kg/1000:,.2f} TN")
+
+            # Parámetros que se van a subir (de laboratorio + manual de temp inicial)
+            if parametros_dict:
+                _pretty_par = {
+                    "acidez":            ("Acidez",            "%",   ".3f"),
+                    "pct_agua_inicial":  ("% Agua inicial",    "%",   ".3f"),
+                    "azufre_ppm":        ("Azufre",            "ppm", ".1f"),
+                    "fosforo_ppm":       ("Fósforo",           "ppm", ".1f"),
+                    "sedimentos_pct":    ("Sedimentos",        "%",   ".3f"),
+                    "densidad_g_ml":     ("Densidad",          "g/ml",".3f"),
+                    "producto_pct":      ("Producto",          "%",   ".3f"),
+                    "temp_inicial_c":    ("Temperatura inicial","°C", ".1f"),
+                }
+                st.markdown("**🧪 Parámetros a guardar** _(promedio ponderado del laboratorio)_")
+                _items = []
+                for _k, _v in parametros_dict.items():
+                    _lbl, _u, _fmt = _pretty_par.get(_k, (_k, "", ".3f"))
+                    _items.append(f"{_lbl}: **{_v:{_fmt}} {_u}**".rstrip())
+                # Distribuye en 3 columnas
+                _ncols = 3
+                _rcols = st.columns(_ncols)
+                for _i, _it in enumerate(_items):
+                    _rcols[_i % _ncols].caption(_it)
+            else:
+                if sector in ("REACTORES", "BACHAS"):
+                    st.caption("🧪 _Sin parámetros de laboratorio (cargá tickets de MP para traerlos)._")
 
         submit_b = st.button("✅ Guardar carga", type="primary", use_container_width=True, key="b_submit")
 
