@@ -488,6 +488,48 @@ def _ui_multiselect_tickets(codigo_producto, key_prefix, dias=180, limit=30, max
 
 
 # ===========================================================================
+# ultimas_muestras_mp: últimas N muestras de un MP (AG-C, SEBO-*, etc) en
+# procesos_lab. Usa dic_producto_lab para resolver (lab_producto, lab_calidad).
+# Útil para ARE donde el MP no se pesa: igual queremos saber la acidez.
+# ===========================================================================
+def ultimas_muestras_mp(codigo_producto, n=3):
+    if not codigo_producto:
+        return pd.DataFrame()
+    try:
+        m = cat(
+            "SELECT lab_producto, lab_calidad FROM dic_producto_lab dpl "
+            "JOIN dim_producto p ON p.id_producto = dpl.id_producto "
+            "WHERE p.codigo_producto = %s",
+            (codigo_producto,),
+        )
+    except Exception:
+        m = pd.DataFrame()
+    if m.empty:
+        return pd.DataFrame()
+    lp = m.iloc[0]["lab_producto"]
+    lc = m.iloc[0]["lab_calidad"]
+    where = ["UPPER(TRIM(producto_lab)) = UPPER(%s)"]
+    params = [lp]
+    if lc:
+        where.append("UPPER(TRIM(calidad_final_lab)) = UPPER(%s)")
+        params.append(lc)
+    sql = (
+        "SELECT ticket, num_muestra, fecha::date AS fecha, "
+        "       prc_acidez, prc_agua, prc_sedimentos, prc_producto, "
+        "       ppm_azufre, ppm_fosforo, densidad__g_ml, "
+        "       calidad_final_lab, empleado "
+        "FROM produccion.procesos_lab "
+        "WHERE " + " AND ".join(where) + " "
+        "ORDER BY fecha DESC NULLS LAST, num_muestra DESC NULLS LAST LIMIT %s"
+    )
+    params.append(int(n))
+    try:
+        return cat(sql, tuple(params))
+    except Exception:
+        return pd.DataFrame()
+
+
+# ===========================================================================
 # ultimas_muestras_glicerina: devuelve las últimas N muestras del producto
 # GLICERINA en procesos_lab con gli_glicerol no nulo. La UI permite elegir
 # por ticket (default = última); el % glicerol pasa a la fórmula sin input
@@ -1936,6 +1978,7 @@ with tab_objs[0]:
                 catalizador_tipo = cF2.radio(
                     "Catalizador a usar",
                     options=["NAOH","POTASIO"],
+                    index=1,  # default Potasio (KOH)
                     format_func=lambda x: "🧪 Soda cáustica (NaOH)" if x=="NAOH" else "🧪 Potasio (KOH)",
                     horizontal=True, key="b_catalizador",
                 )
@@ -2105,13 +2148,59 @@ with tab_objs[0]:
                 opts_mp = [c for c in productos["codigo_producto"].tolist() if c in _perm_mp]
 
             usa_tickets_lab = sector in ("REACTORES", "BACHAS")
-            if usa_tickets_lab:
+            es_are_mp = (sector == "REACTORES" and tipo_proceso_sel == "PRODUCCION_ARE")
+
+            if es_are_mp:
+                # PRODUCCION_ARE: MP NO se pesa. Es AG-C o SEBO; los kg se asumen =
+                # capacidad reactor × densidad. La acidez sale del último análisis del lab.
+                _opts_are_mp = [c for c in opts_mp if c == "AG-C" or str(c).startswith("SEBO-")] or ["AG-C"]
+                cod = st.selectbox(
+                    "Producto inicial (AG-C o SEBO) *",
+                    _opts_are_mp,
+                    index=(_opts_are_mp.index("AG-C") if "AG-C" in _opts_are_mp else 0),
+                    key="b_pi_are_select",
+                )
+                _dens_mp = densidad_de(cod) or (0.92 if cod == "AG-C" else 0.91)
+                _cap_l = float(fila_bien["capacidad_max_l"] or 0)
+                _kg_planeado = _cap_l * _dens_mp
+                mps_ingresadas.append((cod, float(_kg_planeado)))
+                litros_ini = round(_kg_planeado / _dens_mp, 1) if _dens_mp else None
+                # Métricas
+                _aM1, _aM2, _aM3 = st.columns(3)
+                _aM1.metric("Capacidad reactor", f"{int(_cap_l):,} L")
+                _aM2.metric(f"Densidad {cod}",    f"{_dens_mp:.2f} kg/L")
+                _aM3.metric("Q MP a procesar",   f"{_kg_planeado:,.0f} kg", f"{_kg_planeado/1000:,.2f} TN")
+                st.caption("ℹ️ El MP NO se pesa; se asume reactor lleno (capacidad × densidad). Los insumos (glicerina, NaOH/Potasio, fuel) se calculan automáticamente por fórmula.")
+                # Acidez/azufre/agua: último análisis del producto MP en procesos_lab
+                _df_mp_lab = ultimas_muestras_mp(cod, n=3)
+                if not _df_mp_lab.empty:
+                    _opts_lab = _df_mp_lab.apply(
+                        lambda r: f"ticket {r['ticket']} · {r['fecha']} · acidez {float(r['prc_acidez'])*100:.3f}%" if pd.notna(r['prc_acidez']) else f"ticket {r['ticket']} · {r['fecha']}",
+                        axis=1,
+                    ).tolist()
+                    _sel_mp = st.selectbox(
+                        f"Análisis de laboratorio del {cod} (últimas 3 muestras)",
+                        _opts_lab, index=0, key="b_are_mp_lab_sel",
+                        help="La más reciente queda preseleccionada. El acidez de esta muestra alimenta la fórmula de glicerina.",
+                    )
+                    _row_mp = _df_mp_lab.iloc[_opts_lab.index(_sel_mp)]
+                    # Promedio ponderado degenera en valor único (1 ticket); usamos el avg dict de la API existente.
+                    _lab_avg_mp0 = {}
+                    for _col in ("prc_acidez", "prc_agua", "prc_sedimentos", "prc_producto",
+                                 "ppm_azufre", "ppm_fosforo", "densidad__g_ml"):
+                        _val = _row_mp.get(_col)
+                        if pd.notna(_val):
+                            _lab_avg_mp0[_col] = float(_val)
+                    _bm1, _bm2, _bm3 = st.columns(3)
+                    _bm1.metric("Acidez (lab)",   f"{float(_row_mp['prc_acidez'])*100:.3f}%"     if pd.notna(_row_mp['prc_acidez'])    else "—")
+                    _bm2.metric("% Agua (lab)",   f"{float(_row_mp['prc_agua'])*100:.3f}%"       if pd.notna(_row_mp['prc_agua'])      else "—")
+                    _bm3.metric("Densidad (lab)", f"{float(_row_mp['densidad__g_ml']):.3f} g/ml" if pd.notna(_row_mp['densidad__g_ml']) else "—")
+                else:
+                    st.warning(f"No hay análisis de laboratorio recientes para **{cod}**. La fórmula de glicerina no podrá calcularse hasta que cargues uno.")
+            elif usa_tickets_lab:
                 # Opciones según proceso/sector
                 if sector == "REACTORES" and tipo_proceso_sel == "DESGOMADO_ACUOSO":
                     _opts_mp_tl = ["AFE-SG"]
-                    _multi_mp = False
-                elif sector == "REACTORES" and tipo_proceso_sel == "PRODUCCION_ARE":
-                    _opts_mp_tl = [c for c in opts_mp if c == "AG-C" or str(c).startswith("SEBO-")] or ["AG-C"]
                     _multi_mp = False
                 elif sector == "BACHAS":
                     _opts_mp_tl = [c for c in opts_mp if str(c).startswith("BORRA")] or opts_mp or ["BORRA-A"]
@@ -2125,7 +2214,7 @@ with tab_objs[0]:
                     n_mp = int(st.number_input("Cantidad de materias primas", 1, 5, value=1, key="b_n_mp"))
 
                 # DESGOMADO: AFE-SG con multiselect (todo se pesa y se mide en lab → tickets reales)
-                # ARE / BACHAS: text input (las MP pueden venir de stock interno sin portería)
+                # BACHAS: text input (las MP pueden venir de stock interno sin portería)
                 _usa_multiselect_mp = (sector == "REACTORES" and tipo_proceso_sel == "DESGOMADO_ACUOSO")
                 if _usa_multiselect_mp:
                     st.caption("📥 Elegí los tickets desde el desplegable (ya filtrados por **AFE-SG** con lab cargado). Máximo 3 por proceso. La app suma kg y trae los parámetros del laboratorio.")
@@ -2223,22 +2312,14 @@ with tab_objs[0]:
         # ============================================================
         # Q AG planeado: capacidad del reactor × densidad del MP elegido
         # (asume que se usa el reactor a su máxima capacidad).
-        # Aplica solo a PRODUCCION_ARE.
+        # Aplica solo a PRODUCCION_ARE. Las métricas ya las mostró el bloque
+        # MP arriba; acá solo dejamos la variable lista para la fórmula.
         # ============================================================
         if es_reactor and tipo_proceso_sel == "PRODUCCION_ARE" and p_ini:
             try:
                 _cap = float(fila_bien["capacidad_max_l"] or 0)
                 _dens_mp = densidad_de(p_ini) or 0.92
                 q_ag_kg_ref = float(_cap * _dens_mp)
-                _ar1, _ar2, _ar3 = st.columns(3)
-                _ar1.metric("Capacidad reactor", f"{int(_cap):,} L")
-                _ar2.metric(f"Densidad {p_ini}", f"{_dens_mp:.2f} kg/L")
-                _ar3.metric("Q MP máx. (kg)", f"{q_ag_kg_ref:,.0f}", f"{q_ag_kg_ref/1000:,.2f} TN")
-                if kg_ini and kg_ini > 0:
-                    _desv = (kg_ini - q_ag_kg_ref) / q_ag_kg_ref * 100 if q_ag_kg_ref else 0
-                    _msg = (f"Cargado real **{kg_ini:,.0f} kg** vs máx. teórico **{q_ag_kg_ref:,.0f} kg** "
-                            f"→ desvío **{_desv:+.1f}%**")
-                    (st.success if abs(_desv) <= 10 else st.warning)(("✅ " if abs(_desv) <= 10 else "⚠️ ") + _msg)
             except Exception:
                 pass
 
