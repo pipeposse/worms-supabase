@@ -395,6 +395,99 @@ def _render_tickets_lab_panel(det, avg, missing_lab, missing_port, mapping, st_c
 
 
 # ===========================================================================
+# tickets_lab_disponibles_por_codigo: tickets de portería del producto pedido
+# que YA tienen muestra cargada en procesos_lab. Devuelve transacción, kg,
+# corriente, procedencia, fecha de entrada y métricas de lab para mostrarlos
+# en un multiselect tipo "ticket · 22.280 kg · vegetal · CORDOBA · 25/05".
+# ===========================================================================
+def tickets_lab_disponibles_por_codigo(codigo_producto, dias=180, limit=30):
+    if not codigo_producto:
+        return pd.DataFrame()
+    try:
+        m = cat(
+            "SELECT lab_producto, lab_calidad FROM dic_producto_lab dpl "
+            "JOIN dim_producto p ON p.id_producto = dpl.id_producto "
+            "WHERE p.codigo_producto = %s",
+            (codigo_producto,),
+        )
+    except Exception:
+        m = pd.DataFrame()
+    if m.empty:
+        return pd.DataFrame()
+    lp = m.iloc[0]["lab_producto"]
+    lc = m.iloc[0]["lab_calidad"]
+    where = ["UPPER(TRIM(t.lab_producto)) = UPPER(%s)",
+             "t.fecha_entrada >= current_date - %s",
+             "t.peso_neto IS NOT NULL"]
+    params = [lp, int(dias)]
+    if lc:
+        where.append("UPPER(TRIM(t.lab_calidad)) = UPPER(%s)")
+        params.append(lc)
+    sql = (
+        "SELECT t.transaccion AS ticket, ABS(t.peso_neto) AS kg, "
+        "       LOWER(t.corriente) AS corriente, t.procedencia, "
+        "       t.fecha_entrada, t.lab_fecha, "
+        "       t.lab_prc_acidez, t.lab_prc_agua "
+        "FROM produccion.v_transacciones_limpias t "
+        "WHERE " + " AND ".join(where) + " "
+        "ORDER BY t.fecha_entrada DESC NULLS LAST, t.transaccion DESC LIMIT %s"
+    )
+    params.append(int(limit))
+    try:
+        return cat(sql, tuple(params))
+    except Exception:
+        return pd.DataFrame()
+
+
+def _ui_multiselect_tickets(codigo_producto, key_prefix, dias=180, limit=30, max_tickets=3):
+    """Renderiza multiselect de tickets disponibles + cuadro de tickets manuales
+    extra. Devuelve string compuesto de todos los tickets separados por coma.
+    Aplica un tope de `max_tickets` (default 3) entre seleccionados + manuales."""
+    _df = tickets_lab_disponibles_por_codigo(codigo_producto, dias=dias, limit=limit)
+    _selected_str = ""
+    if _df.empty:
+        st.caption("Sin tickets recientes con lab cargado para este producto. Usá el campo manual.")
+    else:
+        def _fmt(r):
+            _f = r["fecha_entrada"]
+            try:
+                _f = pd.to_datetime(_f).strftime("%d/%m/%y")
+            except Exception:
+                _f = str(_f)
+            _ac = r.get("lab_prc_acidez")
+            _ac_txt = f" · acidez {float(_ac)*100:.2f}%" if pd.notna(_ac) else ""
+            return (f"{int(r['ticket'])} · {float(r['kg']):,.0f} kg · "
+                    f"{(r['corriente'] or '—')} · {(r['procedencia'] or '—')} · "
+                    f"{_f}{_ac_txt}")
+        _df = _df.copy()
+        _df["_label"] = _df.apply(_fmt, axis=1)
+        _opts = _df["_label"].tolist()
+        _picked = st.multiselect(
+            f"Tickets de portería con lab cargado (máx {max_tickets})",
+            _opts, key=f"{key_prefix}_msel",
+            max_selections=max_tickets,
+            help=f"Últimos {dias} días, producto matching del laboratorio. "
+                 f"Filtrado por dic_producto_lab. Tope: {max_tickets} tickets por proceso.",
+        )
+        _ticks = _df.loc[_df["_label"].isin(_picked), "ticket"].astype(int).tolist()
+        _selected_str = ", ".join(str(t) for t in _ticks)
+    _manual = st.text_input(
+        "Otros tickets (manual, separados por coma)",
+        key=f"{key_prefix}_man",
+        placeholder="opcional: ej. 4805, 4640",
+        help=f"Solo si necesitás tickets más viejos o no listados arriba. "
+             f"El total combinado no debería superar {max_tickets}.",
+    )
+    _full = ", ".join([s for s in [_selected_str, (_manual or "").strip()] if s])
+    # Avisar si se pasa del tope
+    import re as _re2
+    _count = len(set(int(x) for x in _re2.findall(r"\d+", _full or "")))
+    if _count > max_tickets:
+        st.warning(f"⚠️ Cargaste **{_count}** tickets; el proceso admite hasta **{max_tickets}**. Quitá los sobrantes antes de guardar.")
+    return _full
+
+
+# ===========================================================================
 # ultimas_muestras_glicerina: devuelve las últimas N muestras del producto
 # GLICERINA en procesos_lab con gli_glicerol no nulo. La UI permite elegir
 # por ticket (default = última); el % glicerol pasa a la fórmula sin input
@@ -800,7 +893,7 @@ if st.session_state.section != "CARGAS":
                 # Tabla "permeable": cada camion con su estado evaluado
                 st.markdown("**Detalle de llegadas**")
                 df_show = df_d.copy()
-                df_show["evaluado"] = df_show["eval_estado"].map({"SI":"\u2705 SI","NO":"\u26a0\ufe0f NO","no corresponde":"\u2014 no corresponde"}).fillna(df_show["eval_estado"])
+                df_show["evaluado"] = df_show["eval_estado"].map({"SI":"✅ SI","NO":"⚠️ NO","no corresponde":"— no corresponde"}).fillna(df_show["eval_estado"])
                 # Orden preestablecido: producto_base -> lab_calidad -> corriente juntas y al frente.
                 _orden = ["transaccion","hora_e","producto_base","lab_calidad","corriente","evaluado",
                           "peso_neto","peso_entrada","peso_salida","patente_chasis","conductor",
@@ -811,42 +904,42 @@ if st.session_state.section != "CARGAS":
                                     "evaluado","peso_neto","cliente"] if c in df_show.columns]
                 _saved = get_pref("porteria_dia_cols", None)
                 _default = [c for c in _saved if c in _orden] if _saved else _def
-                _sel = st.multiselect("Columnas a mostrar (se reordenan autom\u00e1ticamente \u00b7 se guardan por usuario)", _orden, default=_default, key="pd_cols")
+                _sel = st.multiselect("Columnas a mostrar (se reordenan automáticamente · se guardan por usuario)", _orden, default=_default, key="pd_cols")
                 _cols = [c for c in _orden if c in _sel] or _orden
                 if _cols != _saved:
                     set_pref("porteria_dia_cols", _cols)
                 st.dataframe(df_show[_cols], use_container_width=True, hide_index=True, height=460)
-                st.caption("Clic en el encabezado de una columna para ordenar (\u25b2/\u25bc). Eleg\u00ed o quit\u00e1 columnas arriba.")
-                st.download_button("\u2b07\ufe0f Descargar CSV del dia",
+                st.caption("Clic en el encabezado de una columna para ordenar (▲/▼). Elegí o quitá columnas arriba.")
+                st.download_button("⬇️ Descargar CSV del dia",
                                    df_d.dropna(axis=1, how="all").to_csv(index=False).encode("utf-8"),
                                    file_name=f"porteria_{dia_sel}.csv", mime="text/csv")
 
-                # ----- Ver qu\u00e9 evalu\u00f3 laboratorio, por ticket -----
+                # ----- Ver qué evaluó laboratorio, por ticket -----
                 ev = df_d[df_d["evaluado"] == "SI"] if "evaluado" in df_d.columns else df_d.iloc[0:0]
                 if not ev.empty:
-                    with st.expander("Ver evaluaci\u00f3n de laboratorio por ticket", expanded=False):
+                    with st.expander("Ver evaluación de laboratorio por ticket", expanded=False):
                         def _lv(x, dec=2):
-                            return f"{float(x):,.{dec}f}" if pd.notna(x) else "\u2014"
+                            return f"{float(x):,.{dec}f}" if pd.notna(x) else "—"
                         _tk = st.selectbox("Ticket evaluado", ev["transaccion"].tolist(),
                                            format_func=lambda x: f"Ticket {int(x)}", key="pd_lab_tk")
                         _r = ev[ev["transaccion"] == _tk].iloc[0]
                         lc = st.columns(4)
-                        lc[0].metric("Calidad", _r.get("lab_calidad") or "\u2014")
+                        lc[0].metric("Calidad", _r.get("lab_calidad") or "—")
                         lc[1].metric("Acidez %", _lv(_r.get("lab_prc_acidez")))
                         lc[2].metric("Agua %", _lv(_r.get("lab_prc_agua")))
                         lc[3].metric("Producto %", _lv(_r.get("lab_prc_producto")))
                         lc2 = st.columns(4)
                         lc2[0].metric("Azufre ppm", _lv(_r.get("lab_ppm_azufre")))
-                        lc2[1].metric("F\u00f3sforo ppm", _lv(_r.get("lab_ppm_fosforo")))
+                        lc2[1].metric("Fósforo ppm", _lv(_r.get("lab_ppm_fosforo")))
                         lc2[2].metric("Densidad g/ml", _lv(_r.get("lab_densidad"), 3))
-                        lc2[3].metric("Rechazado", str(_r.get("lab_rechazado") or "\u2014"))
-                        _pb = _r.get("producto_base") or "\u2014"
-                        _col = _r.get("lab_color") or "\u2014"
+                        lc2[3].metric("Rechazado", str(_r.get("lab_rechazado") or "—"))
+                        _pb = _r.get("producto_base") or "—"
+                        _col = _r.get("lab_color") or "—"
                         _mu = _r.get("lab_num_muestra")
-                        _mu = int(_mu) if pd.notna(_mu) else "\u2014"
-                        _emp = _r.get("lab_empleado") or "\u2014"
-                        _flab = _r.get("lab_fecha") or "\u2014"
-                        st.caption(f"Producto: {_pb} \u00b7 Color: {_col} \u00b7 Muestra #{_mu} \u00b7 Analista: {_emp} \u00b7 Fecha lab: {_flab}")
+                        _mu = int(_mu) if pd.notna(_mu) else "—"
+                        _emp = _r.get("lab_empleado") or "—"
+                        _flab = _r.get("lab_fecha") or "—"
+                        st.caption(f"Producto: {_pb} · Color: {_col} · Muestra #{_mu} · Analista: {_emp} · Fecha lab: {_flab}")
 
                 # ----- Comprobante de pesaje (por id unico; transaccion puede repetirse) -----
                 st.divider()
@@ -854,7 +947,7 @@ if st.session_state.section != "CARGAS":
                 opts_cp = df_d.dropna(subset=["id"]).copy()
                 if not opts_cp.empty:
                     opts_cp["lbl"] = opts_cp.apply(
-                        lambda r: f"Ticket {int(r['transaccion'])} \u00b7 {r['hora_e']} \u00b7 {r['patente_chasis'] or ''} \u00b7 {r['cliente'] or ''}", axis=1)
+                        lambda r: f"Ticket {int(r['transaccion'])} · {r['hora_e']} · {r['patente_chasis'] or ''} · {r['cliente'] or ''}", axis=1)
                     lbl = st.selectbox("Ver comprobante", opts_cp["lbl"].tolist(), key="cp_tk")
                     id_sel = int(opts_cp[opts_cp["lbl"]==lbl].iloc[0]["id"])
                     rowc = cat("SELECT * FROM produccion.transacciones WHERE id=%s LIMIT 1", (id_sel,))
@@ -900,7 +993,7 @@ if st.session_state.section != "CARGAS":
   <table style="font-size:13px;width:100%;margin-top:14px;border-collapse:collapse">
     <tr><td style="padding:2px 8px"><b>Tipo y Nro. de Comprobante:</b></td><td>{g('tipodoc')} {g('comprnum1')}</td></tr>
     <tr><td style="padding:2px 8px"><b>Procedencia/Destino:</b></td><td>{g('procdest')}</td></tr>
-    <tr><td style="padding:2px 8px"><b>Contenedor N\u00b0:</b></td><td>{g('proc_contenedor')}</td></tr>
+    <tr><td style="padding:2px 8px"><b>Contenedor N°:</b></td><td>{g('proc_contenedor')}</td></tr>
     <tr><td style="padding:2px 8px"><b>Observaciones:</b></td><td>{g('observaciones')}</td></tr>
   </table>
   <table style="font-size:18px;width:100%;margin-top:18px;border-collapse:collapse">
@@ -913,11 +1006,11 @@ if st.session_state.section != "CARGAS":
 """
                         st.markdown(comp_html, unsafe_allow_html=True)
                         st.download_button(
-                            "\u2b07\ufe0f Descargar comprobante (HTML para imprimir)",
+                            "⬇️ Descargar comprobante (HTML para imprimir)",
                             ("<html><head><meta charset='utf-8'><title>Comprobante "
                              + g('transaccion') + "</title></head><body>" + comp_html + "</body></html>").encode("utf-8"),
                             file_name=f"comprobante_{g('transaccion')}_{id_sel}.html", mime="text/html", key="cp_dl")
-                        st.caption("Abrilo y us\u00e1 Ctrl+P para imprimir o guardar como PDF.")
+                        st.caption("Abrilo y usá Ctrl+P para imprimir o guardar como PDF.")
             else:
                 st.info("Todavia no entro ningun camion en la fecha elegida.")
 
@@ -1055,7 +1148,7 @@ if st.session_state.section != "CARGAS":
                 df_pd = df_p.copy()
                 df_pd["eval_estado"] = df_pd.apply(
                     lambda r: ("no corresponde" if r["corriente"] not in CORR_EVAL else r["evaluado"]), axis=1)
-                # ocultar columnas 100% vac\u00edas
+                # ocultar columnas 100% vacías
                 df_pd = df_pd.dropna(axis=1, how="all")
                 _front = [c for c in ["transaccion","fecha_entrada","producto_base","lab_calidad","corriente",
                                       "eval_estado","peso_neto","cliente"] if c in df_pd.columns]
@@ -1064,14 +1157,14 @@ if st.session_state.section != "CARGAS":
                 df_pd = df_pd[_orden_h]
                 _saved_h = get_pref("porteria_hist_cols", None)
                 _default_h = [c for c in _saved_h if c in _orden_h] if _saved_h else _front
-                _sel_h = st.multiselect("Columnas a mostrar (se reordenan autom\u00e1ticamente \u00b7 se guardan por usuario)", _orden_h,
+                _sel_h = st.multiselect("Columnas a mostrar (se reordenan automáticamente · se guardan por usuario)", _orden_h,
                                         default=_default_h, key="ph_cols")
                 _cols_h = [c for c in _orden_h if c in _sel_h] or _orden_h
                 if _cols_h != _saved_h:
                     set_pref("porteria_hist_cols", _cols_h)
-                st.caption(f"{len(df_pd)} filas \u00b7 {len(_cols_h)} columnas. Clic en el encabezado para ordenar (\u25b2/\u25bc); eleg\u00ed/quit\u00e1 columnas arriba.")
+                st.caption(f"{len(df_pd)} filas · {len(_cols_h)} columnas. Clic en el encabezado para ordenar (▲/▼); elegí/quitá columnas arriba.")
                 st.dataframe(df_pd[_cols_h], use_container_width=True, hide_index=True, height=420)
-                st.download_button("\u2b07\ufe0f Descargar CSV", df_pd.to_csv(index=False).encode("utf-8"),
+                st.download_button("⬇️ Descargar CSV", df_pd.to_csv(index=False).encode("utf-8"),
                                    file_name=f"porteria_hist_{fmin}_{fmax}.csv", mime="text/csv")
             else:
                 st.info("Sin datos en el rango.")
@@ -1190,7 +1283,7 @@ if st.session_state.section != "CARGAS":
                 st.bar_chart(by_proc.head(15), x="cliente", y="TN_total", use_container_width=True)
                 st.dataframe(by_proc, use_container_width=True, hide_index=True)
 
-                st.download_button("\u2b07\ufe0f Descargar CSV efluentes",
+                st.download_button("⬇️ Descargar CSV efluentes",
                                    df_ef.to_csv(index=False).encode("utf-8"),
                                    file_name=f"efluentes_{ef_desde}_{ef_hasta}.csv", mime="text/csv")
 
@@ -1268,7 +1361,7 @@ if st.session_state.section != "CARGAS":
                 # Si eligio 1 solo producto: chart limpio por procedencia
                 if len(sel_pbs) == 1:
                     sub = resumen[resumen["producto_base"]==sel_pbs[0]]
-                    st.markdown(f"**{sel_pbs[0]} \u2014 promedio por cliente**")
+                    st.markdown(f"**{sel_pbs[0]} — promedio por cliente**")
                     st.bar_chart(sub, x="procedencia", y="promedio", use_container_width=True)
                 else:
                     # vista por producto: tabla pivote (filas producto_base, columnas procedencia)
@@ -1279,20 +1372,20 @@ if st.session_state.section != "CARGAS":
 
                 st.markdown("**Detalle (producto_base + cliente)**")
                 st.dataframe(resumen, use_container_width=True, hide_index=True, height=420)
-                st.caption("n = mediciones validas \u00b7 desvio = desviacion estandar (consistencia del cliente).")
-                st.download_button("\u2b07\ufe0f Descargar CSV",
+                st.caption("n = mediciones validas · desvio = desviacion estandar (consistencia del cliente).")
+                st.download_button("⬇️ Descargar CSV",
                                    resumen.to_csv(index=False).encode("utf-8"),
                                    file_name=f"lab_por_cliente_{param_sel}.csv", mime="text/csv")
 
     elif st.session_state.section == "VISTAS":
-        # =================== VISTAS DE PRODUCCI\u00d3N ===================
-        st.title("\U0001F4CA Vistas de producci\u00f3n")
+        # =================== VISTAS DE PRODUCCIÓN ===================
+        st.title("\U0001F4CA Vistas de producción")
         try:
             secs_v = cat("SELECT DISTINCT sector FROM produccion.v_reacciones_lkg WHERE sector IS NOT NULL ORDER BY 1")["sector"].tolist()
         except Exception as e:
             st.exception(e); secs_v = []
         if not secs_v:
-            st.info("Todav\u00eda no hay producci\u00f3n cargada para mostrar.")
+            st.info("Todavía no hay producción cargada para mostrar.")
         else:
             with st.expander("Filtros", expanded=True):
                 cf1, cf2, cf3, cf4, cf5 = st.columns([1.2, 1.2, 1, 1, 1.2])
@@ -1343,32 +1436,32 @@ if st.session_state.section != "CARGAS":
                 _are_kg_tot = pd.to_numeric(dfv["are_kg"], errors="coerce").sum()
 
                 # ---- KPIs ----
-                st.markdown("#### Resumen del per\u00edodo")
+                st.markdown("#### Resumen del período")
                 k = st.columns(5)
                 k[0].metric("Reacciones", f"{len(dfv)}")
                 k[1].metric(f"AG-C procesado · insumo ({u})", f"{dfv['_ag'].sum():,.2f}")
                 k[2].metric(f"ARE producido ({u})", f"{dfv['_are'].sum():,.2f}")
-                k[3].metric("Rendimiento", f"{(_are_kg_tot/_ag_kg_tot*100):,.1f}%" if _ag_kg_tot else "\u2014")
-                k[4].metric("Horas prom.", f"{_hrs.mean():,.1f} h" if _hrs.notna().any() else "\u2014")
+                k[3].metric("Rendimiento", f"{(_are_kg_tot/_ag_kg_tot*100):,.1f}%" if _ag_kg_tot else "—")
+                k[4].metric("Horas prom.", f"{_hrs.mean():,.1f} h" if _hrs.notna().any() else "—")
 
-                # ---- Producci\u00f3n de ARE por d\u00eda (producto obtenido) ----
-                st.markdown(f"#### Producci\u00f3n de ARE por d\u00eda \u00b7 {u}")
+                # ---- Producción de ARE por día (producto obtenido) ----
+                st.markdown(f"#### Producción de ARE por día · {u}")
                 prod_dia = dfv.groupby("_dia").agg(ARE=("_are", "sum")).reset_index()
                 st.bar_chart(prod_dia, x="_dia", y="ARE", color="#2dd4bf", use_container_width=True)
 
-                # ---- Materia prima (AG-C) procesada por d\u00eda (insumo, no producci\u00f3n) ----
-                st.markdown(f"#### Materia prima procesada \u00b7 AG-C (insumo) \u00b7 {u}")
+                # ---- Materia prima (AG-C) procesada por día (insumo, no producción) ----
+                st.markdown(f"#### Materia prima procesada · AG-C (insumo) · {u}")
                 mp_dia = dfv.groupby("_dia").agg(AG=("_ag", "sum")).reset_index()
                 st.bar_chart(mp_dia, x="_dia", y="AG", color="#60a5fa", use_container_width=True)
 
-                # ---- Consumos por d\u00eda ----
-                st.markdown(f"#### Consumos por d\u00eda \u00b7 {u}")
+                # ---- Consumos por día ----
+                st.markdown(f"#### Consumos por día · {u}")
                 cons_dia = dfv.groupby("_dia").agg(Fuel=("_fuel", "sum"), NaOH=("_naoh", "sum"), Glicerina=("_gli", "sum")).reset_index()
                 st.bar_chart(cons_dia, x="_dia", y=["Fuel", "NaOH", "Glicerina"], color=["#f5b94a", "#c084fc", "#34d399"], use_container_width=True)
 
                 # ---- Tiempos ----
                 if _hrs.notna().any():
-                    st.markdown("#### Tiempos por reacci\u00f3n (horas)")
+                    st.markdown("#### Tiempos por reacción (horas)")
                     t = dfv.loc[_hrs.notna(), ["ticket", "horas"]].copy()
                     st.bar_chart(t, x="ticket", y="horas", color="#fbbf24", use_container_width=True)
 
@@ -1388,11 +1481,11 @@ if st.session_state.section != "CARGAS":
                 rep["ARE_TN"] = (rep["ARE_kg"] / 1000).round(2)
                 rep = rep.round(2)
                 st.dataframe(rep, use_container_width=True, hide_index=True)
-                st.download_button("\u2b07\ufe0f Descargar informe (CSV)", rep.to_csv(index=False).encode("utf-8"),
+                st.download_button("⬇️ Descargar informe (CSV)", rep.to_csv(index=False).encode("utf-8"),
                                    file_name=f"informe_{sector_v}_{fmin_v}_{fmax_v}.csv", mime="text/csv")
 
-                # ---- Detalle reacci\u00f3n por reacci\u00f3n ----
-                with st.expander("Detalle reacci\u00f3n por reacci\u00f3n (litros y kg)"):
+                # ---- Detalle reacción por reacción ----
+                with st.expander("Detalle reacción por reacción (litros y kg)"):
                     cols_show = ["fecha", "ticket", "reactor", "corriente",
                                  "ag_kg", "ag_lts", "are_kg", "are_lts",
                                  "naoh_kg", "naoh_lts", "fuel_lts",
@@ -1402,7 +1495,7 @@ if st.session_state.section != "CARGAS":
                     cols_show = [c for c in cols_show if c in dfv.columns]
                     _det = dfv[cols_show].dropna(axis=1, how="all")
                     st.dataframe(_det, use_container_width=True, hide_index=True, height=420)
-                    st.download_button("\u2b07\ufe0f Descargar detalle (CSV)", _det.to_csv(index=False).encode("utf-8"),
+                    st.download_button("⬇️ Descargar detalle (CSV)", _det.to_csv(index=False).encode("utf-8"),
                                        file_name=f"detalle_{sector_v}_{fmin_v}_{fmax_v}.csv", mime="text/csv",
                                        key="vp_det_csv")
 
@@ -1416,9 +1509,9 @@ if st.session_state.section != "CARGAS":
         if _tq.empty:
             st.info("No hay tanques cargados.")
         else:
-            t_estado, t_cargar, t_editar = st.tabs(["Stock actual", "Cargar medici\u00f3n", "Editar tanque"])
+            t_estado, t_cargar, t_editar = st.tabs(["Stock actual", "Cargar medición", "Editar tanque"])
 
-            # ---------- STOCK ACTUAL (\u00faltimo medido por tanque) ----------
+            # ---------- STOCK ACTUAL (último medido por tanque) ----------
             with t_estado:
                 _u = st.radio("Unidad", ["TN", "kg", "litros"], horizontal=True, key="tq_u")
                 _secs = sorted(_tq["sector"].dropna().unique().tolist())
@@ -1438,22 +1531,22 @@ if st.session_state.section != "CARGAS":
                 df["stock"] = df.apply(_stk, axis=1)
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Tanques", len(df))
-                k2.metric("Con medici\u00f3n", int(df["medido_en"].notna().sum()))
+                k2.metric("Con medición", int(df["medido_en"].notna().sum()))
                 k3.metric(f"Stock total ({_u})", f"{pd.to_numeric(df['stock'], errors='coerce').sum():,.2f}")
                 _show = df[["sector", "nombre", "producto_medido", "producto_principal", "stock",
                             "medido_en", "cargado_por", "observaciones"]].rename(
                     columns={"producto_medido": "producto", "stock": f"stock_{_u}"})
                 st.dataframe(_show, use_container_width=True, hide_index=True, height=440)
-                st.caption("Cada fila = \u00faltima medici\u00f3n cargada por tanque (lo vigente). "
+                st.caption("Cada fila = última medición cargada por tanque (lo vigente). "
                            "'producto' = lo medido; 'producto_principal' = lo que el tanque suele contener.")
                 _m = df.dropna(subset=["medido_en"]).groupby("producto_medido", as_index=False)["stock"].sum()
                 if not _m.empty:
                     st.markdown(f"#### Stock por material ({_u})")
                     st.bar_chart(_m.sort_values("stock", ascending=False), x="producto_medido", y="stock", use_container_width=True)
 
-            # ---------- CARGAR MEDICI\u00d3N (manual, con timestamp) ----------
+            # ---------- CARGAR MEDICIÓN (manual, con timestamp) ----------
             with t_cargar:
-                _opt = _tq.apply(lambda r: f"{r['nombre']} \u00b7 {r['sector']}", axis=1).tolist()
+                _opt = _tq.apply(lambda r: f"{r['nombre']} · {r['sector']}", axis=1).tolist()
                 _selt = st.selectbox("Tanque", _opt, key="tq_sel_c")
                 _row = _tq.iloc[_opt.index(_selt)]
                 _idt = int(_row["id_tanque"])
@@ -1474,19 +1567,19 @@ if st.session_state.section != "CARGAS":
                     _kg = c3.number_input("Kg medidos", 0.0, 5_000_000.0, step=100.0, value=0.0, key="tq_kg_c")
                     _lts = (_kg / _dens) if _dens else None
                 cf, ch = st.columns(2)
-                _fch = cf.date_input("Fecha medici\u00f3n", date.today(), key="tq_fch_c")
-                _hr = ch.time_input("Hora medici\u00f3n", key="tq_hr_c")
+                _fch = cf.date_input("Fecha medición", date.today(), key="tq_fch_c")
+                _hr = ch.time_input("Hora medición", key="tq_hr_c")
                 from datetime import datetime as _dtq
                 _medido = _dtq.combine(_fch, _hr)
                 _obs = st.text_input("Observaciones", max_chars=200, key="tq_obs_c")
-                st.caption(f"= {(_kg or 0)/1000:,.2f} TN \u00b7 {(_lts or 0):,.0f} L \u00b7 densidad {_dens:g} kg/L")
+                st.caption(f"= {(_kg or 0)/1000:,.2f} TN · {(_lts or 0):,.0f} L · densidad {_dens:g} kg/L")
                 _ult = cat("SELECT medido_en, kg FROM produccion.fact_stock_tanque WHERE id_tanque=%s ORDER BY medido_en DESC LIMIT 1", (_idt,))
                 if not _ult.empty:
                     _ru = _ult.iloc[0]
-                    st.caption(f"\u00daltima medici\u00f3n previa: {_ru['medido_en']} \u00b7 {(_ru['kg'] or 0)/1000:,.2f} TN")
-                if st.button("Guardar medici\u00f3n", type="primary", use_container_width=True, key="tq_save_c"):
+                    st.caption(f"Última medición previa: {_ru['medido_en']} · {(_ru['kg'] or 0)/1000:,.2f} TN")
+                if st.button("Guardar medición", type="primary", use_container_width=True, key="tq_save_c"):
                     if (_kg or 0) <= 0:
-                        st.error("Carg\u00e1 una cantidad mayor a 0.")
+                        st.error("Cargá una cantidad mayor a 0.")
                     else:
                         try:
                             with conectar(USR["id_usuario"]) as (conn, audit):
@@ -1500,7 +1593,7 @@ if st.session_state.section != "CARGAS":
                                                  (float(_lts) if _lts else None), float(_kg),
                                                  int(USR["id_usuario"]), _obs or None))
                                 audit.log("I", "fact_stock_tanque", _idt, {"producto": _pcod, "kg": float(_kg)})
-                            st.success(f"Medici\u00f3n guardada: {_row['nombre']} \u00b7 {_pcod} \u00b7 {_kg/1000:,.2f} TN.")
+                            st.success(f"Medición guardada: {_row['nombre']} · {_pcod} · {_kg/1000:,.2f} TN.")
                             cat.clear()
                         except Exception as e:
                             st.exception(e)
@@ -1510,7 +1603,7 @@ if st.session_state.section != "CARGAS":
                 if USR["rol"] not in ("SUPERVISOR", "ADMIN"):
                     st.info("Solo supervisor o admin pueden editar tanques.")
                 else:
-                    _o2 = _tq.apply(lambda r: f"{r['nombre']} \u00b7 {r['sector']}", axis=1).tolist()
+                    _o2 = _tq.apply(lambda r: f"{r['nombre']} · {r['sector']}", axis=1).tolist()
                     _s2 = st.selectbox("Tanque a editar", _o2, key="tq_sel_e")
                     _r2 = _tq.iloc[_o2.index(_s2)]
                     _idt2 = int(_r2["id_tanque"])
@@ -1549,11 +1642,11 @@ if st.session_state.section != "CARGAS":
 
     elif st.session_state.section == "ADMIN":
         # =================== ADMIN ===================
-        st.title("\u2699\ufe0f Gestion de usuarios")
+        st.title("⚙️ Gestion de usuarios")
         if USR["rol"] != "ADMIN":
             st.error("Solo ADMIN puede entrar a esta seccion.")
         else:
-            with st.expander("\u2795 Crear nuevo usuario", expanded=False):
+            with st.expander("➕ Crear nuevo usuario", expanded=False):
                 with st.form("form_user_new"):
                     c1, c2 = st.columns(2)
                     n_nombre = c1.text_input("Usuario (login) *", max_chars=30, placeholder="ej. sosa")
@@ -1607,7 +1700,7 @@ if st.session_state.section != "CARGAS":
                         try: set_activo(USR["id_usuario"], u_id, False); st.success("Desactivado."); cat.clear(); st.rerun()
                         except Exception as e: st.error(str(e))
                 else:
-                    if st.button("\u2705 Reactivar usuario", key=f"act_{u_id}", use_container_width=True):
+                    if st.button("✅ Reactivar usuario", key=f"act_{u_id}", use_container_width=True):
                         try: set_activo(USR["id_usuario"], u_id, True); st.success("Reactivado."); cat.clear(); st.rerun()
                         except Exception as e: st.error(str(e))
             with ac2:
@@ -1671,7 +1764,7 @@ tab_objs = st.tabs(tabs)
 # =========================================================================
 with tab_objs[0]:
     st.subheader("🏭 Carga de producción")
-    sub_nueva, sub_edit, sub_pfinal, sub_eval, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "✏️ Avanzar etapa", "\U0001f3c1 Acopio final", "\U0001f9ea Evaluación interna", "\u26a0\ufe0f Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
+    sub_nueva, sub_edit, sub_pfinal, sub_eval, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "✏️ Avanzar etapa", "\U0001f3c1 Acopio final", "\U0001f9ea Evaluación interna", "⚠️ Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
 
     # ---------- SUB-TAB: NUEVA CARGA ----------
     with sub_nueva:
@@ -2031,23 +2124,35 @@ with tab_objs[0]:
                 if _multi_mp:
                     n_mp = int(st.number_input("Cantidad de materias primas", 1, 5, value=1, key="b_n_mp"))
 
-                st.caption("📥 Ingresá **N° de ticket** de portería. La app suma kg automáticamente y trae los parámetros del laboratorio (acidez, agua, sedimentos, azufre, etc.).")
+                # DESGOMADO: AFE-SG con multiselect (todo se pesa y se mide en lab → tickets reales)
+                # ARE / BACHAS: text input (las MP pueden venir de stock interno sin portería)
+                _usa_multiselect_mp = (sector == "REACTORES" and tipo_proceso_sel == "DESGOMADO_ACUOSO")
+                if _usa_multiselect_mp:
+                    st.caption("📥 Elegí los tickets desde el desplegable (ya filtrados por **AFE-SG** con lab cargado). Máximo 3 por proceso. La app suma kg y trae los parámetros del laboratorio.")
+                else:
+                    st.caption("📥 Ingresá **N° de ticket** de portería (máx 3 por proceso). La app suma kg y trae los parámetros del laboratorio.")
 
                 for i in range(n_mp):
                     with st.container(border=True):
                         st.markdown(f"**MP #{i+1}**")
-                        cMP1, cMP2 = st.columns([1, 2])
                         if len(_opts_mp_tl) == 1:
                             cod = _opts_mp_tl[0]
-                            cMP1.text_input(f"Producto inicial #{i+1}", value=cod, disabled=True, key=f"b_pi_lab_fx_{i}")
+                            st.text_input(f"Producto inicial #{i+1}", value=cod, disabled=True, key=f"b_pi_lab_fx_{i}")
                         else:
-                            cod = cMP1.selectbox(f"Producto inicial #{i+1} *", _opts_mp_tl, key=f"b_pi_lab_{i}")
-                        _tkmp = cMP2.text_input(
-                            f"Tickets de portería #{i+1} (n°, coma)",
-                            key=f"b_tkmp_lab_{i}",
-                            placeholder="ej. 5063, 5048, 5028",
-                            help="Cada ticket es una pesada en portería. La app suma kg y busca los análisis en procesos_lab."
-                        )
+                            cod = st.selectbox(f"Producto inicial #{i+1} *", _opts_mp_tl, key=f"b_pi_lab_{i}")
+                        if _usa_multiselect_mp:
+                            _tkmp = _ui_multiselect_tickets(cod, key_prefix=f"b_tkmp_lab_{i}", dias=180, limit=30, max_tickets=3)
+                        else:
+                            _tkmp = st.text_input(
+                                f"Tickets de portería #{i+1} (n°, coma · máx 3)",
+                                key=f"b_tkmp_lab_{i}",
+                                placeholder="ej. 5063, 5048, 5028",
+                                help="Cada ticket es una pesada en portería. La app suma kg y busca los análisis en procesos_lab. Tope 3 por proceso.",
+                            )
+                            import re as _re3
+                            _nct = len(set(int(x) for x in _re3.findall(r"\d+", _tkmp or "")))
+                            if _nct > 3:
+                                st.warning(f"⚠️ Cargaste {_nct} tickets; el proceso admite hasta 3.")
                         # Lookup combinado portería + lab (promedio ponderado por kg)
                         _det, _avg, _mlab, _mport, _mapping = params_de_tickets_lab(_tkmp, cod)
                         _kg = float(pd.to_numeric(_det["kg"], errors="coerce").sum()) if (not _det.empty and "kg" in _det.columns) else 0.0
@@ -2845,8 +2950,9 @@ with tab_objs[0]:
             _usa_tickets_pf = _sector_pf in ("REACTORES", "BACHAS")
             _lab_avg_pf = {}
             if _usa_tickets_pf:
-                _tk_sal = cF2.text_input("Tickets portería salida (n°, coma)", key=f"pf_tksal_{id_pf}",
-                                         help="Pesadas del producto final en portería. La app suma kg y trae los parámetros del laboratorio (acidez/agua/densidad/AyS).")
+                with cF2:
+                    st.caption("Tickets de portería de salida (filtrados por producto + lab):")
+                    _tk_sal = _ui_multiselect_tickets(p_obt_pf, key_prefix=f"pf_tksal_{id_pf}", dias=180, limit=30)
                 _sal_tickets = _tk_sal or None
                 _det_pf, _avg_pf, _mlab_pf, _mport_pf, _mapping_pf = params_de_tickets_lab(_tk_sal, p_obt_pf)
                 kg_pf = float(pd.to_numeric(_det_pf["kg"], errors="coerce").sum()) if (not _det_pf.empty and "kg" in _det_pf.columns) else 0.0
@@ -3078,7 +3184,7 @@ with tab_objs[0]:
             cant_g = cG2.number_input(f"Cantidad ({unidad_g})", 0.0, 100000.0, key="g_cant")
             motivo_g = st.text_input("Motivo * (mín 5 chars)", max_chars=200, key="g_mot",
                                      placeholder="ej. perdida por fuga, recarga adicional por baja conversión")
-            if st.button("\u26a0\ufe0f Registrar gasto extra", type="primary", use_container_width=True, key="g_save"):
+            if st.button("⚠️ Registrar gasto extra", type="primary", use_container_width=True, key="g_save"):
                 if cant_g <= 0:
                     st.error("Cantidad > 0.")
                 elif len(motivo_g.strip()) < 5:
