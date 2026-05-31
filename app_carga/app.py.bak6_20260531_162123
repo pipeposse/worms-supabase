@@ -853,10 +853,9 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
     kg_port = 0.0
     kg_tk = 0.0
     lab_avg = {}
-    tank_avg = {}
     cP, cT = st.columns(2)
     with cP:
-        up = st.checkbox("🎟️ Portería (tickets)", value=True, key=f"{key_prefix}_up")
+        up = st.checkbox("🎟️ Portería (tickets)", value=(target_kg is None), key=f"{key_prefix}_up")
         if up:
             if permite_multiselect:
                 tkstr = _ui_multiselect_tickets(cod, key_prefix=f"{key_prefix}_ms", dias=180, limit=30, max_tickets=3)
@@ -887,22 +886,6 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                 sel = st.selectbox(f"Tanque con {cod}", opts, key=f"{key_prefix}_tksel")
                 row = df.iloc[opts.index(sel)]
                 _stock = float(row["kg"] or 0)
-                try:
-                    _pt = cat(
-                        "SELECT acidez_pct, agua_pct, sedimentos_pct, densidad_g_ml, ppm_azufre, ppm_fosforo "
-                        "FROM produccion.fact_param_tanque "
-                        "WHERE id_tanque=%s AND id_producto=(SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s) "
-                        "LIMIT 1", (int(row["id_tanque"]), cod))
-                    if not _pt.empty:
-                        _p0 = _pt.iloc[0]
-                        for _k, _dst, _div in [("acidez_pct", "prc_acidez", 100.0), ("agua_pct", "prc_agua", 100.0),
-                                               ("sedimentos_pct", "prc_sedimentos", 100.0), ("densidad_g_ml", "densidad__g_ml", 1.0),
-                                               ("ppm_azufre", "ppm_azufre", 1.0), ("ppm_fosforo", "ppm_fosforo", 1.0)]:
-                            _v = _p0.get(_k)
-                            if pd.notna(_v):
-                                tank_avg[_dst] = float(_v) / _div
-                except Exception:
-                    pass
                 _falta = (target_kg - kg_port) if target_kg else _stock
                 kg_tk = float(st.number_input(
                     "Kg desde tanque", min_value=0.0,
@@ -914,8 +897,6 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                 if kg_tk > _stock:
                     st.warning("⚠️ Supera el stock del tanque (se registra el movimiento igual).")
     total = kg_port + kg_tk
-    if not lab_avg and tank_avg:
-        lab_avg = tank_avg
     if not lab_avg:
         _ms = ultimas_muestras_mp(cod, n=1)
         if not _ms.empty:
@@ -2331,19 +2312,27 @@ with tab_objs[0]:
                     "Las TN reales de AFE-S se confirman al cerrar (Acopio final)."
                 )
 
+            st.markdown("**Horario de inicio**")
+            cH1, cH2 = st.columns(2)
+            f_ini = cH1.date_input("Fecha inicio", date.today(), key="b_fini")
+            h_ini = cH2.time_input("Hora inicio",  key="b_hini")
             from datetime import datetime as _dt
-            inicio_dt = _dt.now()
-            fin_dt = None
+            inicio_dt = _dt.combine(f_ini, h_ini)
+            fin_dt    = None
             tiempo_est = None
-            st.caption("🕒 El inicio de la reacción se registra automáticamente al guardar (timestamp).")
+            st.caption("El fin y la duración se cargan al cerrar (Avanzar etapa / Acopio final).")
 
         elif sector == "BACHAS":
             # BACHAS también usa el flujo de etapas: la carga arranca en ARMADO.
             etapa_sel = "ARMADO"
-            st.text_input("Etapa actual *", value="ARMADO (carga de borra + mezcla)", disabled=True, key="b_etapa_disp_b")
+            st.markdown("**Etapa + inicio**")
+            cBe1, cBe2, cBe3 = st.columns(3)
+            cBe1.text_input("Etapa actual *", value="ARMADO (carga de borra + mezcla)", disabled=True, key="b_etapa_disp_b")
+            f_ini = cBe2.date_input("Fecha inicio", date.today(), key="b_fini")
+            h_ini = cBe3.time_input("Hora inicio", key="b_hini")
             from datetime import datetime as _dtb
-            inicio_dt = _dtb.now()
-            st.caption("🕒 El inicio se registra automáticamente al guardar. Avanzás las etapas desde **Avanzar etapa**.")
+            inicio_dt = _dtb.combine(f_ini, h_ini)
+            st.caption("ℹ️ Avanzás las etapas (calentamiento → decantación → tanque) desde **Avanzar etapa**.")
 
         # Producto obtenido / kg / calidad
         # En REACTORES: solo se completan al llegar a EN_TANQUE. En otros sectores: ahora.
@@ -2477,30 +2466,50 @@ with tab_objs[0]:
             es_are_mp = (sector == "REACTORES" and tipo_proceso_sel == "PRODUCCION_ARE")
 
             if es_are_mp:
-                # PRODUCCION_ARE: la MP (AG-C/SEBO) ya se eligió arriba (define el proceso).
+                # PRODUCCION_ARE: MP NO se pesa. La MP ya se eligió arriba (define el proceso).
                 cod = mp_pre
+                st.text_input("Materia prima (elegida arriba)", value=cod, disabled=True, key="b_pi_are_disp")
                 _dens_mp = densidad_de(cod) or (0.92 if cod == "AG-C" else 0.91)
                 _cap_l = float(fila_bien["capacidad_max_l"] or 0)
                 _kg_planeado = _cap_l * _dens_mp
+                mps_ingresadas.append((cod, float(_kg_planeado)))
+                litros_ini = round(_kg_planeado / _dens_mp, 1) if _dens_mp else None
+                # Métricas
                 _aM1, _aM2, _aM3 = st.columns(3)
                 _aM1.metric("Capacidad reactor", f"{int(_cap_l):,} L")
-                _aM2.metric(f"Densidad {cod}", f"{_dens_mp:.2f} kg/L")
-                _aM3.metric("Q MP objetivo", f"{_kg_planeado:,.0f} kg", f"{_kg_planeado/1000:,.2f} TN")
-                st.caption(f"ℹ️ Elegí la fuente del **{cod}** (portería y/o tanque). **Los parámetros de laboratorio vienen con la fuente.** El Q AG se asume = capacidad × densidad.")
+                _aM2.metric(f"Densidad {cod}",    f"{_dens_mp:.2f} kg/L")
+                _aM3.metric("Q MP a procesar",   f"{_kg_planeado:,.0f} kg", f"{_kg_planeado/1000:,.2f} TN")
+                st.caption("ℹ️ El MP NO se pesa; se asume reactor lleno (capacidad × densidad). Los insumos (glicerina, NaOH/Potasio, fuel) se calculan automáticamente por fórmula.")
+                # Acidez/azufre/agua: último análisis del producto MP en procesos_lab
+                _df_mp_lab = ultimas_muestras_mp(cod, n=3)
+                if not _df_mp_lab.empty:
+                    _opts_lab = _df_mp_lab.apply(
+                        lambda r: f"ticket {r['ticket']} · {r['fecha']} · acidez {float(r['prc_acidez'])*100:.3f}%" if pd.notna(r['prc_acidez']) else f"ticket {r['ticket']} · {r['fecha']}",
+                        axis=1,
+                    ).tolist()
+                    _sel_mp = st.selectbox(
+                        f"Análisis de laboratorio del {cod} (últimas 3 muestras)",
+                        _opts_lab, index=0, key="b_are_mp_lab_sel",
+                        help="La más reciente queda preseleccionada. El acidez de esta muestra alimenta la fórmula de glicerina.",
+                    )
+                    _row_mp = _df_mp_lab.iloc[_opts_lab.index(_sel_mp)]
+                    # Promedio ponderado degenera en valor único (1 ticket); usamos el avg dict de la API existente.
+                    _lab_avg_mp0 = {}
+                    for _col in ("prc_acidez", "prc_agua", "prc_sedimentos", "prc_producto",
+                                 "ppm_azufre", "ppm_fosforo", "densidad__g_ml"):
+                        _val = _row_mp.get(_col)
+                        if pd.notna(_val):
+                            _lab_avg_mp0[_col] = float(_val)
+                    _bm1, _bm2, _bm3 = st.columns(3)
+                    _bm1.metric("Acidez (lab)",   f"{float(_row_mp['prc_acidez'])*100:.3f}%"     if pd.notna(_row_mp['prc_acidez'])    else "—")
+                    _bm2.metric("% Agua (lab)",   f"{float(_row_mp['prc_agua'])*100:.3f}%"       if pd.notna(_row_mp['prc_agua'])      else "—")
+                    _bm3.metric("Densidad (lab)", f"{float(_row_mp['densidad__g_ml']):.3f} g/ml" if pd.notna(_row_mp['densidad__g_ml']) else "—")
+                else:
+                    st.warning(f"No hay análisis de laboratorio recientes para **{cod}**. La fórmula de glicerina no podrá calcularse hasta que cargues uno.")
+                # Fuente de la MP (portería + tanque, combinable) para llegar al Q MP del reactor
                 _kg_src, _ports_src, _avg_src = fuente_mp_combinada(cod, key_prefix="b_mpf_are", target_kg=float(_kg_planeado))
-                _kg_used = float(_kg_src) if (_kg_src and _kg_src > 0) else float(_kg_planeado)
-                mps_ingresadas.append((cod, _kg_used))
-                litros_ini = round(_kg_used / _dens_mp, 1) if _dens_mp else None
                 if _ports_src:
                     mp_fuentes[len(mps_ingresadas)-1] = _ports_src
-                _lab_avg_mp0 = _avg_src or {}
-                if _lab_avg_mp0:
-                    _bm1, _bm2, _bm3 = st.columns(3)
-                    _bm1.metric("Acidez (fuente)", f"{_lab_avg_mp0['prc_acidez']*100:.3f}%" if _lab_avg_mp0.get('prc_acidez') is not None else "—")
-                    _bm2.metric("% Agua (fuente)", f"{_lab_avg_mp0['prc_agua']*100:.3f}%" if _lab_avg_mp0.get('prc_agua') is not None else "—")
-                    _bm3.metric("Azufre (fuente)", f"{_lab_avg_mp0['ppm_azufre']:.0f} ppm" if _lab_avg_mp0.get('ppm_azufre') is not None else "—")
-                else:
-                    st.warning(f"Elegí una fuente (portería o tanque) para traer los parámetros de laboratorio de {cod}.")
             elif usa_tickets_lab:
                 # Opciones según proceso/sector
                 if sector == "REACTORES" and tipo_proceso_sel == "DESGOMADO_ACUOSO":
