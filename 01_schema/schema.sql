@@ -815,3 +815,552 @@ LEFT JOIN dim_producto p ON p.id_producto = s.id_producto
 LEFT JOIN dim_usuario u ON u.id_usuario = s.id_usuario
 WHERE t.activo
 ORDER BY t.id_tanque, s.medido_en DESC NULLS LAST;
+
+-- =============================================================================
+--  2026-05-31 · Fuente insumo/MP (ticket vs tanque), ticket lab automatico,
+--  cronograma de evaluacion, parametros por proceso/tanque, maquina de estados,
+--  motor de reglas, decantacion y cronograma diario. Todo idempotente.
+--  (Refleja las migraciones aplicadas a worms-prod el 2026-05-31.)
+-- =============================================================================
+SET search_path TO produccion, public;
+
+-- --- Equivalencia insumo (consumible) -> producto almacenable en tanque -------
+ALTER TABLE produccion.dic_insumo
+  ADD COLUMN IF NOT EXISTS id_producto_equiv BIGINT REFERENCES produccion.dim_producto(id_producto);
+COMMENT ON COLUMN produccion.dic_insumo.id_producto_equiv IS
+  'Producto almacenable equivalente: permite ubicar tanques que contienen este insumo para la carga por fuente=TANQUE.';
+
+-- --- Libro mayor de movimientos de tanque + stock actual ----------------------
+CREATE TABLE IF NOT EXISTS produccion.fact_movimiento_tanque (
+  id_movimiento BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id_tanque     BIGINT NOT NULL REFERENCES produccion.dim_tanque(id_tanque),
+  id_producto   BIGINT REFERENCES produccion.dim_producto(id_producto),
+  tipo          TEXT NOT NULL CHECK (tipo IN ('IN','OUT','AJUSTE')),
+  litros        NUMERIC,
+  kg            NUMERIC,
+  ts            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  id_batch      BIGINT REFERENCES produccion.fact_batch_proceso(id_batch) ON DELETE SET NULL,
+  id_usuario    BIGINT,
+  origen        TEXT NOT NULL DEFAULT 'PROCESO',
+  observaciones TEXT,
+  creado_en     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_mov_tanque_tanque_ts ON produccion.fact_movimiento_tanque(id_tanque, ts);
+CREATE INDEX IF NOT EXISTS ix_mov_tanque_batch     ON produccion.fact_movimiento_tanque(id_batch);
+
+CREATE OR REPLACE VIEW produccion.vw_stock_snapshot_ultimo AS
+SELECT DISTINCT ON (id_tanque)
+       id_tanque, id_producto, medido_en, litros, kg, nivel_pct
+FROM produccion.fact_stock_tanque
+ORDER BY id_tanque, medido_en DESC;
+
+CREATE OR REPLACE VIEW produccion.vw_stock_tanque_actual AS
+SELECT t.id_tanque, t.codigo, t.nombre, t.sector, t.capacidad_litros, t.id_producto_principal,
+       s.medido_en AS ultima_medicion,
+       COALESCE(s.litros,0) + COALESCE(m.delta_litros,0) AS litros_actual,
+       COALESCE(s.kg,0)     + COALESCE(m.delta_kg,0)     AS kg_actual,
+       CASE WHEN t.capacidad_litros IS NOT NULL AND t.capacidad_litros>0
+            THEN ROUND((COALESCE(s.litros,0)+COALESCE(m.delta_litros,0))/t.capacidad_litros*100,1) END AS nivel_pct_actual
+FROM produccion.dim_tanque t
+LEFT JOIN produccion.vw_stock_snapshot_ultimo s ON s.id_tanque = t.id_tanque
+LEFT JOIN LATERAL (
+   SELECT SUM(CASE mv.tipo WHEN 'OUT' THEN -1 ELSE 1 END * COALESCE(mv.litros,0)) AS delta_litros,
+          SUM(CASE mv.tipo WHEN 'OUT' THEN -1 ELSE 1 END * COALESCE(mv.kg,0))     AS delta_kg
+   FROM produccion.fact_movimiento_tanque mv
+   WHERE mv.id_tanque = t.id_tanque AND (s.medido_en IS NULL OR mv.ts > s.medido_en)
+) m ON TRUE
+WHERE t.activo;
+
+-- --- Cola de laboratorio + linea de insumo/MP con fuente ----------------------
+CREATE SEQUENCE IF NOT EXISTS produccion.seq_ticket_lab;
+
+CREATE TABLE IF NOT EXISTS produccion.fact_ticket_lab (
+  id_ticket       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  ticket_lab      TEXT NOT NULL UNIQUE,
+  id_batch        BIGINT REFERENCES produccion.fact_batch_proceso(id_batch) ON DELETE CASCADE,
+  id_batch_insumo BIGINT,
+  rol             TEXT NOT NULL CHECK (rol IN ('INSUMO','MP','FINAL','SUBPRODUCTO')),
+  codigo_insumo   TEXT REFERENCES produccion.dic_insumo(codigo),
+  id_producto     BIGINT REFERENCES produccion.dim_producto(id_producto),
+  fuente          TEXT NOT NULL CHECK (fuente IN ('TICKET','TANQUE','DECANTACION')),
+  ticket_porteria TEXT,
+  id_tanque       BIGINT REFERENCES produccion.dim_tanque(id_tanque),
+  cantidad        NUMERIC,
+  unidad          TEXT,
+  estado          TEXT NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE','EVALUADO','ANULADO')),
+  mediciones      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  evaluado_en     TIMESTAMPTZ,
+  id_usuario_lab  BIGINT,
+  creado_en       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_ticket_lab_estado ON produccion.fact_ticket_lab(estado);
+CREATE INDEX IF NOT EXISTS ix_ticket_lab_batch  ON produccion.fact_ticket_lab(id_batch);
+
+CREATE TABLE IF NOT EXISTS produccion.fact_batch_insumo (
+  id_batch_insumo BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id_batch        BIGINT NOT NULL REFERENCES produccion.fact_batch_proceso(id_batch) ON DELETE CASCADE,
+  rol             TEXT NOT NULL DEFAULT 'INSUMO' CHECK (rol IN ('INSUMO','MP')),
+  codigo_insumo   TEXT REFERENCES produccion.dic_insumo(codigo),
+  id_producto     BIGINT REFERENCES produccion.dim_producto(id_producto),
+  cantidad        NUMERIC NOT NULL CHECK (cantidad >= 0),
+  unidad          TEXT,
+  fuente          TEXT NOT NULL CHECK (fuente IN ('TICKET','TANQUE')),
+  ticket_porteria TEXT,
+  id_tanque       BIGINT REFERENCES produccion.dim_tanque(id_tanque),
+  ticket_lab      TEXT,
+  id_ticket       BIGINT REFERENCES produccion.fact_ticket_lab(id_ticket),
+  id_movimiento   BIGINT REFERENCES produccion.fact_movimiento_tanque(id_movimiento) ON DELETE SET NULL,
+  id_usuario      BIGINT,
+  anulado         BOOLEAN NOT NULL DEFAULT FALSE,
+  creado_en       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT chk_bi_identidad CHECK ((rol='INSUMO' AND codigo_insumo IS NOT NULL) OR (rol='MP' AND id_producto IS NOT NULL)),
+  CONSTRAINT chk_bi_fuente CHECK ((fuente='TICKET' AND ticket_porteria IS NOT NULL AND id_tanque IS NULL)
+                               OR (fuente='TANQUE' AND id_tanque IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS ix_batch_insumo_batch ON produccion.fact_batch_insumo(id_batch);
+
+CREATE OR REPLACE FUNCTION produccion.fn_batch_insumo_carga()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+DECLARE v_prod_id bigint; v_unidad text; v_densidad double precision;
+        v_kg numeric; v_litros numeric; v_ticket text; v_id_ticket bigint;
+BEGIN
+  IF new.rol='INSUMO' THEN
+    SELECT i.unidad, i.id_producto_equiv INTO v_unidad, v_prod_id FROM produccion.dic_insumo i WHERE i.codigo=new.codigo_insumo;
+    new.unidad := COALESCE(new.unidad, v_unidad);
+  ELSE
+    v_prod_id := new.id_producto; new.unidad := COALESCE(new.unidad,'KG');
+  END IF;
+
+  v_ticket := 'TL-' || lpad(nextval('produccion.seq_ticket_lab')::text, 8, '0');
+  INSERT INTO produccion.fact_ticket_lab
+    (ticket_lab, id_batch, id_batch_insumo, rol, codigo_insumo, id_producto, fuente, ticket_porteria, id_tanque, cantidad, unidad)
+  VALUES (v_ticket, new.id_batch, new.id_batch_insumo, new.rol, new.codigo_insumo, new.id_producto,
+          new.fuente, new.ticket_porteria, new.id_tanque, new.cantidad, new.unidad)
+  RETURNING id_ticket INTO v_id_ticket;
+  new.ticket_lab := v_ticket; new.id_ticket := v_id_ticket;
+
+  IF new.fuente='TANQUE' THEN
+    SELECT p.densidad_g_ml INTO v_densidad FROM produccion.dim_producto p WHERE p.id_producto=v_prod_id;
+    IF upper(COALESCE(new.unidad,'KG'))='L' THEN
+      v_litros := new.cantidad; v_kg := CASE WHEN v_densidad IS NOT NULL THEN new.cantidad*v_densidad END;
+    ELSE
+      v_kg := new.cantidad; v_litros := CASE WHEN v_densidad IS NOT NULL AND v_densidad>0 THEN new.cantidad/v_densidad END;
+    END IF;
+    INSERT INTO produccion.fact_movimiento_tanque (id_tanque, id_producto, tipo, litros, kg, id_batch, id_usuario, origen, observaciones)
+    VALUES (new.id_tanque, v_prod_id, 'OUT', v_litros, v_kg, new.id_batch, new.id_usuario, 'PROCESO',
+            'Consumo batch '||new.id_batch||' ('||COALESCE(new.codigo_insumo,(SELECT codigo_producto FROM produccion.dim_producto WHERE id_producto=new.id_producto))||')')
+    RETURNING id_movimiento INTO new.id_movimiento;
+  END IF;
+  RETURN new;
+END $$;
+DROP TRIGGER IF EXISTS trg_batch_insumo_carga ON produccion.fact_batch_insumo;
+CREATE TRIGGER trg_batch_insumo_carga BEFORE INSERT ON produccion.fact_batch_insumo
+  FOR EACH ROW EXECUTE FUNCTION produccion.fn_batch_insumo_carga();
+
+CREATE OR REPLACE FUNCTION produccion.fn_batch_insumo_post()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+BEGIN
+  UPDATE produccion.fact_ticket_lab SET id_batch_insumo=new.id_batch_insumo WHERE id_ticket=new.id_ticket;
+  IF new.rol='INSUMO' THEN
+    UPDATE produccion.fact_batch_proceso b
+       SET insumos = jsonb_set(COALESCE(b.insumos,'{}'::jsonb), ARRAY[new.codigo_insumo],
+                       to_jsonb(COALESCE((b.insumos->>new.codigo_insumo)::numeric,0) + new.cantidad))
+     WHERE b.id_batch=new.id_batch;
+  END IF;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS trg_batch_insumo_post ON produccion.fact_batch_insumo;
+CREATE TRIGGER trg_batch_insumo_post AFTER INSERT ON produccion.fact_batch_insumo
+  FOR EACH ROW EXECUTE FUNCTION produccion.fn_batch_insumo_post();
+
+-- --- Cronograma de evaluacion interna (slots automaticos al iniciar) ----------
+CREATE TABLE IF NOT EXISTS produccion.dic_cronograma_eval (
+  tipo_proceso  TEXT PRIMARY KEY REFERENCES produccion.dic_tipo_proceso(codigo),
+  cadencia      TEXT NOT NULL CHECK (cadencia IN ('HORARIA','UNICA')),
+  etapa         TEXT REFERENCES produccion.dic_etapa_proceso(codigo),
+  activo        BOOLEAN NOT NULL DEFAULT TRUE,
+  observaciones TEXT
+);
+CREATE TABLE IF NOT EXISTS produccion.fact_eval_programada (
+  id_prog       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id_batch      BIGINT NOT NULL REFERENCES produccion.fact_batch_proceso(id_batch) ON DELETE CASCADE,
+  tipo_proceso  TEXT,
+  etapa         TEXT,
+  secuencia     INT NOT NULL,
+  programado_ts TIMESTAMPTZ NOT NULL,
+  estado        TEXT NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE','REALIZADA','OMITIDA')),
+  id_eval       BIGINT REFERENCES produccion.fact_evaluacion_interna(id_eval),
+  creado_en     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (id_batch, secuencia)
+);
+CREATE INDEX IF NOT EXISTS ix_eval_prog_batch ON produccion.fact_eval_programada(id_batch, estado);
+
+CREATE OR REPLACE FUNCTION produccion.fn_generar_cronograma_eval()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+DECLARE v_cad text; v_etapa text; v_n int; k int;
+BEGIN
+  IF new.inicio_ts IS NULL THEN RETURN new; END IF;
+  IF tg_op='UPDATE' AND old.inicio_ts IS NOT NULL THEN RETURN new; END IF;
+  IF new.tipo_proceso IS NULL THEN RETURN new; END IF;
+  SELECT cadencia, etapa INTO v_cad, v_etapa FROM produccion.dic_cronograma_eval WHERE tipo_proceso=new.tipo_proceso AND activo;
+  IF v_cad IS NULL THEN RETURN new; END IF;
+  IF EXISTS (SELECT 1 FROM produccion.fact_eval_programada WHERE id_batch=new.id_batch) THEN RETURN new; END IF;
+  IF v_cad='UNICA' THEN v_n := 1; ELSE v_n := greatest(1, ceil(COALESCE(new.tiempo_estimado_horas,0))::int + 1); END IF;
+  FOR k IN 0 .. v_n-1 LOOP
+    INSERT INTO produccion.fact_eval_programada (id_batch, tipo_proceso, etapa, secuencia, programado_ts)
+    VALUES (new.id_batch, new.tipo_proceso, COALESCE(v_etapa,new.etapa_actual), k+1, new.inicio_ts + make_interval(hours => k));
+  END LOOP;
+  RETURN new;
+END $$;
+DROP TRIGGER IF EXISTS trg_cronograma_eval ON produccion.fact_batch_proceso;
+CREATE TRIGGER trg_cronograma_eval AFTER INSERT OR UPDATE OF inicio_ts, tipo_proceso, tiempo_estimado_horas
+  ON produccion.fact_batch_proceso FOR EACH ROW EXECUTE FUNCTION produccion.fn_generar_cronograma_eval();
+
+-- --- Parametros iniciales por proceso + derivar corriente/proceso de la MP ----
+CREATE TABLE IF NOT EXISTS produccion.dic_proceso_parametros (
+  tipo_proceso        TEXT PRIMARY KEY REFERENCES produccion.dic_tipo_proceso(codigo),
+  temp_inicial_c      NUMERIC,
+  tiempo_total_horas  NUMERIC,
+  acidez_objetivo_pct NUMERIC,
+  calidad_objetivo    TEXT REFERENCES produccion.dic_calidad(codigo),
+  observaciones       TEXT
+);
+
+CREATE OR REPLACE FUNCTION produccion.fn_derivar_desde_mp()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+DECLARE v_codigo text; v_corriente text; v_tipo text;
+BEGIN
+  IF new.id_producto_inicial IS NULL THEN RETURN new; END IF;
+  SELECT codigo_producto, corriente INTO v_codigo, v_corriente FROM produccion.dim_producto WHERE id_producto=new.id_producto_inicial;
+  IF v_corriente IS NOT NULL THEN new.corriente := v_corriente; END IF;
+  IF new.tipo_proceso IS NULL AND new.sector IS NOT NULL THEN
+    SELECT pp.tipo_proceso INTO v_tipo FROM produccion.dic_proceso_producto pp
+     WHERE pp.rol='MP' AND pp.sector=new.sector AND pp.tipo_proceso IS NOT NULL AND v_codigo LIKE pp.patron
+     ORDER BY length(pp.patron) DESC LIMIT 1;
+    IF v_tipo IS NOT NULL THEN new.tipo_proceso := v_tipo; END IF;
+  END IF;
+  RETURN new;
+END $$;
+DROP TRIGGER IF EXISTS trg_derivar_desde_mp ON produccion.fact_batch_proceso;
+CREATE TRIGGER trg_derivar_desde_mp BEFORE INSERT OR UPDATE OF id_producto_inicial, sector
+  ON produccion.fact_batch_proceso FOR EACH ROW EXECUTE FUNCTION produccion.fn_derivar_desde_mp();
+
+CREATE OR REPLACE VIEW produccion.vw_batch_operario AS
+SELECT b.id_batch, b.fecha, b.sector, b.tipo_proceso AS area_proceso, b.corriente,
+       pi.codigo_producto AS mp_codigo, pi.nombre_producto AS mp_nombre, b.kg_inicial, b.litros_inicial,
+       b.ticket_porteria, b.tanque_destino,
+       pb.codigo_producto AS resultado_estimado_codigo, pb.nombre_producto AS resultado_estimado_nombre,
+       b.calidad_buscada, b.estimado_are_kg, b.estimado_glicerina_kg,
+       COALESCE(pp.tiempo_total_horas, b.tiempo_estimado_horas) AS tiempo_total_horas,
+       pp.temp_inicial_c, pp.acidez_objetivo_pct, b.inicio_ts,
+       CASE WHEN b.inicio_ts IS NOT NULL
+            THEN b.inicio_ts + make_interval(hours => COALESCE(pp.tiempo_total_horas, b.tiempo_estimado_horas)::int) END AS fin_estimado_ts,
+       b.etapa_actual
+FROM produccion.fact_batch_proceso b
+LEFT JOIN produccion.dim_producto pi ON pi.id_producto = b.id_producto_inicial
+LEFT JOIN produccion.dim_producto pb ON pb.id_producto = b.id_producto_buscado
+LEFT JOIN produccion.dic_proceso_parametros pp ON pp.tipo_proceso = b.tipo_proceso
+WHERE NOT b.anulado;
+
+-- --- Reversa de stock + anulacion de tickets/slots al anular un batch ---------
+CREATE OR REPLACE FUNCTION produccion.fn_anular_batch()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+BEGIN
+  IF new.anulado AND NOT old.anulado THEN
+    IF NOT EXISTS (SELECT 1 FROM produccion.fact_movimiento_tanque WHERE id_batch=new.id_batch AND origen='REVERSA') THEN
+      INSERT INTO produccion.fact_movimiento_tanque (id_tanque, id_producto, tipo, litros, kg, id_batch, id_usuario, origen, observaciones)
+      SELECT id_tanque, id_producto, 'IN', litros, kg, id_batch, new.id_usuario_anula, 'REVERSA', 'Reversa por anulacion batch '||new.id_batch
+      FROM produccion.fact_movimiento_tanque WHERE id_batch=new.id_batch AND tipo='OUT' AND origen='PROCESO';
+    END IF;
+    UPDATE produccion.fact_ticket_lab SET estado='ANULADO' WHERE id_batch=new.id_batch AND estado='PENDIENTE';
+    UPDATE produccion.fact_eval_programada SET estado='OMITIDA' WHERE id_batch=new.id_batch AND estado='PENDIENTE';
+  END IF;
+  RETURN new;
+END $$;
+DROP TRIGGER IF EXISTS trg_anular_batch ON produccion.fact_batch_proceso;
+CREATE TRIGGER trg_anular_batch AFTER UPDATE OF anulado ON produccion.fact_batch_proceso
+  FOR EACH ROW EXECUTE FUNCTION produccion.fn_anular_batch();
+
+-- --- Parametros de lab por tanque + auto-update desde procesos_lab ------------
+CREATE TABLE IF NOT EXISTS produccion.fact_param_tanque (
+  id_param             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id_tanque            BIGINT NOT NULL REFERENCES produccion.dim_tanque(id_tanque) ON DELETE CASCADE,
+  id_producto          BIGINT NOT NULL REFERENCES produccion.dim_producto(id_producto),
+  corriente            TEXT,
+  evaluado             BOOLEAN NOT NULL DEFAULT FALSE,
+  ultima_evaluacion_ts TIMESTAMPTZ,
+  id_procesos_lab      BIGINT,
+  acidez_pct           NUMERIC, agua_pct NUMERIC, sedimentos_pct NUMERIC,
+  densidad_g_ml        NUMERIC, ppm_azufre NUMERIC, ppm_fosforo NUMERIC,
+  parametros_extra     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  actualizado_en       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (id_tanque, id_producto)
+);
+CREATE INDEX IF NOT EXISTS ix_param_tanque_tanque   ON produccion.fact_param_tanque(id_tanque);
+CREATE INDEX IF NOT EXISTS ix_param_tanque_evaluado ON produccion.fact_param_tanque(evaluado);
+
+CREATE OR REPLACE FUNCTION produccion.fn_lab_actualiza_param_tanque()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+DECLARE v_ids text[] := ARRAY[new.id_tanque_1, new.id_tanque_2]; v_raw text; v_idt bigint; v_prod bigint; v_extra jsonb;
+BEGIN
+  v_extra := jsonb_strip_nulls(jsonb_build_object(
+      'color',new.color,'hkf_pct',new.prc_hkf*100,'hexano_pct',new.prc_hexano_impurezas*100,
+      'gli_glicerol',new.gli_glicerol,'gli_humedad',new.gli_humedad,'gli_ays',new.gli_ays,
+      'borra_grasa',new.borra_prc_grasa,'eflu_ph',new.eflu_ph,
+      'sebo_iodo',new.sebo_indice_yodo_gyodo_gmuestra,'temp',new.temp_celcius));
+  FOREACH v_raw IN ARRAY v_ids LOOP
+    IF v_raw IS NULL OR btrim(v_raw)='' THEN CONTINUE; END IF;
+    IF v_raw !~ '^\d+$' THEN CONTINUE; END IF;
+    v_idt := v_raw::bigint;
+    IF NOT EXISTS (SELECT 1 FROM produccion.dim_tanque WHERE id_tanque=v_idt) THEN CONTINUE; END IF;
+    SELECT dpl.id_producto INTO v_prod FROM produccion.dic_producto_lab dpl
+      WHERE dpl.lab_producto=new.producto_lab AND (dpl.lab_calidad IS NULL OR dpl.lab_calidad=new.calidad_final_lab)
+      ORDER BY (dpl.lab_calidad=new.calidad_final_lab) DESC NULLS LAST LIMIT 1;
+    IF v_prod IS NULL THEN SELECT id_producto_principal INTO v_prod FROM produccion.dim_tanque WHERE id_tanque=v_idt; END IF;
+    IF v_prod IS NULL THEN CONTINUE; END IF;
+    INSERT INTO produccion.fact_param_tanque
+      (id_tanque,id_producto,corriente,evaluado,ultima_evaluacion_ts,id_procesos_lab,
+       acidez_pct,agua_pct,sedimentos_pct,densidad_g_ml,ppm_azufre,ppm_fosforo,parametros_extra,actualizado_en)
+    VALUES (v_idt,v_prod,new.corriente,TRUE,COALESCE(new.fecha,now())::timestamptz,new.id,
+       new.prc_acidez*100,new.prc_agua*100,new.prc_sedimentos*100,new.densidad__g_ml,new.ppm_azufre,new.ppm_fosforo,v_extra,now())
+    ON CONFLICT (id_tanque,id_producto) DO UPDATE SET
+       corriente=COALESCE(excluded.corriente, produccion.fact_param_tanque.corriente),
+       evaluado=TRUE, ultima_evaluacion_ts=excluded.ultima_evaluacion_ts, id_procesos_lab=excluded.id_procesos_lab,
+       acidez_pct=excluded.acidez_pct, agua_pct=excluded.agua_pct, sedimentos_pct=excluded.sedimentos_pct,
+       densidad_g_ml=excluded.densidad_g_ml, ppm_azufre=excluded.ppm_azufre, ppm_fosforo=excluded.ppm_fosforo,
+       parametros_extra=produccion.fact_param_tanque.parametros_extra || excluded.parametros_extra, actualizado_en=now();
+  END LOOP;
+  RETURN new;
+END $$;
+DROP TRIGGER IF EXISTS trg_lab_param_tanque ON produccion.procesos_lab;
+CREATE TRIGGER trg_lab_param_tanque AFTER INSERT OR UPDATE ON produccion.procesos_lab
+  FOR EACH ROW EXECUTE FUNCTION produccion.fn_lab_actualiza_param_tanque();
+
+CREATE OR REPLACE VIEW produccion.vw_param_tanque_actual AS
+SELECT pt.id_tanque, t.codigo, t.nombre, t.sector, p.codigo_producto, p.nombre_producto,
+       pt.corriente, pt.evaluado, pt.ultima_evaluacion_ts,
+       pt.acidez_pct, pt.agua_pct, pt.sedimentos_pct, pt.densidad_g_ml, pt.ppm_azufre, pt.ppm_fosforo, pt.parametros_extra
+FROM produccion.fact_param_tanque pt
+JOIN produccion.dim_tanque t ON t.id_tanque=pt.id_tanque
+JOIN produccion.dim_producto p ON p.id_producto=pt.id_producto;
+
+-- --- Maquina de estados del batch + log + checklist + caldera -----------------
+ALTER TABLE produccion.fact_batch_proceso
+  ADD COLUMN IF NOT EXISTS estado TEXT NOT NULL DEFAULT 'CARGA'
+    CHECK (estado IN ('CARGA','REACCION','REPOSO','DECANTACION','FINALIZADO','FRENADA','ANULADA')),
+  ADD COLUMN IF NOT EXISTS caldera_encendida_ts    TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS esperando_validacion_lab BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS ticket_validacion_lab    TEXT,
+  ADD COLUMN IF NOT EXISTS validado_lab             BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS id_usuario_estado BIGINT,
+  ADD COLUMN IF NOT EXISTS motivo_estado     TEXT;
+COMMENT ON COLUMN produccion.fact_batch_proceso.caldera_encendida_ts IS
+  'Prendido de caldera. Debe ser >= 1h antes del inicio de reaccion para llegar a 80 C.';
+
+CREATE TABLE IF NOT EXISTS produccion.fact_batch_estado_log (
+  id_log          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id_batch        BIGINT NOT NULL REFERENCES produccion.fact_batch_proceso(id_batch) ON DELETE CASCADE,
+  estado_anterior TEXT, estado_nuevo TEXT NOT NULL,
+  ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  id_usuario      BIGINT, motivo TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_estado_log_batch ON produccion.fact_batch_estado_log(id_batch, ts);
+
+CREATE OR REPLACE FUNCTION produccion.fn_log_estado_batch()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+BEGIN
+  IF tg_op='INSERT' OR new.estado IS DISTINCT FROM old.estado THEN
+    INSERT INTO produccion.fact_batch_estado_log (id_batch, estado_anterior, estado_nuevo, id_usuario, motivo)
+    VALUES (new.id_batch, CASE WHEN tg_op='UPDATE' THEN old.estado END, new.estado,
+            COALESCE(new.id_usuario_estado, new.id_usuario_carga), new.motivo_estado);
+  END IF;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS trg_log_estado_batch ON produccion.fact_batch_proceso;
+CREATE TRIGGER trg_log_estado_batch AFTER INSERT OR UPDATE OF estado ON produccion.fact_batch_proceso
+  FOR EACH ROW EXECUTE FUNCTION produccion.fn_log_estado_batch();
+
+CREATE TABLE IF NOT EXISTS produccion.fact_batch_checklist (
+  id_checklist           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id_batch               BIGINT NOT NULL UNIQUE REFERENCES produccion.fact_batch_proceso(id_batch) ON DELETE CASCADE,
+  mp_ok                  BOOLEAN NOT NULL DEFAULT FALSE,
+  insumos_ok             BOOLEAN NOT NULL DEFAULT FALSE,
+  temperatura_inicial_ok BOOLEAN NOT NULL DEFAULT FALSE,
+  parametros_ok          BOOLEAN NOT NULL DEFAULT FALSE,
+  corriente_ok           BOOLEAN NOT NULL DEFAULT FALSE,
+  caldera_encendida_ok   BOOLEAN NOT NULL DEFAULT FALSE,
+  id_usuario             BIGINT NOT NULL,
+  confirmado_en          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE OR REPLACE FUNCTION produccion.fn_checklist_confirma()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+BEGIN
+  IF new.mp_ok AND new.insumos_ok AND new.temperatura_inicial_ok AND new.parametros_ok
+     AND new.corriente_ok AND new.caldera_encendida_ok THEN
+    UPDATE produccion.fact_batch_proceso b
+       SET id_usuario_estado=new.id_usuario, motivo_estado='Checklist de carga confirmado',
+           caldera_encendida_ts=COALESCE(b.caldera_encendida_ts, now()),
+           inicio_ts=COALESCE(b.inicio_ts, now()), estado='REACCION'
+     WHERE b.id_batch=new.id_batch AND b.estado='CARGA';
+  END IF;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS trg_checklist_confirma ON produccion.fact_batch_checklist;
+CREATE TRIGGER trg_checklist_confirma AFTER INSERT OR UPDATE ON produccion.fact_batch_checklist
+  FOR EACH ROW EXECUTE FUNCTION produccion.fn_checklist_confirma();
+
+-- --- Motor de reglas: evaluacion interna -> accion ----------------------------
+CREATE TABLE IF NOT EXISTS produccion.dic_regla_evaluacion (
+  id_regla      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tipo_proceso  TEXT NOT NULL REFERENCES produccion.dic_tipo_proceso(codigo),
+  parametro     TEXT NOT NULL,
+  operador      TEXT NOT NULL CHECK (operador IN ('<=','>=','<','>','=')),
+  valor         NUMERIC NOT NULL,
+  accion        TEXT NOT NULL CHECK (accion IN ('PASAR_A_REPOSO','PASAR_A_REPOSO_Y_VALIDAR','PASAR_A_DECANTACION','FRENAR')),
+  activo        BOOLEAN NOT NULL DEFAULT TRUE,
+  observaciones TEXT
+);
+
+CREATE OR REPLACE FUNCTION produccion.fn_aplicar_reglas_eval()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+DECLARE v_tipo text; v_estado text; r record; v_val numeric; v_match boolean; v_ticket text;
+BEGIN
+  SELECT tipo_proceso, estado INTO v_tipo, v_estado FROM produccion.fact_batch_proceso WHERE id_batch=new.id_batch;
+  IF v_tipo IS NULL THEN RETURN NULL; END IF;
+  FOR r IN SELECT * FROM produccion.dic_regla_evaluacion WHERE tipo_proceso=v_tipo AND activo AND new.mediciones ? parametro LOOP
+    v_val := (new.mediciones->>r.parametro)::numeric;
+    v_match := CASE r.operador WHEN '<=' THEN v_val<=r.valor WHEN '>=' THEN v_val>=r.valor
+                               WHEN '<' THEN v_val<r.valor WHEN '>' THEN v_val>r.valor WHEN '=' THEN v_val=r.valor END;
+    IF NOT COALESCE(v_match,false) THEN CONTINUE; END IF;
+    IF r.accion='PASAR_A_REPOSO_Y_VALIDAR' AND v_estado='REACCION' THEN
+      SELECT ticket_lab INTO v_ticket FROM produccion.fact_ticket_lab WHERE id_batch=new.id_batch AND rol='MP' ORDER BY id_ticket LIMIT 1;
+      UPDATE produccion.fact_batch_proceso SET estado='REPOSO', esperando_validacion_lab=true, ticket_validacion_lab=v_ticket,
+             id_usuario_estado=new.id_usuario,
+             motivo_estado='Regla '||r.parametro||' '||r.operador||' '||r.valor||': reposo + validacion lab '||COALESCE(v_ticket,'(sin ticket MP)')
+       WHERE id_batch=new.id_batch;
+    ELSIF r.accion='PASAR_A_REPOSO' AND v_estado='REACCION' THEN
+      UPDATE produccion.fact_batch_proceso SET estado='REPOSO', id_usuario_estado=new.id_usuario,
+             motivo_estado='Regla '||r.parametro||' '||r.operador||' '||r.valor WHERE id_batch=new.id_batch;
+    ELSIF r.accion='PASAR_A_DECANTACION' THEN
+      UPDATE produccion.fact_batch_proceso SET estado='DECANTACION', id_usuario_estado=new.id_usuario,
+             motivo_estado='Regla '||r.parametro||' '||r.operador||' '||r.valor WHERE id_batch=new.id_batch;
+    ELSIF r.accion='FRENAR' THEN
+      UPDATE produccion.fact_batch_proceso SET estado='FRENADA', id_usuario_estado=new.id_usuario,
+             motivo_estado='Regla automatica '||r.parametro||' '||r.operador||' '||r.valor WHERE id_batch=new.id_batch;
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS trg_aplicar_reglas_eval ON produccion.fact_evaluacion_interna;
+CREATE TRIGGER trg_aplicar_reglas_eval AFTER INSERT ON produccion.fact_evaluacion_interna
+  FOR EACH ROW EXECUTE FUNCTION produccion.fn_aplicar_reglas_eval();
+
+CREATE OR REPLACE FUNCTION produccion.fn_validar_lab_batch()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+BEGIN
+  IF new.estado='EVALUADO' AND (tg_op='INSERT' OR old.estado IS DISTINCT FROM new.estado) THEN
+    UPDATE produccion.fact_batch_proceso SET validado_lab=true, esperando_validacion_lab=false
+     WHERE ticket_validacion_lab=new.ticket_lab AND esperando_validacion_lab;
+  END IF;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS trg_validar_lab_batch ON produccion.fact_ticket_lab;
+CREATE TRIGGER trg_validar_lab_batch AFTER INSERT OR UPDATE OF estado ON produccion.fact_ticket_lab
+  FOR EACH ROW EXECUTE FUNCTION produccion.fn_validar_lab_batch();
+
+CREATE OR REPLACE FUNCTION produccion.fn_frenar_reaccion(p_id_batch bigint, p_id_usuario bigint, p_motivo text DEFAULT NULL)
+RETURNS void LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+BEGIN
+  UPDATE produccion.fact_batch_proceso SET estado='FRENADA', id_usuario_estado=p_id_usuario,
+         motivo_estado=COALESCE(p_motivo,'Frenada por supervision')
+   WHERE id_batch=p_id_batch AND estado IN ('REACCION','REPOSO');
+END $$;
+
+-- --- Decantacion: ticket de lab por producto final y subproductos -------------
+ALTER TABLE produccion.fact_salida_decantacion
+  ADD COLUMN IF NOT EXISTS ticket_lab TEXT,
+  ADD COLUMN IF NOT EXISTS id_ticket  BIGINT REFERENCES produccion.fact_ticket_lab(id_ticket);
+
+CREATE OR REPLACE FUNCTION produccion.fn_decantacion_ticket()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = produccion, public, pg_temp AS $$
+DECLARE v_final bigint; v_rol text; v_ticket text; v_id bigint;
+BEGIN
+  SELECT id_producto_obtenido INTO v_final FROM produccion.fact_batch_proceso WHERE id_batch=new.id_batch;
+  v_rol := CASE WHEN v_final IS NOT NULL AND new.id_producto=v_final THEN 'FINAL' ELSE 'SUBPRODUCTO' END;
+  v_ticket := 'TL-' || lpad(nextval('produccion.seq_ticket_lab')::text, 8, '0');
+  INSERT INTO produccion.fact_ticket_lab (ticket_lab, id_batch, rol, id_producto, fuente, cantidad, unidad)
+  VALUES (v_ticket, new.id_batch, v_rol, new.id_producto, 'DECANTACION', new.kg, 'KG') RETURNING id_ticket INTO v_id;
+  UPDATE produccion.fact_salida_decantacion SET ticket_lab=v_ticket, id_ticket=v_id WHERE id_salida=new.id_salida;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS trg_decantacion_ticket ON produccion.fact_salida_decantacion;
+CREATE TRIGGER trg_decantacion_ticket AFTER INSERT ON produccion.fact_salida_decantacion
+  FOR EACH ROW EXECUTE FUNCTION produccion.fn_decantacion_ticket();
+
+-- --- Cronograma diario de reactores + cumplimiento + serie de mediciones ------
+CREATE TABLE IF NOT EXISTS produccion.plan_dia_reactor (
+  id_plan          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  fecha            DATE NOT NULL,
+  id_bien_uso      BIGINT REFERENCES produccion.dim_bien_uso(id_bien_uso),
+  reactor_label    TEXT,
+  id_batch         BIGINT REFERENCES produccion.fact_batch_proceso(id_batch),
+  caldera_plan_ts  TIMESTAMPTZ,
+  reaccion_plan_ts TIMESTAMPTZ,
+  observaciones    TEXT,
+  creado_en        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_plan_dia_fecha ON produccion.plan_dia_reactor(fecha);
+
+CREATE OR REPLACE VIEW produccion.vw_batch_tiempos AS
+SELECT b.id_batch, b.fecha, b.sector, b.tipo_proceso, b.estado, b.caldera_encendida_ts,
+       min(l.ts) FILTER (WHERE l.estado_nuevo='REACCION')    AS t_reaccion,
+       min(l.ts) FILTER (WHERE l.estado_nuevo='REPOSO')      AS t_reposo,
+       min(l.ts) FILTER (WHERE l.estado_nuevo='DECANTACION') AS t_decantacion,
+       min(l.ts) FILTER (WHERE l.estado_nuevo='FINALIZADO')  AS t_finalizado,
+       min(l.ts) FILTER (WHERE l.estado_nuevo='FRENADA')     AS t_frenada
+FROM produccion.fact_batch_proceso b
+LEFT JOIN produccion.fact_batch_estado_log l ON l.id_batch=b.id_batch
+GROUP BY b.id_batch, b.fecha, b.sector, b.tipo_proceso, b.estado, b.caldera_encendida_ts;
+
+CREATE OR REPLACE VIEW produccion.vw_cumplimiento_cronograma AS
+WITH dur AS (
+  SELECT t.*,
+         round(extract(epoch FROM (t.t_reposo      - t.t_reaccion))/60)::int AS reaccion_min,
+         round(extract(epoch FROM (t.t_decantacion - t.t_reposo))/60)::int    AS reposo_min,
+         round(extract(epoch FROM (t.t_finalizado  - t.t_decantacion))/60)::int AS decantacion_min,
+         round(extract(epoch FROM (t.t_reaccion    - t.caldera_encendida_ts))/60)::int AS caldera_anticipacion_min
+  FROM produccion.vw_batch_tiempos t)
+SELECT d.id_batch, d.fecha, d.sector, d.tipo_proceso, d.estado,
+       p.caldera_plan_ts, d.caldera_encendida_ts,
+       CASE WHEN d.caldera_encendida_ts IS NULL THEN 'SIN_DATO' WHEN p.caldera_plan_ts IS NULL THEN 'SIN_PLAN'
+            WHEN d.caldera_encendida_ts <= p.caldera_plan_ts THEN 'EN_HORARIO' ELSE 'FUERA_HORARIO' END AS caldera_cumplimiento,
+       d.caldera_anticipacion_min, (d.caldera_anticipacion_min >= 60) AS caldera_ok_80c,
+       p.reaccion_plan_ts, d.t_reaccion AS reaccion_real_ts,
+       CASE WHEN d.t_reaccion IS NULL THEN 'SIN_DATO' WHEN p.reaccion_plan_ts IS NULL THEN 'SIN_PLAN'
+            WHEN d.t_reaccion <= p.reaccion_plan_ts THEN 'EN_HORARIO' ELSE 'FUERA_HORARIO' END AS inicio_cumplimiento,
+       d.reaccion_min, dr.duracion_target_min AS reaccion_target_min,
+       d.reposo_min,   dp.duracion_target_min AS reposo_target_min,
+       d.decantacion_min, dd.duracion_target_min AS decantacion_target_min
+FROM dur d
+LEFT JOIN produccion.plan_dia_reactor p ON p.id_batch=d.id_batch
+LEFT JOIN produccion.dic_etapa_duracion dr ON dr.tipo_proceso=d.tipo_proceso AND dr.etapa='REACCION'
+LEFT JOIN produccion.dic_etapa_duracion dp ON dp.tipo_proceso=d.tipo_proceso AND dp.etapa='REPOSANDO'
+LEFT JOIN produccion.dic_etapa_duracion dd ON dd.tipo_proceso=d.tipo_proceso AND dd.etapa='DECANTACION';
+
+CREATE OR REPLACE VIEW produccion.vw_evaluacion_interna_serie AS
+SELECT ei.id_batch, ei.etapa, ei.ts, ei.id_usuario, kv.key AS parametro,
+       CASE WHEN jsonb_typeof(kv.value)='number' THEN (kv.value)::numeric END AS valor
+FROM produccion.fact_evaluacion_interna ei
+CROSS JOIN LATERAL jsonb_each(ei.mediciones) kv
+WHERE NOT ei.anulado;
+
+-- --- Permisos de lectura para el chat IA (rol read-only) ----------------------
+GRANT SELECT ON
+  produccion.fact_movimiento_tanque, produccion.fact_batch_insumo, produccion.fact_ticket_lab,
+  produccion.fact_eval_programada, produccion.dic_cronograma_eval, produccion.dic_proceso_parametros,
+  produccion.fact_param_tanque, produccion.fact_batch_estado_log, produccion.fact_batch_checklist,
+  produccion.dic_regla_evaluacion, produccion.plan_dia_reactor,
+  produccion.vw_stock_tanque_actual, produccion.vw_stock_snapshot_ultimo, produccion.vw_batch_operario,
+  produccion.vw_param_tanque_actual, produccion.vw_batch_tiempos, produccion.vw_cumplimiento_cronograma,
+  produccion.vw_evaluacion_interna_serie
+TO ai_readonly;

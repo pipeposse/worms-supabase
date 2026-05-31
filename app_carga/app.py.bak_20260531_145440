@@ -19,88 +19,7 @@ from etl.db import (
 )
 from etl.config import DATABASE_URL
 
-st.set_page_config(page_title="WORMS Carga", layout="wide", page_icon="🏭")
-
-
-# ===== Design system global (look premium) — login, landing y secciones =====
-def inject_global_css():
-    st.markdown("""
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <style>
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
-      :root{
-        --bg:#f5f6fb; --surface:#ffffff; --ink:#0f172a; --muted:#64748b; --line:#e6e8f0;
-        --brand:#4f46e5; --brand2:#7c3aed; --grad:linear-gradient(135deg,#4f46e5 0%,#7c3aed 60%,#9333ea 100%);
-        --ok:#059669; --warn:#d97706; --bad:#dc2626;
-      }
-      html, body, [class*="css"], .stMarkdown, p, span, label, input, button, textarea, select{
-        font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-      }
-      [data-testid="stAppViewContainer"]{
-        background:radial-gradient(1200px 600px at 12% -8%, #eef1ff 0%, transparent 55%), var(--bg);
-      }
-      .block-container{max-width:1200px; padding-top:1.6rem;}
-      h1,h2,h3,h4{font-family:'Plus Jakarta Sans','Inter',sans-serif; letter-spacing:-.01em; color:var(--ink);}
-      h1{font-size:1.7rem;} h2{font-size:1.3rem;} h3{font-size:1.12rem;}
-      a{color:var(--brand);}
-      .stButton>button, .stDownloadButton>button{
-        border-radius:12px; font-weight:600; border:1px solid var(--line);
-        transition:transform .12s ease, box-shadow .12s ease, border-color .12s; padding:.5rem 1rem;
-      }
-      .stButton>button:hover, .stDownloadButton>button:hover{
-        transform:translateY(-1px); box-shadow:0 6px 16px -8px rgba(79,70,229,.45); border-color:#c7cbf5;
-      }
-      .stButton>button[kind="primary"], [data-testid="stBaseButton-primary"]{
-        background:var(--grad); border:0; color:#fff; box-shadow:0 8px 20px -10px rgba(124,58,237,.7);
-      }
-      .stButton>button[kind="primary"]:hover{filter:brightness(1.05); transform:translateY(-1px);}
-      .stTabs [data-baseweb="tab-list"]{gap:4px; border-bottom:1px solid var(--line);}
-      .stTabs [data-baseweb="tab"]{border-radius:10px 10px 0 0; padding:8px 14px; font-weight:600; color:var(--muted);}
-      .stTabs [aria-selected="true"]{color:var(--brand); background:rgba(79,70,229,.07);}
-      [data-testid="stMetric"]{
-        background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:14px 16px;
-        box-shadow:0 1px 2px rgba(16,24,40,.05);
-      }
-      [data-testid="stMetricValue"]{font-size:1.55rem; font-weight:800; font-family:'Plus Jakarta Sans';}
-      [data-testid="stMetricLabel"]{opacity:.85; font-weight:600;}
-      [data-testid="stVerticalBlockBorderWrapper"]{
-        border-radius:16px !important; border-color:var(--line) !important; background:var(--surface);
-        box-shadow:0 1px 3px rgba(16,24,40,.05); transition:box-shadow .15s, transform .15s, border-color .15s;
-      }
-      [data-testid="stVerticalBlockBorderWrapper"]:hover{
-        box-shadow:0 14px 30px -18px rgba(79,70,229,.45); border-color:#cdd2f3 !important; transform:translateY(-2px);
-      }
-      [data-baseweb="input"], [data-baseweb="select"]>div, [data-baseweb="textarea"]{border-radius:11px !important;}
-      div[data-testid="stExpander"] details{border-radius:13px; border:1px solid var(--line); overflow:hidden;}
-      section[data-testid="stSidebar"]{
-        background:linear-gradient(180deg,#ffffff 0%,#f3f3fb 100%); border-right:1px solid var(--line);
-      }
-      .worms-hero{
-        position:relative; overflow:hidden; border-radius:22px; padding:28px 32px; color:#fff;
-        background:var(--grad); box-shadow:0 18px 40px -18px rgba(124,58,237,.65); margin-bottom:6px;
-      }
-      .worms-hero h1{color:#fff; margin:0 0 6px; font-size:2rem; line-height:1.1;}
-      .worms-hero p{margin:0; opacity:.94; font-size:.98rem;}
-      .worms-hero .glow{position:absolute; right:-50px; top:-60px; width:230px; height:230px;
-        background:radial-gradient(circle, rgba(255,255,255,.28), transparent 70%); pointer-events:none;}
-      .worms-hero .chip{display:inline-block; margin-top:12px; background:rgba(255,255,255,.18);
-        border:1px solid rgba(255,255,255,.35); padding:5px 12px; border-radius:999px; font-size:.8rem; font-weight:600;}
-      .kpi-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(178px,1fr)); gap:14px; margin:16px 0 6px;}
-      .kpi{background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:15px 18px;
-        box-shadow:0 1px 2px rgba(16,24,40,.05);}
-      .kpi.brand{background:linear-gradient(135deg,#eef2ff,#faf5ff); border-color:#e0e7ff;}
-      .kpi .l{font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:700;}
-      .kpi .v{font-size:1.95rem; font-weight:800; color:var(--ink); font-family:'Plus Jakarta Sans'; line-height:1.1; margin-top:5px;}
-      .kpi .v.ok{color:var(--ok);} .kpi .v.warn{color:var(--warn);} .kpi .v.bad{color:var(--bad);}
-      .kpi .s{font-size:.8rem; color:var(--muted); margin-top:3px;}
-      .section-title{font-family:'Plus Jakarta Sans'; font-weight:800; font-size:1.05rem; color:var(--ink); margin:20px 0 8px;}
-      .pill{display:inline-block; padding:3px 10px; border-radius:999px; font-size:.72rem; font-weight:700;}
-      .pill.ok{background:#d1fae5; color:#065f46;} .pill.warn{background:#fef3c7; color:#92400e;}
-      .pill.info{background:#e0e7ff; color:#3730a3;} .pill.bad{background:#fee2e2; color:#991b1b;}
-    </style>
-    """, unsafe_allow_html=True)
-
-inject_global_css()
+st.set_page_config(page_title="WORMS Carga", layout="wide")
 
 
 # ---------- LOGIN -----------------------------------------------------------
@@ -160,69 +79,16 @@ def go_to(sec):
     st.session_state.section = sec
     st.rerun()
 
-@st.cache_data(ttl=60)
-def _landing_kpis():
-    """KPIs del pantallazo inicial. Devuelve dict o None si falla la conexion."""
-    if not DATABASE_URL:
-        return None
-    sql = """
-      SELECT
-        (SELECT count(*) FROM vw_stock_tanque_actual) AS tanques,
-        (SELECT COALESCE(SUM(kg_actual),0)/1000.0 FROM vw_stock_tanque_actual) AS stock_tn,
-        (SELECT count(*) FROM fact_batch_proceso WHERE estado IN ('REACCION','REPOSO','DECANTACION') AND NOT anulado) AS en_proceso,
-        (SELECT count(*) FROM fact_batch_proceso WHERE estado='REACCION' AND NOT anulado) AS en_reaccion,
-        (SELECT count(*) FROM fact_batch_proceso WHERE estado='REPOSO' AND NOT anulado) AS en_reposo,
-        (SELECT count(*) FROM fact_ticket_lab WHERE estado='PENDIENTE') AS tickets_pend,
-        (SELECT count(*) FROM fact_batch_proceso WHERE esperando_validacion_lab) AS esp_valid,
-        (SELECT count(*) FROM fact_batch_proceso WHERE fecha=CURRENT_DATE AND NOT anulado) AS hoy
-    """
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SET search_path TO produccion, public")
-                cur.execute(sql)
-                row = cur.fetchone()
-                cols = ["tanques","stock_tn","en_proceso","en_reaccion","en_reposo","tickets_pend","esp_valid","hoy"]
-                return dict(zip(cols, row))
-        finally:
-            conn.close()
-    except Exception:
-        return None
-
 if st.session_state.section is None:
-    _hoy_txt = date.today().strftime("%d/%m/%Y")
-    st.markdown(f"""
-    <div class="worms-hero">
-      <div class="glow"></div>
-      <h1>🏭 WORMS · Panel de producción</h1>
-      <p>Hola <b>{USR['nombre_full']}</b> — todo el proceso de reactores y bachas en un solo lugar.</p>
-      <span class="chip">👤 {USR['rol'].title()} · 📅 {_hoy_txt}</span>
-    </div>
+    st.markdown("""
+    <style>
+      .block-container{max-width:1100px;padding-top:2.4rem;}
+      [data-testid="stVerticalBlockBorderWrapper"]{transition:border-color .15s;}
+    </style>
     """, unsafe_allow_html=True)
-
-    k = _landing_kpis()
-    if k:
-        esp_cls = "bad" if (k['esp_valid'] or 0) > 0 else "ok"
-        tic_cls = "warn" if (k['tickets_pend'] or 0) > 0 else "ok"
-        st.markdown(f"""
-        <div class="kpi-grid">
-          <div class="kpi brand"><div class="l">En proceso ahora</div>
-            <div class="v">{int(k['en_proceso'] or 0)}</div>
-            <div class="s">{int(k['en_reaccion'] or 0)} en reacción · {int(k['en_reposo'] or 0)} en reposo</div></div>
-          <div class="kpi"><div class="l">Cargas de hoy</div>
-            <div class="v">{int(k['hoy'] or 0)}</div><div class="s">reacciones iniciadas hoy</div></div>
-          <div class="kpi"><div class="l">Stock en tanques</div>
-            <div class="v">{(k['stock_tn'] or 0):,.0f}<span style="font-size:1rem;font-weight:700;"> TN</span></div>
-            <div class="s">{int(k['tanques'] or 0)} tanques activos</div></div>
-          <div class="kpi"><div class="l">Tickets lab pendientes</div>
-            <div class="v {tic_cls}">{int(k['tickets_pend'] or 0)}</div><div class="s">a evaluar en laboratorio</div></div>
-          <div class="kpi"><div class="l">Esperando validación</div>
-            <div class="v {esp_cls}">{int(k['esp_valid'] or 0)}</div><div class="s">reacciones que aguardan lab</div></div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown('<div class="section-title">Accesos</div>', unsafe_allow_html=True)
+    st.markdown("## 🏭 WORMS · Panel de producción")
+    st.caption(f"Sesión: **{USR['nombre_full']}** · rol **{USR['rol']}**")
+    st.write("")
 
     tiles = [
         ("🏭", "Cargas", "Carga de producción: armado, etapas, producto final y anulaciones.", "CARGAS", "land_cargas", True),
@@ -264,7 +130,20 @@ with st.sidebar:
     st.divider()
     st.caption("Base: Supabase")
 
-# ---- estilo global: ya inyectado por inject_global_css() al inicio ----
+# ---- estilo global (look más profesional) ----
+st.markdown("""
+<style>
+  .block-container{padding-top:2rem; max-width:1180px;}
+  /* tarjeta de metrica neutra: funciona en tema claro y oscuro (sin forzar colores de texto) */
+  [data-testid="stMetric"]{border:1px solid rgba(130,140,150,.28);border-radius:12px;padding:12px 14px;}
+  [data-testid="stMetricValue"]{font-size:1.5rem;font-weight:700;}
+  [data-testid="stMetricLabel"]{opacity:.8;}
+  section[data-testid="stSidebar"]{border-right:1px solid rgba(130,140,150,.2);}
+  div[data-testid="stExpander"] details{border-radius:12px;}
+  .stTabs [data-baseweb="tab-list"]{gap:2px;}
+  h1{font-size:1.7rem;} h2{font-size:1.3rem;}
+</style>
+""", unsafe_allow_html=True)
 
 if st.session_state.get("show_chg_pin"):
     with st.expander("🔑 Cambiar mi PIN", expanded=True):
@@ -800,50 +679,6 @@ try:
     catalizadores = cat("SELECT codigo, descripcion, genera_glicerina_recup, reduce_glicerina, nota FROM dic_catalizador")
 except Exception:
     catalizadores = pd.DataFrame(columns=["codigo","descripcion","genera_glicerina_recup","reduce_glicerina","nota"])
-
-
-def selector_fuente_mp(cod, key_prefix):
-    """Selector opcional de fuente de la materia prima: ticket de porteria o tanque.
-    Si es tanque, muestra el stock vivo (vw_stock_tanque_actual) y descuenta al guardar.
-    Devuelve dict {'fuente','id_tanque','kg','ticket','stock_kg'}."""
-    op = st.radio(
-        "Fuente de la materia prima",
-        ["🎟️ Ticket de portería", "🛢️ Tanque"],
-        horizontal=True, key=f"{key_prefix}_fte",
-        help="Pesada por ticket de portería, o descontar del stock de un tanque que contenga este producto.",
-    )
-    if "Tanque" not in str(op):
-        return {"fuente": "TICKET", "id_tanque": None, "kg": 0.0, "ticket": None, "stock_kg": None}
-    try:
-        df = cat(
-            "SELECT v.id_tanque, v.codigo, v.nombre, COALESCE(v.kg_actual,0) kg, "
-            "COALESCE(v.litros_actual,0) lt, v.capacidad_litros cap "
-            "FROM produccion.vw_stock_tanque_actual v "
-            "JOIN produccion.dim_tanque_producto tp ON tp.id_tanque=v.id_tanque "
-            "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto AND p.codigo_producto=%s "
-            "ORDER BY kg DESC NULLS LAST", (cod,))
-    except Exception:
-        df = pd.DataFrame()
-    if df is None or df.empty:
-        st.warning(f"No hay tanques con stock de **{cod}**. Usá ticket de portería.")
-        return {"fuente": "TICKET", "id_tanque": None, "kg": 0.0, "ticket": None, "stock_kg": None}
-    opts = df.apply(lambda r: f"{r['codigo']} · {r['nombre']} · {float(r['kg'])/1000:,.1f} TN disp.", axis=1).tolist()
-    sel = st.selectbox(f"Tanque con {cod}", opts, key=f"{key_prefix}_tk")
-    row = df.iloc[opts.index(sel)]
-    _stock_kg = float(row["kg"] or 0)
-    st.markdown(
-        f"<div class='kpi' style='margin:6px 0'><div class='l'>Stock disponible en tanque</div>"
-        f"<div class='v'>{_stock_kg/1000:,.1f}<span style='font-size:1rem;font-weight:700'> TN</span></div>"
-        f"<div class='s'>{float(row['lt']):,.0f} L · capacidad {int(row['cap'] or 0):,} L</div></div>",
-        unsafe_allow_html=True)
-    kg = float(st.number_input(
-        f"Kg a usar de {cod}", min_value=0.0,
-        value=float(round(_stock_kg)) if _stock_kg else 0.0, step=100.0, key=f"{key_prefix}_kg"))
-    if kg > _stock_kg:
-        st.warning("⚠️ La cantidad supera el stock actual del tanque (igual se registrará el movimiento).")
-    return {"fuente": "TANQUE", "id_tanque": int(row["id_tanque"]), "kg": kg, "ticket": None, "stock_kg": _stock_kg}
-
-
 def catalizador_genera_glicerina(cod):
     r = catalizadores[catalizadores["codigo"]==cod]
     return bool(r.iloc[0]["genera_glicerina_recup"]) if not r.empty else True
@@ -2302,7 +2137,6 @@ with tab_objs[0]:
         # sectores se mantiene el flujo manual (litros / kg / etc).
         # ============================================================
         mps_ingresadas = []
-        mp_fuentes = {}               # idx en mps_ingresadas -> {'fuente','id_tanque','kg','ticket'}
         _tickets_entrada_des = None   # tickets de portería (string) para auditar
         _lab_avg_mp0 = {}             # promedios ponderados del primer MP
 
@@ -2395,51 +2229,29 @@ with tab_objs[0]:
                             st.text_input(f"Producto inicial #{i+1}", value=cod, disabled=True, key=f"b_pi_lab_fx_{i}")
                         else:
                             cod = st.selectbox(f"Producto inicial #{i+1} *", _opts_mp_tl, key=f"b_pi_lab_{i}")
-
-                        # --- Fuente opcional: ticket de portería o tanque ---
-                        _fuente = selector_fuente_mp(cod, key_prefix=f"b_mpf_{i}")
-
-                        if _fuente["fuente"] == "TANQUE":
-                            _kg = float(_fuente.get("kg") or 0.0)
-                            _avg = {}
-                            _ms = ultimas_muestras_mp(cod, n=1)
-                            if not _ms.empty:
-                                _r0 = _ms.iloc[0]
-                                for _col in ("prc_acidez","prc_agua","prc_sedimentos","prc_producto","ppm_azufre","ppm_fosforo","densidad__g_ml"):
-                                    _v = _r0.get(_col)
-                                    if pd.notna(_v): _avg[_col] = float(_v)
-                            if _kg > 0:
-                                st.caption(f"🛢️ Desde tanque · **{_kg:,.0f} kg · {_kg/1000:,.2f} TN** · parámetros del último análisis de {cod}.")
-                            if cod and _kg > 0:
-                                mps_ingresadas.append((cod, float(_kg)))
-                                mp_fuentes[len(mps_ingresadas)-1] = _fuente
-                                if i == 0:
-                                    _lab_avg_mp0 = _avg or {}
+                        if _usa_multiselect_mp:
+                            _tkmp = _ui_multiselect_tickets(cod, key_prefix=f"b_tkmp_lab_{i}", dias=180, limit=30, max_tickets=3)
                         else:
-                            if _usa_multiselect_mp:
-                                _tkmp = _ui_multiselect_tickets(cod, key_prefix=f"b_tkmp_lab_{i}", dias=180, limit=30, max_tickets=3)
-                            else:
-                                _tkmp = st.text_input(
-                                    f"Tickets de portería #{i+1} (n°, coma · máx 3)",
-                                    key=f"b_tkmp_lab_{i}",
-                                    placeholder="ej. 5063, 5048, 5028",
-                                    help="Cada ticket es una pesada en portería. La app suma kg y busca los análisis en procesos_lab. Tope 3 por proceso.",
-                                )
-                                import re as _re3
-                                _nct = len(set(int(x) for x in _re3.findall(r"\d+", _tkmp or "")))
-                                if _nct > 3:
-                                    st.warning(f"⚠️ Cargaste {_nct} tickets; el proceso admite hasta 3.")
-                            # Lookup combinado portería + lab (promedio ponderado por kg)
-                            _det, _avg, _mlab, _mport, _mapping = params_de_tickets_lab(_tkmp, cod)
-                            _kg = float(pd.to_numeric(_det["kg"], errors="coerce").sum()) if (not _det.empty and "kg" in _det.columns) else 0.0
-                            if _tkmp and _tkmp.strip():
-                                st.caption(f"Total cargado: **{_kg:,.0f} kg · {_kg/1000:,.2f} TN**")
-                                _render_tickets_lab_panel(_det, _avg, _mlab, _mport, _mapping, st_container=st)
-                            if cod and _kg > 0:
-                                mps_ingresadas.append((cod, float(_kg)))
-                                mp_fuentes[len(mps_ingresadas)-1] = {"fuente":"TICKET","id_tanque":None,"kg":float(_kg),"ticket":_tkmp}
-                                if i == 0:
-                                    _lab_avg_mp0 = _avg or {}
+                            _tkmp = st.text_input(
+                                f"Tickets de portería #{i+1} (n°, coma · máx 3)",
+                                key=f"b_tkmp_lab_{i}",
+                                placeholder="ej. 5063, 5048, 5028",
+                                help="Cada ticket es una pesada en portería. La app suma kg y busca los análisis en procesos_lab. Tope 3 por proceso.",
+                            )
+                            import re as _re3
+                            _nct = len(set(int(x) for x in _re3.findall(r"\d+", _tkmp or "")))
+                            if _nct > 3:
+                                st.warning(f"⚠️ Cargaste {_nct} tickets; el proceso admite hasta 3.")
+                        # Lookup combinado portería + lab (promedio ponderado por kg)
+                        _det, _avg, _mlab, _mport, _mapping = params_de_tickets_lab(_tkmp, cod)
+                        _kg = float(pd.to_numeric(_det["kg"], errors="coerce").sum()) if (not _det.empty and "kg" in _det.columns) else 0.0
+                        if _tkmp and _tkmp.strip():
+                            st.caption(f"Total cargado: **{_kg:,.0f} kg · {_kg/1000:,.2f} TN**")
+                            _render_tickets_lab_panel(_det, _avg, _mlab, _mport, _mapping, st_container=st)
+                        if cod and _kg > 0:
+                            mps_ingresadas.append((cod, float(_kg)))
+                            if i == 0:
+                                _lab_avg_mp0 = _avg or {}
                                 _dens0 = densidad_de(cod)
                                 litros_ini = round(_kg / _dens0, 1) if (_kg and _dens0) else None
                                 _tickets_entrada_des = _tkmp or None
@@ -3006,39 +2818,6 @@ with tab_objs[0]:
                                  (float(naoh_kg_v) if naoh_kg_v else None))
                             )
                             id_b = cur.fetchone()[0]
-                            # MP -> fact_batch_insumo (idempotente): genera el ticket de lab de la MP y,
-                            # si la fuente es un tanque, descuenta stock. Aislado en savepoint para que
-                            # cualquier error NO afecte el guardado del batch.
-                            try:
-                                cur.execute("SAVEPOINT sp_mpins")
-                                for _ix, (_cmp, _kmp) in enumerate(mps_ingresadas):
-                                    cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s", (_cmp,))
-                                    _rp = cur.fetchone()
-                                    if not _rp:
-                                        continue
-                                    _pidmp = _rp[0]
-                                    cur.execute("SELECT 1 FROM fact_batch_insumo WHERE id_batch=%s AND id_producto=%s AND rol='MP'", (id_b, _pidmp))
-                                    if cur.fetchone():
-                                        continue
-                                    _src = mp_fuentes.get(_ix) or {}
-                                    if _src.get("fuente") == "TANQUE" and _src.get("id_tanque"):
-                                        cur.execute(
-                                            "INSERT INTO fact_batch_insumo (id_batch,rol,id_producto,cantidad,fuente,id_tanque,id_usuario) "
-                                            "VALUES (%s,'MP',%s,%s,'TANQUE',%s,%s)",
-                                            (id_b, _pidmp, float(_kmp or 0), int(_src["id_tanque"]), int(USR["id_usuario"])))
-                                    else:
-                                        _tkv = (_src.get("ticket") or ticket_porteria_v or "s/ticket")
-                                        cur.execute(
-                                            "INSERT INTO fact_batch_insumo (id_batch,rol,id_producto,cantidad,fuente,ticket_porteria,id_usuario) "
-                                            "VALUES (%s,'MP',%s,%s,'TICKET',%s,%s)",
-                                            (id_b, _pidmp, float(_kmp or 0), str(_tkv)[:120], int(USR["id_usuario"])))
-                                cur.execute("RELEASE SAVEPOINT sp_mpins")
-                            except Exception as _e_mp:
-                                try:
-                                    cur.execute("ROLLBACK TO SAVEPOINT sp_mpins")
-                                except Exception:
-                                    pass
-                                st.warning(f"La MP quedó registrada en el batch, pero no se generó el detalle de fuente/ticket de lab: {_e_mp}")
                             # Primer evento de etapa (abre el ARMADO). NOT EXISTS evita duplicar en re-upsert.
                             if es_reactor and etapa_sel:
                                 cur.execute("""

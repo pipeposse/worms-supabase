@@ -859,3 +859,82 @@ UPDATE dic_insumo SET densidad_g_ml = 0.95 WHERE codigo = 'FUEL_OIL' AND densida
 INSERT INTO dic_calidad (codigo, descripcion, orden, activo)
 VALUES ('UNICA', 'Calidad única (AFE)', 6, TRUE)
 ON CONFLICT (codigo) DO NOTHING;
+
+-- =============================================================================
+--  2026-05-31 · Seeds/config para la tanda de cambios de fuente, ticket lab,
+--  cronograma, parametros, estados, reglas y decantacion. No destructivo.
+-- =============================================================================
+SET search_path TO produccion, public;
+
+-- Equivalencia insumo -> producto almacenable (para ubicar tanques con ese insumo)
+UPDATE produccion.dic_insumo i SET id_producto_equiv = p.id_producto
+FROM produccion.dim_producto p
+WHERE p.codigo_producto = CASE i.codigo
+    WHEN 'FUEL_OIL' THEN 'FUEL' WHEN 'soda_kg' THEN 'SODA' WHEN 'metanol_kg' THEN 'METANOL'
+    WHEN 'acido_kg' THEN 'ACIDO-SULF' WHEN 'catalizador_kg' THEN 'KOH'
+    WHEN 'floculante_kg' THEN 'FLOCULANTE' WHEN 'kg_glicerina' THEN 'GLICERINA' ELSE NULL END
+  AND i.id_producto_equiv IS NULL;
+
+-- Limpieza dim_tanque: normalizar id_producto_principal y textos desde el mapeo limpio
+UPDATE produccion.dim_tanque t
+SET id_producto_principal = sub.id_producto
+FROM (SELECT id_tanque, min(id_producto) AS id_producto FROM produccion.dim_tanque_producto WHERE es_principal GROUP BY id_tanque) sub
+WHERE sub.id_tanque = t.id_tanque AND t.id_producto_principal IS DISTINCT FROM sub.id_producto;
+
+UPDATE produccion.dim_tanque t
+SET producto_principal_txt = COALESCE(pr.txt, t.producto_principal_txt), otros_productos_txt = COALESCE(ot.txt, '-')
+FROM (SELECT tp.id_tanque, string_agg(p.codigo_producto, ' / ' ORDER BY p.codigo_producto) txt
+        FROM produccion.dim_tanque_producto tp JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto
+       WHERE tp.es_principal GROUP BY tp.id_tanque) pr
+FULL JOIN (SELECT tp.id_tanque, string_agg(p.codigo_producto, ' / ' ORDER BY p.codigo_producto) txt
+        FROM produccion.dim_tanque_producto tp JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto
+       WHERE NOT tp.es_principal GROUP BY tp.id_tanque) ot ON ot.id_tanque = pr.id_tanque
+WHERE t.id_tanque = COALESCE(pr.id_tanque, ot.id_tanque);
+
+-- Cadencia de evaluacion interna por proceso
+INSERT INTO produccion.dic_cronograma_eval (tipo_proceso, cadencia, observaciones) VALUES
+  ('PRODUCCION_ARE','HORARIA','Una evaluacion por hora desde el inicio de la reaccion'),
+  ('DESGOMADO_ACUOSO','UNICA','Una unica medicion al iniciar el reactor')
+ON CONFLICT (tipo_proceso) DO UPDATE SET cadencia=excluded.cadencia, observaciones=excluded.observaciones;
+
+-- Parametros iniciales por proceso (COMPLETAR temp/tiempo/acidez reales)
+INSERT INTO produccion.dic_proceso_parametros (tipo_proceso, observaciones) VALUES
+  ('PRODUCCION_ARE','Completar temp_inicial_c, tiempo_total_horas y acidez_objetivo_pct'),
+  ('DESGOMADO_ACUOSO','Completar temp_inicial_c y tiempo_total_horas')
+ON CONFLICT (tipo_proceso) DO NOTHING;
+
+-- Reglas evaluacion interna -> accion
+INSERT INTO produccion.dic_regla_evaluacion (tipo_proceso, parametro, operador, valor, accion, observaciones)
+VALUES ('PRODUCCION_ARE','acidez','<=',10,'PASAR_A_REPOSO_Y_VALIDAR',
+        'Acidez <=10: reaccion pasa a reposo y queda esperando validacion de laboratorio con el ticket de la MP')
+ON CONFLICT DO NOTHING;
+
+-- Backfill ESTIMADO (no deterministico) de parametros por tanque, derivado de las
+-- ultimas muestras por producto + jitter. evaluado al azar. Se reemplaza solo cuando
+-- procesos_lab evalua el tanque por ID. Protegido por ON CONFLICT (re-ejecutable).
+WITH base AS (
+  SELECT dpl.id_producto,
+         avg(p.prc_acidez)*100 AS acidez, avg(p.prc_agua)*100 AS agua, avg(p.prc_sedimentos)*100 AS sed,
+         avg(p.densidad__g_ml) AS dens, avg(p.ppm_azufre) AS azufre, avg(p.ppm_fosforo) AS fosforo
+  FROM produccion.dic_producto_lab dpl
+  JOIN LATERAL (SELECT * FROM produccion.procesos_lab pl WHERE pl.producto_lab=dpl.lab_producto
+                ORDER BY pl.fecha DESC NULLS LAST LIMIT 10) p ON TRUE
+  GROUP BY dpl.id_producto),
+jit AS (
+  SELECT tp.id_tanque, tp.id_producto, COALESCE(b.acidez,0) acidez, COALESCE(b.agua,0) agua,
+         COALESCE(b.sed,0) sed, b.dens, b.azufre, b.fosforo, dp.corriente, (random()<0.5) evaluado
+  FROM produccion.dim_tanque_producto tp
+  JOIN produccion.dim_producto dp ON dp.id_producto=tp.id_producto
+  LEFT JOIN base b ON b.id_producto=tp.id_producto)
+INSERT INTO produccion.fact_param_tanque
+  (id_tanque,id_producto,corriente,evaluado,ultima_evaluacion_ts,acidez_pct,agua_pct,sedimentos_pct,densidad_g_ml,ppm_azufre,ppm_fosforo)
+SELECT id_tanque, id_producto, corriente, evaluado,
+       CASE WHEN evaluado THEN now() - make_interval(days => (random()*60)::int) END,
+       nullif(round((acidez*(0.92+random()*0.16))::numeric,3),0),
+       nullif(round((agua  *(0.92+random()*0.16))::numeric,3),0),
+       nullif(round((sed   *(0.92+random()*0.16))::numeric,3),0),
+       round((dens  *(0.97+random()*0.06))::numeric,4),
+       round((azufre*(0.90+random()*0.20))::numeric,1),
+       round((fosforo*(0.90+random()*0.20))::numeric,1)
+FROM jit
+ON CONFLICT (id_tanque, id_producto) DO NOTHING;
