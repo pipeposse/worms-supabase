@@ -2913,79 +2913,7 @@ with tab_objs[0]:
                 _h2.caption(f"**Glicerol total cargado:** {(gli_pura_total or 0):,.1f} kg"
                             + (f" · vs requerido {est_glicerol_puro_kg:,.0f} kg" if est_glicerol_puro_kg else ""))
 
-        # ===== Cronograma de trabajo + checklist (planificación de la reacción) =====
-        import datetime as _dtk
-        _check_ok = True
-        caldera_dt = None
-        if es_reactor and not es_recup:
-            st.markdown('<div class="section-title">🗓️ Cronograma de trabajo</div>', unsafe_allow_html=True)
-            _pp = {}
-            try:
-                _dfp = cat("SELECT temp_inicial_c, tiempo_total_horas, acidez_objetivo_pct "
-                           "FROM produccion.dic_proceso_parametros WHERE tipo_proceso=%s", (tipo_proceso_sel,))
-                if not _dfp.empty:
-                    _pp = _dfp.iloc[0].to_dict()
-            except Exception:
-                _pp = {}
-            _temp_obj = _pp.get("temp_inicial_c") or 80.0
-            _tot_h = _pp.get("tiempo_total_horas")
-            if _tot_h is None and tiempo_est:
-                _tot_h = float(tiempo_est)
-            _ini = inicio_dt
-            _fin_est = (_ini + _dtk.timedelta(hours=float(_tot_h))) if (_ini and _tot_h) else None
-            cc1, cc2, cc3 = st.columns(3)
-            cc1.metric("🌡️ Temp. inicial objetivo", f"{float(_temp_obj):.0f} °C")
-            cc2.metric("⏱️ Tiempo total estimado", f"{float(_tot_h):.1f} h" if _tot_h else "—")
-            cc3.metric("🏁 Fin estimado", _fin_est.strftime("%H:%M") if _fin_est else "—")
-
-            # Cronograma de etapas con horarios estimados desde el inicio
-            try:
-                _de = duraciones_etapa[(duraciones_etapa["sector"] == sector) &
-                                       (duraciones_etapa["tipo_proceso"] == tipo_proceso_sel)].copy()
-            except Exception:
-                _de = pd.DataFrame()
-            if not _de.empty and _ini is not None:
-                _orden = ["ARMADO", "REACCION", "REPOSANDO", "DECANTACION", "EN_TANQUE"]
-                _de["_o"] = _de["etapa"].apply(lambda e: _orden.index(e) if e in _orden else 99)
-                _rows = []
-                _t = _ini
-                for _, _r in _de.sort_values("_o").iterrows():
-                    _dur = float(_r.get("duracion_target_min") or 0)
-                    _fin = _t + _dtk.timedelta(minutes=_dur)
-                    _rows.append({"Etapa": _r["etapa"], "Desde": _t.strftime("%H:%M"),
-                                  "Hasta": _fin.strftime("%H:%M"), "Duración (min)": int(_dur)})
-                    _t = _fin
-                st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
-
-            # Prendido de caldera (debe ser >= 1h antes para llegar a 80°C)
-            st.markdown("**🔥 Prendido de caldera**")
-            _cal_def = (_ini - _dtk.timedelta(hours=1)) if _ini else None
-            _kc1, _kc2 = st.columns(2)
-            _cal_f = _kc1.date_input("Fecha de prendido",
-                                     (_cal_def.date() if _cal_def else date.today()), key="b_cal_f")
-            _cal_h = _kc2.time_input("Hora de prendido",
-                                     (_cal_def.time() if _cal_def else _dtk.time(6, 0)), key="b_cal_h")
-            caldera_dt = _dtk.datetime.combine(_cal_f, _cal_h)
-            if _ini is not None:
-                _antic = int((_ini - caldera_dt).total_seconds() / 60)
-                if _antic >= 60:
-                    st.success(f"✅ Caldera encendida {_antic} min antes del inicio (≥60 para llegar a 80 °C).")
-                else:
-                    st.warning(f"⚠️ Caldera solo {_antic} min antes; se recomienda ≥60 min para llegar a 80 °C.")
-
-            # Checklist obligatorio para iniciar la reacción
-            st.markdown('<div class="section-title">✅ Checklist para iniciar la reacción</div>', unsafe_allow_html=True)
-            _ck1 = st.checkbox("Cantidades de materia prima e insumos verificadas", key="b_ck_mp")
-            _ck2 = st.checkbox("Caldera encendida (≥1 h antes, llega a 80 °C)", key="b_ck_cal")
-            _ck3 = st.checkbox("Temperatura inicial y parámetros verificados", key="b_ck_temp")
-            st.checkbox(f"Corriente confirmada: {corriente_v or '—'}", value=True, disabled=True, key="b_ck_corr")
-            _check_ok = bool(_ck1 and _ck2 and _ck3)
-            if not _check_ok:
-                st.info("Marcá los ítems obligatorios para habilitar el guardado e iniciar la reacción.")
-
-        _btn_label = "🚀 Guardar planificación e iniciar reacción" if (es_reactor and not es_recup) else "✅ Guardar carga"
-        submit_b = st.button(_btn_label, type="primary", use_container_width=True, key="b_submit",
-                             disabled=(es_reactor and not es_recup and not _check_ok))
+        submit_b = st.button("✅ Guardar carga", type="primary", use_container_width=True, key="b_submit")
 
         if submit_b:
             errs = []
@@ -3143,25 +3071,6 @@ with tab_objs[0]:
                                 except Exception:
                                     pass
                                 st.warning(f"La MP quedó registrada en el batch, pero no se generó el detalle de fuente/ticket de lab: {_e_mp}")
-                            # Checklist + prendido de caldera (dispara estado->REACCION e inicia la reaccion).
-                            if es_reactor and not es_recup:
-                                try:
-                                    cur.execute("SAVEPOINT sp_chk")
-                                    if caldera_dt is not None:
-                                        cur.execute("UPDATE fact_batch_proceso SET caldera_encendida_ts=%s WHERE id_batch=%s",
-                                                    (caldera_dt.isoformat(), id_b))
-                                    cur.execute(
-                                        "INSERT INTO fact_batch_checklist "
-                                        "(id_batch, mp_ok, insumos_ok, temperatura_inicial_ok, parametros_ok, corriente_ok, caldera_encendida_ok, id_usuario) "
-                                        "VALUES (%s,true,true,true,true,true,true,%s) ON CONFLICT (id_batch) DO NOTHING",
-                                        (id_b, int(USR["id_usuario"])))
-                                    cur.execute("RELEASE SAVEPOINT sp_chk")
-                                except Exception as _e_ck:
-                                    try:
-                                        cur.execute("ROLLBACK TO SAVEPOINT sp_chk")
-                                    except Exception:
-                                        pass
-                                    st.warning(f"No se pudo registrar checklist/caldera: {_e_ck}")
                             # Primer evento de etapa (abre el ARMADO). NOT EXISTS evita duplicar en re-upsert.
                             if es_reactor and etapa_sel:
                                 cur.execute("""
