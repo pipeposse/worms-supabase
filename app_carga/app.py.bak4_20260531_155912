@@ -844,113 +844,6 @@ def selector_fuente_mp(cod, key_prefix):
     return {"fuente": "TANQUE", "id_tanque": int(row["id_tanque"]), "kg": kg, "ticket": None, "stock_kg": _stock_kg}
 
 
-def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=False):
-    """Fuente de la materia prima combinando PORTERÍA (tickets) + TANQUE para llegar a la
-    cantidad necesaria. Devuelve (kg_total, portions, lab_avg).
-    portions: lista de dicts {fuente:'TICKET'|'TANQUE', ticket, id_tanque, kg}."""
-    st.markdown("**📦 Fuente de la materia prima** — combiná portería y/o tanque hasta la cantidad")
-    portions = []
-    kg_port = 0.0
-    kg_tk = 0.0
-    lab_avg = {}
-    cP, cT = st.columns(2)
-    with cP:
-        up = st.checkbox("🎟️ Portería (tickets)", value=(target_kg is None), key=f"{key_prefix}_up")
-        if up:
-            if permite_multiselect:
-                tkstr = _ui_multiselect_tickets(cod, key_prefix=f"{key_prefix}_ms", dias=180, limit=30, max_tickets=3)
-            else:
-                tkstr = st.text_input("N° de tickets (coma)", key=f"{key_prefix}_tk", placeholder="ej. 5063, 5048")
-            _det, _avg, _ml, _mp, _mapp = params_de_tickets_lab(tkstr, cod)
-            kg_port = float(pd.to_numeric(_det["kg"], errors="coerce").sum()) if (not _det.empty and "kg" in _det.columns) else 0.0
-            lab_avg = _avg or {}
-            if kg_port > 0:
-                st.caption(f"Portería: **{kg_port:,.0f} kg · {kg_port/1000:,.2f} TN**")
-                portions.append({"fuente": "TICKET", "ticket": (tkstr or None), "id_tanque": None, "kg": kg_port})
-    with cT:
-        ut = st.checkbox("🛢️ Tanque", key=f"{key_prefix}_ut")
-        if ut:
-            try:
-                df = cat(
-                    "SELECT v.id_tanque, v.codigo, v.nombre, COALESCE(v.kg_actual,0) kg, COALESCE(v.litros_actual,0) lt "
-                    "FROM produccion.vw_stock_tanque_actual v "
-                    "JOIN produccion.dim_tanque_producto tp ON tp.id_tanque=v.id_tanque "
-                    "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto AND p.codigo_producto=%s "
-                    "ORDER BY kg DESC NULLS LAST", (cod,))
-            except Exception:
-                df = pd.DataFrame()
-            if df is None or df.empty:
-                st.caption(f"Sin tanques con stock de {cod}.")
-            else:
-                opts = df.apply(lambda r: f"{r['codigo']} · {float(r['kg'])/1000:,.1f} TN", axis=1).tolist()
-                sel = st.selectbox(f"Tanque con {cod}", opts, key=f"{key_prefix}_tksel")
-                row = df.iloc[opts.index(sel)]
-                _stock = float(row["kg"] or 0)
-                _falta = (target_kg - kg_port) if target_kg else _stock
-                kg_tk = float(st.number_input(
-                    "Kg desde tanque", min_value=0.0,
-                    value=float(max(0.0, round(_falta))) if (_falta and _falta > 0) else 0.0,
-                    step=100.0, key=f"{key_prefix}_tkkg"))
-                st.caption(f"Disponible: {_stock/1000:,.1f} TN")
-                if kg_tk > 0:
-                    portions.append({"fuente": "TANQUE", "ticket": None, "id_tanque": int(row["id_tanque"]), "kg": kg_tk})
-                if kg_tk > _stock:
-                    st.warning("⚠️ Supera el stock del tanque (se registra el movimiento igual).")
-    total = kg_port + kg_tk
-    if not lab_avg:
-        _ms = ultimas_muestras_mp(cod, n=1)
-        if not _ms.empty:
-            _r0 = _ms.iloc[0]
-            for _c in ("prc_acidez", "prc_agua", "prc_sedimentos", "prc_producto", "ppm_azufre", "ppm_fosforo", "densidad__g_ml"):
-                _v = _r0.get(_c)
-                if pd.notna(_v):
-                    lab_avg[_c] = float(_v)
-    if target_kg:
-        _f = target_kg - total
-        _msg = "✅ completo" if abs(_f) <= max(1.0, target_kg * 0.01) else (f"faltan {_f:,.0f} kg" if _f > 0 else f"sobran {-_f:,.0f} kg")
-        st.markdown(
-            f"<div class='kpi' style='margin:6px 0'><div class='l'>Total cargado / objetivo</div>"
-            f"<div class='v'>{total/1000:,.2f}<span style='font-size:1rem;font-weight:700'> / {target_kg/1000:,.2f} TN</span></div>"
-            f"<div class='s'>{_msg}</div></div>", unsafe_allow_html=True)
-    elif total > 0:
-        st.caption(f"Total cargado: **{total:,.0f} kg · {total/1000:,.2f} TN**")
-    return total, portions, lab_avg
-
-
-def proceso_desde_mp(cod):
-    """El tipo de reacción se deriva de la materia prima elegida (AFE -> desgomado, AG/SEBO -> ARE)."""
-    if not cod:
-        return None
-    c = str(cod).upper()
-    if c.startswith("AFE"):
-        return "DESGOMADO_ACUOSO"
-    return "PRODUCCION_ARE"
-
-
-def corriente_de_mp_lab(cod):
-    """Corriente (VEGETAL/ANIMAL) definida por el último análisis de laboratorio de la MP."""
-    if not cod:
-        return None
-    try:
-        df = cat(
-            "SELECT pl.corriente FROM produccion.procesos_lab pl "
-            "JOIN produccion.dic_producto_lab dpl ON dpl.lab_producto = pl.producto_lab "
-            "JOIN produccion.dim_producto p ON p.id_producto = dpl.id_producto "
-            "WHERE p.codigo_producto=%s AND pl.corriente IS NOT NULL "
-            "ORDER BY pl.fecha DESC NULLS LAST LIMIT 1", (cod,))
-        if not df.empty and df.iloc[0, 0]:
-            return str(df.iloc[0, 0]).upper()
-    except Exception:
-        pass
-    try:
-        d2 = cat("SELECT corriente FROM produccion.dim_producto WHERE codigo_producto=%s", (cod,))
-        if not d2.empty and d2.iloc[0, 0]:
-            return str(d2.iloc[0, 0]).upper()
-    except Exception:
-        pass
-    return None
-
-
 def siguiente_identificador(sector):
     """Identificador de carga auto-incremental y relacionado con el sector: PREFIJO-AAAA-NNNN."""
     pref = {"REACTORES": "RX", "BACHAS": "BA", "EXPO": "EX", "RECUPERACION": "RP"}.get(sector, "ID")
@@ -2161,14 +2054,12 @@ with tab_objs[0]:
 
         # Corriente (Vegetal/Animal) — se define al inicio del armado. Obligatoria en REACTORES/BACHAS.
         corriente_v = None
-        if sector == "BACHAS":
+        if sector in ("REACTORES", "BACHAS"):
             corriente_v = st.radio(
                 "Corriente *", ["VEGETAL", "ANIMAL"], horizontal=True, key="b_corriente",
                 format_func=lambda c: "🌱 Vegetal" if c == "VEGETAL" else "🐄 Animal",
                 help="Origen del material. Define si la producción es vegetal o animal."
             )
-        elif sector == "REACTORES":
-            st.caption("🧬 La corriente (vegetal/animal) se define automáticamente desde el análisis de laboratorio de la materia prima.")
 
         # Bloque REACTORES
         id_bien_sel = None
@@ -2184,7 +2075,7 @@ with tab_objs[0]:
         q_ag_kg_ref = 0.0
         catalizador_tipo = None
         if es_reactor:
-            st.markdown("**Reactor → materia prima → proceso** (el proceso y la corriente se derivan de la MP)")
+            st.markdown("**Reactor + proceso + etapa**")
             cR1, cR2, cR3 = st.columns(3)
             cod_bien = cR1.selectbox(
                 "Bien de uso *", bienes_uso_full["codigo"].tolist(), key="b_bien",
@@ -2192,23 +2083,15 @@ with tab_objs[0]:
             )
             fila_bien = bienes_uso_full[bienes_uso_full["codigo"]==cod_bien].iloc[0]
             id_bien_sel = int(fila_bien["id_bien_uso"])
-            # 1) Materia prima a tratar -> define el proceso y la corriente
-            _mp_reactor_opts = [c for c in productos_mp["codigo_producto"].tolist()
-                                if str(c).startswith(("AG-", "AFE", "SEBO", "BORRA"))] or productos_mp["codigo_producto"].tolist()
-            if not _mp_reactor_opts:
-                _mp_reactor_opts = ["AG-C"]
-            mp_pre = cR2.selectbox(
-                "Materia prima a tratar *", _mp_reactor_opts, key="b_mp_pre",
-                help="Elegí la MP; el tipo de reacción y la corriente se derivan automáticamente de ella.")
-            tipo_proceso_sel = proceso_desde_mp(mp_pre)
-            corriente_v = corriente_de_mp_lab(mp_pre)
-            _proc_desc = (tipos_proceso[tipos_proceso["codigo"] == tipo_proceso_sel].iloc[0]["descripcion"]
-                          if tipo_proceso_sel in tipos_proceso["codigo"].tolist() else (tipo_proceso_sel or "—"))
-            cR3.text_input("Proceso (derivado de la MP) *", value=_proc_desc, disabled=True, key="b_tproc_disp")
+            tipo_proceso_sel = cR2.selectbox(
+                "Proceso *", tipos_proceso["codigo"].tolist(), key="b_tproc",
+                format_func=lambda c: tipos_proceso[tipos_proceso["codigo"]==c].iloc[0]["descripcion"]
+            )
+            # Una carga nueva SIEMPRE arranca en ARMADO; las demás etapas se avanzan en "Avanzar etapa".
             _et_proc = etapas_de_proceso(proceso_key_de(sector, tipo_proceso_sel))
             _et_codes = _et_proc["etapa"].tolist()
             etapa_sel = "ARMADO" if "ARMADO" in _et_codes else (_et_codes[0] if _et_codes else "ARMADO")
-            st.caption(f"🧪 MP **{mp_pre}** → proceso **{tipo_proceso_sel}** · corriente (lab) **{corriente_v or '—'}** · etapa inicial **ARMADO**")
+            cR3.text_input("Etapa actual *", value="ARMADO (mezcla de insumos)", disabled=True, key="b_etapa_disp")
 
             st.caption(f"🔧 Capacidad: {int(fila_bien['capacidad_max_l'] or 0):,} L  ·  Fuel {fila_bien['consumo_fuel_kg_x_tn']:.1f} kg/TN  ·  NaOH {fila_bien['consumo_naoh_kg_x_tn']:.1f} kg/TN  ·  K {fila_bien['consumo_potasio_kg_x_tn']:.3f} kg/TN")
 
@@ -2466,9 +2349,15 @@ with tab_objs[0]:
             es_are_mp = (sector == "REACTORES" and tipo_proceso_sel == "PRODUCCION_ARE")
 
             if es_are_mp:
-                # PRODUCCION_ARE: MP NO se pesa. La MP ya se eligió arriba (define el proceso).
-                cod = mp_pre
-                st.text_input("Materia prima (elegida arriba)", value=cod, disabled=True, key="b_pi_are_disp")
+                # PRODUCCION_ARE: MP NO se pesa. Es AG-C o SEBO; los kg se asumen =
+                # capacidad reactor × densidad. La acidez sale del último análisis del lab.
+                _opts_are_mp = [c for c in opts_mp if c == "AG-C" or str(c).startswith("SEBO-")] or ["AG-C"]
+                cod = st.selectbox(
+                    "Producto inicial (AG-C o SEBO) *",
+                    _opts_are_mp,
+                    index=(_opts_are_mp.index("AG-C") if "AG-C" in _opts_are_mp else 0),
+                    key="b_pi_are_select",
+                )
                 _dens_mp = densidad_de(cod) or (0.92 if cod == "AG-C" else 0.91)
                 _cap_l = float(fila_bien["capacidad_max_l"] or 0)
                 _kg_planeado = _cap_l * _dens_mp
@@ -2506,10 +2395,6 @@ with tab_objs[0]:
                     _bm3.metric("Densidad (lab)", f"{float(_row_mp['densidad__g_ml']):.3f} g/ml" if pd.notna(_row_mp['densidad__g_ml']) else "—")
                 else:
                     st.warning(f"No hay análisis de laboratorio recientes para **{cod}**. La fórmula de glicerina no podrá calcularse hasta que cargues uno.")
-                # Fuente de la MP (portería + tanque, combinable) para llegar al Q MP del reactor
-                _kg_src, _ports_src, _avg_src = fuente_mp_combinada(cod, key_prefix="b_mpf_are", target_kg=float(_kg_planeado))
-                if _ports_src:
-                    mp_fuentes[len(mps_ingresadas)-1] = _ports_src
             elif usa_tickets_lab:
                 # Opciones según proceso/sector
                 if sector == "REACTORES" and tipo_proceso_sel == "DESGOMADO_ACUOSO":
@@ -2543,16 +2428,53 @@ with tab_objs[0]:
                         else:
                             cod = st.selectbox(f"Producto inicial #{i+1} *", _opts_mp_tl, key=f"b_pi_lab_{i}")
 
-                        # --- Fuente combinable: portería (tickets) + tanque ---
-                        _kg, _ports, _avg = fuente_mp_combinada(cod, key_prefix=f"b_mpf_{i}", permite_multiselect=_usa_multiselect_mp)
-                        if cod and _kg > 0:
-                            mps_ingresadas.append((cod, float(_kg)))
-                            mp_fuentes[len(mps_ingresadas)-1] = _ports
-                            if i == 0:
-                                _lab_avg_mp0 = _avg or {}
+                        # --- Fuente opcional: ticket de portería o tanque ---
+                        _fuente = selector_fuente_mp(cod, key_prefix=f"b_mpf_{i}")
+
+                        if _fuente["fuente"] == "TANQUE":
+                            _kg = float(_fuente.get("kg") or 0.0)
+                            _avg = {}
+                            _ms = ultimas_muestras_mp(cod, n=1)
+                            if not _ms.empty:
+                                _r0 = _ms.iloc[0]
+                                for _col in ("prc_acidez","prc_agua","prc_sedimentos","prc_producto","ppm_azufre","ppm_fosforo","densidad__g_ml"):
+                                    _v = _r0.get(_col)
+                                    if pd.notna(_v): _avg[_col] = float(_v)
+                            if _kg > 0:
+                                st.caption(f"🛢️ Desde tanque · **{_kg:,.0f} kg · {_kg/1000:,.2f} TN** · parámetros del último análisis de {cod}.")
+                            if cod and _kg > 0:
+                                mps_ingresadas.append((cod, float(_kg)))
+                                mp_fuentes[len(mps_ingresadas)-1] = _fuente
+                                if i == 0:
+                                    _lab_avg_mp0 = _avg or {}
+                        else:
+                            if _usa_multiselect_mp:
+                                _tkmp = _ui_multiselect_tickets(cod, key_prefix=f"b_tkmp_lab_{i}", dias=180, limit=30, max_tickets=3)
+                            else:
+                                _tkmp = st.text_input(
+                                    f"Tickets de portería #{i+1} (n°, coma · máx 3)",
+                                    key=f"b_tkmp_lab_{i}",
+                                    placeholder="ej. 5063, 5048, 5028",
+                                    help="Cada ticket es una pesada en portería. La app suma kg y busca los análisis en procesos_lab. Tope 3 por proceso.",
+                                )
+                                import re as _re3
+                                _nct = len(set(int(x) for x in _re3.findall(r"\d+", _tkmp or "")))
+                                if _nct > 3:
+                                    st.warning(f"⚠️ Cargaste {_nct} tickets; el proceso admite hasta 3.")
+                            # Lookup combinado portería + lab (promedio ponderado por kg)
+                            _det, _avg, _mlab, _mport, _mapping = params_de_tickets_lab(_tkmp, cod)
+                            _kg = float(pd.to_numeric(_det["kg"], errors="coerce").sum()) if (not _det.empty and "kg" in _det.columns) else 0.0
+                            if _tkmp and _tkmp.strip():
+                                st.caption(f"Total cargado: **{_kg:,.0f} kg · {_kg/1000:,.2f} TN**")
+                                _render_tickets_lab_panel(_det, _avg, _mlab, _mport, _mapping, st_container=st)
+                            if cod and _kg > 0:
+                                mps_ingresadas.append((cod, float(_kg)))
+                                mp_fuentes[len(mps_ingresadas)-1] = {"fuente":"TICKET","id_tanque":None,"kg":float(_kg),"ticket":_tkmp}
+                                if i == 0:
+                                    _lab_avg_mp0 = _avg or {}
                                 _dens0 = densidad_de(cod)
                                 litros_ini = round(_kg / _dens0, 1) if (_kg and _dens0) else None
-                                _tickets_entrada_des = "; ".join(p.get("ticket") for p in _ports if p.get("ticket")) or None
+                                _tickets_entrada_des = _tkmp or None
             else:
                 # Sectores no-REACTORES/BACHAS: flujo manual original
                 permite_multi = (p_obt == "AG-E") or (sector == "EXPO")
@@ -3193,32 +3115,27 @@ with tab_objs[0]:
                             # cualquier error NO afecte el guardado del batch.
                             try:
                                 cur.execute("SAVEPOINT sp_mpins")
-                                cur.execute("SELECT 1 FROM fact_batch_insumo WHERE id_batch=%s AND rol='MP' LIMIT 1", (id_b,))
-                                if not cur.fetchone():
-                                    for _ix, (_cmp, _kmp) in enumerate(mps_ingresadas):
-                                        cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s", (_cmp,))
-                                        _rp = cur.fetchone()
-                                        if not _rp:
-                                            continue
-                                        _pidmp = _rp[0]
-                                        _ports = mp_fuentes.get(_ix)
-                                        if isinstance(_ports, dict):
-                                            _ports = [_ports]
-                                        if not _ports:
-                                            _ports = [{"fuente": "TICKET", "ticket": ticket_porteria_v, "id_tanque": None, "kg": _kmp}]
-                                        for _po in _ports:
-                                            _pk = float(_po.get("kg") or 0)
-                                            if _po.get("fuente") == "TANQUE" and _po.get("id_tanque"):
-                                                cur.execute(
-                                                    "INSERT INTO fact_batch_insumo (id_batch,rol,id_producto,cantidad,fuente,id_tanque,id_usuario) "
-                                                    "VALUES (%s,'MP',%s,%s,'TANQUE',%s,%s)",
-                                                    (id_b, _pidmp, _pk, int(_po["id_tanque"]), int(USR["id_usuario"])))
-                                            else:
-                                                _tkv = (_po.get("ticket") or ticket_porteria_v or "s/ticket")
-                                                cur.execute(
-                                                    "INSERT INTO fact_batch_insumo (id_batch,rol,id_producto,cantidad,fuente,ticket_porteria,id_usuario) "
-                                                    "VALUES (%s,'MP',%s,%s,'TICKET',%s,%s)",
-                                                    (id_b, _pidmp, _pk, str(_tkv)[:120], int(USR["id_usuario"])))
+                                for _ix, (_cmp, _kmp) in enumerate(mps_ingresadas):
+                                    cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s", (_cmp,))
+                                    _rp = cur.fetchone()
+                                    if not _rp:
+                                        continue
+                                    _pidmp = _rp[0]
+                                    cur.execute("SELECT 1 FROM fact_batch_insumo WHERE id_batch=%s AND id_producto=%s AND rol='MP'", (id_b, _pidmp))
+                                    if cur.fetchone():
+                                        continue
+                                    _src = mp_fuentes.get(_ix) or {}
+                                    if _src.get("fuente") == "TANQUE" and _src.get("id_tanque"):
+                                        cur.execute(
+                                            "INSERT INTO fact_batch_insumo (id_batch,rol,id_producto,cantidad,fuente,id_tanque,id_usuario) "
+                                            "VALUES (%s,'MP',%s,%s,'TANQUE',%s,%s)",
+                                            (id_b, _pidmp, float(_kmp or 0), int(_src["id_tanque"]), int(USR["id_usuario"])))
+                                    else:
+                                        _tkv = (_src.get("ticket") or ticket_porteria_v or "s/ticket")
+                                        cur.execute(
+                                            "INSERT INTO fact_batch_insumo (id_batch,rol,id_producto,cantidad,fuente,ticket_porteria,id_usuario) "
+                                            "VALUES (%s,'MP',%s,%s,'TICKET',%s,%s)",
+                                            (id_b, _pidmp, float(_kmp or 0), str(_tkv)[:120], int(USR["id_usuario"])))
                                 cur.execute("RELEASE SAVEPOINT sp_mpins")
                             except Exception as _e_mp:
                                 try:
