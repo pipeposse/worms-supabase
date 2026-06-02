@@ -2143,7 +2143,7 @@ tab_objs = st.tabs(tabs)
 # =========================================================================
 with tab_objs[0]:
     st.subheader("🏭 Carga de producción")
-    sub_nueva, sub_edit, sub_pfinal, sub_eval, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "\U0001F4CA Dashboard de reacciones", "\U0001f3c1 Acopio final", "\U0001f9ea Evaluación interna", "⚠️ Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
+    sub_nueva, sub_edit, sub_pfinal, sub_eval, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "✏️ Avanzar etapa", "\U0001f3c1 Acopio final", "\U0001f9ea Evaluación interna", "⚠️ Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
 
     # ---------- SUB-TAB: NUEVA CARGA ----------
     with sub_nueva:
@@ -3362,36 +3362,25 @@ with tab_objs[0]:
     # SUB-TAB: AVANZAR ETAPA — vista de tarjetas tipo "panel de planta"
     # ===========================================================================
     with sub_edit:
+        # Etiquetas y emojis de etapas (compartidos por todas las helpers).
         _STAGE_LBL = {"ARMADO": "Armado", "CARGA": "Carga", "REACCION": "Reacción",
                       "CALENTAMIENTO": "Calentamiento", "REPOSANDO": "Reposo",
                       "DECANTACION": "Decantación", "EN_TANQUE": "Acopio final"}
         _STAGE_EMOJI = {"ARMADO": "🧱", "CARGA": "📥", "REACCION": "🔥",
                         "CALENTAMIENTO": "🌡️", "REPOSANDO": "⏸️",
                         "DECANTACION": "💧", "EN_TANQUE": "🪣"}
-        _EST = {"CARGA": ("#ece9e3", "#5a564f", "📝", "En carga"),
-                "REACCION": ("#fde2c8", "#8a4b12", "🔥", "Reacción"),
-                "REPOSO": ("#d8e8f7", "#1d5a91", "⏸️", "Reposo"),
-                "DECANTACION": ("#e3dbf3", "#5a3b9a", "💧", "Decantación"),
-                "FINALIZADO": ("#d6efd9", "#256b31", "✅", "Finalizada"),
-                "FRENADA": ("#fee2e2", "#9a2727", "⛔", "Frenada"),
-                "ANULADA": ("#eeeeee", "#888888", "🚫", "Anulada")}
 
+        # Estado: tarjeta abierta para edición avanzada
         if "e_open_detail" not in st.session_state:
             st.session_state["e_open_detail"] = None
 
+        # ----- Reacciones en curso -----
         df_open = cat("""
             SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha, b.sector,
-                   b.tipo_proceso, b.etapa_actual, b.inicio_ts, b.estado,
-                   b.esperando_validacion_lab, b.validado_lab,
-                   b.ticket_producto_final, b.ticket_validacion_lab,
+                   b.tipo_proceso, b.etapa_actual, b.inicio_ts,
                    pb.codigo_producto AS buscado, b.calidad_buscada,
                    pi.codigo_producto AS mp, b.kg_inicial,
-                   bu.nombre_ui AS reactor, b.corriente,
-                   (SELECT (ei.mediciones->>'acidez')::numeric FROM produccion.fact_evaluacion_interna ei
-                     WHERE ei.id_batch=b.id_batch AND NOT ei.anulado AND ei.mediciones ? 'acidez'
-                     ORDER BY ei.ts DESC LIMIT 1) AS acidez_ult,
-                   (SELECT count(*) FROM produccion.fact_evaluacion_interna ei
-                     WHERE ei.id_batch=b.id_batch AND NOT ei.anulado) AS n_eval
+                   bu.nombre_ui AS reactor, b.corriente
               FROM fact_batch_proceso b
               LEFT JOIN dim_producto pi ON pi.id_producto = b.id_producto_inicial
               LEFT JOIN dim_producto pb ON pb.id_producto = b.id_producto_buscado
@@ -3402,23 +3391,15 @@ with tab_objs[0]:
              LIMIT 60
         """)
 
-        st.markdown('<div class="section-title" style="font-size:1.3rem">📊 Dashboard de reacciones</div>', unsafe_allow_html=True)
-
+        st.markdown("### 🏭 Reacciones en curso")
         if df_open.empty:
-            st.success("✅ No hay reacciones abiertas. Las nuevas se arman en **Nueva carga** y las completas se cierran en **Acopio final**.")
+            st.success("✅ No hay reacciones abiertas. Las completas se cierran en **'Acopio final'** y las nuevas se arman en **'Nueva carga'**.")
         else:
-            # ---- KPIs por estado ----
-            _by = df_open["estado"].fillna("CARGA").value_counts().to_dict()
-            _esp = int(df_open["esperando_validacion_lab"].fillna(False).sum())
-            _kp = "".join(
-                f"<div class='kpi'><div class='l'>{_EST.get(_e,('','','','?'))[3]}</div>"
-                f"<div class='v'>{_n}</div></div>"
-                for _e, _n in _by.items())
-            _kp += (f"<div class='kpi'><div class='l'>Esperando lab</div>"
-                    f"<div class='v {'bad' if _esp else 'ok'}'>{_esp}</div></div>")
-            st.markdown(f"<div class='kpi-grid'>{_kp}</div>", unsafe_allow_html=True)
-            st.caption(f"**{len(df_open)} reacción(es) abiertas.** ▶ avanza de etapa · **Abrir** ve evaluaciones, insumos y tickets.")
+            st.caption(f"**{len(df_open)} reacción(es) abiertas.** Una tarjeta por reacción · "
+                       "**▶ Avanzar** pasa a la siguiente etapa con la duración medida automáticamente (inicio → ahora). "
+                       "**⚙️ Detalles** abre los campos manuales (duración exacta, temperatura, observaciones).")
 
+            # Cargar eventos de etapa de todos los batches abiertos en una sola query
             _ids = [int(x) for x in df_open["id_batch"].tolist()]
             _ids_str = ",".join(str(x) for x in _ids) if _ids else "NULL"
             df_evts_open = cat(f"""
@@ -3428,7 +3409,9 @@ with tab_objs[0]:
                 ORDER BY id_batch, inicio_ts
             """) if _ids else pd.DataFrame()
 
+            # ---------- Helpers ----------
             def _elapsed_min(row_batch, df_evts):
+                """Minutos transcurridos desde el inicio del evento abierto de la etapa actual."""
                 ev = df_evts[(df_evts["id_batch"] == int(row_batch["id_batch"])) &
                              (df_evts["etapa"] == row_batch["etapa_actual"]) &
                              (df_evts["fin_ts"].isna())]
@@ -3452,22 +3435,37 @@ with tab_objs[0]:
                     return "—"
                 return f"{int(mins)//60}h {int(mins)%60:02d}m"
 
+            def _status_color(elapsed, target):
+                # Verde si <= target+10% · amarillo si <= target+25% · rojo en otros casos
+                if target is None or elapsed is None:
+                    return "#64748b"
+                if elapsed <= target * 1.10: return "#10b981"  # green
+                if elapsed <= target * 1.25: return "#f59e0b"  # amber
+                return "#ef4444"  # red
+
             def _render_stepper(etapas_codigos, idx_actual):
+                """Render del stepper como una barra de segmentos coloreados."""
                 segs = []
                 labels = []
                 for j, c in enumerate(etapas_codigos):
                     if j < idx_actual:
-                        _bg = "#10b981"; _tc = "#475569"
+                        _bg = "#10b981"  # green = done
+                        _txt_color = "#0f172a"
                     elif j == idx_actual:
-                        _bg = "#4f46e5"; _tc = "#4f46e5"
+                        _bg = "#3b82f6"  # blue = current
+                        _txt_color = "#fff"
                     else:
-                        _bg = "#e2e8f0"; _tc = "#94a3b8"
+                        _bg = "#1f2937"  # gray = pending
+                        _txt_color = "#94a3b8"
                     segs.append(f'<div style="flex:1;height:6px;background:{_bg};border-radius:3px;margin-right:2px"></div>')
-                    _wt = "700" if j == idx_actual else "500"
-                    labels.append(f'<div style="flex:1;font-size:10px;color:{_tc};margin-right:2px;text-align:center;font-weight:{_wt}">{_STAGE_LBL.get(c,c)[:8]}</div>')
-                return ('<div style="display:flex;margin-top:10px">' + "".join(segs) + "</div>"
-                        '<div style="display:flex;margin-top:3px">' + "".join(labels) + "</div>")
+                    _lbl_short = _STAGE_LBL.get(c, c)[:8]
+                    _wt = "700" if j == idx_actual else "400"
+                    labels.append(f'<div style="flex:1;font-size:10px;color:{_txt_color};margin-right:2px;text-align:center;font-weight:{_wt}">{_lbl_short}</div>')
+                bar = '<div style="display:flex;margin-top:8px">' + "".join(segs) + "</div>"
+                lbl = '<div style="display:flex;margin-top:3px">' + "".join(labels) + "</div>"
+                return bar + lbl
 
+            # ---------- Grid de tarjetas (3 por fila) ----------
             ncols = 3
             for row_start in range(0, len(df_open), ncols):
                 cols = st.columns(ncols, gap="small")
@@ -3477,242 +3475,204 @@ with tab_objs[0]:
                         break
                     r = df_open.iloc[idx]
                     et_act = r["etapa_actual"] or "ARMADO"
-                    _est = r["estado"] or "CARGA"
-                    _ebg, _etc, _eem, _elbl = _EST.get(_est, ("#ece9e3", "#5a564f", "❔", _est))
                     _et_proc = etapas_de_proceso(proceso_key_de(r["sector"], r["tipo_proceso"]))
                     etapas_codigos = _et_proc["etapa"].tolist() if not _et_proc.empty else [et_act]
                     idx_actual = etapas_codigos.index(et_act) if et_act in etapas_codigos else 0
                     idx_next = min(idx_actual + 1, len(etapas_codigos) - 1)
                     es_ultima = (idx_actual >= len(etapas_codigos) - 1)
                     nueva_et_def = etapas_codigos[idx_next] if etapas_codigos else et_act
+
                     elapsed = _elapsed_min(r, df_evts_open)
-                    target = _target_min(r["sector"], r["tipo_proceso"], et_act)
-                    emoji = _STAGE_EMOJI.get(et_act, "❔")
-                    et_lbl = _STAGE_LBL.get(et_act, et_act)
+                    target  = _target_min(r["sector"], r["tipo_proceso"], et_act)
+                    color   = _status_color(elapsed, target)
+                    emoji   = _STAGE_EMOJI.get(et_act, "❔")
+                    et_lbl  = _STAGE_LBL.get(et_act, et_act)
                     proc_short = (r["tipo_proceso"] or "").replace("PRODUCCION_ARE", "ARE").replace("DESGOMADO_ACUOSO", "DESGOMADO")
                     mp_buscado = f"{r['mp'] or '—'} → {r['buscado'] or '—'}"
-                    _ac = r.get("acidez_ult")
-                    _ac_chip = (f"<span style='background:#eef2ff;color:#3730a3;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:700'>acidez {float(_ac):.1f}</span>"
-                                if pd.notna(_ac) else "")
-                    _tpf_chip = (f"<span style='background:#fef3c7;color:#92400e;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:700'>🎫 {r['ticket_producto_final']}</span>"
-                                 if r.get("ticket_producto_final") else "")
+
                     with cols[j]:
+                        # ----- Tarjeta visual -----
                         st.markdown(
                             f"""
-<div style="background:#fff;border:1px solid #e6e8f0;border-left:6px solid {_etc};
-            border-radius:14px;padding:14px 16px;margin-bottom:6px;min-height:170px;box-shadow:0 1px 3px rgba(16,24,40,.05)">
+<div style="background:#0b1220;border:1px solid #1f2937;border-left:6px solid {color};
+            border-radius:10px;padding:12px 14px;margin-bottom:6px;min-height:185px">
   <div style="display:flex;justify-content:space-between;align-items:flex-start">
     <div>
       <div style="font-size:11px;color:#94a3b8">#{int(r['id_batch'])} · {r['ticket'] or '—'} · {proc_short}</div>
-      <div style="font-size:17px;font-weight:700;color:#0f172a;margin-top:2px">{emoji} {et_lbl}</div>
-      <div style="font-size:11px;color:#64748b;margin-top:2px">{r['reactor'] or '—'} · {mp_buscado}</div>
+      <div style="font-size:18px;font-weight:600;color:#f1f5f9;margin-top:2px">{emoji} {et_lbl}</div>
+      <div style="font-size:11px;color:#cbd5e1;margin-top:2px">{r['reactor'] or '—'} · {mp_buscado}</div>
     </div>
     <div style="text-align:right">
-      <span style="background:{_ebg};color:{_etc};border-radius:999px;padding:3px 10px;font-size:11px;font-weight:700">{_eem} {_elbl}</span>
-      <div style="font-size:18px;font-weight:800;color:#0f172a;margin-top:6px">{_fmt_hm(elapsed)}</div>
+      <div style="font-size:22px;font-weight:700;color:{color}">{_fmt_hm(elapsed)}</div>
       <div style="font-size:10px;color:#94a3b8">target {_fmt_hm(target)}</div>
     </div>
   </div>
-  <div style="margin-top:8px">{_ac_chip} {_tpf_chip}</div>
   {_render_stepper(etapas_codigos, idx_actual)}
 </div>
 """,
                             unsafe_allow_html=True,
                         )
+                        # ----- Botones de acción -----
                         bc1, bc2 = st.columns([1.4, 1])
                         if es_ultima:
                             bc1.button("🏁 Ir a Acopio final", key=f"e_acopio_{int(r['id_batch'])}",
                                        use_container_width=True, disabled=True,
-                                       help="Última etapa. Cerrala desde 'Acopio final'.")
+                                       help="Esta reacción ya está en la última etapa. Cerrala desde la pestaña 'Acopio final'.")
                         else:
-                            if bc1.button(f"▶ Avanzar a {_STAGE_LBL.get(nueva_et_def, nueva_et_def)}",
-                                          key=f"e_adv_{int(r['id_batch'])}", use_container_width=True, type="primary"):
+                            _lbl_btn = f"▶ Avanzar a {_STAGE_LBL.get(nueva_et_def, nueva_et_def)}"
+                            if bc1.button(_lbl_btn, key=f"e_adv_{int(r['id_batch'])}", use_container_width=True, type="primary"):
+                                # Avance rápido: usa elapsed minutes calculado de inicio_ts → ahora.
+                                # Validación de reposo mínimo si la etapa actual es REPOSANDO
                                 _reposo_min = int((K("reposo_min_horas_reactor", 4) or 4) * 60)
                                 if et_act == "REPOSANDO" and elapsed is not None and elapsed < _reposo_min:
-                                    st.error(f"Reposo mínimo {_reposo_min//60} h. Llevás {_fmt_hm(elapsed)}; abrí el detalle para forzar.")
+                                    st.error(f"Reposo mínimo {_reposo_min//60} h. Llevás {_fmt_hm(elapsed)}; abrí Detalles si querés forzar.")
                                 else:
                                     try:
                                         with conectar(USR["id_usuario"]) as (conn, audit):
                                             with conn.cursor() as cur:
                                                 cur.execute("""
                                                     UPDATE produccion.fact_etapa_evento
-                                                       SET fin_ts = NOW(), duracion_real_min = COALESCE(%s, duracion_real_min)
+                                                       SET fin_ts = NOW(),
+                                                           duracion_real_min = COALESCE(%s, duracion_real_min)
                                                      WHERE id_batch=%s AND fin_ts IS NULL
                                                 """, (int(elapsed) if elapsed else None, int(r['id_batch'])))
                                                 cur.execute("""
                                                     INSERT INTO produccion.fact_etapa_evento (id_batch, etapa, inicio_ts, id_usuario)
                                                     VALUES (%s, %s, NOW(), %s)
                                                 """, (int(r['id_batch']), nueva_et_def, int(USR["id_usuario"])))
-                                                cur.execute("UPDATE produccion.fact_batch_proceso SET etapa_actual=%s WHERE id_batch=%s",
-                                                            (nueva_et_def, int(r['id_batch'])))
+                                                cur.execute(
+                                                    "UPDATE produccion.fact_batch_proceso SET etapa_actual=%s WHERE id_batch=%s",
+                                                    (nueva_et_def, int(r['id_batch']))
+                                                )
                                             audit.log("U", "fact_batch_proceso", int(r['id_batch']),
-                                                      {"avance_rapido": et_act, "duracion_min": elapsed, "nueva_etapa": nueva_et_def})
-                                        st.success(f"#{int(r['id_batch'])} · pasó a {_STAGE_LBL.get(nueva_et_def, nueva_et_def)}.")
+                                                      {"avance_rapido": et_act, "duracion_min": elapsed,
+                                                       "nueva_etapa": nueva_et_def})
+                                        st.success(f"#{int(r['id_batch'])} · pasó de {et_lbl} a {_STAGE_LBL.get(nueva_et_def, nueva_et_def)}.")
                                         cat.clear(); st.rerun()
                                     except Exception as e:
                                         st.exception(e)
-                        if bc2.button("🔍 Abrir", key=f"e_det_{int(r['id_batch'])}", use_container_width=True):
+                        if bc2.button("⚙️ Detalles", key=f"e_det_{int(r['id_batch'])}", use_container_width=True):
                             st.session_state["e_open_detail"] = int(r['id_batch'])
                             st.rerun()
 
-            # ---------- Detalle de una reacción ----------
+            # ---------- Detalle (panel inferior) ----------
             _id_det = st.session_state.get("e_open_detail")
             if _id_det:
                 _row_det = df_open[df_open["id_batch"] == _id_det]
                 if not _row_det.empty:
                     r = _row_det.iloc[0]
                     id_batch_edit = int(r["id_batch"])
-                    _est = r["estado"] or "CARGA"
-                    _ebg, _etc, _eem, _elbl = _EST.get(_est, ("#ece9e3", "#5a564f", "❔", _est))
                     st.divider()
-                    _tc1, _tc2 = st.columns([4, 1])
-                    _tc1.markdown(
-                        f"### 🔬 Reacción #{id_batch_edit} · {r['ticket'] or '—'} "
-                        f"<span style='background:{_ebg};color:{_etc};border-radius:999px;padding:3px 12px;font-size:13px;font-weight:700'>{_eem} {_elbl}</span>",
-                        unsafe_allow_html=True)
-                    if _tc2.button("✖ Cerrar", key="e_close_det", use_container_width=True):
+                    _tit_col1, _tit_col2 = st.columns([4, 1])
+                    _tit_col1.markdown(f"### ⚙️ Detalle · #{id_batch_edit} · {r['ticket'] or '—'}")
+                    if _tit_col2.button("Cerrar detalle", key="e_close_det", use_container_width=True):
                         st.session_state["e_open_detail"] = None
                         st.rerun()
-                    _di1, _di2, _di3, _di4 = st.columns(4)
-                    _di1.metric("Reactor", r["reactor"] or "—")
-                    _di2.metric("MP → buscado", f"{r['mp'] or '—'} → {r['buscado'] or '—'}")
-                    _di3.metric("Corriente", r["corriente"] or "—")
-                    _di4.metric("Acidez última", f"{float(r['acidez_ult']):.1f}" if pd.notna(r.get("acidez_ult")) else "—")
-                    if r.get("ticket_producto_final"):
-                        st.warning(f"🎫 **Ticket de producto final:** {r['ticket_producto_final']} — a evaluar en laboratorio."
-                                   + (f" · validación interna con ticket MP **{r['ticket_validacion_lab']}**" if r.get("ticket_validacion_lab") else ""))
 
-                    dtabs = st.tabs(["🔄 Etapas", "🧪 Evaluaciones internas", "📦 Insumos / MP", "🎫 Tickets de lab"])
+                    # Historial de eventos de etapa
+                    df_eve = cat(f"""
+                        SELECT e.id_evento_etapa, e.etapa, e.inicio_ts, e.fin_ts,
+                               e.duracion_real_min, e.observaciones,
+                               u.nombre AS usuario,
+                               d.duracion_target_min, d.duracion_min_min, d.duracion_max_min
+                        FROM produccion.fact_etapa_evento e
+                        JOIN produccion.dim_usuario u ON u.id_usuario = e.id_usuario
+                        LEFT JOIN produccion.dic_etapa_duracion d
+                          ON d.sector=%s AND d.tipo_proceso=%s AND d.etapa=e.etapa
+                        WHERE e.id_batch = %s
+                        ORDER BY e.inicio_ts
+                    """, (r["sector"], r["tipo_proceso"], id_batch_edit))
 
-                    # --- Etapas: historial + avance manual ---
-                    with dtabs[0]:
-                        df_eve = cat("""
-                            SELECT e.etapa, e.inicio_ts, e.fin_ts, e.duracion_real_min, e.observaciones,
-                                   u.nombre AS usuario, d.duracion_target_min
-                            FROM produccion.fact_etapa_evento e
-                            JOIN produccion.dim_usuario u ON u.id_usuario = e.id_usuario
-                            LEFT JOIN produccion.dic_etapa_duracion d
-                              ON d.sector=%s AND d.tipo_proceso=%s AND d.etapa=e.etapa
-                            WHERE e.id_batch = %s ORDER BY e.inicio_ts
-                        """, (r["sector"], r["tipo_proceso"], id_batch_edit))
-                        if not df_eve.empty:
-                            df_eve = df_eve.copy()
-                            def _dur(x):
-                                if pd.notna(x.get("duracion_real_min")):
-                                    return float(x["duracion_real_min"])
-                                if pd.notna(x["inicio_ts"]):
-                                    fin = x["fin_ts"] if pd.notna(x["fin_ts"]) else pd.Timestamp.now(tz="UTC")
-                                    return round((fin - x["inicio_ts"]).total_seconds() / 60, 1)
-                                return None
-                            df_eve["min_real"] = df_eve.apply(_dur, axis=1)
-                            df_eve["estado"] = df_eve["fin_ts"].apply(lambda v: "✅ cerrada" if pd.notna(v) else "🟢 abierta")
-                            st.dataframe(df_eve[["etapa", "estado", "min_real", "duracion_target_min", "inicio_ts", "fin_ts", "usuario"]],
-                                         use_container_width=True, hide_index=True)
-                        _et_proc_av = etapas_de_proceso(proceso_key_de(r["sector"], r["tipo_proceso"]))
-                        etapas_codigos = _et_proc_av["etapa"].tolist()
-                        etapa_actual_cod = r["etapa_actual"]
-                        idx_actual = etapas_codigos.index(etapa_actual_cod) if etapa_actual_cod in etapas_codigos else 0
-                        idx_nueva = min(idx_actual + 1, len(etapas_codigos) - 1) if etapas_codigos else 0
-                        tgt_min = _target_min(r["sector"], r["tipo_proceso"], etapa_actual_cod)
-                        elapsed_now = _elapsed_min(r, df_evts_open)
-                        _def_h = (elapsed_now // 60) if elapsed_now is not None else ((tgt_min or 0) // 60)
-                        _def_m = ((elapsed_now % 60) if elapsed_now is not None else ((tgt_min or 0) % 60)) // 5 * 5
-                        st.caption(f"Etapa actual: {_STAGE_EMOJI.get(etapa_actual_cod,'')} {_STAGE_LBL.get(etapa_actual_cod, etapa_actual_cod)} · transcurrido {_fmt_hm(elapsed_now)} · target {_fmt_hm(tgt_min)}")
-                        cE1, cE2, cE3 = st.columns([1, 1, 1.4])
-                        dur_h = cE1.number_input("Duró (h)", 0, 1000, value=int(_def_h), step=1, key=f"e_dur_h_{id_batch_edit}")
-                        dur_m = cE2.number_input("y min", 0, 59, value=int(_def_m), step=5, key=f"e_dur_m_{id_batch_edit}")
-                        dur_min_in = int(dur_h) * 60 + int(dur_m)
-                        nueva_etapa = cE3.selectbox("Pasar a", etapas_codigos, index=idx_nueva,
-                                                    format_func=lambda c: _STAGE_LBL.get(c, c), key=f"e_etapa_{id_batch_edit}")
-                        temp_et = st.number_input("Temperatura al cerrar la etapa (°C, opcional)", 0.0, 300.0, step=1.0, value=0.0, key=f"e_temp_{id_batch_edit}")
-                        obs_etapa = st.text_input("Observaciones (opcional)", max_chars=200, key=f"e_obs_{id_batch_edit}")
-                        _reposo_min = int((K("reposo_min_horas_reactor", 4) or 4) * 60)
+                    if not df_eve.empty:
+                        df_eve = df_eve.copy()
+                        def _dur(x):
+                            if pd.notna(x.get("duracion_real_min")):
+                                return float(x["duracion_real_min"])
+                            if pd.notna(x["inicio_ts"]):
+                                fin = x["fin_ts"] if pd.notna(x["fin_ts"]) else pd.Timestamp.now(tz="UTC")
+                                return round((fin - x["inicio_ts"]).total_seconds() / 60, 1)
+                            return None
+                        df_eve["duracion_min"] = df_eve.apply(_dur, axis=1)
+                        df_eve["estado"] = df_eve["fin_ts"].apply(lambda v: "✅ cerrada" if pd.notna(v) else "🟢 abierta")
+                        df_eve["desv_vs_target"] = df_eve.apply(
+                            lambda x: None if pd.isna(x.get("duracion_target_min")) or pd.isna(x["duracion_min"])
+                                      else round((x["duracion_min"] - x["duracion_target_min"]) / x["duracion_target_min"] * 100, 1),
+                            axis=1)
+                        st.markdown("**Historial de etapas (min real vs target)**")
+                        st.dataframe(
+                            df_eve[["etapa","estado","duracion_min","duracion_target_min","desv_vs_target","inicio_ts","fin_ts","usuario","observaciones"]],
+                            use_container_width=True, hide_index=True
+                        )
+                        total_real = df_eve["duracion_min"].fillna(0).sum()
+                        total_target = df_eve["duracion_target_min"].fillna(0).sum()
+                        kK1, kK2 = st.columns(2)
+                        kK1.metric("Tiempo real (min)", f"{total_real:,.0f}")
+                        kK2.metric("Tiempo target (min)", f"{total_target:,.0f}",
+                                   f"{((total_real-total_target)/total_target*100):+.1f}%" if total_target > 0 and total_real > 0 else None)
+
+                    _et_proc_av = etapas_de_proceso(proceso_key_de(r["sector"], r["tipo_proceso"]))
+                    etapas_codigos = _et_proc_av["etapa"].tolist()
+                    etapa_actual_cod = r["etapa_actual"]
+                    idx_actual = etapas_codigos.index(etapa_actual_cod) if etapa_actual_cod in etapas_codigos else 0
+                    idx_nueva = min(idx_actual + 1, len(etapas_codigos) - 1) if etapas_codigos else 0
+                    tgt_min = _target_min(r["sector"], r["tipo_proceso"], etapa_actual_cod)
+                    elapsed_now = _elapsed_min(r, df_evts_open)
+                    _def_h = (elapsed_now // 60) if elapsed_now is not None else ((tgt_min or 0) // 60)
+                    _def_m = (elapsed_now %  60) if elapsed_now is not None else ((tgt_min or 0) %  60)
+                    _def_m = (_def_m // 5) * 5  # redondear al múltiplo de 5
+
+                    st.markdown(f"**Etapa actual:** {_STAGE_EMOJI.get(etapa_actual_cod,'')} {_STAGE_LBL.get(etapa_actual_cod, etapa_actual_cod)} · "
+                                f"transcurrido {_fmt_hm(elapsed_now)} · target {_fmt_hm(tgt_min)}")
+
+                    cE1, cE2, cE3 = st.columns([1, 1, 1.4])
+                    dur_h = cE1.number_input("Duró (h)", 0, 1000, value=int(_def_h), step=1, key=f"e_dur_h_{id_batch_edit}")
+                    dur_m = cE2.number_input("y min",    0,   59, value=int(_def_m), step=5, key=f"e_dur_m_{id_batch_edit}")
+                    dur_min_in = int(dur_h) * 60 + int(dur_m)
+                    nueva_etapa = cE3.selectbox("Pasar a", etapas_codigos, index=idx_nueva,
+                                                format_func=lambda c: _STAGE_LBL.get(c, c),
+                                                key=f"e_etapa_{id_batch_edit}")
+                    temp_et = st.number_input("Temperatura al cerrar la etapa (°C, opcional)",
+                                              0.0, 300.0, step=1.0, value=0.0, key=f"e_temp_{id_batch_edit}")
+                    obs_etapa = st.text_input("Observaciones (opcional)", max_chars=200, key=f"e_obs_{id_batch_edit}")
+
+                    _reposo_min = int((K("reposo_min_horas_reactor", 4) or 4) * 60)
+                    if etapa_actual_cod == "REPOSANDO" and dur_min_in and dur_min_in < _reposo_min:
+                        st.error(f"⚠️ Reposo mínimo {_reposo_min//60} h. Llevás {dur_min_in} min — no se puede cerrar con menos.")
+
+                    if st.button(f"💾 Cerrar {_STAGE_LBL.get(etapa_actual_cod, etapa_actual_cod)} y pasar a {_STAGE_LBL.get(nueva_etapa, nueva_etapa)}",
+                                 type="primary", use_container_width=True, key=f"e_save_{id_batch_edit}"):
                         if etapa_actual_cod == "REPOSANDO" and dur_min_in and dur_min_in < _reposo_min:
-                            st.error(f"⚠️ Reposo mínimo {_reposo_min//60} h. Llevás {dur_min_in} min.")
-                        if st.button(f"💾 Cerrar {_STAGE_LBL.get(etapa_actual_cod, etapa_actual_cod)} → {_STAGE_LBL.get(nueva_etapa, nueva_etapa)}",
-                                     type="primary", use_container_width=True, key=f"e_save_{id_batch_edit}"):
-                            if etapa_actual_cod == "REPOSANDO" and dur_min_in and dur_min_in < _reposo_min:
-                                st.error(f"No se puede cerrar el reposo con menos de {_reposo_min//60} h.")
-                            else:
-                                try:
-                                    with conectar(USR["id_usuario"]) as (conn, audit):
-                                        with conn.cursor() as cur:
-                                            cur.execute("""
-                                                UPDATE produccion.fact_etapa_evento
-                                                   SET fin_ts = NOW(), duracion_real_min = COALESCE(%s, duracion_real_min),
-                                                       observaciones = COALESCE(NULLIF(%s,''), observaciones)
-                                                 WHERE id_batch=%s AND fin_ts IS NULL
-                                            """, (int(dur_min_in) if dur_min_in else None, obs_etapa, id_batch_edit))
-                                            cur.execute("""
-                                                INSERT INTO produccion.fact_etapa_evento (id_batch, etapa, inicio_ts, id_usuario)
-                                                VALUES (%s, %s, NOW(), %s)
-                                            """, (id_batch_edit, nueva_etapa, int(USR["id_usuario"])))
-                                            _tp = {f"temp_{etapa_actual_cod.lower()}_c": float(temp_et)} if (temp_et and temp_et > 0) else {}
-                                            cur.execute("UPDATE produccion.fact_batch_proceso SET etapa_actual=%s, "
-                                                        "parametros_proceso = COALESCE(parametros_proceso,'{}'::jsonb) || %s::jsonb WHERE id_batch=%s",
-                                                        (nueva_etapa, json.dumps(_tp), id_batch_edit))
-                                        audit.log("U", "fact_batch_proceso", id_batch_edit,
-                                                  {"cerro_etapa": etapa_actual_cod, "duracion_min": int(dur_min_in) if dur_min_in else None, "nueva_etapa": nueva_etapa})
-                                    st.success(f"#{id_batch_edit} · pasó a {_STAGE_LBL.get(nueva_etapa, nueva_etapa)}.")
-                                    st.session_state["e_open_detail"] = None
-                                    cat.clear(); st.rerun()
-                                except Exception as e:
-                                    st.exception(e)
-
-                    # --- Evaluaciones internas ---
-                    with dtabs[1]:
-                        _ev = cat("""
-                            SELECT to_char(ei.ts,'DD/MM HH24:MI') AS hora, ei.etapa,
-                                   (ei.mediciones->>'acidez')::numeric AS acidez,
-                                   (ei.mediciones->>'temperatura')::numeric AS temperatura,
-                                   (ei.mediciones->>'fosforo')::numeric AS fosforo,
-                                   (ei.mediciones->>'azufre')::numeric AS azufre,
-                                   ei.observaciones, u.nombre AS usuario
-                            FROM produccion.fact_evaluacion_interna ei
-                            LEFT JOIN produccion.dim_usuario u ON u.id_usuario = ei.id_usuario
-                            WHERE ei.id_batch=%s AND NOT ei.anulado ORDER BY ei.ts
-                        """, (id_batch_edit,))
-                        if _ev.empty:
-                            st.info("Todavía no hay evaluaciones internas. Se cargan en la pestaña **Evaluación interna**.")
+                            st.error(f"No se puede cerrar el reposo con menos de {_reposo_min//60} h.")
                         else:
-                            st.dataframe(_ev, use_container_width=True, hide_index=True)
-                            if _ev["acidez"].notna().any():
-                                st.caption("Caída de acidez en el tiempo")
-                                st.line_chart(_ev.dropna(subset=["acidez"]).set_index("hora")["acidez"])
-
-                    # --- Insumos / MP cargados con su ticket ---
-                    with dtabs[2]:
-                        _ins = cat("""
-                            SELECT bi.rol,
-                                   COALESCE(bi.codigo_insumo, p.codigo_producto) AS item,
-                                   bi.cantidad, bi.unidad, bi.fuente,
-                                   COALESCE(bi.ticket_porteria, 'TK '||bi.id_tanque::text) AS origen,
-                                   bi.ticket_lab
-                            FROM produccion.fact_batch_insumo bi
-                            LEFT JOIN produccion.dim_producto p ON p.id_producto = bi.id_producto
-                            WHERE bi.id_batch=%s AND NOT bi.anulado ORDER BY bi.id_batch_insumo
-                        """, (id_batch_edit,))
-                        if _ins.empty:
-                            st.info("Sin insumos/MP registrados en detalle para esta reacción.")
-                        else:
-                            st.dataframe(_ins, use_container_width=True, hide_index=True)
-
-                    # --- Tickets de laboratorio generados ---
-                    with dtabs[3]:
-                        _tk = cat("""
-                            SELECT t.ticket_lab, t.rol,
-                                   COALESCE(t.codigo_insumo, p.codigo_producto) AS producto,
-                                   t.fuente, t.estado, to_char(t.creado_en,'DD/MM HH24:MI') AS generado,
-                                   to_char(t.evaluado_en,'DD/MM HH24:MI') AS evaluado
-                            FROM produccion.fact_ticket_lab t
-                            LEFT JOIN produccion.dim_producto p ON p.id_producto = t.id_producto
-                            WHERE t.id_batch=%s ORDER BY t.id_ticket
-                        """, (id_batch_edit,))
-                        if _tk.empty:
-                            st.info("Sin tickets de laboratorio generados todavía.")
-                        else:
-                            st.dataframe(_tk, use_container_width=True, hide_index=True)
-                            st.caption("Los tickets PENDIENTE se evalúan en laboratorio. El ticket FINAL aparece cuando la acidez llega a ≤10.")
+                            try:
+                                with conectar(USR["id_usuario"]) as (conn, audit):
+                                    with conn.cursor() as cur:
+                                        cur.execute("""
+                                            UPDATE produccion.fact_etapa_evento
+                                               SET fin_ts = NOW(),
+                                                   duracion_real_min = COALESCE(%s, duracion_real_min),
+                                                   observaciones = COALESCE(NULLIF(%s,''), observaciones)
+                                             WHERE id_batch=%s AND fin_ts IS NULL
+                                        """, (int(dur_min_in) if dur_min_in else None, obs_etapa, id_batch_edit))
+                                        cur.execute("""
+                                            INSERT INTO produccion.fact_etapa_evento (id_batch, etapa, inicio_ts, id_usuario)
+                                            VALUES (%s, %s, NOW(), %s)
+                                        """, (id_batch_edit, nueva_etapa, int(USR["id_usuario"])))
+                                        _tp = {f"temp_{etapa_actual_cod.lower()}_c": float(temp_et)} if (temp_et and temp_et > 0) else {}
+                                        cur.execute(
+                                            "UPDATE produccion.fact_batch_proceso SET etapa_actual=%s, "
+                                            "parametros_proceso = COALESCE(parametros_proceso,'{}'::jsonb) || %s::jsonb "
+                                            "WHERE id_batch=%s",
+                                            (nueva_etapa, json.dumps(_tp), id_batch_edit)
+                                        )
+                                    audit.log("U", "fact_batch_proceso", id_batch_edit,
+                                              {"cerro_etapa": etapa_actual_cod, "duracion_min": int(dur_min_in) if dur_min_in else None,
+                                               "nueva_etapa": nueva_etapa})
+                                st.success(f"#{id_batch_edit} · pasó a {_STAGE_LBL.get(nueva_etapa, nueva_etapa)} ({int(dur_h)} h {int(dur_m)} min).")
+                                st.session_state["e_open_detail"] = None
+                                cat.clear(); st.rerun()
+                            except Exception as e:
+                                st.exception(e)
 
     # ---------- SUB-TAB: PRODUCTO FINAL (real + tanque destino + estimado vs real + decantación) ----------
     with sub_pfinal:
