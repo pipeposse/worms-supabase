@@ -776,20 +776,10 @@ def etapas_de_proceso(pkey):
         return etapas_proc.rename(columns={"codigo":"etapa"})[["etapa","descripcion","orden"]]
     return df
 params_proceso = cat("SELECT codigo, descripcion, unidad, aplica_a FROM dic_parametro_proceso WHERE activo ORDER BY codigo")
-# Duraciones por etapa: derivadas de dic_proceso_etapa (la MISMA tabla que se edita en 'Etapas/tiempos')
-def _pk_to_sector_proc(pk):
-    if pk in ("PRODUCCION_ARE", "DESGOMADO_ACUOSO"):
-        return ("REACTORES", pk)
-    return (pk, None)
-if not proc_etapa.empty:
-    duraciones_etapa = proc_etapa.copy()
-    duraciones_etapa[["sector", "tipo_proceso"]] = duraciones_etapa["proceso_key"].apply(
-        lambda pk: pd.Series(_pk_to_sector_proc(pk)))
-    duraciones_etapa = duraciones_etapa[["sector", "tipo_proceso", "etapa",
-                                         "duracion_target_min", "duracion_min_min", "duracion_max_min"]]
-else:
-    duraciones_etapa = pd.DataFrame(columns=["sector", "tipo_proceso", "etapa",
-                                             "duracion_target_min", "duracion_min_min", "duracion_max_min"])
+duraciones_etapa = cat("""
+    SELECT sector, tipo_proceso, etapa, duracion_target_min, duracion_min_min, duracion_max_min
+    FROM dic_etapa_duracion
+""")
 consumos_proceso = cat("""
     SELECT tipo_proceso, codigo_insumo, consumo_por_tn, unidad_consumo, base_referencia, nota
     FROM dic_consumo_proceso
@@ -3626,10 +3616,10 @@ with tab_objs[0]:
                                    u.nombre AS usuario, d.duracion_target_min
                             FROM produccion.fact_etapa_evento e
                             JOIN produccion.dim_usuario u ON u.id_usuario = e.id_usuario
-                            LEFT JOIN produccion.dic_proceso_etapa d
-                              ON d.proceso_key=%s AND d.etapa=e.etapa
+                            LEFT JOIN produccion.dic_etapa_duracion d
+                              ON d.sector=%s AND d.tipo_proceso=%s AND d.etapa=e.etapa
                             WHERE e.id_batch = %s ORDER BY e.inicio_ts
-                        """, (proceso_key_de(r["sector"], r["tipo_proceso"]), id_batch_edit))
+                        """, (r["sector"], r["tipo_proceso"], id_batch_edit))
                         if not df_eve.empty:
                             df_eve = df_eve.copy()
                             def _dur(x):
