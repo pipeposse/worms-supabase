@@ -867,7 +867,6 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
     st.markdown("**📦 Fuente de la materia prima** — combiná portería y/o tanque hasta la cantidad")
     portions = []
     parts_lab = []   # [(kg, params_dict)] para promedio ponderado por kg
-    parts_corr = []  # [(kg, corriente)] -> la corriente la define la fuente (no el producto)
     kg_port = 0.0
     kg_tk = 0.0
     cP, cT = st.columns(2)
@@ -881,24 +880,13 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                 st.caption(f"Portería: **{kg_port:,.0f} kg · {kg_port/1000:,.2f} TN**")
                 portions.append({"fuente": "TICKET", "ticket": (tkstr or None), "id_tanque": None, "kg": kg_port})
                 parts_lab.append((kg_port, _avg or {}))
-                try:
-                    import re as _rec
-                    _tn = [int(x) for x in _rec.findall(r"\d+", tkstr or "")]
-                    if _tn:
-                        _dfc = cat("SELECT UPPER(corriente) corr, ABS(peso_neto) kg "
-                                   "FROM produccion.v_transacciones_limpias "
-                                   "WHERE transaccion = ANY(%s) AND corriente IS NOT NULL", (_tn,))
-                        if not _dfc.empty:
-                            parts_corr.append((kg_port, _dfc.groupby("corr")["kg"].sum().idxmax()))
-                except Exception:
-                    pass
     with cT:
         ut = st.checkbox("🛢️ Tanque", key=f"{key_prefix}_ut")
         if ut:
             try:
                 df = cat(
                     "SELECT v.id_tanque, v.codigo, v.nombre, COALESCE(v.kg_actual,0) kg, COALESCE(v.litros_actual,0) lt, "
-                    "pt.acidez_pct, pt.agua_pct, pt.sedimentos_pct, pt.densidad_g_ml, pt.ppm_azufre, pt.ppm_fosforo, pt.ultima_evaluacion_ts, pt.corriente "
+                    "pt.acidez_pct, pt.agua_pct, pt.sedimentos_pct, pt.densidad_g_ml, pt.ppm_azufre, pt.ppm_fosforo, pt.ultima_evaluacion_ts "
                     "FROM produccion.vw_stock_tanque_actual v "
                     "JOIN produccion.dim_tanque_producto tp ON tp.id_tanque=v.id_tanque "
                     "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto AND p.codigo_producto=%s "
@@ -941,9 +929,6 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                 if kg_tk > 0:
                     portions.append({"fuente": "TANQUE", "ticket": None, "id_tanque": int(row["id_tanque"]), "kg": kg_tk})
                     parts_lab.append((kg_tk, _tank_avg))
-                    _tcorr = str(row.get("corriente")).upper() if pd.notna(row.get("corriente")) else None
-                    if _tcorr:
-                        parts_corr.append((kg_tk, _tcorr))
                 if kg_tk > _stock:
                     st.warning("⚠️ Supera el stock del tanque (se registra el movimiento igual).")
     total = kg_port + kg_tk
@@ -981,20 +966,7 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
             f"<div class='s'>{_msg}{_ac_pond_txt}</div></div>", unsafe_allow_html=True)
     elif total > 0:
         st.caption(f"Total cargado: **{total:,.0f} kg · {total/1000:,.2f} TN**{_ac_pond_txt}")
-    src_corr = None
-    if parts_corr:
-        _cg = {}
-        for _kg, _c in parts_corr:
-            if _c:
-                _cg[_c] = _cg.get(_c, 0.0) + float(_kg or 0)
-        if _cg:
-            src_corr = max(_cg, key=_cg.get)
-    if src_corr:
-        st.session_state["mp_corr"] = src_corr
-        st.caption("Corriente de la fuente: **"
-                   + ("🌱 Vegetal" if src_corr == "VEGETAL" else ("🐄 Animal" if src_corr == "ANIMAL" else src_corr))
-                   + "**")
-    return total, portions, lab_avg, src_corr
+    return total, portions, lab_avg
 
 
 def proceso_desde_mp(cod):
@@ -2284,10 +2256,7 @@ with tab_objs[0]:
                 "Materia prima a tratar *", _mp_reactor_opts, key="b_mp_pre",
                 help="El tipo de reacción y la corriente se derivan automáticamente de la MP.")
             tipo_proceso_sel = proceso_desde_mp(mp_pre)
-            if st.session_state.get("mp_pre_last") != mp_pre:
-                st.session_state["mp_pre_last"] = mp_pre
-                st.session_state.pop("mp_corr", None)
-            corriente_v = st.session_state.get("mp_corr") or corriente_de_mp_lab(mp_pre)
+            corriente_v = corriente_de_mp_lab(mp_pre)
             _proc_desc = (tipos_proceso[tipos_proceso["codigo"] == tipo_proceso_sel].iloc[0]["descripcion"]
                           if tipo_proceso_sel in tipos_proceso["codigo"].tolist() else (tipo_proceso_sel or "—"))
             _et_proc = etapas_de_proceso(proceso_key_de(sector, tipo_proceso_sel))
@@ -2548,7 +2517,7 @@ with tab_objs[0]:
                 _aM2.metric(f"Densidad {cod}", f"{_dens_mp:.2f} kg/L")
                 _aM3.metric("Q MP objetivo", f"{_kg_planeado:,.0f} kg", f"{_kg_planeado/1000:,.2f} TN")
                 st.caption(f"ℹ️ Elegí la fuente del **{cod}** (portería y/o tanque). **Los parámetros de laboratorio vienen con la fuente.** El Q AG se asume = capacidad × densidad.")
-                _kg_src, _ports_src, _avg_src, _corr_src = fuente_mp_combinada(cod, key_prefix="b_mpf_are", target_kg=float(_kg_planeado))
+                _kg_src, _ports_src, _avg_src = fuente_mp_combinada(cod, key_prefix="b_mpf_are", target_kg=float(_kg_planeado))
                 _kg_used = float(_kg_src) if (_kg_src and _kg_src > 0) else float(_kg_planeado)
                 mps_ingresadas.append((cod, _kg_used))
                 litros_ini = round(_kg_used / _dens_mp, 1) if _dens_mp else None
@@ -2596,7 +2565,7 @@ with tab_objs[0]:
                             cod = st.selectbox(f"Producto inicial #{i+1} *", _opts_mp_tl, key=f"b_pi_lab_{i}")
 
                         # --- Fuente combinable: portería (tickets) + tanque ---
-                        _kg, _ports, _avg, _corr_src = fuente_mp_combinada(cod, key_prefix=f"b_mpf_{i}", permite_multiselect=_usa_multiselect_mp)
+                        _kg, _ports, _avg = fuente_mp_combinada(cod, key_prefix=f"b_mpf_{i}", permite_multiselect=_usa_multiselect_mp)
                         if cod and _kg > 0:
                             mps_ingresadas.append((cod, float(_kg)))
                             mp_fuentes[len(mps_ingresadas)-1] = _ports
