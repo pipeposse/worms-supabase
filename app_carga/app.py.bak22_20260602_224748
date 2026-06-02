@@ -1982,15 +1982,13 @@ if st.session_state.section != "CARGAS":
             _t = d.copy()
             _t["Medidor"] = _t["fuente_medicion"].map({"WeDo": "📡 WeDo", "Manual": "✍️ Manual"})
             _t = _t[["codigo", "nombre", "tipo_tanque", "sector", "producto_principal", "Medidor", "wedo_label",
-                     "intervalo_real_min", "nivel_pct_actual", "_litros", "_tn", "capacidad_litros", "ultima_medicion"]].rename(columns={
+                     "nivel_pct_actual", "_litros", "_tn", "capacidad_litros", "ultima_medicion"]].rename(columns={
                 "codigo": "Código", "nombre": "Tanque", "tipo_tanque": "Tipo", "sector": "Sector",
-                "producto_principal": "Producto", "wedo_label": "Sensor", "intervalo_real_min": "Intervalo (min)",
-                "nivel_pct_actual": "Nivel %",
+                "producto_principal": "Producto", "wedo_label": "Sensor", "nivel_pct_actual": "Nivel %",
                 "_litros": "Litros", "_tn": "TN", "capacidad_litros": "Capac. (L)", "ultima_medicion": "Última medición"})
             try:
                 _cfg = {
                     "Nivel %": st.column_config.ProgressColumn("Nivel %", min_value=0, max_value=100, format="%.0f%%"),
-                    "Intervalo (min)": st.column_config.NumberColumn("Intervalo (min)", format="%.0f", help="Cada cuántos minutos reporta el sensor WeDo (intervalo real observado)."),
                     "Litros": st.column_config.NumberColumn(format="%d"),
                     "TN": st.column_config.NumberColumn(format="%.2f"),
                     "Capac. (L)": st.column_config.NumberColumn(format="%d"),
@@ -2000,8 +1998,7 @@ if st.session_state.section != "CARGAS":
             except Exception:
                 st.dataframe(_t, use_container_width=True, hide_index=True, height=470)
             st.caption("Stock en **litros** (medición real). El **kg/TN** se calcula por densidad del producto del tanque. "
-                       "**Intervalo (min)** = cada cuánto reporta el sensor (no todos a la vez). "
-                       "📡 WeDo = automático por sensor · ✍️ Manual = última medición cargada.")
+                       "📡 WeDo = automático por sensor (cada 5 min) · ✍️ Manual = última medición cargada.")
 
             _byp = d.dropna(subset=["_tn"]).groupby("producto_principal", as_index=False)["_tn"].sum()
             if not _byp.empty:
