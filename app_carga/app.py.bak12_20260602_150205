@@ -3334,16 +3334,6 @@ with tab_objs[0]:
                                 """, (id_b, etapa_sel,
                                       inicio_dt.isoformat() if inicio_dt else None,
                                       int(USR["id_usuario"]), id_b, etapa_sel))
-                                # Guardar la planificación = arrancar la reacción: ARMADO -> REACCION
-                                if sector == "REACTORES" and not es_recup:
-                                    cur.execute("UPDATE fact_etapa_evento SET fin_ts=NOW() "
-                                                "WHERE id_batch=%s AND etapa='ARMADO' AND fin_ts IS NULL", (id_b,))
-                                    cur.execute("INSERT INTO fact_etapa_evento (id_batch, etapa, inicio_ts, id_usuario) "
-                                                "SELECT %s,'REACCION',NOW(),%s "
-                                                "WHERE NOT EXISTS (SELECT 1 FROM fact_etapa_evento WHERE id_batch=%s AND etapa='REACCION')",
-                                                (id_b, int(USR["id_usuario"]), id_b))
-                                    cur.execute("UPDATE fact_batch_proceso SET etapa_actual='REACCION' "
-                                                "WHERE id_batch=%s AND etapa_actual='ARMADO'", (id_b,))
                         audit.insert("fact_batch_proceso", id_b,
                                      {"sector": sector, "proceso": tipo_proceso_sel,
                                       "producto": p_obt, "kg": kg_obt, "fuera_rango": bool(fuera_rango)})
@@ -3942,36 +3932,13 @@ with tab_objs[0]:
             r2 = df_rec2.iloc[opt2.index(sel2)]
             tipo_actual = r2["tipo_proceso"]
 
-            _flash = st.session_state.pop("m_flash", None)
-            if _flash:
-                try:
-                    _bf = cat("SELECT estado, ticket_producto_final, ticket_validacion_lab "
-                              "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(_flash.get("batch")),))
-                    _ef = _bf.iloc[0]["estado"] if not _bf.empty else None
-                    _tpf = _bf.iloc[0]["ticket_producto_final"] if not _bf.empty else None
-                    _tvl = _bf.iloc[0]["ticket_validacion_lab"] if not _bf.empty else None
-                except Exception:
-                    _ef = _tpf = _tvl = None
-                st.success(f"✅ Evaluación interna #{_flash.get('id')} guardada. Podés cargar otra.")
-                if _ef == "REPOSO" and _tpf:
-                    st.warning(f"🟦 Acidez ≤ 10 → la reacción pasó a **REPOSO**. "
-                               f"🎫 Ticket de producto final: **{_tpf}** (a evaluar en laboratorio). "
-                               f"Validación con ticket MP **{_tvl or '—'}**.")
-
-            _et_lbl_r = {"ARMADO": "Armado", "REACCION": "Reacción", "REPOSANDO": "Reposo",
-                         "DECANTACION": "Decantación", "EN_TANQUE": "Acopio final"}
-            _et_eval = etapas_de_proceso(tipo_actual)
-            _et_eval_codes = [c for c in _et_eval["etapa"].tolist() if c != "CARGA"]
-            if not _et_eval_codes:
-                _et_eval_codes = ["REACCION"]
-            _cur_et = r2["etapa_actual"] if r2["etapa_actual"] in _et_eval_codes else _et_eval_codes[0]
+            _et_eval = etapas_de_proceso("PRODUCCION_ARE")
+            _et_eval_codes = _et_eval["etapa"].tolist()
             etapa_m = st.selectbox(
-                "Etapa de la muestra (por defecto, la etapa actual de la reacción)",
-                _et_eval_codes, index=_et_eval_codes.index(_cur_et),
-                format_func=lambda c: _et_lbl_r.get(c, c),
-                key=f"m_etapa_{int(r2['id_batch'])}",
+                "Etapa de la muestra", _et_eval_codes,
+                format_func=lambda c: (_et_eval[_et_eval["etapa"]==c].iloc[0]["descripcion"] if not _et_eval[_et_eval["etapa"]==c].empty else c),
+                key="m_etapa"
             )
-            st.caption(f"Etapa actual de la reacción: **{_et_lbl_r.get(r2['etapa_actual'], r2['etapa_actual'] or '—')}**")
             aplicables_m = params_proceso[params_proceso["aplica_a"].apply(
                 lambda lst: tipo_actual in (lst if isinstance(lst, list) else [])
             )]
@@ -4003,39 +3970,26 @@ with tab_objs[0]:
                                 """, (int(r2["id_batch"]), etapa_m, json.dumps(med), obs_m or None, int(USR["id_usuario"])))
                                 id_m = cur.fetchone()[0]
                             audit.insert("fact_evaluacion_interna", id_m, med)
-                        st.session_state["m_flash"] = {"id": int(id_m), "batch": int(r2["id_batch"])}
-                        cat.clear()
-                        st.rerun()
+                        st.success(f"Evaluación interna #{id_m} guardada.")
+                        try:
+                            cat.clear()
+                            _bs = cat("SELECT estado, ticket_producto_final, ticket_validacion_lab "
+                                      "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(r2["id_batch"]),))
+                            if not _bs.empty:
+                                _est = _bs.iloc[0]["estado"]
+                                _tpf = _bs.iloc[0]["ticket_producto_final"]
+                                _tvl = _bs.iloc[0]["ticket_validacion_lab"]
+                                if _est == "REPOSO" and _tpf:
+                                    st.warning(
+                                        f"🟦 Acidez ≤ 10 → la reacción pasó a **REPOSO**.\n\n"
+                                        f"🎫 **Ticket de producto final: {_tpf}** — entregalo a laboratorio para evaluar.\n\n"
+                                        f"🧪 Validación de la evaluación interna con el ticket de la MP: **{_tvl or '—'}**.")
+                                else:
+                                    st.caption(f"Estado actual de la reacción: **{_est}**.")
+                        except Exception:
+                            pass
                     except Exception as e:
                         st.exception(e)
-
-            st.divider()
-            try:
-                _bst = cat("SELECT estado, etapa_actual, ticket_producto_final "
-                           "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(r2["id_batch"]),))
-                _estx = _bst.iloc[0]["estado"] if not _bst.empty else "—"
-                _etx = _bst.iloc[0]["etapa_actual"] if not _bst.empty else "—"
-                _tpfx = _bst.iloc[0]["ticket_producto_final"] if not _bst.empty else None
-            except Exception:
-                _estx = _etx = "—"; _tpfx = None
-            _sm1, _sm2, _sm3 = st.columns(3)
-            _sm1.metric("Estado de la reacción", _estx or "—")
-            _sm2.metric("Etapa actual", _etx or "—")
-            _sm3.metric("Ticket prod. final", _tpfx or "—")
-            _evs = cat("""
-                SELECT id_eval AS id, to_char(ts,'DD/MM HH24:MI') AS hora, etapa,
-                       (mediciones->>'acidez')::numeric AS acidez,
-                       (mediciones->>'temperatura')::numeric AS temperatura,
-                       (mediciones->>'fosforo')::numeric AS fosforo,
-                       (mediciones->>'azufre')::numeric AS azufre
-                FROM produccion.fact_evaluacion_interna
-                WHERE id_batch=%s AND NOT anulado ORDER BY ts DESC
-            """, (int(r2["id_batch"]),))
-            st.markdown("**🧪 Evaluaciones de esta reacción**")
-            if _evs.empty:
-                st.caption("Todavía no hay evaluaciones para esta reacción.")
-            else:
-                st.dataframe(_evs, hide_index=True, use_container_width=True)
 
 
 
