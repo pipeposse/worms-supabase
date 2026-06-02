@@ -3338,22 +3338,6 @@ with tab_objs[0]:
                                      {"sector": sector, "proceso": tipo_proceso_sel,
                                       "producto": p_obt, "kg": kg_obt, "fuera_rango": bool(fuera_rango)})
                     st.success(f"✅ Carga #{id_b} guardada. Ticket: {identificador or '-'}")
-                    if es_reactor and not es_recup:
-                        try:
-                            cat.clear()
-                            _evdf = cat(
-                                "SELECT secuencia AS \"#\", to_char(programado_ts,'DD/MM HH24:MI') AS \"Hora\", "
-                                "estado AS \"Estado\" FROM produccion.fact_eval_programada "
-                                "WHERE id_batch=%s ORDER BY secuencia", (id_b,))
-                        except Exception:
-                            _evdf = pd.DataFrame()
-                        with st.expander("🗓️ Cronograma de la reacción — monitoreo", expanded=True):
-                            if _evdf is not None and not _evdf.empty:
-                                st.markdown("**Evaluaciones internas programadas**")
-                                st.dataframe(_evdf, hide_index=True, use_container_width=True)
-                            st.caption("Avanzá y monitoreá las etapas desde **Avanzar etapa**. "
-                                       "Cuando la acidez medida llegue a ≤10, la reacción pasa a la siguiente etapa "
-                                       "y se genera el ticket de producto final para evaluar.")
                     cat.clear()
                 except Exception as e:
                     st.exception(e)

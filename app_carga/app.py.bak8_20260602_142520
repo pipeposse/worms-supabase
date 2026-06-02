@@ -847,14 +847,15 @@ def selector_fuente_mp(cod, key_prefix):
 
 
 def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=False):
-    """Fuente de la MP combinando PORTERÍA (tickets) + TANQUE. Los parámetros de
-    laboratorio resultan del PROMEDIO PONDERADO POR KG (toneladas) de las fuentes.
-    Devuelve (kg_total, portions, lab_avg)."""
+    """Fuente de la materia prima combinando PORTERÍA (tickets) + TANQUE para llegar a la
+    cantidad necesaria. Devuelve (kg_total, portions, lab_avg).
+    portions: lista de dicts {fuente:'TICKET'|'TANQUE', ticket, id_tanque, kg}."""
     st.markdown("**📦 Fuente de la materia prima** — combiná portería y/o tanque hasta la cantidad")
     portions = []
-    parts_lab = []   # [(kg, params_dict)] para promedio ponderado por kg
     kg_port = 0.0
     kg_tk = 0.0
+    lab_avg = {}
+    tank_avg = {}
     cP, cT = st.columns(2)
     with cP:
         up = st.checkbox("🎟️ Portería (tickets)", value=True, key=f"{key_prefix}_up")
@@ -862,77 +863,58 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
             tkstr = _ui_multiselect_tickets(cod, key_prefix=f"{key_prefix}_ms", dias=365, limit=20, max_tickets=3)
             _det, _avg, _ml, _mp, _mapp = params_de_tickets_lab(tkstr, cod)
             kg_port = float(pd.to_numeric(_det["kg"], errors="coerce").sum()) if (not _det.empty and "kg" in _det.columns) else 0.0
+            lab_avg = _avg or {}
             if kg_port > 0:
                 st.caption(f"Portería: **{kg_port:,.0f} kg · {kg_port/1000:,.2f} TN**")
                 portions.append({"fuente": "TICKET", "ticket": (tkstr or None), "id_tanque": None, "kg": kg_port})
-                parts_lab.append((kg_port, _avg or {}))
     with cT:
         ut = st.checkbox("🛢️ Tanque", key=f"{key_prefix}_ut")
         if ut:
             try:
                 df = cat(
-                    "SELECT v.id_tanque, v.codigo, v.nombre, COALESCE(v.kg_actual,0) kg, COALESCE(v.litros_actual,0) lt, "
-                    "pt.acidez_pct, pt.agua_pct, pt.sedimentos_pct, pt.densidad_g_ml, pt.ppm_azufre, pt.ppm_fosforo, pt.ultima_evaluacion_ts "
+                    "SELECT v.id_tanque, v.codigo, v.nombre, COALESCE(v.kg_actual,0) kg, COALESCE(v.litros_actual,0) lt "
                     "FROM produccion.vw_stock_tanque_actual v "
                     "JOIN produccion.dim_tanque_producto tp ON tp.id_tanque=v.id_tanque "
                     "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto AND p.codigo_producto=%s "
-                    "LEFT JOIN produccion.fact_param_tanque pt ON pt.id_tanque=v.id_tanque AND pt.id_producto=p.id_producto "
                     "ORDER BY kg DESC NULLS LAST", (cod,))
             except Exception:
                 df = pd.DataFrame()
             if df is None or df.empty:
                 st.caption(f"Sin tanques con stock de {cod}.")
             else:
-                def _tlab(r):
-                    s = f"{r['codigo']} · {float(r['kg'])/1000:,.1f} TN"
-                    s += f" · ac {float(r['acidez_pct']):.2f}%" if pd.notna(r.get('acidez_pct')) else " · ac s/d"
-                    if pd.notna(r.get('ultima_evaluacion_ts')):
-                        try:
-                            s += f" · eval {pd.to_datetime(r['ultima_evaluacion_ts']).strftime('%d/%m/%y')}"
-                        except Exception:
-                            pass
-                    return s
-                opts = df.apply(_tlab, axis=1).tolist()
+                opts = df.apply(lambda r: f"{r['codigo']} · {float(r['kg'])/1000:,.1f} TN", axis=1).tolist()
                 sel = st.selectbox(f"Tanque con {cod}", opts, key=f"{key_prefix}_tksel")
                 row = df.iloc[opts.index(sel)]
                 _stock = float(row["kg"] or 0)
-                _tank_avg = {}
-                for _k, _dst, _div in [("acidez_pct", "prc_acidez", 100.0), ("agua_pct", "prc_agua", 100.0),
-                                       ("sedimentos_pct", "prc_sedimentos", 100.0), ("densidad_g_ml", "densidad__g_ml", 1.0),
-                                       ("ppm_azufre", "ppm_azufre", 1.0), ("ppm_fosforo", "ppm_fosforo", 1.0)]:
-                    _v = row.get(_k)
-                    if pd.notna(_v):
-                        _tank_avg[_dst] = float(_v) / _div
-                _ev = row.get("ultima_evaluacion_ts")
-                _ev_txt = pd.to_datetime(_ev).strftime("%d/%m/%Y") if pd.notna(_ev) else "sin evaluación"
-                _ac_txt = f"{float(row['acidez_pct']):.2f}%" if pd.notna(row.get("acidez_pct")) else "s/d"
-                st.caption(f"Disponible: {_stock/1000:,.1f} TN · acidez {_ac_txt} · última eval: {_ev_txt}")
+                try:
+                    _pt = cat(
+                        "SELECT acidez_pct, agua_pct, sedimentos_pct, densidad_g_ml, ppm_azufre, ppm_fosforo "
+                        "FROM produccion.fact_param_tanque "
+                        "WHERE id_tanque=%s AND id_producto=(SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s) "
+                        "LIMIT 1", (int(row["id_tanque"]), cod))
+                    if not _pt.empty:
+                        _p0 = _pt.iloc[0]
+                        for _k, _dst, _div in [("acidez_pct", "prc_acidez", 100.0), ("agua_pct", "prc_agua", 100.0),
+                                               ("sedimentos_pct", "prc_sedimentos", 100.0), ("densidad_g_ml", "densidad__g_ml", 1.0),
+                                               ("ppm_azufre", "ppm_azufre", 1.0), ("ppm_fosforo", "ppm_fosforo", 1.0)]:
+                            _v = _p0.get(_k)
+                            if pd.notna(_v):
+                                tank_avg[_dst] = float(_v) / _div
+                except Exception:
+                    pass
                 _falta = (target_kg - kg_port) if target_kg else _stock
                 kg_tk = float(st.number_input(
                     "Kg desde tanque", min_value=0.0,
                     value=float(max(0.0, round(_falta))) if (_falta and _falta > 0) else 0.0,
                     step=100.0, key=f"{key_prefix}_tkkg"))
+                st.caption(f"Disponible: {_stock/1000:,.1f} TN")
                 if kg_tk > 0:
                     portions.append({"fuente": "TANQUE", "ticket": None, "id_tanque": int(row["id_tanque"]), "kg": kg_tk})
-                    parts_lab.append((kg_tk, _tank_avg))
                 if kg_tk > _stock:
                     st.warning("⚠️ Supera el stock del tanque (se registra el movimiento igual).")
     total = kg_port + kg_tk
-    # Promedio ponderado por kg de cada parámetro entre todas las fuentes
-    lab_avg = {}
-    if parts_lab:
-        _keys = set()
-        for _kg, _p in parts_lab:
-            _keys |= set(_p.keys())
-        for _k in _keys:
-            _num = 0.0
-            _den = 0.0
-            for _kg, _p in parts_lab:
-                if _p.get(_k) is not None and _kg:
-                    _num += float(_p[_k]) * float(_kg)
-                    _den += float(_kg)
-            if _den > 0:
-                lab_avg[_k] = _num / _den
+    if not lab_avg and tank_avg:
+        lab_avg = tank_avg
     if not lab_avg:
         _ms = ultimas_muestras_mp(cod, n=1)
         if not _ms.empty:
@@ -941,17 +923,15 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                 _v = _r0.get(_c)
                 if pd.notna(_v):
                     lab_avg[_c] = float(_v)
-    _ac_pond = lab_avg.get("prc_acidez")
-    _ac_pond_txt = f" · acidez ponderada {_ac_pond*100:.2f}%" if _ac_pond is not None else ""
     if target_kg:
         _f = target_kg - total
         _msg = "✅ completo" if abs(_f) <= max(1.0, target_kg * 0.01) else (f"faltan {_f:,.0f} kg" if _f > 0 else f"sobran {-_f:,.0f} kg")
         st.markdown(
             f"<div class='kpi' style='margin:6px 0'><div class='l'>Total cargado / objetivo</div>"
             f"<div class='v'>{total/1000:,.2f}<span style='font-size:1rem;font-weight:700'> / {target_kg/1000:,.2f} TN</span></div>"
-            f"<div class='s'>{_msg}{_ac_pond_txt}</div></div>", unsafe_allow_html=True)
+            f"<div class='s'>{_msg}</div></div>", unsafe_allow_html=True)
     elif total > 0:
-        st.caption(f"Total cargado: **{total:,.0f} kg · {total/1000:,.2f} TN**{_ac_pond_txt}")
+        st.caption(f"Total cargado: **{total:,.0f} kg · {total/1000:,.2f} TN**")
     return total, portions, lab_avg
 
 
@@ -3026,32 +3006,6 @@ with tab_objs[0]:
             cc2.metric("⏱️ Tiempo total estimado", f"{float(_tot_h):.1f} h" if _tot_h else "—")
             cc3.metric("🏁 Fin estimado", _fin_est.strftime("%H:%M") if _fin_est else "—")
 
-            # Control de capacidad: la carga (MP + insumos) no debe superar el reactor; idea = llenarlo al máximo
-            _cap_l = float(fila_bien["capacidad_max_l"] or 0)
-            _dens_mp_ref = densidad_de(mp_pre) or 0.92
-            _mp_kg_tot = sum(float(k) for _, k in mps_ingresadas) if mps_ingresadas else 0.0
-            _ins_kg_tot = sum(float(v) for v in insumos_dict.values()) if insumos_dict else 0.0
-            _mp_l = _mp_kg_tot / _dens_mp_ref if _dens_mp_ref else _mp_kg_tot
-            _ins_l = 0.0
-            for _ik, _iv in (insumos_dict or {}).items():
-                try:
-                    _di = densidad_insumo(_ik, 1.0) or 1.0
-                except Exception:
-                    _di = 1.0
-                _ins_l += float(_iv) / _di
-            _carga_l = _mp_l + _ins_l
-            _ocup = (_carga_l / _cap_l * 100) if _cap_l else 0.0
-            _cc1, _cc2, _cc3 = st.columns(3)
-            _cc1.metric("🛢️ Carga total (MP+insumos)", f"{_carga_l:,.0f} L")
-            _cc2.metric("📦 Capacidad reactor", f"{int(_cap_l):,} L")
-            _cc3.metric("Ocupación", f"{_ocup:.0f}%")
-            if _cap_l and _carga_l > _cap_l * 1.001:
-                st.error(f"⛔ La carga ({_carga_l:,.0f} L) supera la capacidad del reactor ({int(_cap_l):,} L). Reducí la cantidad.")
-            elif _cap_l and _ocup < 95:
-                st.warning(f"⚠️ El reactor no se llena al máximo (ocupación {_ocup:.0f}%). La idea es usarlo a capacidad plena.")
-            elif _cap_l:
-                st.success(f"✅ Reactor al {_ocup:.0f}% de su capacidad.")
-
             # Cronograma de etapas con horarios estimados desde el inicio
             try:
                 _de = duraciones_etapa[(duraciones_etapa["sector"] == sector) &
@@ -3096,13 +3050,10 @@ with tab_objs[0]:
                 _cadv = None
             if _cadv == "HORARIA" and _ini is not None:
                 _nslots = max(1, int(float(_tot_h or 0)) + 1)
-                _erows = [{"#": _kk + 1, "Hora": (_ini + _dtk.timedelta(hours=_kk)).strftime("%H:%M"),
-                           "Qué se mide": "Acidez · temperatura · fósforo"} for _kk in range(_nslots)]
-                st.dataframe(pd.DataFrame(_erows), hide_index=True, use_container_width=True)
+                _evh = [(_ini + _dtk.timedelta(hours=_kk)).strftime("%H:%M") for _kk in range(_nslots)]
+                st.caption(f"Una evaluación por hora desde el inicio ({_nslots}): " + " · ".join(_evh))
             elif _cadv == "UNICA" and _ini is not None:
-                st.dataframe(pd.DataFrame([{"#": 1, "Hora": _ini.strftime("%H:%M"),
-                                            "Qué se mide": "Medición única al inicio"}]),
-                             hide_index=True, use_container_width=True)
+                st.caption(f"Una medición única al inicio: {_ini.strftime('%H:%M')}")
             else:
                 st.caption("Se programa automáticamente al iniciar la reacción.")
 
@@ -3126,16 +3077,9 @@ with tab_objs[0]:
 
             # Checklist obligatorio para iniciar la reacción
             st.markdown('<div class="section-title">✅ Checklist para iniciar la reacción</div>', unsafe_allow_html=True)
-            _ck1 = st.checkbox(
-                f"MP {_mp_kg_tot/1000:,.1f} TN + insumos {_ins_kg_tot/1000:,.2f} TN · ocupación {_ocup:.0f}% del reactor",
-                key="b_ck_mp")
-            _ck2 = st.checkbox(
-                f"Caldera encendida a las {caldera_dt.strftime('%H:%M')}" + (f" · {_antic} min antes del inicio" if _ini is not None else ""),
-                key="b_ck_cal")
-            _ck3 = st.checkbox(
-                (f"Temp. objetivo {float(_temp_obj):.0f} °C · acidez {acidez_oleico_v:.2f}%" if acidez_oleico_v is not None
-                 else f"Temp. objetivo {float(_temp_obj):.0f} °C · parámetros verificados"),
-                key="b_ck_temp")
+            _ck1 = st.checkbox("Cantidades de materia prima e insumos verificadas", key="b_ck_mp")
+            _ck2 = st.checkbox("Caldera encendida (≥1 h antes, llega a 80 °C)", key="b_ck_cal")
+            _ck3 = st.checkbox("Temperatura inicial y parámetros verificados", key="b_ck_temp")
             st.checkbox(f"Corriente confirmada: {corriente_v or '—'}", value=True, disabled=True, key="b_ck_corr")
             _check_ok = bool(_ck1 and _ck2 and _ck3)
             if not _check_ok:
@@ -3338,22 +3282,6 @@ with tab_objs[0]:
                                      {"sector": sector, "proceso": tipo_proceso_sel,
                                       "producto": p_obt, "kg": kg_obt, "fuera_rango": bool(fuera_rango)})
                     st.success(f"✅ Carga #{id_b} guardada. Ticket: {identificador or '-'}")
-                    if es_reactor and not es_recup:
-                        try:
-                            cat.clear()
-                            _evdf = cat(
-                                "SELECT secuencia AS \"#\", to_char(programado_ts,'DD/MM HH24:MI') AS \"Hora\", "
-                                "estado AS \"Estado\" FROM produccion.fact_eval_programada "
-                                "WHERE id_batch=%s ORDER BY secuencia", (id_b,))
-                        except Exception:
-                            _evdf = pd.DataFrame()
-                        with st.expander("🗓️ Cronograma de la reacción — monitoreo", expanded=True):
-                            if _evdf is not None and not _evdf.empty:
-                                st.markdown("**Evaluaciones internas programadas**")
-                                st.dataframe(_evdf, hide_index=True, use_container_width=True)
-                            st.caption("Avanzá y monitoreá las etapas desde **Avanzar etapa**. "
-                                       "Cuando la acidez medida llegue a ≤10, la reacción pasa a la siguiente etapa "
-                                       "y se genera el ticket de producto final para evaluar.")
                     cat.clear()
                 except Exception as e:
                     st.exception(e)
