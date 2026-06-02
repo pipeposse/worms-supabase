@@ -2006,7 +2006,7 @@ if st.session_state.section != "CARGAS":
                 st.bar_chart(_byp.sort_values("_tn", ascending=False), x="producto_principal", y="_tn", use_container_width=True)
 
             st.divider()
-            g_cargar, g_editar, g_hist = st.tabs(["✍️ Cargar medición (manual)", "✏️ Editar tanque", "📈 Histórico / variación"])
+            g_cargar, g_editar = st.tabs(["✍️ Cargar medición (manual)", "✏️ Editar tanque"])
 
             # ---------- Cargar medición: SOLO tanques manuales, con filtros ----------
             with g_cargar:
@@ -2132,45 +2132,6 @@ if st.session_state.section != "CARGAS":
                                 cat.clear(); st.rerun()
                             except Exception as e:
                                 st.exception(e)
-
-            # ---------- Histórico / variación diaria (manual + WeDo) ----------
-            with g_hist:
-                _oh = _panel.apply(lambda r: f"{r['nombre']} · {r['codigo']} · {r['fuente_medicion']}", axis=1).tolist()
-                _selh = st.selectbox("Tanque", _oh, key="tq_hist_sel")
-                _rh = _panel.iloc[_oh.index(_selh)]
-                _idh = int(_rh["id_tanque"])
-                _dias = st.slider("Últimos días", 1, 90, 14, key="tq_hist_dias")
-                _serie = cat("SELECT medido_en, litros, nivel_pct, observaciones "
-                             "FROM produccion.fact_stock_tanque WHERE id_tanque=%s "
-                             "AND medido_en >= now() - make_interval(days => %s) "
-                             "AND litros IS NOT NULL ORDER BY medido_en", (_idh, int(_dias)))
-                if _serie.empty:
-                    st.info("Sin lecturas en el rango elegido.")
-                else:
-                    _hc1, _hc2, _hc3 = st.columns(3)
-                    _hc1.metric("Lecturas", len(_serie))
-                    _hc2.metric("Último (L)", f"{pd.to_numeric(_serie['litros'],errors='coerce').iloc[-1]:,.0f}")
-                    _hc3.metric("Fuente", _rh["fuente_medicion"])
-                    st.markdown("**Evolución del stock (litros)**")
-                    st.line_chart(_serie[["medido_en", "litros"]].dropna().set_index("medido_en"), use_container_width=True)
-                    _vd = cat("SELECT fecha, fuente, lecturas, litros_apertura, litros_cierre, "
-                              "variacion_intradia, variacion_vs_dia_anterior, min_litros, max_litros "
-                              "FROM produccion.vw_tanque_variacion_diaria WHERE id_tanque=%s "
-                              "ORDER BY fecha DESC LIMIT %s", (_idh, int(_dias)))
-                    st.markdown("**Variación diaria** — litros (positivo = ingreso · negativo = salida)")
-                    try:
-                        st.dataframe(_vd, use_container_width=True, hide_index=True,
-                                     column_config={
-                                         "fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                                         "litros_apertura": st.column_config.NumberColumn(format="%d"),
-                                         "litros_cierre": st.column_config.NumberColumn(format="%d"),
-                                         "variacion_intradia": st.column_config.NumberColumn(format="%d"),
-                                         "variacion_vs_dia_anterior": st.column_config.NumberColumn(format="%d"),
-                                     })
-                    except Exception:
-                        st.dataframe(_vd, use_container_width=True, hide_index=True)
-                    st.caption("Incluye **WeDo (sensor)** y **manuales** — todo en `fact_stock_tanque`. "
-                               "La columna **fuente** indica si el día fue WeDo, Manual o Mixto.")
 
     elif st.session_state.section == "ADMIN":
         # =================== ADMIN ===================

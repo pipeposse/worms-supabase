@@ -1942,147 +1942,134 @@ if st.session_state.section != "CARGAS":
             st.info("No hay tanques cargados.")
         else:
             # ---------- Filtros ----------
-            fc1, fc2, fc3, fc4 = st.columns(4)
-            f_sec = fc1.multiselect("Sector", sorted(_panel["sector"].dropna().unique().tolist()), key="tqp_sec")
-            f_tip = fc2.selectbox("Tipo de tanque", ["Todos"] + sorted(_panel["tipo_tanque"].dropna().unique().tolist()), key="tqp_tip")
-            f_med = fc3.selectbox("Medidor", ["Todos", "WeDo", "Manual"], key="tqp_med")
-            f_prod = fc4.selectbox("Producto asignado", ["Todos"] + sorted([x for x in _panel["producto_principal"].dropna().unique().tolist()]), key="tqp_prod")
+            fc1, fc2, fc3, fc4 = st.columns([1.4, 1, 1.4, 1])
+            _secs = sorted(_panel["sector"].dropna().unique().tolist())
+            f_sec = fc1.multiselect("Sector", _secs, key="tqp_sec")
+            f_med = fc2.selectbox("Medidor", ["Todos", "WeDo", "Manual"], key="tqp_med")
+            _prods_asig = sorted([x for x in _panel["producto_principal"].dropna().unique().tolist()])
+            f_prod = fc3.selectbox("Producto asignado", ["Todos"] + _prods_asig, key="tqp_prod")
+            f_u = fc4.radio("Unidad", ["TN", "kg", "L"], horizontal=True, key="tqp_u")
 
             d = _panel.copy()
             if f_sec:
                 d = d[d["sector"].isin(f_sec)]
-            if f_tip != "Todos":
-                d = d[d["tipo_tanque"] == f_tip]
             if f_med != "Todos":
                 d = d[d["fuente_medicion"] == f_med]
             if f_prod != "Todos":
                 d = d[d["producto_principal"] == f_prod]
 
-            # Stock: LITROS de base; kg/TN por fórmula de densidad
-            d["_litros"] = pd.to_numeric(d["litros_actual"], errors="coerce")
-            d["_dens"] = pd.to_numeric(d["densidad"], errors="coerce").fillna(0.91)
-            d["_kg"] = d["_litros"] * d["_dens"]
-            d["_tn"] = d["_kg"] / 1000.0
+            def _stk(r):
+                if f_u == "L":
+                    return pd.to_numeric(r["litros_actual"], errors="coerce")
+                kg = pd.to_numeric(r["kg_actual"], errors="coerce")
+                return (kg / 1000.0) if f_u == "TN" else kg
+            d["stock"] = d.apply(_stk, axis=1)
 
             # ---------- KPIs ----------
             _tot = len(d)
             _wd = int((d["fuente_medicion"] == "WeDo").sum())
-            _lt = float(d["_litros"].sum())
-            _tn = float(d["_tn"].sum())
+            _mn = _tot - _wd
+            _stot = float(pd.to_numeric(d["stock"], errors="coerce").sum())
+            _cap = float(pd.to_numeric(d["capacidad_litros"], errors="coerce").sum())
             st.markdown(
                 "<div class='kpi-grid'>"
                 f"<div class='kpi brand'><div class='l'>Tanques</div><div class='v'>{_tot}</div></div>"
                 f"<div class='kpi'><div class='l'>📡 WeDo (radar)</div><div class='v'>{_wd}</div></div>"
-                f"<div class='kpi'><div class='l'>✍️ Manual</div><div class='v'>{_tot-_wd}</div></div>"
-                f"<div class='kpi'><div class='l'>Stock total (litros)</div><div class='v'>{_lt:,.0f}</div></div>"
-                f"<div class='kpi'><div class='l'>Stock total (TN)</div><div class='v'>{_tn:,.1f}</div></div>"
+                f"<div class='kpi'><div class='l'>✍️ Manual</div><div class='v'>{_mn}</div></div>"
+                f"<div class='kpi'><div class='l'>Stock total ({f_u})</div><div class='v'>{_stot:,.1f}</div></div>"
+                f"<div class='kpi'><div class='l'>Capacidad total</div><div class='v'>{_cap/1000:,.0f}<span style='font-size:1rem;font-weight:700'> kL</span></div></div>"
                 "</div>", unsafe_allow_html=True)
 
             # ---------- Tabla ----------
-            _t = d.copy()
-            _t["Medidor"] = _t["fuente_medicion"].map({"WeDo": "📡 WeDo", "Manual": "✍️ Manual"})
-            _t = _t[["codigo", "nombre", "tipo_tanque", "sector", "producto_principal", "Medidor", "wedo_label",
-                     "nivel_pct_actual", "_litros", "_tn", "capacidad_litros", "ultima_medicion"]].rename(columns={
-                "codigo": "Código", "nombre": "Tanque", "tipo_tanque": "Tipo", "sector": "Sector",
-                "producto_principal": "Producto", "wedo_label": "Sensor", "nivel_pct_actual": "Nivel %",
-                "_litros": "Litros", "_tn": "TN", "capacidad_litros": "Capac. (L)", "ultima_medicion": "Última medición"})
+            _t = d[["codigo", "nombre", "sector", "producto_principal", "fuente_medicion", "wedo_label",
+                    "nivel_pct_actual", "stock", "capacidad_litros", "ultima_medicion"]].copy()
+            _t["fuente_medicion"] = _t["fuente_medicion"].map({"WeDo": "📡 WeDo", "Manual": "✍️ Manual"})
+            _t = _t.rename(columns={
+                "codigo": "Código", "nombre": "Tanque", "sector": "Sector", "producto_principal": "Producto",
+                "fuente_medicion": "Medidor", "wedo_label": "Sensor", "nivel_pct_actual": "Nivel %",
+                "stock": f"Stock ({f_u})", "capacidad_litros": "Capac. (L)", "ultima_medicion": "Última medición"})
             try:
                 _cfg = {
                     "Nivel %": st.column_config.ProgressColumn("Nivel %", min_value=0, max_value=100, format="%.0f%%"),
-                    "Litros": st.column_config.NumberColumn(format="%d"),
-                    "TN": st.column_config.NumberColumn(format="%.2f"),
+                    f"Stock ({f_u})": st.column_config.NumberColumn(format="%.1f"),
                     "Capac. (L)": st.column_config.NumberColumn(format="%d"),
                     "Última medición": st.column_config.DatetimeColumn(format="DD/MM HH:mm"),
                 }
                 st.dataframe(_t, use_container_width=True, hide_index=True, height=470, column_config=_cfg)
             except Exception:
                 st.dataframe(_t, use_container_width=True, hide_index=True, height=470)
-            st.caption("Stock en **litros** (medición real). El **kg/TN** se calcula por densidad del producto del tanque. "
-                       "📡 WeDo = automático por sensor (cada 5 min) · ✍️ Manual = última medición cargada.")
+            st.caption("📡 **WeDo** = stock automático por sensor radar (se actualiza solo cada 5 min). "
+                       "✍️ **Manual** = última medición cargada a mano.")
 
-            _byp = d.dropna(subset=["_tn"]).groupby("producto_principal", as_index=False)["_tn"].sum()
+            _byp = d.dropna(subset=["stock"]).groupby("producto_principal", as_index=False)["stock"].sum()
             if not _byp.empty:
-                st.markdown('<div class="section-title">Stock por material (TN)</div>', unsafe_allow_html=True)
-                st.bar_chart(_byp.sort_values("_tn", ascending=False), x="producto_principal", y="_tn", use_container_width=True)
+                st.markdown(f'<div class="section-title">Stock por material ({f_u})</div>', unsafe_allow_html=True)
+                st.bar_chart(_byp.sort_values("stock", ascending=False), x="producto_principal", y="stock", use_container_width=True)
 
             st.divider()
-            g_cargar, g_editar, g_hist = st.tabs(["✍️ Cargar medición (manual)", "✏️ Editar tanque", "📈 Histórico / variación"])
+            g_cargar, g_editar = st.tabs(["✍️ Cargar medición (manual)", "✏️ Editar tanque"])
 
-            # ---------- Cargar medición: SOLO tanques manuales, con filtros ----------
+            # ---------- Cargar medición: SOLO tanques manuales ----------
             with g_cargar:
                 _man = _panel[_panel["fuente_medicion"] == "Manual"]
                 if _man.empty:
                     st.info("No hay tanques manuales (todos miden por sensor WeDo).")
                 else:
-                    st.caption("Solo **tanques manuales**. Filtrá para encontrar el tanque rápido.")
-                    ff1, ff2, ff3 = st.columns(3)
-                    _csec = ff1.selectbox("Sector", ["Todos"] + sorted(_man["sector"].dropna().unique().tolist()), key="tqc_sec")
-                    _ctip = ff2.selectbox("Tipo", ["Todos"] + sorted(_man["tipo_tanque"].dropna().unique().tolist()), key="tqc_tip")
-                    _cpr = ff3.selectbox("Producto", ["Todos"] + sorted([x for x in _man["producto_principal"].dropna().unique().tolist()]), key="tqc_pr")
-                    _mm = _man.copy()
-                    if _csec != "Todos":
-                        _mm = _mm[_mm["sector"] == _csec]
-                    if _ctip != "Todos":
-                        _mm = _mm[_mm["tipo_tanque"] == _ctip]
-                    if _cpr != "Todos":
-                        _mm = _mm[_mm["producto_principal"] == _cpr]
-                    if _mm.empty:
-                        st.warning("No hay tanques manuales con esos filtros.")
+                    st.caption("Solo **tanques manuales**. Los WeDo se actualizan solos por sensor y no se cargan a mano.")
+                    _opt = _man.apply(lambda r: f"{r['nombre']} · {r['sector']}", axis=1).tolist()
+                    _selt = st.selectbox("Tanque", _opt, key="tq_sel_c")
+                    _row = _man.iloc[_opt.index(_selt)]
+                    _idt = int(_row["id_tanque"])
+                    _perm = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
+                                "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
+                                "WHERE tp.id_tanque=%s ORDER BY tp.es_principal DESC, p.codigo_producto", (_idt,))
+                    _plist = _perm["codigo_producto"].tolist() or _prods["codigo_producto"].tolist()
+                    _ppal = _prods[_prods["id_producto"] == _row["id_producto_principal"]]["codigo_producto"].tolist()
+                    _defp = _ppal[0] if (_ppal and _ppal[0] in _plist) else _plist[0]
+                    c1, c2, c3 = st.columns(3)
+                    _pcod = c1.selectbox("Producto medido", _plist, index=_plist.index(_defp), key="tq_prod_c")
+                    _modo = c2.radio("Unidad", ["Litros", "Kg"], horizontal=True, key="tq_modo_c")
+                    _dens = float(_prods[_prods["codigo_producto"] == _pcod]["dens"].iloc[0])
+                    if _modo == "Litros":
+                        _lts = c3.number_input("Litros medidos", 0.0, 5_000_000.0, step=100.0, value=0.0, key="tq_lts_c")
+                        _kg = _lts * _dens
                     else:
-                        _opt = _mm.apply(lambda r: f"{r['nombre']} · {r['codigo']} · {r['sector']}", axis=1).tolist()
-                        _selt = st.selectbox(f"Tanque ({len(_mm)})", _opt, key="tq_sel_c")
-                        _row = _mm.iloc[_opt.index(_selt)]
-                        _idt = int(_row["id_tanque"])
-                        _cap = float(_row["capacidad_litros"]) if pd.notna(_row["capacidad_litros"]) else 0.0
-                        _perm = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
-                                    "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
-                                    "WHERE tp.id_tanque=%s ORDER BY tp.es_principal DESC, p.codigo_producto", (_idt,))
-                        _plist = _perm["codigo_producto"].tolist() or _prods["codigo_producto"].tolist()
-                        _ppal = _prods[_prods["id_producto"] == _row["id_producto_principal"]]["codigo_producto"].tolist()
-                        _defp = _ppal[0] if (_ppal and _ppal[0] in _plist) else _plist[0]
-                        cc1, cc2 = st.columns(2)
-                        _pcod = cc1.selectbox("Producto medido", _plist, index=_plist.index(_defp), key="tq_prod_c")
-                        _lts = cc2.number_input("Litros medidos", 0.0, 5_000_000.0, step=100.0, value=0.0, key="tq_lts_c")
-                        _densp = float(_prods[_prods["codigo_producto"] == _pcod]["dens"].iloc[0])
-                        _kg = _lts * _densp
-                        _ocup = (_lts / _cap * 100) if _cap else 0.0
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("Equivale a", f"{_kg/1000:,.2f} TN")
-                        m2.metric("En kg", f"{_kg:,.0f} kg")
-                        m3.metric("Ocupación", f"{_ocup:.0f}%" if _cap else "—")
-                        st.caption(f"Densidad {_densp:g} kg/L · capacidad {int(_cap):,} L")
-                        cf, ch = st.columns(2)
-                        _fch = cf.date_input("Fecha medición", date.today(), key="tq_fch_c")
-                        _hr = ch.time_input("Hora medición", key="tq_hr_c")
-                        from datetime import datetime as _dtq
-                        _medido = _dtq.combine(_fch, _hr)
-                        _obs = st.text_input("Observaciones", max_chars=200, key="tq_obs_c")
-                        if st.button("💾 Guardar medición", type="primary", use_container_width=True, key="tq_save_c"):
-                            if (_lts or 0) <= 0:
-                                st.error("Cargá los litros (mayor a 0).")
-                            else:
-                                try:
-                                    with conectar(USR["id_usuario"]) as (conn, audit):
-                                        with conn.cursor() as cur:
-                                            cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s", (_pcod,))
-                                            _pid = cur.fetchone()[0]
-                                            cur.execute("INSERT INTO produccion.fact_stock_tanque "
-                                                        "(id_tanque,id_producto,medido_en,litros,kg,id_usuario,observaciones) "
-                                                        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                                                        (_idt, _pid, _medido.isoformat(), float(_lts), float(_kg),
-                                                         int(USR["id_usuario"]), _obs or None))
-                                        audit.log("I", "fact_stock_tanque", _idt, {"producto": _pcod, "litros": float(_lts)})
-                                    st.success(f"Medición guardada: {_row['nombre']} · {_pcod} · {_lts:,.0f} L ({_kg/1000:,.2f} TN).")
-                                    cat.clear()
-                                except Exception as e:
-                                    st.exception(e)
+                        _kg = c3.number_input("Kg medidos", 0.0, 5_000_000.0, step=100.0, value=0.0, key="tq_kg_c")
+                        _lts = (_kg / _dens) if _dens else None
+                    cf, ch = st.columns(2)
+                    _fch = cf.date_input("Fecha medición", date.today(), key="tq_fch_c")
+                    _hr = ch.time_input("Hora medición", key="tq_hr_c")
+                    from datetime import datetime as _dtq
+                    _medido = _dtq.combine(_fch, _hr)
+                    _obs = st.text_input("Observaciones", max_chars=200, key="tq_obs_c")
+                    st.caption(f"= {(_kg or 0)/1000:,.2f} TN · {(_lts or 0):,.0f} L · densidad {_dens:g} kg/L")
+                    if st.button("Guardar medición", type="primary", use_container_width=True, key="tq_save_c"):
+                        if (_kg or 0) <= 0:
+                            st.error("Cargá una cantidad mayor a 0.")
+                        else:
+                            try:
+                                with conectar(USR["id_usuario"]) as (conn, audit):
+                                    with conn.cursor() as cur:
+                                        cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s", (_pcod,))
+                                        _pid = cur.fetchone()[0]
+                                        cur.execute("INSERT INTO produccion.fact_stock_tanque "
+                                                    "(id_tanque,id_producto,medido_en,litros,kg,id_usuario,observaciones) "
+                                                    "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                                                    (_idt, _pid, _medido.isoformat(),
+                                                     (float(_lts) if _lts else None), float(_kg),
+                                                     int(USR["id_usuario"]), _obs or None))
+                                    audit.log("I", "fact_stock_tanque", _idt, {"producto": _pcod, "kg": float(_kg)})
+                                st.success(f"Medición guardada: {_row['nombre']} · {_pcod} · {_kg/1000:,.2f} TN.")
+                                cat.clear()
+                            except Exception as e:
+                                st.exception(e)
 
-            # ---------- Editar tanque (WeDo: solo capacidad) ----------
+            # ---------- Editar tanque ----------
             with g_editar:
                 if USR["rol"] not in ("SUPERVISOR", "ADMIN"):
                     st.info("Solo supervisor o admin pueden editar tanques.")
                 else:
-                    _o2 = _panel.apply(lambda r: f"{r['nombre']} · {r['codigo']}" + (" · 📡 WeDo" if r["fuente_medicion"] == "WeDo" else ""), axis=1).tolist()
+                    _o2 = _panel.apply(lambda r: f"{r['nombre']} · {r['sector']}" + (" · 📡 WeDo" if r["fuente_medicion"] == "WeDo" else ""), axis=1).tolist()
                     _s2 = st.selectbox("Tanque a editar", _o2, key="tq_sel_e")
                     _r2 = _panel.iloc[_o2.index(_s2)]
                     _idt2 = int(_r2["id_tanque"])
@@ -2090,7 +2077,8 @@ if st.session_state.section != "CARGAS":
                     _cap = st.number_input("Capacidad (litros)", 0.0, 5_000_000.0, step=100.0,
                                            value=float(_r2["capacidad_litros"]) if pd.notna(_r2["capacidad_litros"]) else 0.0, key="tq_cap_e")
                     if _es_wedo:
-                        st.info("🛰️ Tanque **WeDo**: el stock lo maneja el sensor radar. Acá solo se edita la **capacidad**.")
+                        st.info("🛰️ Tanque **WeDo**: el stock lo maneja el sensor radar automáticamente. "
+                                "Acá solo se puede editar la **capacidad**.")
                         if st.button("Guardar capacidad", type="primary", use_container_width=True, key="tq_save_e"):
                             try:
                                 with conectar(USR["id_usuario"]) as (conn, audit):
@@ -2132,45 +2120,6 @@ if st.session_state.section != "CARGAS":
                                 cat.clear(); st.rerun()
                             except Exception as e:
                                 st.exception(e)
-
-            # ---------- Histórico / variación diaria (manual + WeDo) ----------
-            with g_hist:
-                _oh = _panel.apply(lambda r: f"{r['nombre']} · {r['codigo']} · {r['fuente_medicion']}", axis=1).tolist()
-                _selh = st.selectbox("Tanque", _oh, key="tq_hist_sel")
-                _rh = _panel.iloc[_oh.index(_selh)]
-                _idh = int(_rh["id_tanque"])
-                _dias = st.slider("Últimos días", 1, 90, 14, key="tq_hist_dias")
-                _serie = cat("SELECT medido_en, litros, nivel_pct, observaciones "
-                             "FROM produccion.fact_stock_tanque WHERE id_tanque=%s "
-                             "AND medido_en >= now() - make_interval(days => %s) "
-                             "AND litros IS NOT NULL ORDER BY medido_en", (_idh, int(_dias)))
-                if _serie.empty:
-                    st.info("Sin lecturas en el rango elegido.")
-                else:
-                    _hc1, _hc2, _hc3 = st.columns(3)
-                    _hc1.metric("Lecturas", len(_serie))
-                    _hc2.metric("Último (L)", f"{pd.to_numeric(_serie['litros'],errors='coerce').iloc[-1]:,.0f}")
-                    _hc3.metric("Fuente", _rh["fuente_medicion"])
-                    st.markdown("**Evolución del stock (litros)**")
-                    st.line_chart(_serie[["medido_en", "litros"]].dropna().set_index("medido_en"), use_container_width=True)
-                    _vd = cat("SELECT fecha, fuente, lecturas, litros_apertura, litros_cierre, "
-                              "variacion_intradia, variacion_vs_dia_anterior, min_litros, max_litros "
-                              "FROM produccion.vw_tanque_variacion_diaria WHERE id_tanque=%s "
-                              "ORDER BY fecha DESC LIMIT %s", (_idh, int(_dias)))
-                    st.markdown("**Variación diaria** — litros (positivo = ingreso · negativo = salida)")
-                    try:
-                        st.dataframe(_vd, use_container_width=True, hide_index=True,
-                                     column_config={
-                                         "fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                                         "litros_apertura": st.column_config.NumberColumn(format="%d"),
-                                         "litros_cierre": st.column_config.NumberColumn(format="%d"),
-                                         "variacion_intradia": st.column_config.NumberColumn(format="%d"),
-                                         "variacion_vs_dia_anterior": st.column_config.NumberColumn(format="%d"),
-                                     })
-                    except Exception:
-                        st.dataframe(_vd, use_container_width=True, hide_index=True)
-                    st.caption("Incluye **WeDo (sensor)** y **manuales** — todo en `fact_stock_tanque`. "
-                               "La columna **fuente** indica si el día fue WeDo, Manual o Mixto.")
 
     elif st.session_state.section == "ADMIN":
         # =================== ADMIN ===================
