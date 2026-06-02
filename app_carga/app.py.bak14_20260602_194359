@@ -7,10 +7,6 @@ from pathlib import Path
 import pandas as pd
 import psycopg2
 import streamlit as st
-from datetime import datetime as _dtmod, timezone as _tzmod, timedelta as _tdmod
-TZ_AR = _tzmod(_tdmod(hours=-3))  # Argentina (UTC-3, sin horario de verano)
-def _ahora_ar():
-    return _dtmod.now(TZ_AR)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -2349,7 +2345,8 @@ with tab_objs[0]:
                     "Las TN reales de AFE-S se confirman al cerrar (Acopio final)."
                 )
 
-            inicio_dt = _ahora_ar()
+            from datetime import datetime as _dt
+            inicio_dt = _dt.now()
             fin_dt = None
             tiempo_est = None
             st.caption("🕒 El inicio de la reacción se registra automáticamente al guardar (timestamp).")
@@ -2358,7 +2355,8 @@ with tab_objs[0]:
             # BACHAS también usa el flujo de etapas: la carga arranca en ARMADO.
             etapa_sel = "ARMADO"
             st.text_input("Etapa actual *", value="ARMADO (carga de borra + mezcla)", disabled=True, key="b_etapa_disp_b")
-            inicio_dt = _ahora_ar()
+            from datetime import datetime as _dtb
+            inicio_dt = _dtb.now()
             st.caption("🕒 El inicio se registra automáticamente al guardar. Avanzás las etapas desde **Avanzar etapa**.")
 
         # Producto obtenido / kg / calidad
@@ -2374,7 +2372,7 @@ with tab_objs[0]:
         p_buscado = None
         calidad_buscada = ""
         if es_reactor:
-            st.markdown('<div class="section-title">🎯 Producto buscado</div>', unsafe_allow_html=True)
+            st.markdown("**Producto buscado (target)** — lo que se quiere obtener con la reacción")
             opt_obj = productos_obt["codigo_producto"].tolist()
             if tipo_proceso_sel == "DESGOMADO_ACUOSO":
                 # Flujo fijo AFE-SG -> AFE-S. AFE es calidad ÚNICA (no A/B/C).
@@ -3016,12 +3014,6 @@ with tab_objs[0]:
             _tot_h = _pp.get("tiempo_total_horas")
             if _tot_h is None and tiempo_est:
                 _tot_h = float(tiempo_est)
-            if tipo_proceso_sel == "PRODUCCION_ARE":
-                _tot_h = float(st.number_input(
-                    "⏱️ Duración estimada de la reacción (horas)", 1.0, 24.0,
-                    value=float(_tot_h or 4.0), step=1.0, key="b_reac_h",
-                    help="Cada hora de reacción se programa una evaluación interna; más una en decantación."))
-                tiempo_est = _tot_h
             _ini = inicio_dt
             _fin_est = (_ini + _dtk.timedelta(hours=float(_tot_h))) if (_ini and _tot_h) else None
             cc1, cc2, cc3 = st.columns(3)
@@ -3082,7 +3074,7 @@ with tab_objs[0]:
                                      (_cal_def.date() if _cal_def else date.today()), key="b_cal_f")
             _cal_h = _kc2.time_input("Hora de prendido",
                                      (_cal_def.time() if _cal_def else _dtk.time(6, 0)), key="b_cal_h")
-            caldera_dt = _dtk.datetime.combine(_cal_f, _cal_h).replace(tzinfo=(_ini.tzinfo if _ini is not None else TZ_AR))
+            caldera_dt = _dtk.datetime.combine(_cal_f, _cal_h)
             if _ini is not None:
                 _antic = int((_ini - caldera_dt).total_seconds() / 60)
                 if _antic >= 60:
@@ -3091,33 +3083,21 @@ with tab_objs[0]:
                     st.warning(f"⚠️ Caldera solo {_antic} min antes; se recomienda ≥60 min para llegar a 80 °C.")
 
             # Cronograma de evaluaciones internas (preview de lo que se programará al iniciar)
-            st.markdown('<div class="section-title">🧪 Esquema de evaluaciones internas</div>', unsafe_allow_html=True)
-            _evrows = []
-            if _ini is not None:
-                if tipo_proceso_sel == "PRODUCCION_ARE":
-                    _nh = max(1, int(round(float(_tot_h or 4))))
-                    for _kk in range(_nh + 1):
-                        _evrows.append({"#": len(_evrows) + 1, "Etapa": "Reacción",
-                                        "Hora": (_ini + _dtk.timedelta(hours=_kk)).strftime("%H:%M"),
-                                        "Qué se mide": "Acidez · temperatura · fósforo · azufre"})
-                    _rep_h = 0.0
-                    try:
-                        _rep = duraciones_etapa[(duraciones_etapa["sector"] == sector) &
-                                                (duraciones_etapa["tipo_proceso"] == tipo_proceso_sel) &
-                                                (duraciones_etapa["etapa"] == "REPOSANDO")]
-                        _rep_h = float(_rep.iloc[0]["duracion_target_min"]) / 60.0 if not _rep.empty else 0.0
-                    except Exception:
-                        _rep_h = 0.0
-                    _dec_t = _ini + _dtk.timedelta(hours=float(_tot_h or 4) + _rep_h)
-                    _evrows.append({"#": len(_evrows) + 1, "Etapa": "Decantación",
-                                    "Hora": _dec_t.strftime("%H:%M"), "Qué se mide": "Acidez final · densidad"})
-                else:
-                    _evrows.append({"#": 1, "Etapa": "Reacción", "Hora": _ini.strftime("%H:%M"),
-                                    "Qué se mide": "Medición única al inicio"})
-            if _evrows:
-                st.dataframe(pd.DataFrame(_evrows), hide_index=True, use_container_width=True)
-                st.caption(f"**{len(_evrows)} evaluaciones**: una por hora durante la reacción + una en decantación. "
-                           "Se reprograman solas al iniciar según la duración real.")
+            st.markdown('<div class="section-title">🧪 Cronograma de evaluaciones internas</div>', unsafe_allow_html=True)
+            try:
+                _cadf = cat("SELECT cadencia FROM produccion.dic_cronograma_eval WHERE tipo_proceso=%s", (tipo_proceso_sel,))
+                _cadv = _cadf.iloc[0]["cadencia"] if not _cadf.empty else None
+            except Exception:
+                _cadv = None
+            if _cadv == "HORARIA" and _ini is not None:
+                _nslots = max(1, int(float(_tot_h or 0)) + 1)
+                _erows = [{"#": _kk + 1, "Hora": (_ini + _dtk.timedelta(hours=_kk)).strftime("%H:%M"),
+                           "Qué se mide": "Acidez · temperatura · fósforo"} for _kk in range(_nslots)]
+                st.dataframe(pd.DataFrame(_erows), hide_index=True, use_container_width=True)
+            elif _cadv == "UNICA" and _ini is not None:
+                st.dataframe(pd.DataFrame([{"#": 1, "Hora": _ini.strftime("%H:%M"),
+                                            "Qué se mide": "Medición única al inicio"}]),
+                             hide_index=True, use_container_width=True)
             else:
                 st.caption("Se programa automáticamente al iniciar la reacción.")
 
