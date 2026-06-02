@@ -576,12 +576,10 @@ def _ui_multiselect_tickets(codigo_producto, key_prefix, dias=180, limit=30, max
             except Exception:
                 _f = str(_f)
             _ac = r.get("lab_prc_acidez")
-            _ac_txt = f" · ac {float(_ac)*100:.2f}%" if pd.notna(_ac) else ""
-            _ag = r.get("lab_prc_agua")
-            _ag_txt = f" · agua {float(_ag)*100:.2f}%" if pd.notna(_ag) else ""
-            return (f"{codigo_producto} · #{int(r['ticket'])} · {float(r['kg']):,.0f} kg neto · "
+            _ac_txt = f" · acidez {float(_ac)*100:.2f}%" if pd.notna(_ac) else ""
+            return (f"{int(r['ticket'])} · {float(r['kg']):,.0f} kg · "
                     f"{(r['corriente'] or '—')} · {(r['procedencia'] or '—')} · "
-                    f"{_f}{_ac_txt}{_ag_txt}")
+                    f"{_f}{_ac_txt}")
         _df = _df.copy()
         _df["_label"] = _df.apply(_fmt, axis=1)
         _opts = _df["_label"].tolist()
@@ -860,7 +858,10 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
     with cP:
         up = st.checkbox("🎟️ Portería (tickets)", value=True, key=f"{key_prefix}_up")
         if up:
-            tkstr = _ui_multiselect_tickets(cod, key_prefix=f"{key_prefix}_ms", dias=365, limit=20, max_tickets=3)
+            if permite_multiselect:
+                tkstr = _ui_multiselect_tickets(cod, key_prefix=f"{key_prefix}_ms", dias=180, limit=30, max_tickets=3)
+            else:
+                tkstr = st.text_input("N° de tickets (coma)", key=f"{key_prefix}_tk", placeholder="ej. 5063, 5048")
             _det, _avg, _ml, _mp, _mapp = params_de_tickets_lab(tkstr, cod)
             kg_port = float(pd.to_numeric(_det["kg"], errors="coerce").sum()) if (not _det.empty and "kg" in _det.columns) else 0.0
             lab_avg = _avg or {}
@@ -3041,40 +3042,6 @@ with tab_objs[0]:
                 else:
                     st.warning(f"⚠️ Caldera solo {_antic} min antes; se recomienda ≥60 min para llegar a 80 °C.")
 
-            # Cronograma de evaluaciones internas (preview de lo que se programará al iniciar)
-            st.markdown('<div class="section-title">🧪 Cronograma de evaluaciones internas</div>', unsafe_allow_html=True)
-            try:
-                _cadf = cat("SELECT cadencia FROM produccion.dic_cronograma_eval WHERE tipo_proceso=%s", (tipo_proceso_sel,))
-                _cadv = _cadf.iloc[0]["cadencia"] if not _cadf.empty else None
-            except Exception:
-                _cadv = None
-            if _cadv == "HORARIA" and _ini is not None:
-                _nslots = max(1, int(float(_tot_h or 0)) + 1)
-                _evh = [(_ini + _dtk.timedelta(hours=_kk)).strftime("%H:%M") for _kk in range(_nslots)]
-                st.caption(f"Una evaluación por hora desde el inicio ({_nslots}): " + " · ".join(_evh))
-            elif _cadv == "UNICA" and _ini is not None:
-                st.caption(f"Una medición única al inicio: {_ini.strftime('%H:%M')}")
-            else:
-                st.caption("Se programa automáticamente al iniciar la reacción.")
-
-            # Verificación rápida: cantidades, insumos y parámetros que se van a usar
-            st.markdown('<div class="section-title">📋 Cantidades, insumos y parámetros</div>', unsafe_allow_html=True)
-            _vt1, _vt2 = st.columns(2)
-            _mp_txt = ", ".join(f"{c} · {k/1000:,.2f} TN" for c, k in mps_ingresadas) if mps_ingresadas else "—"
-            _ins_txt = ", ".join(f"{k}: {v:,.0f} kg" for k, v in insumos_dict.items()) if insumos_dict else "—"
-            _vt1.markdown(f"**Materia prima:** {_mp_txt}")
-            _vt1.markdown(f"**Insumos a usar:** {_ins_txt}")
-            if est_are_kg:
-                _vt2.markdown(f"**Resultado estimado:** {est_are_kg/1000:,.2f} TN")
-            _par_bits = []
-            if acidez_oleico_v is not None:
-                _par_bits.append(f"acidez **{acidez_oleico_v:.2f}%**")
-            if pct_agua_ini_v is not None:
-                _par_bits.append(f"agua **{pct_agua_ini_v:.2f}%**")
-            if azufre_ppm_v is not None:
-                _par_bits.append(f"azufre **{azufre_ppm_v:.0f} ppm**")
-            _vt2.markdown("**Parámetros (de la fuente):** " + (" · ".join(_par_bits) if _par_bits else "—"))
-
             # Checklist obligatorio para iniciar la reacción
             st.markdown('<div class="section-title">✅ Checklist para iniciar la reacción</div>', unsafe_allow_html=True)
             _ck1 = st.checkbox("Cantidades de materia prima e insumos verificadas", key="b_ck_mp")
@@ -3644,10 +3611,7 @@ with tab_objs[0]:
             st.markdown("**Producto final real**")
             cF1, cF2, cF3 = st.columns(3)
             _finales = productos_permitidos(_sector_pf, rpf["tipo_proceso"], None, "FINAL") or productos[productos["tipo_producto"]=="FINAL"]["codigo_producto"].tolist()
-            _cands_pf = set(c for c in (_finales or []) if isinstance(c, str) and c)
-            if isinstance(rpf["buscado"], str) and rpf["buscado"]:
-                _cands_pf.add(rpf["buscado"])
-            _opts_pf = sorted(_cands_pf)
+            _opts_pf = sorted(set(_finales) | ({rpf["buscado"]} if rpf["buscado"] else set()))
             _idx_def = _opts_pf.index(rpf["buscado"]) if (rpf["buscado"] in _opts_pf) else 0
             p_obt_pf = cF1.selectbox("Producto obtenido *", _opts_pf, index=_idx_def, key="pf_prod")
             _sal_tickets = None
