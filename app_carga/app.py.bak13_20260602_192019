@@ -2206,7 +2206,7 @@ with tab_objs[0]:
                 help="Origen del material. Define si la producción es vegetal o animal."
             )
         elif sector == "REACTORES":
-            corriente_v = None  # la corriente se deriva de la MP y se muestra en el banner del reactor
+            st.caption("🧬 La corriente (vegetal/animal) se define automáticamente desde el análisis de laboratorio de la materia prima.")
 
         # Bloque REACTORES
         id_bien_sel = None
@@ -2222,45 +2222,50 @@ with tab_objs[0]:
         q_ag_kg_ref = 0.0
         catalizador_tipo = None
         if es_reactor:
-            st.markdown('<div class="section-title">🏭 Reactor y materia prima</div>', unsafe_allow_html=True)
-            cR1, cR2 = st.columns(2)
+            st.markdown("**Reactor → materia prima → proceso** (el proceso y la corriente se derivan de la MP)")
+            cR1, cR2, cR3 = st.columns(3)
             cod_bien = cR1.selectbox(
-                "Reactor (bien de uso) *", bienes_uso_full["codigo"].tolist(), key="b_bien",
+                "Bien de uso *", bienes_uso_full["codigo"].tolist(), key="b_bien",
                 format_func=lambda c: bienes_uso_full[bienes_uso_full["codigo"]==c].iloc[0]["nombre_ui"]
             )
             fila_bien = bienes_uso_full[bienes_uso_full["codigo"]==cod_bien].iloc[0]
             id_bien_sel = int(fila_bien["id_bien_uso"])
+            # 1) Materia prima a tratar -> define el proceso y la corriente
             _mp_reactor_opts = [c for c in productos_mp["codigo_producto"].tolist()
                                 if str(c).startswith(("AG-", "AFE", "SEBO", "BORRA"))] or productos_mp["codigo_producto"].tolist()
             if not _mp_reactor_opts:
                 _mp_reactor_opts = ["AG-C"]
             mp_pre = cR2.selectbox(
                 "Materia prima a tratar *", _mp_reactor_opts, key="b_mp_pre",
-                help="El tipo de reacción y la corriente se derivan automáticamente de la MP.")
+                help="Elegí la MP; el tipo de reacción y la corriente se derivan automáticamente de ella.")
             tipo_proceso_sel = proceso_desde_mp(mp_pre)
             corriente_v = corriente_de_mp_lab(mp_pre)
             _proc_desc = (tipos_proceso[tipos_proceso["codigo"] == tipo_proceso_sel].iloc[0]["descripcion"]
                           if tipo_proceso_sel in tipos_proceso["codigo"].tolist() else (tipo_proceso_sel or "—"))
+            cR3.text_input("Proceso (derivado de la MP) *", value=_proc_desc, disabled=True, key="b_tproc_disp")
             _et_proc = etapas_de_proceso(proceso_key_de(sector, tipo_proceso_sel))
             _et_codes = _et_proc["etapa"].tolist()
             etapa_sel = "ARMADO" if "ARMADO" in _et_codes else (_et_codes[0] if _et_codes else "ARMADO")
-            _cap_l0 = int(fila_bien['capacidad_max_l'] or 0)
-            _dft = duraciones_etapa[(duraciones_etapa["sector"] == sector) & (duraciones_etapa["tipo_proceso"] == tipo_proceso_sel)]
-            _tot_t = int(_dft["duracion_target_min"].sum()) if not _dft.empty else 0
-            _corr_em = "🌱" if corriente_v == "VEGETAL" else ("🐄" if corriente_v == "ANIMAL" else "•")
-            def _cell(lbl, val):
-                return ("<div style='min-width:92px'>"
-                        f"<div style='font-size:10.5px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;font-weight:700'>{lbl}</div>"
-                        f"<div style='font-size:15px;font-weight:700;color:#0f172a;margin-top:2px'>{val}</div></div>")
-            st.markdown(
-                "<div style='background:linear-gradient(135deg,#eef2ff,#faf5ff);border:1px solid #e0e7ff;"
-                "border-radius:14px;padding:12px 18px;margin:8px 0 12px;display:flex;flex-wrap:wrap;gap:22px;align-items:center'>"
-                + _cell("Proceso", _proc_desc)
-                + _cell("Corriente", f"{_corr_em} {corriente_v or '—'}")
-                + _cell("Capacidad", f"{_cap_l0:,} L")
-                + _cell("Duración objetivo", (f"{_tot_t/60:.1f} h" if _tot_t else "—"))
-                + _cell("Etapa inicial", "Armado")
-                + "</div>", unsafe_allow_html=True)
+            st.caption(f"🧪 MP **{mp_pre}** → proceso **{tipo_proceso_sel}** · corriente (lab) **{corriente_v or '—'}** · etapa inicial **ARMADO**")
+
+            st.caption(f"🔧 Capacidad: {int(fila_bien['capacidad_max_l'] or 0):,} L  ·  Fuel {fila_bien['consumo_fuel_kg_x_tn']:.1f} kg/TN  ·  NaOH {fila_bien['consumo_naoh_kg_x_tn']:.1f} kg/TN  ·  K {fila_bien['consumo_potasio_kg_x_tn']:.3f} kg/TN")
+
+            # Duraciones esperadas por etapa para este (sector, proceso)
+            dur_filt = duraciones_etapa[
+                (duraciones_etapa["sector"]==sector) &
+                (duraciones_etapa["tipo_proceso"]==tipo_proceso_sel)
+            ]
+            if not dur_filt.empty:
+                total_target = int(dur_filt["duracion_target_min"].sum())
+                etapas_order = etapas_proc.set_index("codigo")["orden"].to_dict()
+                dur_filt = dur_filt.copy()
+                dur_filt["orden"] = dur_filt["etapa"].map(etapas_order).fillna(99)
+                dur_filt = dur_filt.sort_values("orden")
+                resumen = " · ".join(
+                    f"**{row['etapa']}** {int(row['duracion_target_min'])}m ({int(row['duracion_min_min'])}–{int(row['duracion_max_min'])})"
+                    for _, row in dur_filt.iterrows()
+                )
+                st.caption(f"⏱️ Duraciones esperadas por etapa (min): {resumen}  ·  **Total target: {total_target} min** ({total_target/60:.1f} h)")
 
             # --- Inputs iniciales para formula de carga (PRODUCCION_ARE) ---
             gli_ticket_sel = None         # ticket de la muestra GLICERINA elegida (lab)
