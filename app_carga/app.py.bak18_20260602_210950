@@ -911,8 +911,6 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
             else:
                 def _tlab(r):
                     s = f"{r['codigo']} · {float(r['kg'])/1000:,.1f} TN"
-                    if pd.notna(r.get('corriente')):
-                        s += f" · {str(r['corriente']).lower()}"
                     s += f" · ac {float(r['acidez_pct']):.2f}%" if pd.notna(r.get('acidez_pct')) else " · ac s/d"
                     if pd.notna(r.get('ultima_evaluacion_ts')):
                         try:
@@ -983,8 +981,6 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
             f"<div class='s'>{_msg}{_ac_pond_txt}</div></div>", unsafe_allow_html=True)
     elif total > 0:
         st.caption(f"Total cargado: **{total:,.0f} kg · {total/1000:,.2f} TN**{_ac_pond_txt}")
-    _distinct_corr = set(c for _kg, c in parts_corr if c)
-    st.session_state["mp_corr_conflict"] = (len(_distinct_corr) > 1)
     src_corr = None
     if parts_corr:
         _cg = {}
@@ -993,11 +989,7 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                 _cg[_c] = _cg.get(_c, 0.0) + float(_kg or 0)
         if _cg:
             src_corr = max(_cg, key=_cg.get)
-    if len(_distinct_corr) > 1:
-        st.error("⛔ La materia prima de **portería** y **tanque** tienen distinta corriente ("
-                 + " vs ".join(sorted(_distinct_corr))
-                 + "). No se puede mezclar: elegí fuentes de la **misma corriente**. La carga queda bloqueada.")
-    elif src_corr:
+    if src_corr:
         st.session_state["mp_corr"] = src_corr
         st.caption("Corriente de la fuente: **"
                    + ("🌱 Vegetal" if src_corr == "VEGETAL" else ("🐄 Animal" if src_corr == "ANIMAL" else src_corr))
@@ -3211,8 +3203,7 @@ with tab_objs[0]:
 
         _btn_label = "🚀 Guardar planificación e iniciar reacción" if (es_reactor and not es_recup) else "✅ Guardar carga"
         submit_b = st.button(_btn_label, type="primary", use_container_width=True, key="b_submit",
-                             disabled=((es_reactor and not es_recup and not _check_ok)
-                                       or bool(st.session_state.get("mp_corr_conflict"))))
+                             disabled=(es_reactor and not es_recup and not _check_ok))
 
         if submit_b:
             errs = []
@@ -3227,8 +3218,6 @@ with tab_objs[0]:
                 errs.append("REACTORES requiere proceso y etapa.")
             if sector in ("REACTORES", "BACHAS") and not corriente_v:
                 errs.append("Definí la corriente (Vegetal/Animal).")
-            if st.session_state.get("mp_corr_conflict"):
-                errs.append("La materia prima de portería y de tanque tienen distinta corriente: usá una sola corriente.")
             if tipo_proceso_sel == "PRODUCCION_ARE" and catalizador_tipo == "NAOH" and not (naoh_kg_v and naoh_kg_v > 0):
                 errs.append("Cargá el NaOH (litros o kg).")
             if errs:
