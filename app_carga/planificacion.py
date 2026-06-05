@@ -11,6 +11,7 @@ Genera el ID de producción PLANIFICADO + un ticket de movimiento por cada MP/in
 render(USR, cat, conectar, siguiente_identificador, H) — H = helpers de app.py.
 """
 import json as _json
+import re as _re
 import pandas as pd
 import streamlit as st
 
@@ -173,11 +174,33 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         cons = cat("SELECT codigo_insumo, consumo_por_tn FROM produccion.dic_consumo_proceso "
                    "WHERE tipo_proceso=%s AND codigo_insumo='FUEL_OIL'", (proc,))
         fuel_rate = float(cons.iloc[0]["consumo_por_tn"]) if not cons.empty else 8.7
-        _goma_lab = lab_avg.get("prc_goma") or lab_avg.get("pct_goma")
-        _goma_def = round(float(_goma_lab) * 100, 2) if _goma_lab is not None else 0.0
+        # % goma desde el laboratorio (procesos_lab) de los tickets de AFE-SG elegidos
+        _goma_def = 0.0
+        _gtxt = "—"
+        _tok = []
+        for _p in (ports or []):
+            if _p.get("fuente") == "TICKET" and _p.get("ticket"):
+                _tok += [t.strip() for t in _re.split(r"[;,\s]+", str(_p["ticket"])) if t.strip()]
+        if _tok:
+            try:
+                _g = cat(
+                    "SELECT AVG(gm) gm, COUNT(*) n FROM ("
+                    " SELECT (COALESCE(prc_goma_abajo,0)+COALESCE(prc_goma_medio,0)+COALESCE(prc_goma_arriba,0))"
+                    "        / NULLIF((prc_goma_abajo IS NOT NULL)::int+(prc_goma_medio IS NOT NULL)::int+(prc_goma_arriba IS NOT NULL)::int,0) gm"
+                    " FROM produccion.procesos_lab"
+                    " WHERE TRIM(ticket) = ANY(%s)"
+                    "   AND (prc_goma_abajo IS NOT NULL OR prc_goma_medio IS NOT NULL OR prc_goma_arriba IS NOT NULL)"
+                    ") s", (_tok,))
+                if not _g.empty and _g.iloc[0]["gm"] is not None:
+                    _goma_def = round(float(_g.iloc[0]["gm"]) * 100, 2)
+                    _gtxt = f"de lab · {int(_g.iloc[0]['n'])} muestra(s)"
+            except Exception:
+                pass
         pct_goma = st.number_input("% Goma (parámetro clave del desgomado)", min_value=0.0, step=0.1,
                                    value=_goma_def, key="pl_goma",
-                                   help="Viene del laboratorio del AFE-SG. Es lo que se remueve en el desgomado.")
+                                   help=f"Promedio (abajo/medio/arriba) del laboratorio del AFE-SG ({_gtxt}). Ajustable.")
+        if _tok and _goma_def == 0.0:
+            st.caption("ℹ️ Los tickets elegidos no tienen % goma cargado en laboratorio (o está en 0).")
         agua_kg = round(kg_used * pct_agua / 100.0, 1)          # agua de proceso = 5% del peso de la MP
         fuel_kg = round(kg_used / 1000.0 * fuel_rate, 1)
         afe_s = round(kg_used * (1 - merma / 100.0), 0)         # AFE-S esperado (merma 5%)
