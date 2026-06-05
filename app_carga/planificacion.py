@@ -94,7 +94,15 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     else:
         pf_lbl = st.selectbox("Producto final / calidad", list(fin_opts.keys()), key="pl_pf")
     pf_id = fin_opts[pf_lbl]
-    calidad = (fin_code.get(pf_id, "").split("-")[-1] or None)
+    _cal_codes = set(cat("SELECT codigo FROM produccion.dic_calidad")["codigo"].tolist())
+    _raw = (fin_code.get(pf_id, "").split("-")[-1] or "").upper()
+    if proc != "PRODUCCION_ARE":
+        calidad = "UNICA" if "UNICA" in _cal_codes else None  # AFE = calidad única
+    elif _raw in _cal_codes:
+        calidad = _raw
+    else:
+        calidad = "UNICA" if "UNICA" in _cal_codes else None
+    pct_goma = None
 
     # ---------- PRODUCCION_ARE: glicerina (lab) + catalizador ----------
     glicerol_v = None
@@ -160,13 +168,26 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         else:
             st.info("Elegí la fuente de MP (para la acidez) y la muestra de glicerina (para el % glicerol) para ver los estimados.")
     else:  # DESGOMADO_ACUOSO
+        pct_agua = float(K("desgomado_pct_agua", 5) or 5)
+        merma = float(K("desgomado_merma_pct_esperada", 5) or 5)
         cons = cat("SELECT codigo_insumo, consumo_por_tn FROM produccion.dic_consumo_proceso "
-                   "WHERE tipo_proceso=%s AND upper(codigo_insumo) <> 'HORAS'", (proc,))
-        cols = st.columns(max(1, len(cons))) if not cons.empty else [st]
-        for i, r in enumerate(cons.itertuples()):
-            kg_i = round(kg_used / 1000.0 * float(r.consumo_por_tn or 0), 1)
-            cols[i % len(cols)].metric(r.codigo_insumo, f"{kg_i:,.1f}")
-            insumos_calc.append((r.codigo_insumo, "INSUMO", kg_i))
+                   "WHERE tipo_proceso=%s AND codigo_insumo='FUEL_OIL'", (proc,))
+        fuel_rate = float(cons.iloc[0]["consumo_por_tn"]) if not cons.empty else 8.7
+        _goma_lab = lab_avg.get("prc_goma") or lab_avg.get("pct_goma")
+        _goma_def = round(float(_goma_lab) * 100, 2) if _goma_lab is not None else 0.0
+        pct_goma = st.number_input("% Goma (parámetro clave del desgomado)", min_value=0.0, step=0.1,
+                                   value=_goma_def, key="pl_goma",
+                                   help="Viene del laboratorio del AFE-SG. Es lo que se remueve en el desgomado.")
+        agua_kg = round(kg_used * pct_agua / 100.0, 1)          # agua de proceso = 5% del peso de la MP
+        fuel_kg = round(kg_used / 1000.0 * fuel_rate, 1)
+        afe_s = round(kg_used * (1 - merma / 100.0), 0)         # AFE-S esperado (merma 5%)
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("% Goma", f"{pct_goma:.2f}%")
+        d2.metric(f"Agua proceso ({pct_agua:.0f}%)", f"{agua_kg:,.0f} kg")
+        d3.metric("Fuel", f"{fuel_kg:,.0f} kg")
+        d4.metric("AFE-S esperado", f"{afe_s:,.0f} kg")
+        insumos_calc.append(("AGUA", "INSUMO", agua_kg))
+        insumos_calc.append(("FUEL_OIL", "INSUMO", fuel_kg))
 
     # ---------- Resumen de parámetros de laboratorio (de la fuente) ----------
     if lab_avg:
@@ -196,7 +217,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         params = {
             "kg_objetivo": round(q_ag, 0), "temp_inicial_c": temp, "tiempo_horas": horas,
             "acidez_pct": round(acidez, 3), "glicerol_pct": glicerol_v, "catalizador": catal,
-            "glicerina_kg": gli_mov, "insumos_estimados": {c: k for c, _, k in insumos_calc},
+            "glicerina_kg": gli_mov, "pct_goma": pct_goma,
+            "insumos_estimados": {c: k for c, _, k in insumos_calc},
         }
         uid = int(USR["id_usuario"])
         try:
