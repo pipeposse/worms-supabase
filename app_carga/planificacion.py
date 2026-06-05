@@ -196,9 +196,14 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                     _gtxt = f"de lab · {int(_g.iloc[0]['n'])} muestra(s)"
             except Exception:
                 pass
+        # Para AFE-SG el laboratorio mide la goma como SEDIMENTOS (conclusión "SED = GOMA").
+        # Si las columnas prc_goma_* están en 0, usamos prc_sedimentos de la fuente.
+        if _goma_def == 0.0 and lab_avg.get("prc_sedimentos") is not None:
+            _goma_def = round(float(lab_avg["prc_sedimentos"]) * 100, 2)
+            _gtxt = "sedimentos = goma (AFE-SG)"
         pct_goma = st.number_input("% Goma (parámetro clave del desgomado)", min_value=0.0, step=0.1,
                                    value=_goma_def, key="pl_goma",
-                                   help=f"Promedio (abajo/medio/arriba) del laboratorio del AFE-SG ({_gtxt}). Ajustable.")
+                                   help=f"Goma del laboratorio del AFE-SG ({_gtxt}). En AFE-SG la goma se mide como sedimentos. Ajustable.")
         if _tok and _goma_def == 0.0:
             st.caption("ℹ️ Los tickets elegidos no tienen % goma cargado en laboratorio (o está en 0).")
         agua_kg = round(kg_used * pct_agua / 100.0, 1)          # agua de proceso = 5% del peso de la MP
