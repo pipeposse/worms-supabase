@@ -1364,3 +1364,180 @@ GRANT SELECT ON
   produccion.vw_param_tanque_actual, produccion.vw_batch_tiempos, produccion.vw_cumplimiento_cronograma,
   produccion.vw_evaluacion_interna_serie
 TO ai_readonly;
+
+-- ============================================================================
+-- RAG del chat NL->SQL: pgvector + ejemplos pregunta->SQL con embeddings
+-- (sincronizar con `python -m chat.sync_embeddings`)
+-- ============================================================================
+create extension if not exists vector with schema extensions;
+
+create table if not exists reporting.nl_examples (
+  id          bigint generated always as identity primary key,
+  pregunta    text not null,
+  sql         text not null,
+  fuente      text default 'training_examples.json',
+  embedding   extensions.vector(768),
+  actualizado timestamptz not null default now(),
+  unique (pregunta)
+);
+comment on table reporting.nl_examples is 'Ejemplos pregunta->SQL para recuperacion semantica (RAG) del chat. embedding = text-embedding-004 (768).';
+
+create index if not exists nl_examples_embedding_idx
+  on reporting.nl_examples using ivfflat (embedding extensions.vector_cosine_ops) with (lists = 10);
+
+grant select on reporting.nl_examples to ai_readonly;
+
+-- ============================================================================
+-- LEDGER DE MOVIMIENTOS DE STOCK · un ticket (MS-xxxxxxxx) por cada movimiento
+-- Trazabilidad total de ingresos/egresos de productos y materias primas.
+-- ============================================================================
+create sequence if not exists produccion.seq_ticket_mov_stock;
+
+create or replace function produccion.fn_next_ticket_mov_stock() returns text
+language sql as $$
+  select 'MS-' || lpad(nextval('produccion.seq_ticket_mov_stock')::text, 8, '0');
+$$;
+
+create table if not exists produccion.fact_movimiento_stock (
+  id_mov_stock       bigint generated always as identity primary key,
+  ticket_mov         text not null unique default produccion.fn_next_ticket_mov_stock(),
+  momento            timestamptz not null default now(),
+  id_batch           bigint references produccion.fact_batch_proceso(id_batch),
+  identificador_prod text,
+  tipo_movimiento    text not null check (tipo_movimiento in ('ENTRADA','SALIDA','AJUSTE')),
+  rol                text not null check (rol in ('MP','INSUMO','CATALIZADOR','PRODUCTO_FINAL','SUBPRODUCTO','OTRO')),
+  sentido            smallint not null check (sentido in (-1,1)),
+  id_producto        bigint references produccion.dim_producto(id_producto),
+  producto           text,
+  codigo_insumo      text,
+  fuente             text check (fuente in ('TANQUE','PORTERIA','REACTOR','AJUSTE','OTRO')),
+  id_tanque          bigint references produccion.dim_tanque(id_tanque),
+  tanque_label       text,
+  ticket_porteria    text,
+  ticket_lab         text,
+  cantidad           numeric,
+  unidad             text check (unidad in ('KG','LT','TN')),
+  kg                 numeric,
+  litros             numeric,
+  id_usuario         bigint references produccion.dim_usuario(id_usuario),
+  origen             text not null default 'sistema' check (origen in ('planificacion','carga_operario','decantacion','sistema','sync_wedo','ajuste_manual')),
+  observaciones      text,
+  anulado            boolean not null default false,
+  creado_en          timestamptz not null default now()
+);
+comment on table produccion.fact_movimiento_stock is 'Libro mayor de movimientos de stock: una fila (un ticket MS-xxxxxxxx) por cada ingreso/egreso de un producto o materia prima, ligado al id de producción que lo originó.';
+
+create index if not exists ix_mov_stock_batch    on produccion.fact_movimiento_stock(id_batch);
+create index if not exists ix_mov_stock_producto on produccion.fact_movimiento_stock(id_producto);
+create index if not exists ix_mov_stock_momento  on produccion.fact_movimiento_stock(momento desc);
+create index if not exists ix_mov_stock_rol      on produccion.fact_movimiento_stock(rol);
+grant select on produccion.fact_movimiento_stock to ai_readonly;
+
+create or replace view reporting.v_movimientos_stock as
+select ms.ticket_mov, ms.momento, ms.identificador_prod, ms.tipo_movimiento, ms.rol,
+       ms.producto, ms.codigo_insumo, ms.fuente, ms.tanque_label, ms.ticket_porteria,
+       ms.cantidad, ms.unidad, ms.kg, ms.litros,
+       (ms.sentido * coalesce(ms.kg,0))     as kg_neto,
+       (ms.sentido * coalesce(ms.litros,0)) as litros_neto,
+       ms.origen, ms.observaciones
+from produccion.fact_movimiento_stock ms
+where ms.anulado is not true;
+grant select on reporting.v_movimientos_stock to ai_readonly;
+
+-- ============================================================================
+-- Estado PLANIFICADO (Centro de Planificación · la dirección crea el batch
+-- y el operario lo ejecuta). etapa_actual queda NULL hasta el inicio.
+-- ============================================================================
+alter table produccion.fact_batch_proceso drop constraint if exists fact_batch_proceso_estado_check;
+alter table produccion.fact_batch_proceso add constraint fact_batch_proceso_estado_check
+  check (estado = any (array['PLANIFICADO','CARGA','REACCION','REPOSO','DECANTACION','FINALIZADO','FRENADA','ANULADA']));
+
+alter table produccion.fact_batch_proceso drop constraint if exists chk_batch_normal_con_mp;
+alter table produccion.fact_batch_proceso add constraint chk_batch_normal_con_mp
+  check (
+    tipo_operacion <> 'NORMAL'
+    or estado = 'PLANIFICADO'
+    or (id_producto_inicial is not null and kg_inicial is not null and kg_inicial > 0)
+  );
+
+-- ============================================================================
+-- Ciclo de vida del movimiento de stock: PLANIFICADO -> EJECUTADO -> ANULADO
+-- (sólo EJECUTADO afecta el stock de libro) + vista de stock estimado.
+-- ============================================================================
+alter table produccion.fact_movimiento_stock
+  add column if not exists estado_mov text not null default 'EJECUTADO',
+  add column if not exists id_usuario_planifica bigint references produccion.dim_usuario(id_usuario),
+  add column if not exists planificado_en timestamptz,
+  add column if not exists id_usuario_ejecuta bigint references produccion.dim_usuario(id_usuario),
+  add column if not exists ejecutado_en timestamptz;
+alter table produccion.fact_movimiento_stock drop constraint if exists chk_mov_stock_estado;
+alter table produccion.fact_movimiento_stock add constraint chk_mov_stock_estado
+  check (estado_mov in ('PLANIFICADO','EJECUTADO','ANULADO'));
+create index if not exists ix_mov_stock_estado on produccion.fact_movimiento_stock(estado_mov);
+
+-- reporting.v_tanque_stock_estimado: última medición física + movimientos EJECUTADOS posteriores.
+create or replace view reporting.v_tanque_stock_estimado as
+with ult as (
+  select distinct on (id_tanque) id_tanque, medido_en, litros, kg, nivel_pct,
+         case when observaciones='WeDo API' then 'SENSOR' else 'MANUAL' end as fuente_medicion
+  from produccion.fact_stock_tanque where litros is not null
+  order by id_tanque, medido_en desc),
+mov as (
+  select ms.id_tanque, sum(ms.sentido*coalesce(ms.litros,0)) delta_litros,
+         sum(ms.sentido*coalesce(ms.kg,0)) delta_kg, count(*) movs_desde_medicion
+  from produccion.fact_movimiento_stock ms join ult on ult.id_tanque=ms.id_tanque
+  where ms.estado_mov='EJECUTADO' and ms.anulado is not true and ms.momento>ult.medido_en
+  group by ms.id_tanque),
+pend as (
+  select id_tanque, count(*) movs_pendientes, sum(sentido*coalesce(litros,0)) litros_pendientes
+  from produccion.fact_movimiento_stock where estado_mov='PLANIFICADO' and anulado is not true
+  group by id_tanque)
+select t.id_tanque, t.codigo, t.nombre, t.sector, u.fuente_medicion, u.medido_en as ultima_medicion,
+       round(extract(epoch from (now()-u.medido_en))/60.0)::int as antiguedad_min,
+       w.intervalo_real_min as cadencia_sensor_min, u.litros as litros_medido,
+       coalesce(m.delta_litros,0) as delta_litros_ejecutado,
+       (coalesce(u.litros,0)+coalesce(m.delta_litros,0)) as litros_estimado,
+       coalesce(m.movs_desde_medicion,0) as movs_desde_medicion,
+       coalesce(p.movs_pendientes,0) as movs_pendientes,
+       coalesce(p.litros_pendientes,0) as litros_pendientes,
+       case when u.medido_en is null then 'SIN_DATO'
+            when w.id_tanque is not null and now()-u.medido_en <= (coalesce(w.intervalo_real_min,30)::int*2)*interval '1 minute' then 'ALTA'
+            when now()-u.medido_en <= interval '24 hours' or coalesce(m.movs_desde_medicion,0)>0 then 'MEDIA'
+            else 'BAJA' end as confianza
+from produccion.dim_tanque t
+left join ult u on u.id_tanque=t.id_tanque
+left join mov m on m.id_tanque=t.id_tanque
+left join pend p on p.id_tanque=t.id_tanque
+left join produccion.dim_tanque_wedo w on w.id_tanque=t.id_tanque and w.activo
+where t.activo;
+grant select on reporting.v_tanque_stock_estimado to ai_readonly;
+
+-- ============================================================================
+-- RECONCILIACIÓN DE STOCK (job pg_cron cada 30 min): lectura física vs libro.
+-- ============================================================================
+create table if not exists produccion.fact_reconciliacion_stock (
+  id_recon            bigint generated always as identity primary key,
+  id_stock            integer not null unique references produccion.fact_stock_tanque(id_stock),
+  id_tanque           bigint references produccion.dim_tanque(id_tanque),
+  momento             timestamptz not null,
+  litros_medido       numeric,
+  litros_esperado     numeric,
+  discrepancia_litros numeric,
+  severidad           text check (severidad in ('OK','ALERTA')),
+  ajuste_ticket       text,
+  creado_en           timestamptz not null default now()
+);
+create index if not exists ix_recon_tanque on produccion.fact_reconciliacion_stock(id_tanque);
+create index if not exists ix_recon_sev on produccion.fact_reconciliacion_stock(severidad);
+grant select on produccion.fact_reconciliacion_stock to ai_readonly;
+-- fn_reconciliar_stock(p_umbral_litros=300, p_umbral_pct=2.0, p_postear_ajuste=true):
+--   por tanque compara la última lectura física vs (lectura previa + movimientos
+--   ejecutados del intervalo); registra discrepancia y postea AJUSTE si supera umbral.
+--   (cuerpo completo aplicado vía migración reconciliacion_stock_job)
+create or replace view reporting.v_reconciliacion_stock as
+select rc.momento, t.codigo as tanque, rc.litros_medido, rc.litros_esperado,
+       rc.discrepancia_litros, rc.severidad, rc.ajuste_ticket
+from produccion.fact_reconciliacion_stock rc
+join produccion.dim_tanque t on t.id_tanque = rc.id_tanque;
+grant select on reporting.v_reconciliacion_stock to ai_readonly;
+-- cron: select cron.schedule('reconciliar_stock_30min','*/30 * * * *','select produccion.fn_reconciliar_stock();');

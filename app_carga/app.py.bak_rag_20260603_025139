@@ -230,14 +230,12 @@ if st.session_state.section is None:
 
     tiles = [
         ("🏭", "Cargas", "Carga de producción: armado, etapas, producto final y anulaciones.", "CARGAS", "land_cargas", True),
-        ("▶️", "Iniciar producción", "Elegí una producción planificada por dirección y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
         ("📊", "Vistas de producción", "Producción, consumos y tiempos por sector + informe mensual (kg/L/TN).", "VISTAS", "land_vistas", True),
         ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
         ("🚛", "Portería", "Pesajes de portería: filtros, peso por producto y descarga.", "PORT", "land_port", False),
         ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
     ]
     if USR["rol"] in ("SUPERVISOR", "ADMIN"):
-        tiles.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
         tiles.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
     if USR["rol"] == "ADMIN":
         tiles.append(("⚙️", "Admin", "Gestión de usuarios: alta, roles, sectores, reset PIN.", "ADMIN", "land_admin", False))
@@ -2275,41 +2273,6 @@ if st.session_state.section != "CARGAS":
                                 cambiar_sectores(USR["id_usuario"], u_id, sectores_mult)
                             st.success("Cambios aplicados."); cat.clear(); st.rerun()
                         except Exception as e: st.error(str(e))
-
-            st.divider()
-            st.markdown("**🤖 Consultas IA — RAG semántico**")
-            st.caption(
-                "Sincroniza los ejemplos pregunta→SQL como embeddings (pgvector) para que "
-                "el chat recupere los más parecidos a cada pregunta. Idempotente: solo embebe "
-                "los ejemplos nuevos. Corrélo cuando agregues ejemplos a training_examples.json."
-            )
-            if st.button("🔄 Sincronizar ejemplos (RAG)", key="rag_sync", use_container_width=True):
-                try:
-                    from chat.engine import sync_embeddings as _sync_rag
-                    with st.spinner("Generando embeddings…"):
-                        _n = _sync_rag(verbose=False)
-                    if _n == 0:
-                        st.info("Todos los ejemplos ya estaban embebidos. Nada que hacer.")
-                    else:
-                        st.success(f"Listo: {_n} ejemplo(s) embebido(s). El chat ya usa RAG semántico.")
-                except Exception as _e:
-                    st.error(f"No se pudo sincronizar: {_e}")
-
-    elif st.session_state.section == "INICIAR":
-        # =================== INICIAR PRODUCCIÓN (operario, por ID planificado) ===================
-        try:
-            from carga_por_id import render as _render_iniciar
-            _render_iniciar(USR, cat, conectar)
-        except Exception as _e:
-            st.error(f"No se pudo cargar Iniciar producción: {_e}")
-
-    elif st.session_state.section == "PLANIFICACION":
-        # =================== CENTRO DE PLANIFICACIÓN (dirección) ===================
-        try:
-            from planificacion import render as _render_plan
-            _render_plan(USR, cat, conectar, siguiente_identificador)
-        except Exception as _e:
-            st.error(f"No se pudo cargar el Centro de Planificación: {_e}")
 
     elif st.session_state.section == "CHAT":
         # =================== CONSULTAS IA (chat, solo lectura) ===================

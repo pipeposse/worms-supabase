@@ -58,5 +58,73 @@
   {
     "question": "Fuel oil consumido por proceso este mes",
     "sql": "SELECT proceso, ROUND(SUM(fuel_oil)::numeric, 1) AS fuel_oil, COUNT(*) AS corridas\nFROM reporting.v_produccion\nWHERE date_trunc('month', fecha) = date_trunc('month', current_date)\nGROUP BY proceso\nORDER BY fuel_oil DESC;"
+  },
+  {
+    "question": "¿Entraron más camiones en abril o en mayo?",
+    "sql": "SELECT to_char(fecha_entrada,'YYYY-MM') AS mes, COUNT(*) AS camiones, SUM(peso_neto_kg) AS kg_total\nFROM reporting.v_camiones\nWHERE sentido='ENTRADA'\n  AND fecha_entrada >= date_trunc('year', current_date) + interval '3 months'\n  AND fecha_entrada <  date_trunc('year', current_date) + interval '5 months'\nGROUP BY 1\nORDER BY 1;"
+  },
+  {
+    "question": "Comparar camiones mes a mes en lo que va del año",
+    "sql": "SELECT to_char(fecha_entrada,'YYYY-MM') AS mes, COUNT(*) AS camiones, SUM(peso_neto_kg)/1000.0 AS tn\nFROM reporting.v_camiones\nWHERE sentido='ENTRADA' AND fecha_entrada >= date_trunc('year', current_date)\nGROUP BY 1\nORDER BY 1;"
+  },
+  {
+    "question": "¿Cuánto stock hay en cada tanque ahora?",
+    "sql": "SELECT codigo, nombre, sector, producto, litros, tn, nivel_pct, fuente_medicion\nFROM reporting.v_tanques\nORDER BY litros DESC;"
+  },
+  {
+    "question": "Stock total por producto en los tanques",
+    "sql": "SELECT producto, COUNT(*) AS tanques, SUM(tn) AS tn_total, SUM(litros) AS litros_total\nFROM reporting.v_tanques\nWHERE producto IS NOT NULL\nGROUP BY producto\nORDER BY tn_total DESC;"
+  },
+  {
+    "question": "¿Qué tanques están por debajo del 20% de nivel?",
+    "sql": "SELECT codigo, nombre, sector, producto, nivel_pct, litros\nFROM reporting.v_tanques\nWHERE nivel_pct < 20\nORDER BY nivel_pct;"
+  },
+  {
+    "question": "Stock de los tanques de exportación",
+    "sql": "SELECT codigo, nombre, producto, litros, tn, nivel_pct\nFROM reporting.v_tanques\nWHERE sector ILIKE '%exporta%'\nORDER BY litros DESC;"
+  },
+  {
+    "question": "¿Cuántos tanques miden por sensor WeDo y cuántos a mano?",
+    "sql": "SELECT fuente_medicion, COUNT(*) AS tanques, SUM(tn) AS tn_total\nFROM reporting.v_tanques\nGROUP BY fuente_medicion\nORDER BY tanques DESC;"
+  },
+  {
+    "question": "Variación de stock del tanque base plana vieja 6 en los últimos 7 días",
+    "sql": "SELECT fecha, fuente, litros_apertura, litros_cierre, variacion_intradia, variacion_vs_dia_anterior\nFROM reporting.v_tanque_variacion\nWHERE codigo='BPV-BASE-PLANA-VIEJA-6' AND fecha >= current_date - 7\nORDER BY fecha DESC;"
+  },
+  {
+    "question": "¿Qué tanques tuvieron mayor salida de producto hoy?",
+    "sql": "SELECT codigo, nombre, producto, variacion_intradia\nFROM reporting.v_tanque_variacion\nWHERE fecha = current_date AND variacion_intradia < 0\nORDER BY variacion_intradia ASC\nLIMIT 10;"
+  },
+  {
+    "question": "Dame una lista de todos los insumos que entraron a la planta",
+    "sql": "SELECT producto, COUNT(*) AS camiones, round((SUM(peso_neto_kg)/1000.0)::numeric,1) AS tn\nFROM reporting.v_camiones\nWHERE sentido='ENTRADA'\nGROUP BY producto\nORDER BY camiones DESC;"
+  },
+  {
+    "question": "¿Qué materias primas ingresaron este mes?",
+    "sql": "SELECT producto, COUNT(*) AS camiones, round((SUM(peso_neto_kg)/1000.0)::numeric,1) AS tn\nFROM reporting.v_camiones\nWHERE sentido='ENTRADA' AND date_trunc('month',fecha_entrada)=date_trunc('month',current_date)\nGROUP BY producto\nORDER BY tn DESC;"
+  },
+  {
+    "question": "Stock estimado actual de cada tanque y su confianza",
+    "sql": "SELECT codigo, litros_medido, delta_litros_ejecutado, litros_estimado, fuente_medicion, antiguedad_min, confianza\nFROM reporting.v_tanque_stock_estimado\nORDER BY litros_estimado DESC;"
+  },
+  {
+    "question": "¿Qué tanques tienen baja confianza o datos viejos?",
+    "sql": "SELECT codigo, fuente_medicion, antiguedad_min, confianza, movs_pendientes\nFROM reporting.v_tanque_stock_estimado\nWHERE confianza IN ('BAJA','SIN_DATO')\nORDER BY antiguedad_min DESC NULLS LAST;"
+  },
+  {
+    "question": "Movimientos de stock de la última producción",
+    "sql": "SELECT ticket_mov, estado_mov, rol, COALESCE(producto,codigo_insumo) item, fuente, COALESCE(tanque_label,ticket_porteria) origen, cantidad, unidad\nFROM reporting.v_movimientos_stock\nORDER BY momento DESC LIMIT 20;"
+  },
+  {
+    "question": "¿Cuántos movimientos están planificados sin confirmar?",
+    "sql": "SELECT identificador_prod, COUNT(*) movimientos\nFROM reporting.v_movimientos_stock\nWHERE estado_mov='PLANIFICADO'\nGROUP BY identificador_prod ORDER BY 2 DESC;"
+  },
+  {
+    "question": "¿Qué tanques tienen alertas de reconciliación (descuadres)?",
+    "sql": "SELECT tanque, momento, litros_medido, litros_esperado, discrepancia_litros, ajuste_ticket\nFROM reporting.v_reconciliacion_stock\nWHERE severidad='ALERTA'\nORDER BY abs(discrepancia_litros) DESC;"
+  },
+  {
+    "question": "Resumen de reconciliación de stock: cuántas OK y cuántas alerta",
+    "sql": "SELECT severidad, COUNT(*) lecturas, round(AVG(abs(discrepancia_litros)),0) disc_prom_litros\nFROM reporting.v_reconciliacion_stock\nGROUP BY severidad ORDER BY severidad;"
   }
 ]

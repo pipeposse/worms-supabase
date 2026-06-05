@@ -53,3 +53,46 @@
 
 ## Comparaciones
 - Para comparar dos procedencias/productos: agrupar por la dimensión y filtrar con `IN (...)`.
+
+## reporting.v_tanques (stock por tanque) — TIENE DATOS
+- Una fila por tanque. `litros` = stock actual (medición real); `kg` y `tn` se derivan por densidad del producto.
+- `fuente_medicion`: 'WeDo' (sensor radar automático, ~cada 20 min) o 'Manual' (carga a mano).
+- `tipo_tanque`: Base plana, Cónico, Cilíndrico, Pileta, ISO container, Calefaccionado.
+- `sector` = ubicación (Plataforma 1 (BPV), Plataforma 2 (BPN), Exportación, Reactores (Acopio), etc.).
+- `producto` = producto principal asignado. `nivel_pct` = % de llenado. `capacidad_litros` = capacidad nominal.
+- "Stock total" → SUM(`tn`) o SUM(`litros`). "Tanques con sensor / WeDo" → `fuente_medicion='WeDo'`.
+
+## reporting.v_tanque_variacion (variación diaria de stock) — TIENE DATOS (desde que se conectó el sensor)
+- Una fila por tanque y día (`fecha`). `variacion_intradia` = cierre−apertura del día; `variacion_vs_dia_anterior` = cierre de hoy − cierre de ayer.
+- Litros positivos = ingresó producto; negativos = salió. `fuente`: WeDo, Manual o Mixto.
+
+## Sinónimos de tanques
+- "stock / cuánto hay / volumen en tanque" → `litros` (o `tn`). "lleno / llenado / nivel" → `nivel_pct`.
+- "por sensor / automático / wedo / radar" → `fuente_medicion='WeDo'`. "a mano / manual" → `fuente_medicion='Manual'`.
+- "base plana / cónico / pileta / iso / calefaccionado" → `tipo_tanque`. "capacidad" → `capacidad_litros`.
+
+## Glosario CRÍTICO (evitar resultados vacíos)
+- "worms" / "la planta" / "la fábrica" / "la empresa" / "la operación" se refieren a TODO el negocio. NO son un filtro: nunca uses esas palabras en un WHERE/ILIKE.
+- "insumos" / "materia prima" / "MP" / "lo que entró/ingresó" = camiones de ENTRADA en `reporting.v_camiones` (filtro `sentido='ENTRADA'`). El material es la columna `producto`. Para "lista de insumos" usá `SELECT DISTINCT producto ... WHERE sentido='ENTRADA'`.
+- "lo que salió / despachos / ventas" = `sentido='SALIDA'`.
+- No inventes filtros de texto (ILIKE) salvo que la pregunta nombre explícitamente un valor de una columna (un producto, una procedencia, un cliente).
+
+## reporting.v_movimientos_stock (libro de movimientos) — un ticket por movimiento
+- Una fila por movimiento de stock (`ticket_mov` = MS-xxxxxxxx). `estado_mov`: PLANIFICADO (lo creó dirección), EJECUTADO (lo confirmó el operario, afecta stock), ANULADO.
+- `rol`: MP, INSUMO, CATALIZADOR, PRODUCTO_FINAL, SUBPRODUCTO. `fuente`: TANQUE, PORTERIA, REACTOR.
+- `kg_neto`/`litros_neto` ya traen el signo y SÓLO cuentan los EJECUTADO (+ ingreso, − egreso). `identificador_prod` liga al ID de producción.
+
+## reporting.v_tanque_stock_estimado (mejor estimación de stock por tanque)
+- `litros_estimado` = última medición física (`litros_medido`) + movimientos EJECUTADOS desde esa medición (`delta_litros_ejecutado`). Da stock cuasi-real aun en tanques medidos 1 vez al día.
+- `fuente_medicion`: SENSOR (WeDo) o MANUAL. `antiguedad_min`: minutos desde la última medición física. `cadencia_sensor_min`: cada cuánto reporta el sensor.
+- `confianza`: ALTA (sensor fresco), MEDIA (medición vieja pero con movimientos recientes), BAJA, SIN_DATO. `movs_pendientes`/`litros_pendientes`: movimientos PLANIFICADOS sin confirmar.
+
+## Sinónimos de stock/movimientos
+- "movimientos / trazabilidad / de dónde salió / a dónde fue" → `reporting.v_movimientos_stock`.
+- "stock real / actual / estimado / cuánto hay ahora con lo que se movió" → `reporting.v_tanque_stock_estimado` (`litros_estimado`).
+- "confianza / qué tan actualizado está el tanque" → `confianza`, `antiguedad_min`.
+
+## reporting.v_reconciliacion_stock (control físico vs libro)
+- Una fila por lectura física reconciliada. `litros_medido` (sensor/manual) vs `litros_esperado` (libro = lectura previa + movimientos). `discrepancia_litros` = medido − esperado.
+- `severidad`: OK (dentro de umbral) o ALERTA (posible movimiento no registrado, fuga o drift). `ajuste_ticket` = ticket MS del AJUSTE posteado cuando hay ALERTA.
+- "tanques con problemas / descuadres / fugas / discrepancias" → filtrar `severidad='ALERTA'`.

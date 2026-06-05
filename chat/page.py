@@ -4,25 +4,20 @@ import pandas as pd
 import streamlit as st
 
 from . import config_chat as cfg
-from .engine import generate_sql, run_sql_readonly, is_select_only
-
-
-@st.cache_data(show_spinner=False, ttl=900)
-def _sql_cacheado(pregunta: str) -> str:
-    """Genera el SQL una vez por pregunta. Evita re-llamar a Gemini en cada rerun."""
-    return generate_sql(pregunta)
+from .engine import resolver, is_select_only
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def _df_cacheado(sql: str) -> pd.DataFrame:
-    """Ejecuta el SQL una vez por consulta (cache corto). Evita re-pegarle a la BD en cada rerun."""
-    return run_sql_readonly(sql)
+def _resolver_cacheado(pregunta: str) -> dict:
+    """Genera + ejecuta + autocorrige una vez por pregunta (cache corto).
+    Evita re-pegarle a Gemini/BD en cada rerun de Streamlit."""
+    return resolver(pregunta)
 
 SUGERENCIAS = [
     "¿Cuántos camiones entraron ayer y de qué categorías?",
-    "Comparar camiones entre ARROYO SECO y ALVEAR en los últimos 30 días",
-    "Top 10 procedencias por cantidad de camiones este mes",
-    "Kg netos ingresados por día en la última semana",
+    "¿Entraron más camiones en abril o en mayo?",
+    "¿Cuánto stock hay en cada tanque ahora?",
+    "Stock total por producto en los tanques",
     "¿Cuántas muestras de laboratorio se rechazaron este mes por producto?",
     "Acidez promedio de AFE por día en la última semana",
 ]
@@ -50,7 +45,7 @@ def _auto_chart(df: pd.DataFrame):
 
 def render(usr: dict):
     st.title("🤖 Consultas IA")
-    st.caption("Preguntá en lenguaje natural sobre camiones y laboratorio. Solo lectura.")
+    st.caption("Preguntá en lenguaje natural sobre camiones, laboratorio, producción y tanques. Solo lectura.")
 
     # gate por rol (defensa en profundidad; la tarjeta del landing ya se oculta)
     if usr.get("rol") not in cfg.ROLES_PERMITIDOS:
@@ -61,7 +56,7 @@ def render(usr: dict):
     if miss:
         st.error(
             "Falta configurar: **" + ", ".join(miss) + "**.\n\n"
-            "Agregalos en *Settings → Secrets* (Streamlit Cloud). "
+            "Agregalos en *Settings -> Secrets* (Streamlit Cloud). "
             "Ver `.streamlit/secrets.toml.example`."
         )
         return
@@ -70,7 +65,6 @@ def render(usr: dict):
     cols = st.columns(2)
     for i, s in enumerate(SUGERENCIAS):
         if cols[i % 2].button(s, use_container_width=True, key=f"chat_ej_{i}"):
-            # escribir directo en el input (mismo key) antes de crear el widget
             st.session_state["chat_input"] = s
 
     ver_sql = st.toggle("Mostrar el SQL generado", value=False, key="chat_ver_sql")
@@ -83,29 +77,35 @@ def render(usr: dict):
     if not pregunta:
         return
 
-    with st.spinner("Generando la consulta…"):
+    with st.spinner("Generando y ejecutando la consulta…"):
         try:
-            sql = _sql_cacheado(pregunta)
+            res = _resolver_cacheado(pregunta)
         except Exception as e:
-            st.error(f"No pude generar la consulta: {e}")
+            st.error(f"No pude resolver la consulta: {e}")
             return
 
-    if not is_select_only(sql):
-        st.error("La consulta generada no es de solo lectura. Reformulá la pregunta.")
-        if ver_sql and sql:
-            st.code(sql, language="sql")
-        return
+    sql = res.get("sql")
+    n_correcciones = max(0, len(res.get("intentos", [])) - 1)
 
-    if ver_sql:
+    if ver_sql and sql:
         st.code(sql, language="sql")
 
-    with st.spinner("Consultando la base…"):
-        try:
-            df = _df_cacheado(sql)
-        except Exception as e:
-            st.error(f"Error al ejecutar la consulta: {e}")
-            return
+    if not res.get("ok"):
+        if sql and not is_select_only(sql):
+            st.error("La consulta generada no es de solo lectura. Reformulá la pregunta.")
+        else:
+            st.error("No pude obtener un resultado válido para esa pregunta.")
+        if n_correcciones:
+            st.caption(f"Intenté autocorregir {n_correcciones} vez/veces sin éxito.")
+        if res.get("error"):
+            with st.expander("Detalle del error"):
+                st.code(res["error"])
+        return
 
+    if n_correcciones:
+        st.caption(f"✅ Resuelto tras autocorregir {n_correcciones} intento(s).")
+
+    df = res.get("df")
     if df is None or df.empty:
         st.info("La consulta no devolvió resultados.")
         return

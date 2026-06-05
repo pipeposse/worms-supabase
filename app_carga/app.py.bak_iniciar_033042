@@ -230,7 +230,6 @@ if st.session_state.section is None:
 
     tiles = [
         ("🏭", "Cargas", "Carga de producción: armado, etapas, producto final y anulaciones.", "CARGAS", "land_cargas", True),
-        ("▶️", "Iniciar producción", "Elegí una producción planificada por dirección y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
         ("📊", "Vistas de producción", "Producción, consumos y tiempos por sector + informe mensual (kg/L/TN).", "VISTAS", "land_vistas", True),
         ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
         ("🚛", "Portería", "Pesajes de portería: filtros, peso por producto y descarga.", "PORT", "land_port", False),
@@ -2294,14 +2293,6 @@ if st.session_state.section != "CARGAS":
                         st.success(f"Listo: {_n} ejemplo(s) embebido(s). El chat ya usa RAG semántico.")
                 except Exception as _e:
                     st.error(f"No se pudo sincronizar: {_e}")
-
-    elif st.session_state.section == "INICIAR":
-        # =================== INICIAR PRODUCCIÓN (operario, por ID planificado) ===================
-        try:
-            from carga_por_id import render as _render_iniciar
-            _render_iniciar(USR, cat, conectar)
-        except Exception as _e:
-            st.error(f"No se pudo cargar Iniciar producción: {_e}")
 
     elif st.session_state.section == "PLANIFICACION":
         # =================== CENTRO DE PLANIFICACIÓN (dirección) ===================
