@@ -2316,7 +2316,16 @@ if st.session_state.section != "CARGAS":
         # =================== CENTRO DE PLANIFICACIÓN (dirección) ===================
         try:
             from planificacion import render as _render_plan
-            _render_plan(USR, cat, conectar, siguiente_identificador)
+            _render_plan(USR, cat, conectar, siguiente_identificador, H={
+                "proceso_desde_mp": proceso_desde_mp,
+                "fuente_mp_combinada": fuente_mp_combinada,
+                "corriente_de_mp_lab": corriente_de_mp_lab,
+                "densidad_de": densidad_de,
+                "K": K,
+                "ultimas_muestras_glicerina": ultimas_muestras_glicerina,
+                "productos": productos,
+                "bienes_uso_full": bienes_uso_full,
+            })
         except Exception as _e:
             st.error(f"No se pudo cargar el Centro de Planificación: {_e}")
 

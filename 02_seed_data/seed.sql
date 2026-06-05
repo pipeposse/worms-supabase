@@ -938,3 +938,9 @@ SELECT id_tanque, id_producto, corriente, evaluado,
        round((fosforo*(0.90+random()*0.20))::numeric,1)
 FROM jit
 ON CONFLICT (id_tanque, id_producto) DO NOTHING;
+
+-- Parámetros por proceso (los lee el Centro de Planificación y Cargas).
+update produccion.dic_proceso_parametros set
+  temp_inicial_c=80, tiempo_total_horas=4, acidez_objetivo_pct=95 where tipo_proceso='PRODUCCION_ARE';
+update produccion.dic_proceso_parametros set
+  temp_inicial_c=85, tiempo_total_horas=2 where tipo_proceso='DESGOMADO_ACUOSO';
