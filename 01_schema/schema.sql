@@ -1541,3 +1541,29 @@ from produccion.fact_reconciliacion_stock rc
 join produccion.dim_tanque t on t.id_tanque = rc.id_tanque;
 grant select on reporting.v_reconciliacion_stock to ai_readonly;
 -- cron: select cron.schedule('reconciliar_stock_30min','*/30 * * * *','select produccion.fn_reconciliar_stock();');
+
+-- ============================================================================
+-- reporting.v_tanque_real_vs_teorico: por tanque y día, variación física medida
+-- vs movimientos de producción ejecutados (diferencia = lo no explicado).
+-- ============================================================================
+create or replace view reporting.v_tanque_real_vs_teorico as
+with medido as (
+  select id_tanque, codigo, fecha, variacion_intradia as litros_medido_dia
+  from produccion.vw_tanque_variacion_diaria),
+teorico as (
+  select id_tanque, (momento at time zone 'America/Argentina/Buenos_Aires')::date as fecha,
+         sum(sentido*coalesce(litros,0)) as litros_teorico_dia, count(*) as movimientos
+  from produccion.fact_movimiento_stock
+  where estado_mov='EJECUTADO' and anulado is not true and id_tanque is not null
+  group by id_tanque, (momento at time zone 'America/Argentina/Buenos_Aires')::date)
+select coalesce(m.codigo, t.codigo) as tanque, coalesce(m.fecha, te.fecha) as fecha,
+       round(coalesce(m.litros_medido_dia,0)) as litros_medido_dia,
+       round(coalesce(te.litros_teorico_dia,0)) as litros_teorico_dia,
+       round(coalesce(m.litros_medido_dia,0)-coalesce(te.litros_teorico_dia,0)) as diferencia_litros,
+       coalesce(te.movimientos,0) as movimientos_produccion
+from medido m
+full outer join teorico te on te.id_tanque=m.id_tanque and te.fecha=m.fecha
+left join produccion.dim_tanque t on t.id_tanque=coalesce(m.id_tanque, te.id_tanque)
+where coalesce(m.fecha, te.fecha) is not null
+order by fecha desc, tanque;
+grant select on reporting.v_tanque_real_vs_teorico to ai_readonly;

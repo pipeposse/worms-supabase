@@ -96,3 +96,8 @@
 - Una fila por lectura física reconciliada. `litros_medido` (sensor/manual) vs `litros_esperado` (libro = lectura previa + movimientos). `discrepancia_litros` = medido − esperado.
 - `severidad`: OK (dentro de umbral) o ALERTA (posible movimiento no registrado, fuga o drift). `ajuste_ticket` = ticket MS del AJUSTE posteado cuando hay ALERTA.
 - "tanques con problemas / descuadres / fugas / discrepancias" → filtrar `severidad='ALERTA'`.
+
+## reporting.v_tanque_real_vs_teorico (medido físico vs teórico de producción, por día)
+- Una fila por tanque y día. `litros_medido_dia` = variación física real del tanque (sensor/manual). `litros_teorico_dia` = lo que movió producción ese día (movimientos ejecutados).
+- `diferencia_litros` = medido − teórico = lo NO explicado por producción (camiones a tanque, ventas, fugas). `movimientos_produccion` = nº de movimientos de producción.
+- "qué se movió real vs teórico / descuadre diario / movimientos no explicados" → esta vista.

@@ -126,5 +126,9 @@
   {
     "question": "Resumen de reconciliación de stock: cuántas OK y cuántas alerta",
     "sql": "SELECT severidad, COUNT(*) lecturas, round(AVG(abs(discrepancia_litros)),0) disc_prom_litros\nFROM reporting.v_reconciliacion_stock\nGROUP BY severidad ORDER BY severidad;"
+  },
+  {
+    "question": "Diferencia entre el movimiento real medido y el teórico de producción por tanque",
+    "sql": "SELECT fecha, tanque, litros_medido_dia, litros_teorico_dia, diferencia_litros\nFROM reporting.v_tanque_real_vs_teorico\nWHERE abs(diferencia_litros) > 100\nORDER BY fecha DESC, abs(diferencia_litros) DESC;"
   }
 ]
