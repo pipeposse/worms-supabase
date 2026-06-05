@@ -1,14 +1,23 @@
-"""Carga Producción por ID (operario).
-El operario elige una producción PLANIFICADA por la dirección, ve todo en read-only
-(reactor, producto final, movimientos de stock con fuente/origen), completa el checklist
-y la caldera, y al iniciar: confirma los movimientos (PLANIFICADO -> EJECUTADO) y pone
-el batch en REACCION. No carga datos de la reacción: ya los fijó la dirección.
+"""Iniciar producción (operario).
+El operario elige una producción PLANIFICADA por la dirección, ve TODO heredado del
+Centro de Planificación (proceso, reactor, cronograma de etapas, movimientos de stock
+con su ticket y origen), completa el checklist, asigna el horario de encendido de la
+caldera y da inicio. Al iniciar: confirma los movimientos (PLANIFICADO -> EJECUTADO),
+pone el batch en REACCION y el cronograma de evaluación interna se genera solo (trigger).
 
 render(USR, cat, conectar) recibe los helpers de app.py (evita imports circulares).
 """
+from datetime import datetime, date, time, timedelta
+
 import streamlit as st
 
 from planificacion import listar_planificadas, listar_movimientos_plan, confirmar_movimientos_plan
+
+try:
+    from zoneinfo import ZoneInfo
+    TZ_AR = ZoneInfo("America/Argentina/Buenos_Aires")
+except Exception:
+    TZ_AR = None
 
 CHECKS = [
     ("mp_ok", "Materias primas disponibles y verificadas"),
@@ -20,9 +29,13 @@ CHECKS = [
 ]
 
 
+def _ahora():
+    return datetime.now(TZ_AR) if TZ_AR else datetime.now()
+
+
 def render(USR, cat, conectar):
     st.title("▶️ Iniciar producción")
-    st.caption("Elegí la producción planificada por dirección. Confirmás el checklist y la caldera, y arranca la reacción.")
+    st.caption("Elegí la producción planificada por dirección. Heredás todos los datos; sólo confirmás el checklist y la caldera.")
 
     planificadas = listar_planificadas(cat)
     if planificadas.empty:
@@ -35,14 +48,40 @@ def render(USR, cat, conectar):
     }
     sel = st.selectbox("Producción planificada", list(opts.keys()), key="cid_sel")
     id_batch = opts[sel]
-    fila = planificadas[planificadas["id_batch"] == id_batch].iloc[0]
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("ID de producción", fila["identificador_unidad"])
-    c2.metric("Reactor", fila["reactor"] or "—")
-    c3.metric("Producto final", fila["producto_final"] or "—")
+    # ---- detalle heredado del batch ----
+    det = cat(
+        "SELECT b.identificador_unidad, b.sector, b.tipo_proceso, b.calidad_buscada, "
+        "       b.tiempo_estimado_horas, b.parametros_proceso, "
+        "       bu.nombre_ui AS reactor, bu.capacidad_max_l, "
+        "       p.nombre_producto AS producto_final "
+        "FROM produccion.fact_batch_proceso b "
+        "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+        "LEFT JOIN produccion.dim_producto p ON p.id_producto=b.id_producto_buscado "
+        "WHERE b.id_batch=%s", (id_batch,))
+    if det.empty:
+        st.error("No se encontró la producción."); return
+    d = det.iloc[0]
+    params = d["parametros_proceso"] or {}
+    if isinstance(params, str):
+        import json as _j
+        try: params = _j.loads(params)
+        except Exception: params = {}
 
-    st.markdown("##### Movimientos de stock a ejecutar")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("ID de producción", d["identificador_unidad"])
+    c2.metric("Proceso", d["tipo_proceso"] or "—")
+    c3.metric("Reactor", d["reactor"] or "—")
+    c4.metric("Producto final", d["producto_final"] or "—")
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Capacidad reactor (L)", f"{(d['capacidad_max_l'] or 0):,.0f}")
+    c6.metric("Kg objetivo", f"{float(params.get('kg_objetivo', 0)):,.0f}")
+    c7.metric("Temp. inicial (°C)", f"{float(params.get('temp_inicial_c', 0)):,.0f}")
+    c8.metric("Tiempo estimado (h)", f"{float(d['tiempo_estimado_horas'] or 0):,.1f}")
+
+    # ---- movimientos de stock heredados (ticket + origen) ----
+    st.markdown("##### 🔁 Movimientos de stock a ejecutar (origen MP e insumos)")
     movs = listar_movimientos_plan(cat, id_batch)
     if movs.empty:
         st.warning("Esta producción no tiene movimientos de stock cargados.")
@@ -50,14 +89,46 @@ def render(USR, cat, conectar):
         st.dataframe(movs, use_container_width=True, hide_index=True)
         st.caption("Al iniciar, estos tickets pasan de **PLANIFICADO** a **EJECUTADO** y descuentan/ingresan stock.")
 
-    st.markdown("##### Checklist previo")
+    # ---- cronograma de etapas heredado ----
+    crono = cat(
+        "SELECT pe.orden AS \"#\", pe.etapa AS \"Etapa\", COALESCE(e.descripcion,'') AS \"Descripción\", "
+        "       pe.duracion_target_min AS \"Duración (min)\" "
+        "FROM produccion.dic_proceso_etapa pe "
+        "LEFT JOIN produccion.dic_etapa_proceso e ON e.codigo=pe.etapa "
+        "WHERE pe.proceso_key=%s ORDER BY pe.orden", (d["tipo_proceso"],))
+    if not crono.empty:
+        with st.expander("📋 Cronograma de etapas del proceso", expanded=False):
+            st.dataframe(crono, use_container_width=True, hide_index=True)
+            tot_h = crono["Duración (min)"].fillna(0).sum() / 60.0
+            st.caption(f"Duración total estimada: **{tot_h:.1f} h**.")
+
+    # ---- caldera (horario de encendido) ----
+    st.markdown("##### 🔥 Encendido de caldera")
+    ahora = _ahora()
+    cc1, cc2 = st.columns(2)
+    cal_f = cc1.date_input("Fecha de encendido", value=ahora.date(), key="cid_cal_f")
+    cal_h = cc2.time_input("Hora de encendido", value=(ahora - timedelta(hours=1)).time(), step=60, key="cid_cal_h")
+    cal_dt = datetime.combine(cal_f, cal_h)
+    if TZ_AR:
+        cal_dt = cal_dt.replace(tzinfo=TZ_AR)
+    anticipacion_min = (ahora - cal_dt).total_seconds() / 60.0
+    caldera_lista = anticipacion_min >= 60
+    if not caldera_lista:
+        st.warning(f"La caldera debe estar encendida ≥ 1 h antes (lleva ~60 min llegar a 80 °C). "
+                   f"Anticipación actual: {anticipacion_min:.0f} min.")
+    else:
+        st.success(f"Caldera con {anticipacion_min/60:.1f} h de anticipación. OK.")
+
+    # ---- checklist ----
+    st.markdown("##### ✅ Checklist previo")
     estados = {}
     cols = st.columns(2)
     for i, (campo, label) in enumerate(CHECKS):
-        estados[campo] = cols[i % 2].checkbox(label, key=f"cid_chk_{campo}")
+        default = caldera_lista if campo == "caldera_encendida_ok" else False
+        estados[campo] = cols[i % 2].checkbox(label, value=default, key=f"cid_chk_{campo}")
 
-    todo_ok = all(estados.values())
-    if not todo_ok:
+    todo_ok = all(estados.values()) and caldera_lista
+    if not all(estados.values()):
         st.info("Marcá todos los ítems del checklist para habilitar el inicio.")
 
     if st.button("🔥 Iniciar reacción", type="primary", use_container_width=True, disabled=not todo_ok):
@@ -65,7 +136,6 @@ def render(USR, cat, conectar):
         try:
             with conectar(uid) as (conn, audit):
                 with conn.cursor() as cur:
-                    # MP principal + kg total (para satisfacer el constraint NORMAL)
                     cur.execute(
                         "SELECT id_producto, COALESCE(SUM(COALESCE(kg, litros, cantidad)),0) q "
                         "FROM fact_movimiento_stock "
@@ -75,12 +145,10 @@ def render(USR, cat, conectar):
                     id_prod_ini = mp[0][0] if mp else None
                     kg_ini = float(sum(float(r[1]) for r in mp)) if mp else 0.0
                     if kg_ini <= 0:
-                        kg_ini = 1.0  # salvaguarda del constraint kg_inicial > 0
+                        kg_ini = 1.0
 
-                    # confirmar movimientos planificados -> ejecutados
                     n_conf = confirmar_movimientos_plan(cur, id_batch, uid)
 
-                    # checklist
                     cur.execute(
                         "INSERT INTO fact_batch_checklist "
                         "(id_batch, mp_ok, insumos_ok, temperatura_inicial_ok, parametros_ok, "
@@ -89,23 +157,29 @@ def render(USR, cat, conectar):
                         (id_batch, estados["mp_ok"], estados["insumos_ok"], estados["temperatura_inicial_ok"],
                          estados["parametros_ok"], estados["corriente_ok"], estados["caldera_encendida_ok"], uid))
 
-                    # arrancar la reacción
                     cur.execute(
                         "UPDATE fact_batch_proceso "
                         "SET estado='REACCION', etapa_actual='REACCION', id_usuario_carga=%s, "
-                        "    inicio_ts=now(), caldera_encendida_ts=now(), "
+                        "    inicio_ts=now(), caldera_encendida_ts=%s, "
                         "    id_producto_inicial=%s, kg_inicial=%s, "
                         "    id_usuario_estado=%s, motivo_estado='Iniciada por operario (checklist OK)' "
                         "WHERE id_batch=%s AND estado='PLANIFICADO'",
-                        (uid, id_prod_ini, kg_ini, uid, id_batch))
+                        (uid, cal_dt.isoformat(), id_prod_ini, kg_ini, uid, id_batch))
                     if cur.rowcount == 0:
                         raise RuntimeError("La producción ya no está en estado PLANIFICADO (¿la inició otro?).")
             try:
                 cat.clear()
             except Exception:
                 pass
-            st.success(f"Reacción **{fila['identificador_unidad']}** iniciada. "
+            st.success(f"Reacción **{d['identificador_unidad']}** iniciada. "
                        f"{n_conf} movimiento(s) de stock confirmado(s) (EJECUTADO).")
+            # esquema de evaluación interna recién generado por el trigger
+            ev = cat("SELECT secuencia AS \"#\", to_char(programado_ts,'DD/MM HH24:MI') AS \"Hora\", "
+                     "etapa AS \"Etapa\", estado AS \"Estado\" "
+                     "FROM produccion.fact_eval_programada WHERE id_batch=%s ORDER BY secuencia", (id_batch,))
+            if not ev.empty:
+                st.markdown("##### 🧪 Esquema de evaluación interna generado")
+                st.dataframe(ev, use_container_width=True, hide_index=True)
             st.balloons()
         except Exception as e:
             st.error(f"No se pudo iniciar: {e}")

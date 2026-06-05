@@ -235,7 +235,6 @@ if st.session_state.section is None:
         ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
         ("🚛", "Portería", "Pesajes de portería: filtros, peso por producto y descarga.", "PORT", "land_port", False),
         ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
-        ("📦", "Stock y movimientos", "Libro mayor de movimientos, stock estimado en tiempo real y reconciliación. Todo descargable.", "STOCK", "land_stock", False),
     ]
     if USR["rol"] in ("SUPERVISOR", "ADMIN"):
         tiles.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
@@ -2295,14 +2294,6 @@ if st.session_state.section != "CARGAS":
                         st.success(f"Listo: {_n} ejemplo(s) embebido(s). El chat ya usa RAG semántico.")
                 except Exception as _e:
                     st.error(f"No se pudo sincronizar: {_e}")
-
-    elif st.session_state.section == "STOCK":
-        # =================== STOCK Y MOVIMIENTOS ===================
-        try:
-            from stock_section import render as _render_stock
-            _render_stock(USR, cat)
-        except Exception as _e:
-            st.error(f"No se pudo cargar Stock: {_e}")
 
     elif st.session_state.section == "INICIAR":
         # =================== INICIAR PRODUCCIÓN (operario, por ID planificado) ===================

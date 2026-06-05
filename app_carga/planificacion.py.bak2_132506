@@ -1,11 +1,12 @@
 """Centro de Planificación (dirección).
-La directora planifica la reacción completa: elige sector + reactor (se disparan
-capacidad y consumos), producto final, parámetros (se estiman glicerina/NaOH/potasio/
-fuel/ARE) y las MP/insumos con su FUENTE (tanque o portería). Se genera un ID de
-producción PLANIFICADO y un ticket de movimiento de stock (MS-xxxx) por cada MP/insumo.
-El operario luego elige ese ID y confirma la ejecución.
+La directora planifica la reacción completa (reactor, producto final, MP e insumos
+con su fuente tanque/portería) y se genera un ID de producción en estado PLANIFICADO,
+ADEMÁS de un ticket de movimiento de stock (MS-xxxxxxxx) por cada MP/insumo, en estado
+PLANIFICADO. Todos en la planta ven fuente y origen ("BPV-7 → Reactor 1") antes de
+ejecutarlo. El operario, al cargar, CONFIRMA esos movimientos (pasan a EJECUTADO).
 
-render(USR, cat, conectar, siguiente_identificador) recibe helpers de app.py.
+render(USR, cat, conectar, siguiente_identificador) recibe los helpers de app.py
+para evitar imports circulares.
 """
 import json as _json
 import pandas as pd
@@ -15,6 +16,7 @@ ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 
 
 def _kg_litros(cantidad, unidad, dens):
+    """Normaliza a (kg, litros) según unidad y densidad (g/ml ~ kg/l). dens puede ser None."""
     c = float(cantidad or 0)
     d = float(dens) if dens else None
     if unidad == "LT":
@@ -22,13 +24,14 @@ def _kg_litros(cantidad, unidad, dens):
     if unidad == "TN":
         kg = c * 1000.0
         return kg, (round(kg / d, 1) if d else None)
+    # KG
     return c, (round(c / d, 1) if d else None)
 
 
 def render(USR, cat, conectar, siguiente_identificador):
     st.title("🗓️ Centro de Planificación")
-    st.caption("Planificá la reacción completa. Al elegir reactor se calculan capacidad y consumos; "
-               "se emite el ID de producción y un ticket de movimiento por cada MP/insumo.")
+    st.caption("La dirección planifica la reacción completa y emite los tickets de movimiento de stock. "
+               "El operario sólo elige el ID y confirma la ejecución.")
 
     if USR.get("rol") not in ROLES_DIRECCION:
         st.warning("Sección exclusiva de dirección (SUPERVISOR / ADMIN).")
@@ -36,19 +39,13 @@ def render(USR, cat, conectar, siguiente_identificador):
 
     prods = cat("SELECT id_producto, codigo_producto, nombre_producto, COALESCE(densidad_g_ml,0.91) dens "
                 "FROM produccion.dim_producto WHERE activo ORDER BY codigo_producto")
-    reactores = cat("SELECT id_bien_uso, codigo, COALESCE(nombre_ui,codigo) nombre_ui, "
-                    "COALESCE(capacidad_max_l,0) cap, COALESCE(consumo_fuel_kg_x_tn,0) cfuel, "
-                    "COALESCE(consumo_naoh_kg_x_tn,0) cnaoh, COALESCE(consumo_potasio_kg_x_tn,0) cpot "
+    reactores = cat("SELECT id_bien_uso, codigo, COALESCE(nombre_ui,codigo) nombre_ui "
                     "FROM produccion.dim_bien_uso WHERE activo ORDER BY codigo")
     insumos = cat("SELECT codigo, descripcion, COALESCE(unidad,'KG') unidad "
                   "FROM produccion.dic_insumo WHERE activo ORDER BY codigo")
     tipos = cat("SELECT codigo FROM produccion.dic_tipo_proceso WHERE activo ORDER BY codigo")
     tanques = cat("SELECT id_tanque, codigo, COALESCE(producto_principal_txt,'') prod "
                   "FROM produccion.dim_tanque WHERE activo ORDER BY codigo")
-    ctes = cat("SELECT codigo, valor FROM produccion.dic_constante_proceso")
-    K = {r.codigo: float(r.valor) for r in ctes.itertuples()} if not ctes.empty else {}
-    PMa, PMg, FE = K.get("PMa", 282.0), K.get("PMg", 92.0), K.get("factor_exceso_gli", 1.1)
-    DENS_AG = K.get("densidad_aagg", 0.9)
 
     if prods.empty or reactores.empty:
         st.error("Faltan catálogos de productos o reactores.")
@@ -58,7 +55,6 @@ def render(USR, cat, conectar, siguiente_identificador):
     prod_nombre = {int(r.id_producto): r.nombre_producto for r in prods.itertuples()}
     dens_map = {int(r.id_producto): float(r.dens) for r in prods.itertuples()}
     react_opts = {f"{r.codigo} · {r.nombre_ui}": int(r.id_bien_uso) for r in reactores.itertuples()}
-    react_info = {int(r.id_bien_uso): dict(cap=r.cap, cfuel=r.cfuel, cnaoh=r.cnaoh, cpot=r.cpot) for r in reactores.itertuples()}
     tank_opts = {f"{r.codigo}{(' · ' + r.prod) if r.prod else ''}": int(r.id_tanque) for r in tanques.itertuples()}
     tank_label = {f"{r.codigo}{(' · ' + r.prod) if r.prod else ''}": r.codigo for r in tanques.itertuples()}
     tipo_opts = [r.codigo for r in tipos.itertuples()] or ["PRODUCCION_ARE", "DESGOMADO_ACUOSO"]
@@ -71,76 +67,52 @@ def render(USR, cat, conectar, siguiente_identificador):
     reactor_lbl = c2.selectbox("Reactor / bien de uso", list(react_opts.keys()), key="pl_reactor")
     tipo_proc = c3.selectbox("Tipo de proceso", tipo_opts, key="pl_tipo")
 
-    info = react_info.get(react_opts[reactor_lbl], {})
-    cap = float(info.get("cap", 0) or 0)
-
     c4, c5, c6 = st.columns(3)
     pf_lbl = c4.selectbox("Producto final buscado", list(prod_opts.keys()), key="pl_pf")
     calidad = c5.text_input("Calidad buscada", key="pl_cal", placeholder="ej. A / Exportación")
-    kg_obj = c6.number_input("Kg objetivo", min_value=0.0, step=100.0,
-                             value=float(round(cap * DENS_AG)) if cap else 0.0, key="pl_kg",
-                             help="Se prellenó con capacidad del reactor × densidad. Ajustá si querés.")
+    kg_obj = c6.number_input("Kg objetivo", min_value=0.0, step=100.0, key="pl_kg")
 
     c7, c8, c9 = st.columns(3)
     temp = c7.number_input("Temp. inicial (°C)", min_value=0.0, step=5.0, value=80.0, key="pl_temp")
     horas = c8.number_input("Tiempo estimado (h)", min_value=0.0, step=0.5, value=4.0, key="pl_horas")
     acidez_obj = c9.number_input("Acidez objetivo (%)", min_value=0.0, step=0.5, key="pl_acid")
 
-    # ---------- Capacidad + auto-estimados ----------
-    q_ag = float(kg_obj or (cap * DENS_AG))
-    est_fuel = q_ag / 1000.0 * float(info.get("cfuel", 0) or 0)
-    est_naoh = q_ag / 1000.0 * float(info.get("cnaoh", 0) or 0)
-    est_pot = q_ag / 1000.0 * float(info.get("cpot", 0) or 0)
-    est_gli = (q_ag * (float(acidez_obj or 0) / 100.0) * (PMg / (PMa * 2)) * FE) if acidez_obj else 0.0
-    est_are = q_ag
-
-    with st.container(border=True):
-        st.markdown(f"**🔧 Reactor {reactor_lbl.split(' · ')[-1]}** — capacidad {cap:,.0f} L · Q estimado {q_ag:,.0f} kg")
-        e1, e2, e3, e4, e5 = st.columns(5)
-        e1.metric("Glicerina est. (kg)", f"{est_gli:,.0f}")
-        e2.metric("NaOH est. (kg)", f"{est_naoh:,.0f}")
-        e3.metric("Potasio est. (kg)", f"{est_pot:,.0f}")
-        e4.metric("Fuel est. (kg)", f"{est_fuel:,.0f}")
-        e5.metric("ARE est. (kg)", f"{est_are:,.0f}")
-        st.caption("Estimados automáticos desde capacidad/consumos del reactor y la acidez. La glicerina usa PMg/(PMa·2)·factor de exceso.")
-
     # ---------- 2 · Materias primas ----------
-    st.markdown("#### 2 · Materias primas — elegí el **origen** (Tanque o Portería) en cada fila")
+    st.markdown("#### 2 · Materias primas (con fuente)")
     mp_base = pd.DataFrame([{
         "Producto": list(prod_opts.keys())[0], "Fuente": "TANQUE",
-        "Tanque (si Fuente=Tanque)": (list(tank_opts.keys())[0] if tank_opts else ""),
-        "Ticket portería (si Fuente=Portería)": "", "Cantidad": 0.0, "Unidad": "LT",
+        "Tanque": (list(tank_opts.keys())[0] if tank_opts else ""),
+        "Ticket portería": "", "Cantidad": 0.0, "Unidad": "LT",
     }])
     mp_ed = st.data_editor(
         mp_base, num_rows="dynamic", use_container_width=True, hide_index=True, key="pl_mp",
         column_config={
-            "Producto": st.column_config.SelectboxColumn(options=list(prod_opts.keys()), required=True, width="medium"),
-            "Fuente": st.column_config.SelectboxColumn(options=["TANQUE", "PORTERIA"], required=True, width="small"),
-            "Tanque (si Fuente=Tanque)": st.column_config.SelectboxColumn(options=[""] + list(tank_opts.keys()), width="medium"),
-            "Ticket portería (si Fuente=Portería)": st.column_config.TextColumn(width="small"),
-            "Cantidad": st.column_config.NumberColumn(min_value=0.0, format="%.0f", width="small"),
-            "Unidad": st.column_config.SelectboxColumn(options=["LT", "KG", "TN"], width="small"),
+            "Producto": st.column_config.SelectboxColumn(options=list(prod_opts.keys()), required=True, width="large"),
+            "Fuente": st.column_config.SelectboxColumn(options=["TANQUE", "PORTERIA"], required=True),
+            "Tanque": st.column_config.SelectboxColumn(options=[""] + list(tank_opts.keys())),
+            "Ticket portería": st.column_config.TextColumn(),
+            "Cantidad": st.column_config.NumberColumn(min_value=0.0, format="%.0f"),
+            "Unidad": st.column_config.SelectboxColumn(options=["LT", "KG", "TN"]),
         })
 
     # ---------- 3 · Insumos / catalizadores ----------
-    st.markdown("#### 3 · Insumos y catalizadores — con su origen")
+    st.markdown("#### 3 · Insumos y catalizadores (con fuente)")
     if ins_opts:
         ins_base = pd.DataFrame([{
             "Incluir": False, "Insumo": list(ins_opts.keys())[0], "Rol": "INSUMO",
-            "Fuente": "PORTERIA", "Tanque (si Fuente=Tanque)": "",
-            "Ticket portería (si Fuente=Portería)": "", "Cantidad": 0.0, "Unidad": "KG",
+            "Fuente": "PORTERIA", "Tanque": "", "Ticket portería": "", "Cantidad": 0.0, "Unidad": "KG",
         }])
         ins_ed = st.data_editor(
             ins_base, num_rows="dynamic", use_container_width=True, hide_index=True, key="pl_ins",
             column_config={
-                "Incluir": st.column_config.CheckboxColumn(help="Marcá para incluir."),
-                "Insumo": st.column_config.SelectboxColumn(options=list(ins_opts.keys()), width="medium"),
-                "Rol": st.column_config.SelectboxColumn(options=["INSUMO", "CATALIZADOR"], width="small"),
-                "Fuente": st.column_config.SelectboxColumn(options=["PORTERIA", "TANQUE"], width="small"),
-                "Tanque (si Fuente=Tanque)": st.column_config.SelectboxColumn(options=[""] + list(tank_opts.keys()), width="medium"),
-                "Ticket portería (si Fuente=Portería)": st.column_config.TextColumn(width="small"),
-                "Cantidad": st.column_config.NumberColumn(min_value=0.0, format="%.0f", width="small"),
-                "Unidad": st.column_config.SelectboxColumn(options=["KG", "LT", "TN"], width="small"),
+                "Incluir": st.column_config.CheckboxColumn(help="Marcá para incluir este insumo."),
+                "Insumo": st.column_config.SelectboxColumn(options=list(ins_opts.keys()), width="large"),
+                "Rol": st.column_config.SelectboxColumn(options=["INSUMO", "CATALIZADOR"]),
+                "Fuente": st.column_config.SelectboxColumn(options=["PORTERIA", "TANQUE"]),
+                "Tanque": st.column_config.SelectboxColumn(options=[""] + list(tank_opts.keys())),
+                "Ticket portería": st.column_config.TextColumn(),
+                "Cantidad": st.column_config.NumberColumn(min_value=0.0, format="%.0f"),
+                "Unidad": st.column_config.SelectboxColumn(options=["KG", "LT", "TN"]),
             })
     else:
         ins_ed = None
@@ -148,9 +120,6 @@ def render(USR, cat, conectar, siguiente_identificador):
 
     st.markdown("#### 4 · Notas")
     obs = st.text_input("Observaciones", key="pl_obs", placeholder="opcional")
-
-    TANK_COL = "Tanque (si Fuente=Tanque)"
-    TKT_COL = "Ticket portería (si Fuente=Portería)"
 
     st.divider()
     if st.button("✅ Generar ID de producción + tickets de movimiento", type="primary", use_container_width=True):
@@ -163,8 +132,6 @@ def render(USR, cat, conectar, siguiente_identificador):
         params = {
             "kg_objetivo": float(kg_obj or 0), "temp_inicial_c": float(temp or 0),
             "tiempo_horas": float(horas or 0), "acidez_objetivo_pct": float(acidez_obj or 0),
-            "est_glicerina_kg": round(est_gli, 1), "est_naoh_kg": round(est_naoh, 1),
-            "est_potasio_kg": round(est_pot, 1), "est_fuel_kg": round(est_fuel, 1), "est_are_kg": round(est_are, 1),
         }
         uid = int(USR["id_usuario"])
         try:
@@ -181,6 +148,7 @@ def render(USR, cat, conectar, siguiente_identificador):
                         (sector, uid, ident, react_opts[reactor_lbl], tipo_proc, prod_opts[pf_lbl],
                          (calidad or None), float(horas or 0), _json.dumps(params), uid, (obs or None)))
                     id_b = cur.fetchone()[0]
+
                     n_mov = 0
 
                     def _mov(rol, id_producto, producto_txt, codigo_insumo, es_tanque, idt, tlabel, tkp, cant, uni):
@@ -200,10 +168,10 @@ def render(USR, cat, conectar, siguiente_identificador):
                         pid = prod_opts.get(r["Producto"])
                         es_tanque = (r["Fuente"] == "TANQUE")
                         fuente = "TANQUE" if es_tanque else "TICKET"
-                        tsel = r.get(TANK_COL, "")
+                        tsel = r.get("Tanque", "")
                         idt = tank_opts.get(tsel) if es_tanque else None
                         tlabel = tank_label.get(tsel) if es_tanque else None
-                        tkp = (str(r.get(TKT_COL, "")).strip() or None) if not es_tanque else None
+                        tkp = (str(r.get("Ticket portería", "")).strip() or None) if not es_tanque else None
                         cur.execute(
                             "INSERT INTO fact_batch_insumo "
                             "(id_batch, rol, id_producto, cantidad, unidad, fuente, id_tanque, ticket_porteria, id_usuario) "
@@ -221,10 +189,10 @@ def render(USR, cat, conectar, siguiente_identificador):
                             rol = r.get("Rol", "INSUMO")
                             es_tanque = (r.get("Fuente") == "TANQUE")
                             fuente = "TANQUE" if es_tanque else "TICKET"
-                            tsel = r.get(TANK_COL, "")
+                            tsel = r.get("Tanque", "")
                             idt = tank_opts.get(tsel) if es_tanque else None
                             tlabel = tank_label.get(tsel) if es_tanque else None
-                            tkp = (str(r.get(TKT_COL, "")).strip() or None) if not es_tanque else None
+                            tkp = (str(r.get("Ticket portería", "")).strip() or None) if not es_tanque else None
                             cur.execute(
                                 "INSERT INTO fact_batch_insumo "
                                 "(id_batch, rol, codigo_insumo, cantidad, unidad, fuente, id_tanque, ticket_porteria, id_usuario) "
@@ -237,14 +205,15 @@ def render(USR, cat, conectar, siguiente_identificador):
                 cat.clear()
             except Exception:
                 pass
-            st.success(f"Producción planificada **{ident}** (batch #{id_b}) con **{n_mov} movimiento(s)** PLANIFICADO. "
-                       "El operario los confirmará al iniciar.")
+            st.success(f"Producción planificada **{ident}** (batch #{id_b}) creada con **{n_mov} movimiento(s) de stock** "
+                       "en estado PLANIFICADO. El operario los confirmará al cargar.")
             st.balloons()
         except Exception as e:
             st.error(f"No se pudo guardar la planificación: {e}")
 
 
 def listar_planificadas(cat):
+    """Producciones en estado PLANIFICADO (para que el operario elija en Carga Producción)."""
     return cat(
         "SELECT b.id_batch, b.identificador_unidad, b.sector, b.tipo_proceso, "
         "       bu.nombre_ui AS reactor, p.codigo_producto AS producto_final, "
@@ -257,6 +226,7 @@ def listar_planificadas(cat):
 
 
 def listar_movimientos_plan(cat, id_batch):
+    """Movimientos (tickets) de una producción, para mostrarle al operario qué va a confirmar."""
     return cat(
         "SELECT ticket_mov, estado_mov, rol, COALESCE(producto,codigo_insumo) AS item, "
         "       fuente, COALESCE(tanque_label,ticket_porteria) AS origen, cantidad, unidad "
@@ -265,6 +235,8 @@ def listar_movimientos_plan(cat, id_batch):
 
 
 def confirmar_movimientos_plan(cur, id_batch, uid):
+    """Pasa los movimientos PLANIFICADO de un batch a EJECUTADO (los ejecutó el operario).
+    Devuelve la cantidad confirmada. Recibe un cursor abierto (misma transacción del guardado)."""
     cur.execute(
         "UPDATE produccion.fact_movimiento_stock "
         "SET estado_mov='EJECUTADO', id_usuario_ejecuta=%s, ejecutado_en=now(), momento=now() "
