@@ -18,6 +18,11 @@ ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 
 
 def render(USR, cat, conectar, siguiente_identificador, H=None):
+    if H is None:
+        try:
+            H = st.session_state.get("_plan_helpers", {})
+        except Exception:
+            H = {}
     H = H or {}
     proceso_desde_mp = H.get("proceso_desde_mp")
     fuente_mp_combinada = H.get("fuente_mp_combinada")
