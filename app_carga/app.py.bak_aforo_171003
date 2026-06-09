@@ -1967,52 +1967,6 @@ if st.session_state.section != "CARGAS":
             d["_kg"] = d["_litros"] * d["_dens"]
             d["_tn"] = d["_kg"] / 1000.0
 
-            # ---------- Estado de medición + validación (aforo/cubicaje) ----------
-            try:
-                _afo = cat("SELECT id_tanque, tipo_curva, capacidad_litros AS cap_aforo, medible FROM produccion.dim_tanque_aforo")
-                d = d.merge(_afo, on="id_tanque", how="left")
-            except Exception:
-                d["cap_aforo"] = pd.NA; d["medible"] = pd.NA; d["tipo_curva"] = pd.NA
-            _now = pd.Timestamp.now(tz="UTC")
-            def _antig_h(x):
-                try:
-                    return (_now - pd.to_datetime(x, utc=True)).total_seconds() / 3600.0
-                except Exception:
-                    return None
-            d["_antig_h"] = d["ultima_medicion"].map(_antig_h)
-            def _estado(r):
-                if pd.notna(r.get("medible")) and not bool(r["medible"]):
-                    return "⛔ No medible"
-                if pd.isna(r["_litros"]):
-                    return "❔ Sin medición"
-                ah = r["_antig_h"]
-                if r["fuente_medicion"] == "WeDo":
-                    return "📡 Sensor al día" if (ah is not None and ah <= 2) else "📡 Sensor atrasado"
-                if ah is None:
-                    return "✍️ Manual"
-                if ah <= 24:
-                    return "✍️ Manual (hoy)"
-                if ah <= 72:
-                    return "✍️ Manual (días)"
-                return "⏰ Manual (vieja)"
-            d["Estado"] = d.apply(_estado, axis=1)
-            def _valid(r):
-                # Validación: % llenado = litros / capacidad de cubicaje (o nominal). Alerta si supera.
-                cap = r.get("cap_aforo")
-                if pd.isna(cap) or not cap:
-                    cap = r.get("capacidad_litros")
-                if pd.isna(r["_litros"]):
-                    return "—"
-                if pd.isna(cap) or not cap:
-                    return "sin cubicaje"
-                pct = r["_litros"] / float(cap) * 100.0
-                if pct > 102:
-                    return f"⚠️ supera ({pct:.0f}%)"
-                if pct < -1:
-                    return "⚠️ negativo"
-                return f"✔️ {pct:.0f}%"
-            d["Validación"] = d.apply(_valid, axis=1)
-
             # ---------- KPIs ----------
             _tot = len(d)
             _wd = int((d["fuente_medicion"] == "WeDo").sum())
@@ -2027,24 +1981,11 @@ if st.session_state.section != "CARGAS":
                 f"<div class='kpi'><div class='l'>Stock total (TN)</div><div class='v'>{_tn:,.1f}</div></div>"
                 "</div>", unsafe_allow_html=True)
 
-            # ---------- Alertas de medición ----------
-            _n_sin = int((d["Estado"] == "❔ Sin medición").sum())
-            _n_vieja = int(d["Estado"].isin(["⏰ Manual (vieja)", "📡 Sensor atrasado"]).sum())
-            _n_sup = int(d["Validación"].astype(str).str.startswith("⚠️").sum())
-            _n_nom = int((d["Estado"] == "⛔ No medible").sum())
-            if (_n_sin + _n_vieja + _n_sup + _n_nom) > 0:
-                _bits = []
-                if _n_sup:   _bits.append(f"**{_n_sup}** superan capacidad / valor inválido")
-                if _n_sin:   _bits.append(f"**{_n_sin}** sin medición")
-                if _n_vieja: _bits.append(f"**{_n_vieja}** con medición atrasada")
-                if _n_nom:   _bits.append(f"**{_n_nom}** no medibles")
-                st.warning("🔎 Revisar: " + " · ".join(_bits))
-
             # ---------- Tabla ----------
             _t = d.copy()
             _t["Medidor"] = _t["fuente_medicion"].map({"WeDo": "📡 WeDo", "Manual": "✍️ Manual"})
             _t = _t[["codigo", "nombre", "tipo_tanque", "sector", "producto_principal", "Medidor", "wedo_label",
-                     "intervalo_real_min", "nivel_pct_actual", "_litros", "_tn", "capacidad_litros", "ultima_medicion", "Estado", "Validación"]].rename(columns={
+                     "intervalo_real_min", "nivel_pct_actual", "_litros", "_tn", "capacidad_litros", "ultima_medicion"]].rename(columns={
                 "codigo": "Código", "nombre": "Tanque", "tipo_tanque": "Tipo", "sector": "Sector",
                 "producto_principal": "Producto", "wedo_label": "Sensor", "intervalo_real_min": "Intervalo (min)",
                 "nivel_pct_actual": "Nivel %",
@@ -2062,10 +2003,8 @@ if st.session_state.section != "CARGAS":
             except Exception:
                 st.dataframe(_t, use_container_width=True, hide_index=True, height=470)
             st.caption("Stock en **litros** (medición real). El **kg/TN** se calcula por densidad del producto del tanque. "
+                       "**Intervalo (min)** = cada cuánto reporta el sensor (no todos a la vez). "
                        "📡 WeDo = automático por sensor · ✍️ Manual = última medición cargada.")
-            st.caption("**Estado** = frescura de la medición (sensor al día / manual hoy-días-vieja / sin medición / no medible). "
-                       "**Validación** = `% llenado = litros ÷ capacidad de cubicaje`; ⚠️ si supera ~100% (medición inconsistente). "
-                       "La capacidad sale del aforo (`dim_tanque_aforo`); si el tanque no tiene cubicaje, dice *sin cubicaje*.")
 
             _byp = d.dropna(subset=["_tn"]).groupby("producto_principal", as_index=False)["_tn"].sum()
             if not _byp.empty:
@@ -2073,7 +2012,7 @@ if st.session_state.section != "CARGAS":
                 st.bar_chart(_byp.sort_values("_tn", ascending=False), x="producto_principal", y="_tn", use_container_width=True)
 
             st.divider()
-            g_cargar, g_aforo, g_editar, g_hist = st.tabs(["✍️ Cargar medición (manual)", "📏 Medir por cm (aforo)", "✏️ Editar tanque", "📈 Histórico / variación"])
+            g_cargar, g_editar, g_hist = st.tabs(["✍️ Cargar medición (manual)", "✏️ Editar tanque", "📈 Histórico / variación"])
 
             # ---------- Cargar medición: SOLO tanques manuales, con filtros ----------
             with g_cargar:
@@ -2140,70 +2079,6 @@ if st.session_state.section != "CARGAS":
                                                          int(USR["id_usuario"]), _obs or None))
                                         audit.log("I", "fact_stock_tanque", _idt, {"producto": _pcod, "litros": float(_lts)})
                                     st.success(f"Medición guardada: {_row['nombre']} · {_pcod} · {_lts:,.0f} L ({_kg/1000:,.2f} TN).")
-                                    cat.clear()
-                                except Exception as e:
-                                    st.exception(e)
-
-            # ---------- Medir por cm (aforo / cubicaje) ----------
-            with g_aforo:
-                _af = cat("SELECT t.id_tanque, t.codigo, t.nombre, t.sector, a.tipo_curva, a.altura_total_cm, "
-                          "a.capacidad_litros, a.medible, a.observacion, t.id_producto_principal "
-                          "FROM produccion.dim_tanque_aforo a JOIN produccion.dim_tanque t USING(id_tanque) "
-                          "WHERE t.activo ORDER BY t.sector, t.codigo")
-                if _af.empty:
-                    st.info("No hay tanques con cubicaje cargado todavía.")
-                else:
-                    st.caption("El operario mide el **vacío** (cm desde el tope del tanque al líquido, con hilo o metro). "
-                               "La app calcula el volumen y el % de llenado al instante.")
-                    fa1, fa2 = st.columns(2)
-                    _asec = fa1.selectbox("Sector", ["Todos"] + sorted(_af["sector"].dropna().unique().tolist()), key="afo_sec")
-                    _ad = _af if _asec == "Todos" else _af[_af["sector"] == _asec]
-                    _aopt = _ad.apply(lambda r: f"{r['nombre']} · {r['codigo']}" + ("" if r["medible"] else " · ⛔ no medible"), axis=1).tolist()
-                    _asel = fa2.selectbox(f"Tanque ({len(_ad)})", _aopt, key="afo_sel")
-                    _ar = _ad.iloc[_aopt.index(_asel)]
-                    _aid = int(_ar["id_tanque"]); _acap = float(_ar["capacidad_litros"] or 0)
-                    if not bool(_ar["medible"]):
-                        st.warning(f"Este tanque está marcado **NO SE PUEDE MEDIR** ({_ar['observacion'] or ''}). "
-                                   "Cargá la medición por litros en la pestaña anterior.")
-                    else:
-                        _altcm = float(_ar["altura_total_cm"]) if pd.notna(_ar["altura_total_cm"]) else None
-                        _maxcm = _altcm if _altcm else float(cat("SELECT max(cm_vacio) m FROM produccion.dim_tanque_aforo_cm WHERE id_tanque=%s", (_aid,)).iloc[0]["m"] or 500)
-                        _cm = st.number_input("Vacío medido (cm desde el tope)", 0.0, float(_maxcm), step=1.0, value=0.0, key="afo_cm")
-                        _volr = cat("SELECT produccion.fn_volumen_por_vacio(%s,%s) v", (_aid, float(_cm))).iloc[0]["v"]
-                        _vol = float(_volr) if _volr is not None else 0.0
-                        _pct = (_vol / _acap * 100) if _acap else 0.0
-                        _aperm = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
-                                     "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
-                                     "WHERE tp.id_tanque=%s ORDER BY tp.es_principal DESC, p.codigo_producto", (_aid,))
-                        _aplist = _aperm["codigo_producto"].tolist() or _prods["codigo_producto"].tolist()
-                        _apcod = st.selectbox("Producto", _aplist, key="afo_prod")
-                        _adens = float(_prods[_prods["codigo_producto"] == _apcod]["dens"].iloc[0])
-                        _akg = _vol * _adens
-                        ma1, ma2, ma3, ma4 = st.columns(4)
-                        ma1.metric("Volumen", f"{_vol:,.0f} L")
-                        ma2.metric("Llenado", f"{_pct:.0f}%")
-                        ma3.metric("En kg", f"{_akg:,.0f} kg")
-                        ma4.metric("En TN", f"{_akg/1000:,.2f}")
-                        st.progress(min(1.0, max(0.0, _pct/100)))
-                        st.caption(f"Capacidad {int(_acap):,} L" + (f" · altura {int(_altcm)} cm" if _altcm else "") +
-                                   f" · densidad {_adens:g} kg/L · curva {_ar['tipo_curva']}")
-                        if st.button("💾 Guardar al stock", type="primary", use_container_width=True, key="afo_save"):
-                            if _vol <= 0:
-                                st.error("El volumen calculado es 0. Revisá el vacío medido.")
-                            else:
-                                try:
-                                    with conectar(USR["id_usuario"]) as (conn, audit):
-                                        with conn.cursor() as cur:
-                                            cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s", (_apcod,))
-                                            _apid = cur.fetchone()[0]
-                                            cur.execute("INSERT INTO produccion.fact_stock_tanque "
-                                                        "(id_tanque,id_producto,medido_en,litros,kg,id_usuario,observaciones) "
-                                                        "VALUES (%s,%s,now(),%s,%s,%s,%s)",
-                                                        (_aid, _apid, float(_vol), float(_akg), int(USR["id_usuario"]),
-                                                         f"Aforo: vacío {_cm:.0f} cm"))
-                                        audit.log("I", "fact_stock_tanque", _aid, {"aforo_cm": float(_cm), "litros": float(_vol)})
-                                    st.success(f"Stock guardado: {_ar['nombre']} · {_apcod} · {_vol:,.0f} L "
-                                               f"({_akg/1000:,.2f} TN) por aforo ({_cm:.0f} cm de vacío).")
                                     cat.clear()
                                 except Exception as e:
                                     st.exception(e)
@@ -2453,10 +2328,7 @@ if st.session_state.section != "CARGAS":
             }
             _render_plan(USR, cat, conectar, siguiente_identificador)
         except Exception as _e:
-            import traceback as _tb
             st.error(f"No se pudo cargar el Centro de Planificación: {_e}")
-            with st.expander("🔧 Detalle técnico (para diagnóstico)"):
-                st.code(_tb.format_exc())
 
     elif st.session_state.section == "CHAT":
         # =================== CONSULTAS IA (chat, solo lectura) ===================

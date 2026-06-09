@@ -1567,3 +1567,23 @@ left join produccion.dim_tanque t on t.id_tanque=coalesce(m.id_tanque, te.id_tan
 where coalesce(m.fecha, te.fecha) is not null
 order by fecha desc, tanque;
 grant select on reporting.v_tanque_real_vs_teorico to ai_readonly;
+
+-- ============================================================================
+-- AFORO / CUBICAJE DE TANQUES (medidas_acopio_nueva.xlsx)
+-- El operario mide el VACÍO en cm (hilo/metro desde el tope) -> volumen.
+-- Cilíndricos: volumen=(altura-vacío)*litros_por_cm. Cónicos: tabla cm->litros.
+-- ============================================================================
+create table if not exists produccion.dim_tanque_aforo (
+  id_tanque bigint primary key references produccion.dim_tanque(id_tanque),
+  tipo_curva text not null default 'LINEAL' check (tipo_curva in ('LINEAL','TABLA')),
+  altura_total_cm numeric, litros_por_cm numeric, capacidad_litros numeric,
+  medible boolean not null default true, observacion text,
+  fuente text default 'medidas_acopio_nueva.xlsx', actualizado timestamptz not null default now()
+);
+create table if not exists produccion.dim_tanque_aforo_cm (
+  id_tanque bigint not null references produccion.dim_tanque(id_tanque),
+  cm_vacio integer not null, litros numeric not null, primary key (id_tanque, cm_vacio)
+);
+grant select on produccion.dim_tanque_aforo, produccion.dim_tanque_aforo_cm to ai_readonly;
+-- fn_volumen_por_vacio(id_tanque, cm_vacio): LINEAL por fórmula, TABLA por interpolación.
+-- (cuerpo en migración aforo_tanques; datos cargados desde el Excel: 53 cilíndricos + 2 cónicos.)
