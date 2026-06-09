@@ -79,7 +79,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # ---------- Producto final / calidad ----------
     if proc == "PRODUCCION_ARE":
         fin = cat("SELECT id_producto, codigo_producto, nombre_producto FROM produccion.dim_producto "
-                  "WHERE activo AND codigo_producto LIKE 'ARE-%' AND (%s IS NULL OR corriente=%s) "
+                  "WHERE activo AND codigo_producto LIKE 'ARE-%%' AND (%s IS NULL OR corriente=%s) "
                   "ORDER BY codigo_producto", (corr, corr))
     else:
         fin = cat("SELECT id_producto, codigo_producto, nombre_producto FROM produccion.dim_producto "
