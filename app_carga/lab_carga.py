@@ -432,3 +432,211 @@ def _form_AFE(pf, ctx, tok, get_conn, usuario):
             gm = _n("Goma Medio (%)", "prc_goma_medio", pf, p, tok, "gm")
             gb = _n("Goma Abajo (%)", "prc_goma_abajo", pf, p, tok, "gb")
             prc_hkf = _n("HKF (%)", "prc_hkf", pf, p, tok, "hkf")
+        with c3:
+            densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
+            temp = _t("Temp (Celsius)", "temp_celcius", pf, p, tok, "temp")
+            ppm_azufre = _n("Azufre (ppm)", "ppm_azufre", pf, p, tok, "az")
+            ppm_fosforo = _n("Fosforo (ppm)", "ppm_fosforo", pf, p, tok, "fos")
+        cier = _cierre(p, pf, tok, CAL_AFE, default_corriente="VEGETAL")
+        enviar = st.form_submit_button("GUARDAR", use_container_width=True)
+    if enviar:
+        data = dict(tipo_formulario="AFE", producto_lab="AFE",
+                    prc_acidez=prc_acidez, prc_sedimentos=prc_sedimentos,
+                    prc_agua=prc_agua, prc_producto=prc_producto,
+                    prc_goma_arriba=ga, prc_goma_medio=gm, prc_goma_abajo=gb,
+                    prc_hkf=prc_hkf, densidad__g_ml=densidad, temp_celcius=temp,
+                    ppm_azufre=ppm_azufre, ppm_fosforo=ppm_fosforo, **cab, **cier)
+        if _persistir("AFE", data, ctx, get_conn, usuario):
+            _reset(tok)
+
+
+def _form_EFLUENTE(pf, ctx, tok, get_conn, usuario):
+    p = "eflu"
+    st.subheader("EFLUENTES")
+    with st.form(_k(p, tok, "form")):
+        cab = _cab(p, pf, tok)
+        st.markdown("**Analisis**")
+        c1, c2 = st.columns(2)
+        with c1:
+            eflu_ph = _n("pH", "eflu_ph", pf, p, tok, "ph")
+            eflu_cond = _n("Conductividad (ms)", "eflu_conductividad_ms", pf, p, tok, "cond")
+            eflu_agua = _n("Agua (%)", "eflu_prc_agua", pf, p, tok, "ag")
+        with c2:
+            eflu_sed = _n("Sedimentos (%)", "eflu_prc_sedimentos", pf, p, tok, "sed")
+            eflu_grasa = _n("Grasa (%)", "eflu_prc_grasa", pf, p, tok, "gr")
+            eflu_dqo = _n("DQO (mg O2/L)", "eflu_dequo_mg02_l", pf, p, tok, "dqo")
+        c1, c2 = st.columns(2)
+        with c1:
+            calidad = _s("Calidad final *", "calidad_final_lab", CAL_EFLU, pf, p, tok, "cal",
+                         default="LIQUIDO")
+            rechazado = _s("Rechazado/Aceptado *", "rechazado", RECHAZADO, pf, p, tok, "rech")
+        with c2:
+            conclusion = st.text_area("Conclusiones",
+                                      value=(pf.get("conclusion") or "") if pf else "",
+                                      key=_k(p, tok, "conc"))
+        enviar = st.form_submit_button("GUARDAR", use_container_width=True)
+    if enviar:
+        data = dict(tipo_formulario="EFLUENTE", producto_lab="EFLUENTE",
+                    calidad_final_lab=calidad, rechazado=rechazado, conclusion=conclusion,
+                    eflu_ph=eflu_ph, eflu_conductividad_ms=eflu_cond, eflu_prc_agua=eflu_agua,
+                    eflu_prc_sedimentos=eflu_sed, eflu_prc_grasa=eflu_grasa,
+                    eflu_dequo_mg02_l=eflu_dqo, **cab)
+        if _persistir("EFLUENTE", data, ctx, get_conn, usuario):
+            _reset(tok)
+
+
+def _form_BORRA(pf, ctx, tok, get_conn, usuario):
+    p = "borra"
+    st.subheader("BORRA / EMULSION")
+    with st.form(_k(p, tok, "form")):
+        cab = _cab(p, pf, tok)
+        st.markdown("**Analisis**")
+        c1, c2 = st.columns(2)
+        with c1:
+            borra_ph = _n("PH", "borra_ph", pf, p, tok, "ph")
+            borra_alc = _n("Alcalinidad (%)", "borra_alcalinidad", pf, p, tok, "alc")
+            borra_grasa = _n("Materia grasa (%)", "borra_prc_grasa", pf, p, tok, "gr")
+        with c2:
+            prc_sedimentos = _n("Sedimentos (%)", "prc_sedimentos", pf, p, tok, "sed")
+            prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
+        cier = _cierre(p, pf, tok, CAL_BORRA, default_corriente="VEGETAL")
+        enviar = st.form_submit_button("GUARDAR", use_container_width=True)
+    if enviar:
+        data = dict(tipo_formulario="BORRA", producto_lab="BORRA",
+                    borra_ph=borra_ph, borra_alcalinidad=borra_alc, borra_prc_grasa=borra_grasa,
+                    prc_sedimentos=prc_sedimentos, prc_agua=prc_agua, **cab, **cier)
+        if _persistir("BORRA", data, ctx, get_conn, usuario):
+            _reset(tok)
+
+
+def _form_GENERICO(pf, ctx, tok, get_conn, usuario):
+    """Para editar productos sin formulario propio (SEBO, GLICERINA, etc.)."""
+    p = "gen"
+    prod = (pf or {}).get("producto_lab") or ""
+    st.subheader(f"Edicion generica · {prod}")
+    with st.form(_k(p, tok, "form")):
+        cab = _cab(p, pf, tok)
+        c1, c2 = st.columns(2)
+        with c1:
+            prc_acidez = _n("Acidez (%)", "prc_acidez", pf, p, tok, "ac")
+            prc_sedimentos = _n("Sedimentos (%)", "prc_sedimentos", pf, p, tok, "sed")
+            prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
+        with c2:
+            prc_producto = _n("Producto (%)", "prc_producto", pf, p, tok, "prod")
+            densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
+        producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
+        cier = _cierre(p, pf, tok, CAL_GEN)
+        enviar = st.form_submit_button("GUARDAR", use_container_width=True)
+    if enviar:
+        data = dict(tipo_formulario="GENERICO", producto_lab=producto_lab,
+                    prc_acidez=prc_acidez, prc_sedimentos=prc_sedimentos, prc_agua=prc_agua,
+                    prc_producto=prc_producto, densidad__g_ml=densidad, **cab, **cier)
+        if _persistir("GENERICO", data, ctx, get_conn, usuario):
+            _reset(tok)
+
+
+_FORMS = {
+    "AG": _form_AG, "ARE": _form_ARE, "AFE": _form_AFE,
+    "EFLUENTE": _form_EFLUENTE, "BORRA": _form_BORRA,
+}
+
+
+def _form_para_producto(producto_lab):
+    """Mapea producto_lab de un registro al formulario adecuado."""
+    if not producto_lab:
+        return _form_GENERICO
+    p = producto_lab.strip().upper()
+    if p == "EFLUENTE":
+        return _form_EFLUENTE
+    if p in ("BORRA", "EMULSION"):
+        return _form_BORRA
+    if p in _FORMS:
+        return _FORMS[p]
+    return _form_GENERICO
+
+
+def _reset(tok):
+    """Tras guardar: nuevo token (limpia widgets) y vuelve a modo alta."""
+    st.session_state["lab_tok"] = uuid.uuid4().hex[:8]
+    st.session_state["lab_edit_ctx"] = None
+    st.rerun()
+
+
+def render_laboratorio(get_conn=None):
+    st.header("🧪 Laboratorio · Carga y edicion")
+    st.caption("Alta nueva o edicion. Al editar un registro de Access, la app lo adopta "
+               "y tu version prevalece (aunque Access lo reescriba a diario).")
+
+    ss = st.session_state
+    ss.setdefault("lab_tok", uuid.uuid4().hex[:8])
+    ss.setdefault("lab_edit_ctx", None)
+
+    usuario = st.text_input("Tu usuario (auditoria, opcional)", key="lab_user")
+
+    modo = st.radio("Modo", ["➕ Nueva carga", "✏️ Buscar y editar"], horizontal=True,
+                    key="lab_modo")
+
+    # -------- BUSCAR Y EDITAR --------
+    if modo.startswith("✏️"):
+        with st.expander("Buscar registro", expanded=(ss["lab_edit_ctx"] is None)):
+            c1, c2, c3 = st.columns([2, 2, 1])
+            ticket = c1.text_input("Ticket contiene", key="lab_q_ticket")
+            prod = c2.selectbox("Producto", ["(todos)"] + sorted(
+                set(list(_FORMS.keys()) + ["EFLUENTE", "BORRA", "SEBO", "GLICERINA"])),
+                key="lab_q_prod")
+            buscar = c3.button("Buscar", use_container_width=True)
+            if buscar:
+                try:
+                    res = buscar_registros(
+                        ticket=ticket or None,
+                        producto=None if prod == "(todos)" else prod,
+                        get_conn=get_conn)
+                    ss["lab_busqueda"] = res
+                except Exception as e:
+                    st.error(f"Error buscando: {e}")
+                    ss["lab_busqueda"] = []
+
+            res = ss.get("lab_busqueda", [])
+            if res:
+                def _lbl(r):
+                    f = str(r["fecha"])[:16] if r.get("fecha") else "s/f"
+                    org = "APP" if r["source_id"] == APP_SOURCE else "Access"
+                    return (f"[{org}] {f} · {r.get('producto_lab') or '?'} · "
+                            f"tk {r.get('ticket') or '-'} · cal {r.get('calidad_final_lab') or '-'} "
+                            f"· id {r['id_access']}")
+                opciones = {(_lbl(r)): r for r in res}
+                elegido = st.selectbox(f"{len(res)} resultado(s)", list(opciones.keys()),
+                                       key="lab_sel")
+                if st.button("Cargar para editar", type="primary"):
+                    r = opciones[elegido]
+                    full = cargar_registro(r["source_id"], r["id_access"], get_conn=get_conn)
+                    ss["lab_edit_ctx"] = {"source_id": r["source_id"],
+                                          "id_access": r["id_access"], "full": full}
+                    ss["lab_tok"] = uuid.uuid4().hex[:8]
+                    st.rerun()
+            elif buscar:
+                st.info("Sin resultados.")
+
+        ctx = ss.get("lab_edit_ctx")
+        if ctx:
+            full = ctx["full"] or {}
+            org = "tu app" if ctx["source_id"] == APP_SOURCE else "Access (se adoptara al guardar)"
+            st.info(f"Editando registro id {ctx['id_access']} · origen: {org}")
+            if st.button("✖ Cancelar edicion"):
+                ss["lab_edit_ctx"] = None
+                st.rerun()
+            st.divider()
+            form_fn = _form_para_producto(full.get("producto_lab"))
+            form_fn(full, ctx, ss["lab_tok"], get_conn, usuario)
+        return
+
+    # -------- NUEVA CARGA --------
+    tipo = st.radio("Producto / formulario", list(_FORMS.keys()),
+                    horizontal=True, key="lab_tipo_nuevo")
+    st.divider()
+    _FORMS[tipo](None, None, ss["lab_tok"], get_conn, usuario)
+
+
+if __name__ == "__main__":
+    st.set_page_config(page_title="Laboratorio · Carga", page_icon="🧪", layout="wide")
+    render_laboratorio()
