@@ -20,6 +20,7 @@ def conectar(id_usuario):
     try:
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public")
+            cur.execute("SELECT set_config('app.user_id', %s, false)", (str(id_usuario),))
         yield conn, _Audit(conn, id_usuario)
         conn.commit()
     except Exception:

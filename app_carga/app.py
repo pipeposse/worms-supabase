@@ -849,20 +849,29 @@ def selector_fuente_mp(cod, key_prefix):
     try:
         df = cat(
             "SELECT v.id_tanque, v.codigo, v.nombre, COALESCE(v.kg_actual,0) kg, "
-            "COALESCE(v.litros_actual,0) lt, v.capacidad_litros cap "
+            "COALESCE(v.litros_actual,0) lt, v.capacidad_litros cap, "
+            "(pt.id_param IS NOT NULL) tiene_param, pt.acidez_pct, pt.ultima_evaluacion_ts "
             "FROM produccion.vw_stock_tanque_actual v "
-            "JOIN produccion.dim_tanque_producto tp ON tp.id_tanque=v.id_tanque "
-            "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto AND p.codigo_producto=%s "
+            "JOIN produccion.dim_tanque t ON t.id_tanque=v.id_tanque "
+            "JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal AND p.codigo_producto=%s "
+            "LEFT JOIN produccion.fact_param_tanque pt ON pt.id_tanque=v.id_tanque AND pt.id_producto=t.id_producto_principal "
+            "WHERE COALESCE(v.litros_actual,0) > 0 "
             "ORDER BY kg DESC NULLS LAST", (cod,))
     except Exception:
         df = pd.DataFrame()
     if df is None or df.empty:
-        st.warning(f"No hay tanques con stock de **{cod}**. Usá ticket de portería.")
+        st.warning(f"No hay tanques **con stock** de **{cod}**. Usá ticket de portería.")
         return {"fuente": "TICKET", "id_tanque": None, "kg": 0.0, "ticket": None, "stock_kg": None}
-    opts = df.apply(lambda r: f"{r['codigo']} · {r['nombre']} · {float(r['kg'])/1000:,.1f} TN disp.", axis=1).tolist()
+    def _lbl_fte(r):
+        flag = "✅ con parámetros" if r.get("tiene_param") else "⚠️ SIN parámetros"
+        return f"{r['codigo']} · {r['nombre']} · {float(r['kg'])/1000:,.1f} TN · {flag}"
+    opts = df.apply(_lbl_fte, axis=1).tolist()
     sel = st.selectbox(f"Tanque con {cod}", opts, key=f"{key_prefix}_tk")
     row = df.iloc[opts.index(sel)]
     _stock_kg = float(row["kg"] or 0)
+    if not row.get("tiene_param"):
+        st.warning(f"⚠️ **{row['codigo']}** no tiene parámetros de laboratorio cargados. "
+                   "Cargalos en *Tanques → 🧪 Laboratorio* para que la receta herede acidez/agua/azufre.")
     st.markdown(
         f"<div class='kpi' style='margin:6px 0'><div class='l'>Stock disponible en tanque</div>"
         f"<div class='v'>{_stock_kg/1000:,.1f}<span style='font-size:1rem;font-weight:700'> TN</span></div>"
@@ -914,32 +923,33 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
             try:
                 df = cat(
                     "SELECT v.id_tanque, v.codigo, v.nombre, COALESCE(v.kg_actual,0) kg, COALESCE(v.litros_actual,0) lt, "
-                    "pt.acidez_pct, pt.agua_pct, pt.sedimentos_pct, pt.densidad_g_ml, pt.ppm_azufre, pt.ppm_fosforo, pt.ultima_evaluacion_ts, pt.corriente "
+                    "pt.acidez_pct, pt.agua_pct, pt.sedimentos_pct, pt.densidad_g_ml, pt.ppm_azufre, pt.ppm_fosforo, "
+                    "pt.ultima_evaluacion_ts, pt.corriente, (pt.id_param IS NOT NULL) tiene_param "
                     "FROM produccion.vw_stock_tanque_actual v "
-                    "JOIN produccion.dim_tanque_producto tp ON tp.id_tanque=v.id_tanque "
-                    "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto AND p.codigo_producto=%s "
-                    "LEFT JOIN produccion.fact_param_tanque pt ON pt.id_tanque=v.id_tanque AND pt.id_producto=p.id_producto "
+                    "JOIN produccion.dim_tanque t ON t.id_tanque=v.id_tanque "
+                    "JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal AND p.codigo_producto=%s "
+                    "LEFT JOIN produccion.fact_param_tanque pt ON pt.id_tanque=v.id_tanque AND pt.id_producto=t.id_producto_principal "
+                    "WHERE COALESCE(v.litros_actual,0) > 0 "
                     "ORDER BY kg DESC NULLS LAST", (cod,))
             except Exception:
                 df = pd.DataFrame()
             if df is None or df.empty:
-                st.caption(f"Sin tanques con stock de {cod}.")
+                st.caption(f"Sin tanques **con stock** de {cod}.")
             else:
                 def _tlab(r):
                     s = f"{r['codigo']} · {float(r['kg'])/1000:,.1f} TN"
                     if pd.notna(r.get('corriente')):
                         s += f" · {str(r['corriente']).lower()}"
                     s += f" · ac {float(r['acidez_pct']):.2f}%" if pd.notna(r.get('acidez_pct')) else " · ac s/d"
-                    if pd.notna(r.get('ultima_evaluacion_ts')):
-                        try:
-                            s += f" · eval {pd.to_datetime(r['ultima_evaluacion_ts']).strftime('%d/%m/%y')}"
-                        except Exception:
-                            pass
+                    s += " · ✅ parámetros" if r.get('tiene_param') else " · ⚠️ SIN parámetros"
                     return s
                 opts = df.apply(_tlab, axis=1).tolist()
                 sel = st.selectbox(f"Tanque con {cod}", opts, key=f"{key_prefix}_tksel")
                 row = df.iloc[opts.index(sel)]
                 _stock = float(row["kg"] or 0)
+                if not row.get("tiene_param"):
+                    st.warning(f"⚠️ **{row['codigo']}** no tiene parámetros de laboratorio cargados. "
+                               "La receta no podrá heredar acidez/agua/azufre. Cargalos en *Tanques → 🧪 Laboratorio*.")
                 _tank_avg = {}
                 for _k, _dst, _div in [("acidez_pct", "prc_acidez", 100.0), ("agua_pct", "prc_agua", 100.0),
                                        ("sedimentos_pct", "prc_sedimentos", 100.0), ("densidad_g_ml", "densidad__g_ml", 1.0),
@@ -1982,11 +1992,97 @@ if st.session_state.section != "CARGAS":
         st.markdown('<div class="section-title" style="font-size:1.4rem">🛢️ Tanques y stock</div>', unsafe_allow_html=True)
         try:
             import tanques_panel as _tqp
-            _tab_sec, _tab_res = st.tabs(["📊 Por sector", "🔎 Resumen y filtros"])
+            _tab_sec, _tab_res, _tab_lab = st.tabs(["📊 Por sector", "🔎 Resumen y filtros", "🧪 Laboratorio"])
             with _tab_sec:
                 _tqp.vista_por_sector(cat)
             with _tab_res:
                 _tqp.resumen_filtrado(cat)
+            with _tab_lab:
+                st.markdown("### 🧪 Cargar parámetros de laboratorio por tanque")
+                st.caption("El laboratorio actualiza acá los parámetros del tanque. Queda histórico con fecha y usuario, "
+                           "y producción los hereda al instante al elegir el tanque como fuente.")
+                _lt = cat("SELECT t.id_tanque, t.codigo, t.nombre, t.sector, t.id_producto_principal, "
+                          "p.codigo_producto AS prod, pp.acidez_pct, pp.agua_pct, pp.sedimentos_pct, "
+                          "pp.densidad_g_ml, pp.ppm_azufre, pp.ppm_fosforo, pp.corriente, pp.ultima_evaluacion_ts "
+                          "FROM produccion.dim_tanque t "
+                          "LEFT JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
+                          "LEFT JOIN produccion.fact_param_tanque pp ON pp.id_tanque=t.id_tanque AND pp.id_producto=t.id_producto_principal "
+                          "WHERE COALESCE(t.activo,true) ORDER BY t.sector, t.nombre")
+                if _lt.empty:
+                    st.info("No hay tanques.")
+                else:
+                    _ls1, _ls2 = st.columns(2)
+                    _lsec = _ls1.selectbox("Sector", ["Todos"] + sorted(_lt["sector"].dropna().unique().tolist()), key="lab_sec")
+                    _ld = _lt if _lsec == "Todos" else _lt[_lt["sector"] == _lsec]
+                    def _lab_opt(r):
+                        flag = "✅" if pd.notna(r.get("ultima_evaluacion_ts")) else "⚠️ s/param"
+                        return f"{r['nombre']} · {r['codigo']} · {r['prod'] or 'sin producto'} · {flag}"
+                    _lopts = _ld.apply(_lab_opt, axis=1).tolist()
+                    _lsel = _ls2.selectbox(f"Tanque ({len(_ld)})", _lopts, key="lab_tk")
+                    _lr = _ld.iloc[_lopts.index(_lsel)]
+                    _lidt = int(_lr["id_tanque"]); _lpid = _lr["id_producto_principal"]
+                    if pd.isna(_lpid):
+                        st.warning("Este tanque no tiene **producto asignado**. Asigná el producto en la pestaña *Editar tanque* "
+                                   "antes de cargar parámetros (los parámetros van por tanque + producto).")
+                    else:
+                        _ev = _lr.get("ultima_evaluacion_ts")
+                        st.caption(f"Producto actual: **{_lr['prod']}** · última evaluación: "
+                                   f"{pd.to_datetime(_ev).strftime('%d/%m/%Y %H:%M') if pd.notna(_ev) else 'sin evaluación'}")
+                        def _pv(col, d=0.0):
+                            v = _lr.get(col)
+                            return float(v) if pd.notna(v) else float(d)
+                        lc1, lc2, lc3 = st.columns(3)
+                        _ac = lc1.number_input("Acidez %", min_value=0.0, value=_pv("acidez_pct"), step=0.1, format="%.2f", key="lab_ac")
+                        _ag = lc2.number_input("Agua %", min_value=0.0, value=_pv("agua_pct"), step=0.1, format="%.2f", key="lab_ag")
+                        _se = lc3.number_input("Sedimentos %", min_value=0.0, value=_pv("sedimentos_pct"), step=0.1, format="%.2f", key="lab_se")
+                        lc4, lc5, lc6 = st.columns(3)
+                        _az = lc4.number_input("Azufre (ppm)", min_value=0.0, value=_pv("ppm_azufre"), step=1.0, format="%.1f", key="lab_az")
+                        _fo = lc5.number_input("Fósforo (ppm)", min_value=0.0, value=_pv("ppm_fosforo"), step=1.0, format="%.1f", key="lab_fo")
+                        _de = lc6.number_input("Densidad g/ml", min_value=0.0, value=_pv("densidad_g_ml", 0.91), step=0.01, format="%.3f", key="lab_de")
+                        _corr_opts = ["", "VEGETAL", "ANIMAL", "MIXTA"]
+                        _corr_cur = str(_lr.get("corriente")).upper() if pd.notna(_lr.get("corriente")) else ""
+                        _co = st.selectbox("Corriente", _corr_opts,
+                                           index=_corr_opts.index(_corr_cur) if _corr_cur in _corr_opts else 0, key="lab_co")
+                        _cm = st.text_input("Comentario", max_chars=200, key="lab_cm")
+                        if st.button("💾 Guardar parámetros", type="primary", use_container_width=True, key="lab_save"):
+                            try:
+                                with conectar(USR["id_usuario"]) as (conn, audit):
+                                    with conn.cursor() as cur:
+                                        cur.execute(
+                                            "INSERT INTO produccion.fact_param_tanque "
+                                            "(id_tanque,id_producto,corriente,evaluado,ultima_evaluacion_ts,"
+                                            " acidez_pct,agua_pct,sedimentos_pct,densidad_g_ml,ppm_azufre,ppm_fosforo,"
+                                            " parametros_extra,actualizado_en) "
+                                            "VALUES (%s,%s,%s,true,now(),%s,%s,%s,%s,%s,%s,%s,now()) "
+                                            "ON CONFLICT (id_tanque,id_producto) DO UPDATE SET "
+                                            " corriente=EXCLUDED.corriente, evaluado=true, ultima_evaluacion_ts=now(), "
+                                            " acidez_pct=EXCLUDED.acidez_pct, agua_pct=EXCLUDED.agua_pct, "
+                                            " sedimentos_pct=EXCLUDED.sedimentos_pct, densidad_g_ml=EXCLUDED.densidad_g_ml, "
+                                            " ppm_azufre=EXCLUDED.ppm_azufre, ppm_fosforo=EXCLUDED.ppm_fosforo, "
+                                            " parametros_extra=COALESCE(produccion.fact_param_tanque.parametros_extra,'{}'::jsonb)||EXCLUDED.parametros_extra, "
+                                            " actualizado_en=now()",
+                                            (_lidt, int(_lpid), (_co or None),
+                                             float(_ac), float(_ag), float(_se), float(_de), float(_az), float(_fo),
+                                             __import__("json").dumps({"comentario": _cm} if _cm else {})))
+                                    audit.log("U", "fact_param_tanque", _lidt,
+                                              {"acidez_pct": float(_ac), "ppm_azufre": float(_az), "ppm_fosforo": float(_fo)})
+                                st.success(f"Parámetros guardados para {_lr['nombre']} · {_lr['prod']}.")
+                                cat.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.exception(e)
+                    st.divider()
+                    st.markdown("**Histórico reciente de este tanque**")
+                    _hist = cat("SELECT registrado_en, origen, acidez_pct, agua_pct, sedimentos_pct, ppm_azufre, ppm_fosforo, corriente "
+                                "FROM produccion.fact_param_tanque_hist WHERE id_tanque=%s "
+                                "ORDER BY registrado_en DESC LIMIT 10", (_lidt,))
+                    if _hist.empty:
+                        st.caption("Sin historial todavía.")
+                    else:
+                        st.dataframe(_hist.rename(columns={"registrado_en":"Fecha","origen":"Origen","acidez_pct":"Acidez %",
+                                     "agua_pct":"Agua %","sedimentos_pct":"Sed %","ppm_azufre":"Azufre","ppm_fosforo":"Fósforo",
+                                     "corriente":"Corriente"}), use_container_width=True, hide_index=True,
+                                     column_config={"Fecha": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")})
         except Exception as _e_tqp:
             st.warning(f"No se pudo cargar la vista por sector/resumen: {_e_tqp}")
         st.divider()
