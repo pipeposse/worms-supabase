@@ -23,19 +23,6 @@ from etl.db import (
 )
 from etl.config import DATABASE_URL
 
-from contextlib import contextmanager as _lab_cm
-@_lab_cm
-def _lab_conn():
-    """Conexion para la seccion Laboratorio (carga/edicion)."""
-    import psycopg2 as _pg
-    c = _pg.connect(DATABASE_URL)
-    try:
-        with c.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public")
-        yield c
-    finally:
-        c.close()
-
 st.set_page_config(page_title="WORMS Carga", layout="wide", page_icon="🏭")
 
 
@@ -1233,86 +1220,80 @@ if st.session_state.section != "CARGAS":
     if st.session_state.section == "LAB":
         # =================== LABORATORIO ===================
         st.title("🧪 Laboratorio")
-        _lab_view = st.radio("Vista", ["📊 Resultados", "➕ Carga / Edición"],
-                             horizontal=True, key="lab_view_sel", label_visibility="collapsed")
-        if _lab_view.startswith("➕"):
-            from lab_carga import render_laboratorio
-            render_laboratorio(get_conn=_lab_conn)
-        else:
-            with st.expander("Filtros", expanded=True):
-                c1, c2, c3 = st.columns(3)
-                fmin = c1.date_input("Fecha desde", value=(date.today()-_td(days=30)), key="lab_fmin")
-                fmax = c2.date_input("Fecha hasta", value=date.today(), key="lab_fmax")
-                limit_lab = c3.number_input("Límite filas", 100, 100000, 5000, step=500, key="lab_lim")
-                try:
-                    prods_lab = cat("SELECT DISTINCT producto_lab FROM produccion.procesos_lab WHERE producto_lab IS NOT NULL ORDER BY 1")["producto_lab"].tolist()
-                except Exception: prods_lab = []
-                try:
-                    emps_lab = cat("SELECT DISTINCT empleado FROM produccion.procesos_lab WHERE empleado IS NOT NULL ORDER BY 1")["empleado"].tolist()
-                except Exception: emps_lab = []
-                c4, c5, c6 = st.columns(3)
-                sel_prod = c4.multiselect("Producto", prods_lab, key="lab_prods")
-                sel_emp  = c5.multiselect("Empleado", emps_lab, key="lab_emps")
-                sel_corr = c6.multiselect("Corriente", CORR_EVAL, default=CORR_EVAL, key="lab_corr",
-                                          help="Solo corrientes que se evalúan (vegetal, animal, insumo, efluente).")
-
-            where = ["pl.fecha >= %s", "pl.fecha < %s"]
-            params = [fmin.isoformat(), (fmax + _td(days=1)).isoformat()]
-            if sel_prod:
-                where.append("pl.producto_lab = ANY(%s)"); params.append(sel_prod)
-            if sel_emp:
-                where.append("pl.empleado = ANY(%s)"); params.append(sel_emp)
-            # corriente derivada de producto_lab (vía porteria_limpieza), fallback a la propia
-            sql_lab = f"""
-                SELECT pl.*,
-                       COALESCE(NULLIF(lower(pl.corriente),''), m.corriente) AS corriente_eval
-                FROM produccion.procesos_lab pl
-                LEFT JOIN (
-                    SELECT UPPER(TRIM(producto_base)) AS base,
-                           MODE() WITHIN GROUP (ORDER BY corriente) AS corriente
-                    FROM produccion.porteria_limpieza WHERE corriente IS NOT NULL GROUP BY 1
-                ) m ON m.base = CASE UPPER(TRIM(pl.producto_lab))
-                         WHEN 'EFLUENTE'           THEN 'EFLUENTES LIQUIDOS'
-                         WHEN 'ACIDO SULFURICO'    THEN 'ACIDO_KG'
-                         WHEN 'HIDROXIDO DE SODIO' THEN 'SODA_KG'
-                         WHEN 'FONDO DE TK'        THEN 'FONDO_TK'
-                         ELSE UPPER(TRIM(pl.producto_lab)) END
-                WHERE {' AND '.join(where)}
-                ORDER BY pl.fecha DESC NULLS LAST
-                LIMIT {int(limit_lab)}
-            """
+        with st.expander("Filtros", expanded=True):
+            c1, c2, c3 = st.columns(3)
+            fmin = c1.date_input("Fecha desde", value=(date.today()-_td(days=30)), key="lab_fmin")
+            fmax = c2.date_input("Fecha hasta", value=date.today(), key="lab_fmax")
+            limit_lab = c3.number_input("Límite filas", 100, 100000, 5000, step=500, key="lab_lim")
             try:
-                df_l = cat(sql_lab, tuple(params))
-            except Exception as e:
-                st.exception(e); df_l = pd.DataFrame()
-            # corriente final (derivada) + filtro por corriente evaluable
-            if not df_l.empty and "corriente_eval" in df_l.columns:
-                df_l["corriente"] = df_l["corriente_eval"]
-                df_l = df_l.drop(columns=["corriente_eval"])
-                if sel_corr:
-                    df_l = df_l[df_l["corriente"].isin(sel_corr)]
+                prods_lab = cat("SELECT DISTINCT producto_lab FROM produccion.procesos_lab WHERE producto_lab IS NOT NULL ORDER BY 1")["producto_lab"].tolist()
+            except Exception: prods_lab = []
+            try:
+                emps_lab = cat("SELECT DISTINCT empleado FROM produccion.procesos_lab WHERE empleado IS NOT NULL ORDER BY 1")["empleado"].tolist()
+            except Exception: emps_lab = []
+            c4, c5, c6 = st.columns(3)
+            sel_prod = c4.multiselect("Producto", prods_lab, key="lab_prods")
+            sel_emp  = c5.multiselect("Empleado", emps_lab, key="lab_emps")
+            sel_corr = c6.multiselect("Corriente", CORR_EVAL, default=CORR_EVAL, key="lab_corr",
+                                      help="Solo corrientes que se evalúan (vegetal, animal, insumo, efluente).")
 
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Filas", len(df_l))
-            k2.metric("Productos distintos", df_l["producto_lab"].nunique() if not df_l.empty else 0)
-            k3.metric("Aceptados", int((df_l["rechazado"]=="ACEPTADO").sum()) if not df_l.empty else 0)
-            k4.metric("Rechazados", int((df_l["rechazado"]=="RECHAZADO").sum()) if not df_l.empty else 0)
+        where = ["pl.fecha >= %s", "pl.fecha < %s"]
+        params = [fmin.isoformat(), (fmax + _td(days=1)).isoformat()]
+        if sel_prod:
+            where.append("pl.producto_lab = ANY(%s)"); params.append(sel_prod)
+        if sel_emp:
+            where.append("pl.empleado = ANY(%s)"); params.append(sel_emp)
+        # corriente derivada de producto_lab (vía porteria_limpieza), fallback a la propia
+        sql_lab = f"""
+            SELECT pl.*,
+                   COALESCE(NULLIF(lower(pl.corriente),''), m.corriente) AS corriente_eval
+            FROM produccion.procesos_lab pl
+            LEFT JOIN (
+                SELECT UPPER(TRIM(producto_base)) AS base,
+                       MODE() WITHIN GROUP (ORDER BY corriente) AS corriente
+                FROM produccion.porteria_limpieza WHERE corriente IS NOT NULL GROUP BY 1
+            ) m ON m.base = CASE UPPER(TRIM(pl.producto_lab))
+                     WHEN 'EFLUENTE'           THEN 'EFLUENTES LIQUIDOS'
+                     WHEN 'ACIDO SULFURICO'    THEN 'ACIDO_KG'
+                     WHEN 'HIDROXIDO DE SODIO' THEN 'SODA_KG'
+                     WHEN 'FONDO DE TK'        THEN 'FONDO_TK'
+                     ELSE UPPER(TRIM(pl.producto_lab)) END
+            WHERE {' AND '.join(where)}
+            ORDER BY pl.fecha DESC NULLS LAST
+            LIMIT {int(limit_lab)}
+        """
+        try:
+            df_l = cat(sql_lab, tuple(params))
+        except Exception as e:
+            st.exception(e); df_l = pd.DataFrame()
+        # corriente final (derivada) + filtro por corriente evaluable
+        if not df_l.empty and "corriente_eval" in df_l.columns:
+            df_l["corriente"] = df_l["corriente_eval"]
+            df_l = df_l.drop(columns=["corriente_eval"])
+            if sel_corr:
+                df_l = df_l[df_l["corriente"].isin(sel_corr)]
 
-            if not df_l.empty:
-                st.markdown("**Procesos por día**")
-                by_day = df_l.assign(dia=pd.to_datetime(df_l["fecha"]).dt.date).groupby("dia").size().reset_index(name="cantidad")
-                st.line_chart(by_day, x="dia", y="cantidad", use_container_width=True)
-                st.markdown("**Distribución por producto**")
-                by_prod = df_l["producto_lab"].value_counts().reset_index()
-                by_prod.columns = ["producto_lab","cantidad"]
-                st.bar_chart(by_prod, x="producto_lab", y="cantidad", use_container_width=True)
-                df_show = df_l.dropna(axis=1, how="all")
-                st.caption(f"Mostrando {df_show.shape[1]} columnas con datos (se ocultan {df_l.shape[1]-df_show.shape[1]} columnas 100% vacías).")
-                st.dataframe(df_show, use_container_width=True, hide_index=True, height=380)
-                st.download_button("⬇️ Descargar CSV", df_show.to_csv(index=False).encode("utf-8"),
-                                   file_name=f"procesos_lab_{fmin}_{fmax}.csv", mime="text/csv")
-            else:
-                st.info("Sin datos en el rango.")
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Filas", len(df_l))
+        k2.metric("Productos distintos", df_l["producto_lab"].nunique() if not df_l.empty else 0)
+        k3.metric("Aceptados", int((df_l["rechazado"]=="ACEPTADO").sum()) if not df_l.empty else 0)
+        k4.metric("Rechazados", int((df_l["rechazado"]=="RECHAZADO").sum()) if not df_l.empty else 0)
+
+        if not df_l.empty:
+            st.markdown("**Procesos por día**")
+            by_day = df_l.assign(dia=pd.to_datetime(df_l["fecha"]).dt.date).groupby("dia").size().reset_index(name="cantidad")
+            st.line_chart(by_day, x="dia", y="cantidad", use_container_width=True)
+            st.markdown("**Distribución por producto**")
+            by_prod = df_l["producto_lab"].value_counts().reset_index()
+            by_prod.columns = ["producto_lab","cantidad"]
+            st.bar_chart(by_prod, x="producto_lab", y="cantidad", use_container_width=True)
+            df_show = df_l.dropna(axis=1, how="all")
+            st.caption(f"Mostrando {df_show.shape[1]} columnas con datos (se ocultan {df_l.shape[1]-df_show.shape[1]} columnas 100% vacías).")
+            st.dataframe(df_show, use_container_width=True, hide_index=True, height=380)
+            st.download_button("⬇️ Descargar CSV", df_show.to_csv(index=False).encode("utf-8"),
+                               file_name=f"procesos_lab_{fmin}_{fmax}.csv", mime="text/csv")
+        else:
+            st.info("Sin datos en el rango.")
     elif st.session_state.section == "PORT":
         # =================== PORTERIA ===================
         st.title("\U0001f69b Porteria")

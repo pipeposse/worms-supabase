@@ -18,6 +18,19 @@ import streamlit as st
 ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 
 
+def _productos_proceso(cat, sector, tipo, rol):
+    """Productos válidos para (proceso, rol) según dic_proceso_producto (patrones LIKE)."""
+    return cat(
+        "SELECT DISTINCT p.id_producto, p.codigo_producto, p.nombre_producto, "
+        "       COALESCE(p.densidad_g_ml,0.91) dens, COALESCE(p.corriente,'') corriente "
+        "FROM produccion.dim_producto p "
+        "JOIN produccion.dic_proceso_producto pp "
+        "  ON pp.rol=%s AND (pp.tipo_proceso=%s OR pp.tipo_proceso IS NULL) "
+        "     AND (pp.sector=%s OR pp.sector IS NULL) "
+        "WHERE p.activo AND p.codigo_producto LIKE pp.patron "
+        "ORDER BY p.codigo_producto", (rol, tipo, sector))
+
+
 def render(USR, cat, conectar, siguiente_identificador, H=None):
     if H is None:
         try:
@@ -57,6 +70,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     mp = c2.selectbox("Materia prima a tratar", mp_opts, key="pl_mp",
                       help="El proceso y la corriente se derivan de la MP. AG/SEBO → ARE · AFE → desgomado.")
     proc = proceso_desde_mp(mp)
+    sector = str(fila["sector"]) if ("sector" in fila.index and pd.notna(fila["sector"])) else "REACTORES"
     corr = (corriente_de_mp_lab(mp) if callable(corriente_de_mp_lab) else None)
     cap = float(fila["capacidad_max_l"] or 0)
     dens = float(densidad_de(mp) or 0.92)
@@ -155,24 +169,39 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     st.markdown("#### 4 · Insumos estimados por fórmula")
     insumos_calc = []  # (codigo_insumo, rol, kg, fuente_default)
     gli_mov = None     # glicerina como movimiento (sin codigo_insumo)
+    gli_recup_kg = None  # glicerina recuperada estimada (kg) — vuelve en decantación
     if proc == "PRODUCCION_ARE":
         if q_ag > 0 and acidez > 0 and glicerol_v:
-            gli_puro = q_ag * (acidez / 100) * (PMg / (PMa * 2)) * FE
-            est_gli = gli_puro / (glicerol_v / 100)
+            gli_consumido = q_ag * (acidez / 100) * (PMg / (PMa * 2))   # glicerol puro que reacciona (estequiométrico)
+            gli_puro = gli_consumido * FE                               # glicerol cargado (con exceso)
+            est_gli = gli_puro / (glicerol_v / 100)                     # glicerina total a cargar (según pureza)
+            # Glicerina recuperada = (cargada - glicerol consumido) x eficiencia de decantación (ajustable POR REACTOR)
+            f_recup = float(K("factor_recuperacion_gli", 0.9) or 0.9)
+            try:
+                _fr = cat("SELECT factor FROM produccion.dic_factor_recup_gli WHERE id_bien_uso=%s",
+                          (int(fila["id_bien_uso"]),))
+                if not _fr.empty and _fr.iloc[0]["factor"] is not None:
+                    f_recup = float(_fr.iloc[0]["factor"])
+            except Exception:
+                pass
+            gli_recup_kg = max(0.0, (est_gli - gli_consumido) * f_recup)
+            dens_gli = float(K("densidad_glicerina", 1.25) or 1.25)
             tn = q_ag / 1000.0
             est_naoh = tn * float(fila["consumo_naoh_kg_x_tn"] or 0) if catal == "NAOH" else 0.0
             est_pot = tn * float(fila["consumo_potasio_kg_x_tn"] or 0) if catal == "POTASIO" else 0.0
             est_fuel = tn * float(fila["consumo_fuel_kg_x_tn"] or 0)
             e1, e2, e3, e4 = st.columns(4)
-            _gli_l = (est_gli / 1.26)  # densidad glicerina ~1.26 g/ml
+            _gli_l = (est_gli / dens_gli)
             e1.metric("Glicerina a cargar", f"{_gli_l:,.0f} L", f"{est_gli:,.0f} kg · glicerol {glicerol_v:.0f}%")
             if catal == "NAOH":
                 e2.metric("NaOH (catalizador)", f"{est_naoh:,.1f} kg")
             else:
                 e2.metric("KOH (catalizador)", f"{est_pot:,.2f} kg")
-            e3.metric("Glicerina recuperada", "Sí", "vuelve en decantación")
+            e3.metric("Glicerina recuperada", f"{gli_recup_kg/dens_gli:,.0f} L", f"{gli_recup_kg:,.0f} kg · factor {f_recup:.2f}")
             e4.metric("Fuel oil", f"{est_fuel:,.0f} kg")
             st.metric("ARE estimado", f"{q_ag/0.88:,.0f} L", f"{q_ag:,.0f} kg · {q_ag/1000:.1f} TN")
+            st.caption(f"Recuperada = (glicerina cargada {est_gli:,.0f} − glicerol consumido {gli_consumido:,.0f}) × {f_recup:.2f} "
+                       f"(factor de **{fila['nombre_ui']}**). Editá por reactor en `dic_factor_recup_gli`.")
             gli_mov = round(est_gli, 0)
             if catal == "NAOH":
                 insumos_calc.append(("soda_kg", "CATALIZADOR", round(est_naoh, 1)))
@@ -270,7 +299,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         params = {
             "kg_objetivo": round(q_ag, 0), "temp_inicial_c": temp, "tiempo_horas": horas,
             "acidez_pct": round(acidez, 3), "glicerol_pct": glicerol_v, "catalizador": catal,
-            "glicerina_kg": gli_mov, "pct_goma": pct_goma,
+            "glicerina_kg": gli_mov, "glicerina_recup_kg": gli_recup_kg, "pct_goma": pct_goma,
             "insumos_estimados": {c: k for c, _, k in insumos_calc},
         }
         uid = int(USR["id_usuario"])

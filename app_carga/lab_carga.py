@@ -1,0 +1,434 @@
+# -*- coding: utf-8 -*-
+"""
+lab_carga.py  —  Seccion LABORATORIO (alta y EDICION de evaluaciones desde Streamlit)
+=====================================================================================
+
+Replica los formularios de Access (AG, ARE, AFE, EFLUENTES, BORRA) y escribe en
+produccion.lab_evaluaciones. Esa tabla espeja cada fila a produccion.procesos_lab
+(source_id = 'app_lab_streamlit') via trigger.
+
+OVERRIDE DE ACCESS
+------------------
+Access reescribe procesos_lab todos los dias (source_id='laboratorio_pc_1'). Para
+que una edicion hecha aca NO se pierda:
+  - Al EDITAR un registro que vino de Access, la app lo "adopta": crea una fila en
+    lab_evaluaciones con origen_source_id/origen_id_access apuntando al original.
+  - La vista produccion.v_procesos_lab_efectivo oculta el registro de Access cuando
+    existe esa adopcion, y muestra el de la app. Aunque Access lo reescriba a diario,
+    la version de la app prevalece.
+  - reporting.v_laboratorio (lo que lee el dashboard y el chat del CEO) ya lee de esa
+    vista efectiva.
+
+USO
+---
+    from lab_carga import render_laboratorio
+    render_laboratorio()                      # usa DATABASE_URL del entorno
+    render_laboratorio(get_conn=mi_get_conn)  # o tu propio conector psycopg2
+
+Standalone:  streamlit run lab_carga.py
+"""
+
+from __future__ import annotations
+
+import os
+import uuid
+from contextlib import contextmanager
+
+import streamlit as st
+
+try:
+    import psycopg2
+    import psycopg2.extras
+except Exception:  # pragma: no cover
+    psycopg2 = None
+
+
+# ---------------------------------------------------------------------------
+# Conexion
+# ---------------------------------------------------------------------------
+def _database_url():
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        try:
+            url = st.secrets.get("DATABASE_URL")  # type: ignore[attr-defined]
+        except Exception:
+            url = None
+    if not url and os.getenv("PGHOST"):
+        url = (
+            f"postgresql://{os.getenv('PGUSER','postgres')}:"
+            f"{os.getenv('PGPASSWORD','')}@{os.getenv('PGHOST')}:{os.getenv('PGPORT','5432')}/"
+            f"{os.getenv('PGDATABASE','postgres')}?sslmode={os.getenv('PGSSLMODE','require')}"
+        )
+    return url
+
+
+@contextmanager
+def _default_conn():
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 no esta instalado.")
+    url = _database_url()
+    if not url:
+        raise RuntimeError("No hay DATABASE_URL configurada (.env o st.secrets).")
+    conn = psycopg2.connect(url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET search_path TO produccion, public")
+        yield conn
+    finally:
+        conn.close()
+
+
+def _conn_cm(get_conn):
+    return get_conn() if get_conn else _default_conn()
+
+
+# ---------------------------------------------------------------------------
+# Catalogos (valores reales de produccion.procesos_lab)
+# ---------------------------------------------------------------------------
+EMPLEADOS = ["Richard", "Manuela", "Milagros", "Cielo", "Felipe"]
+RECHAZADO = ["ACEPTADO", "RECHAZADO", "REMUESTREO"]
+CORRIENTE = ["VEGETAL", "ANIMAL"]
+CAL_AG    = ["A", "B", "C", "C.2da", "D", "E", "G"]
+CAL_AFE   = ["S", "SG", "B", "C", "A"]
+CAL_ARE   = ["UNICA", "A", "B", "C"]
+CAL_EFLU  = ["LIQUIDO"]
+CAL_BORRA = ["UNICA", "B", "C", "D"]
+CAL_GEN   = ["UNICA", "A", "B", "C", "D", "E"]
+
+_TABLE = "produccion.lab_evaluaciones"
+_EFECTIVO = "produccion.v_procesos_lab_efectivo"
+APP_SOURCE = "app_lab_streamlit"
+
+# columnas de datos que existen en lab_evaluaciones (defensa al insertar/editar)
+_VALID_COLS = {
+    "tipo_formulario", "usuario_app", "origen_source_id", "origen_id_access",
+    "ticket", "num_muestra", "color", "patente_chasis", "patente_acoplado",
+    "num_cisterna", "empleado", "producto", "producto_lab", "calidad_final_lab",
+    "corriente", "rechazado", "conclusion", "temp_celcius", "id_tanque_1",
+    "id_tanque_2", "densidad__g_ml", "prc_acidez", "prc_sedimentos", "prc_agua",
+    "prc_producto", "prc_emulsion", "prc_hkf", "prc_hexano_impurezas",
+    "ppm_azufre", "ppm_fosforo", "prc_goma_arriba", "prc_goma_medio",
+    "prc_goma_abajo", "prc_poliglicerol", "prc_glicerina", "eflu_ph",
+    "eflu_conductividad_ms", "eflu_prc_agua", "eflu_prc_sedimentos",
+    "eflu_prc_grasa", "eflu_dequo_mg02_l", "borra_prc_grasa", "borra_ph",
+    "borra_alcalinidad", "sebo_indice_yodo_gyodo_gmuestra", "concentracion",
+}
+
+
+# ---------------------------------------------------------------------------
+# Acceso a datos
+# ---------------------------------------------------------------------------
+def buscar_registros(ticket=None, producto=None, limite=50, get_conn=None):
+    """Busca en la vista efectiva (lo que se ve realmente hoy)."""
+    where, params = [], []
+    if ticket:
+        where.append("ticket ilike %s")
+        params.append(f"%{ticket.strip()}%")
+    if producto:
+        where.append("producto_lab = %s")
+        params.append(producto)
+    clause = ("where " + " and ".join(where)) if where else ""
+    sql = (
+        "select source_id, id_access, fecha, ticket, producto_lab, calidad_final_lab, "
+        "empleado, rechazado "
+        f"from {_EFECTIVO} {clause} order by fecha desc nulls last limit %s"
+    )
+    params.append(limite)
+    with _conn_cm(get_conn) as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def cargar_registro(source_id, id_access, get_conn=None):
+    """Trae la fila completa (todas las columnas) del registro efectivo."""
+    sql = f"select * from {_EFECTIVO} where source_id=%s and id_access=%s limit 1"
+    with _conn_cm(get_conn) as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (source_id, id_access))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def insertar_evaluacion(data, get_conn=None):
+    """Alta nueva (o adopcion con origen_*). Devuelve id generado."""
+    payload = {k: v for k, v in data.items() if k in _VALID_COLS and v not in (None, "")}
+    cols = list(payload.keys())
+    ph = ", ".join(["%s"] * len(cols))
+    sql = f'insert into {_TABLE} ({", ".join(cols)}) values ({ph}) returning id'
+    with _conn_cm(get_conn) as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(sql, [payload[c] for c in cols])
+            return cur.fetchone()[0]
+
+
+def actualizar_evaluacion(le_id, data, get_conn=None):
+    """Actualiza una fila existente de lab_evaluaciones (registro ya propio de la app)."""
+    payload = {k: v for k, v in data.items()
+               if k in _VALID_COLS and k not in ("origen_source_id", "origen_id_access")}
+    sets = ", ".join(f"{c}=%s" for c in payload)
+    sql = f"update {_TABLE} set {sets} where id=%s"
+    with _conn_cm(get_conn) as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(sql, [payload[c] for c in payload] + [le_id])
+
+
+def guardar_edicion(ctx, data, get_conn=None):
+    """
+    ctx = {'source_id':..., 'id_access':..., 'full':<dict fila original completa>}
+    - Si el registro ya es de la app -> UPDATE de esa fila.
+    - Si vino de Access/otro -> INSERT de override (adopcion) preservando columnas
+      originales no editadas.
+    """
+    base = {k: v for k, v in (ctx.get("full") or {}).items() if k in _VALID_COLS}
+    merged = {**base, **{k: v for k, v in data.items() if k in _VALID_COLS}}
+
+    if ctx["source_id"] == APP_SOURCE:
+        le_id = int(ctx["id_access"])  # id_access de filas app = lab_evaluaciones.id
+        actualizar_evaluacion(le_id, merged, get_conn=get_conn)
+        return ("update", le_id)
+    else:
+        merged["origen_source_id"] = ctx["source_id"]
+        merged["origen_id_access"] = str(ctx["id_access"])
+        new_id = insertar_evaluacion(merged, get_conn=get_conn)
+        return ("adopt", new_id)
+
+
+# ---------------------------------------------------------------------------
+# Validaciones (replican Form_BeforeUpdate de cada macro)
+# ---------------------------------------------------------------------------
+def _falta(d, campos):
+    return [lbl for key, lbl in campos if d.get(key) in (None, "")]
+
+
+def _suma_uno(*vals, tol=1e-4):
+    total = round(sum(v or 0 for v in vals), 4)
+    return abs(total - 1.0) <= tol, total
+
+
+def validar(tipo, d):
+    comunes = [("producto_lab", "Producto laboratorio"),
+               ("calidad_final_lab", "Calidad final"),
+               ("rechazado", "Rechazado")]
+    err = []
+    if tipo == "AG":
+        falt = _falta(d, comunes + [
+            ("prc_acidez", "Acidez (%)"), ("prc_sedimentos", "Sedimentos (%)"),
+            ("prc_agua", "Agua (%)"), ("ticket", "Ticket"),
+            ("prc_producto", "Producto (%)"), ("ppm_azufre", "Azufre (ppm)"),
+            ("ppm_fosforo", "Fosforo (ppm)"), ("prc_emulsion", "Emulsion (%)")])
+        if falt:
+            err.append("Faltan campos: " + ", ".join(falt))
+        else:
+            ok, tot = _suma_uno(d.get("prc_sedimentos"), d.get("prc_agua"),
+                                d.get("prc_emulsion"), d.get("prc_producto"))
+            if not ok:
+                err.append(f"Sed+Agua+Emulsion+Producto debe sumar 1. Suma actual: {tot}")
+    elif tipo == "ARE":
+        falt = _falta(d, comunes + [
+            ("prc_acidez", "Acidez (%)"), ("prc_sedimentos", "Sedimentos (%)"),
+            ("prc_agua", "Agua (%)"), ("ticket", "Ticket"),
+            ("prc_producto", "Producto (%)")])
+        if falt:
+            err.append("Faltan campos: " + ", ".join(falt))
+        else:
+            ok, tot = _suma_uno(d.get("prc_sedimentos"), d.get("prc_agua"),
+                                d.get("prc_poliglicerol"), d.get("prc_glicerina"),
+                                d.get("prc_producto"))
+            if not ok:
+                err.append(f"Sed+Agua+Poliglicerol+Glicerina+Producto debe sumar 1. Suma actual: {tot}")
+    elif tipo == "AFE":
+        falt = _falta(d, comunes + [("ticket", "Ticket")])
+        if falt:
+            err.append("Faltan campos: " + ", ".join(falt))
+    else:  # EFLUENTE, BORRA, GENERICO -> solo comunes
+        falt = _falta(d, comunes)
+        if falt:
+            err.append("Faltan campos: " + ", ".join(falt))
+    return (len(err) == 0), err
+
+
+# ---------------------------------------------------------------------------
+# Widgets con prefill
+# ---------------------------------------------------------------------------
+def _k(p, tok, name):
+    return f"{p}_{tok}_{name}"
+
+
+def _t(label, col, pf, p, tok, name):
+    return st.text_input(label, value=(pf.get(col) or "") if pf else "", key=_k(p, tok, name))
+
+
+def _n(label, col, pf, p, tok, name, **kw):
+    dv = pf.get(col) if pf else None
+    try:
+        dv = float(dv) if dv is not None else None
+    except (TypeError, ValueError):
+        dv = None
+    return st.number_input(label, value=dv, key=_k(p, tok, name), format="%g", **kw)
+
+
+def _s(label, col, options, pf, p, tok, name, default=None):
+    cur = (pf.get(col) if pf else None) or default
+    opts = [""] + list(options)
+    if cur and cur not in opts:
+        opts = ["", cur] + list(options)
+    idx = opts.index(cur) if cur in opts else 0
+    return st.selectbox(label, opts, index=idx, key=_k(p, tok, name))
+
+
+def _cab(p, pf, tok):
+    c1, c2 = st.columns(2)
+    with c1:
+        d = dict(
+            patente_chasis=_t("Patente Chasis", "patente_chasis", pf, p, tok, "pch"),
+            patente_acoplado=_t("Patente Acoplado", "patente_acoplado", pf, p, tok, "pac"),
+            num_cisterna=_t("Num. de Cisterna", "num_cisterna", pf, p, tok, "cist"),
+            empleado=_s("Responsable de carga", "empleado", EMPLEADOS, pf, p, tok, "emp"),
+        )
+    with c2:
+        d.update(
+            ticket=_t("Nº de ticket *", "ticket", pf, p, tok, "tk"),
+            num_muestra=_n("Nº de muestra", "num_muestra", pf, p, tok, "nm"),
+            color=_t("Color", "color", pf, p, tok, "color"),
+        )
+    return d
+
+
+def _cierre(p, pf, tok, calidades, default_corriente=None):
+    c1, c2 = st.columns(2)
+    with c1:
+        corriente = _s("Corriente", "corriente", CORRIENTE, pf, p, tok, "corr",
+                       default=default_corriente)
+        calidad = _s("Calidad final *", "calidad_final_lab", calidades, pf, p, tok, "cal")
+        rechazado = _s("Rechazado/Aceptado *", "rechazado", RECHAZADO, pf, p, tok, "rech")
+    with c2:
+        id_tanque_1 = _t("ID Tanque 1", "id_tanque_1", pf, p, tok, "t1")
+        id_tanque_2 = _t("ID Tanque 2", "id_tanque_2", pf, p, tok, "t2")
+    conclusion = st.text_area("Conclusiones", value=(pf.get("conclusion") or "") if pf else "",
+                              key=_k(p, tok, "conc"))
+    return dict(corriente=corriente, calidad_final_lab=calidad, rechazado=rechazado,
+                id_tanque_1=id_tanque_1, id_tanque_2=id_tanque_2, conclusion=conclusion)
+
+
+# ---------------------------------------------------------------------------
+# Guardado comun
+# ---------------------------------------------------------------------------
+def _persistir(tipo, data, ctx, get_conn, usuario):
+    if not data.get("ticket") and tipo in ("AG", "ARE", "AFE"):
+        st.error("Ticket is required")
+        return False
+    ok, errores = validar(tipo, data)
+    if not ok:
+        for e in errores:
+            st.error(e)
+        return False
+    if usuario:
+        data.setdefault("usuario_app", usuario)
+    try:
+        if ctx:  # edicion
+            modo, rid = guardar_edicion(ctx, data, get_conn=get_conn)
+            if modo == "adopt":
+                st.success(f"Registro de Access adoptado y editado (id {rid}). "
+                           "Tu version prevalece aunque Access lo reescriba.")
+            else:
+                st.success(f"Registro actualizado (id {rid}).")
+        else:  # alta
+            new_id = insertar_evaluacion(data, get_conn=get_conn)
+            st.success(f"Registro guardado con exito (id {new_id}). Espejado a procesos_lab.")
+        return True
+    except Exception as e:
+        st.error(f"Error al guardar el registro: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Formularios por producto
+# ---------------------------------------------------------------------------
+def _form_AG(pf, ctx, tok, get_conn, usuario):
+    p = "ag"
+    st.subheader("AG · Aceite (A / B / C / D / E)")
+    with st.form(_k(p, tok, "form")):
+        cab = _cab(p, pf, tok)
+        st.markdown("**Analisis**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            prc_acidez = _n("Acidez (%)", "prc_acidez", pf, p, tok, "ac")
+            prc_emulsion = _n("Emulsion (%)", "prc_emulsion", pf, p, tok, "em")
+            prc_sedimentos = _n("Sedimentos (%)", "prc_sedimentos", pf, p, tok, "sed")
+            prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
+            prc_producto = _n("Producto (%)", "prc_producto", pf, p, tok, "prod")
+        with c2:
+            prc_hkf = _n("HKF (%)", "prc_hkf", pf, p, tok, "hkf")
+            densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
+            temp = _t("Temp (Celsius)", "temp_celcius", pf, p, tok, "temp")
+            prc_hexano = _n("Hexano impurezas (%)", "prc_hexano_impurezas", pf, p, tok, "hex")
+        with c3:
+            ppm_azufre = _n("Azufre (ppm)", "ppm_azufre", pf, p, tok, "az")
+            ppm_fosforo = _n("Fosforo (ppm)", "ppm_fosforo", pf, p, tok, "fos")
+        cier = _cierre(p, pf, tok, CAL_AG, default_corriente="VEGETAL")
+        enviar = st.form_submit_button("GUARDAR", use_container_width=True)
+    if enviar:
+        data = dict(tipo_formulario="AG", producto_lab="AG",
+                    prc_acidez=prc_acidez, prc_emulsion=prc_emulsion,
+                    prc_sedimentos=prc_sedimentos, prc_agua=prc_agua,
+                    prc_producto=prc_producto, prc_hkf=prc_hkf, densidad__g_ml=densidad,
+                    temp_celcius=temp, prc_hexano_impurezas=prc_hexano,
+                    ppm_azufre=ppm_azufre, ppm_fosforo=ppm_fosforo, **cab, **cier)
+        if _persistir("AG", data, ctx, get_conn, usuario):
+            _reset(tok)
+
+
+def _form_ARE(pf, ctx, tok, get_conn, usuario):
+    p = "are"
+    st.subheader("ARE · (Poliglicerol / Glicerina)")
+    with st.form(_k(p, tok, "form")):
+        cab = _cab(p, pf, tok)
+        st.markdown("**Analisis**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            prc_acidez = _n("Acidez (%)", "prc_acidez", pf, p, tok, "ac")
+            prc_sedimentos = _n("Sedimentos (%)", "prc_sedimentos", pf, p, tok, "sed")
+            prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
+            prc_producto = _n("Producto (%)", "prc_producto", pf, p, tok, "prod")
+        with c2:
+            prc_poli = _n("Poliglicerol (%)", "prc_poliglicerol", pf, p, tok, "poli")
+            prc_gli = _n("Glicerina (%)", "prc_glicerina", pf, p, tok, "gli")
+            prc_hkf = _n("HKF (%)", "prc_hkf", pf, p, tok, "hkf")
+            densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
+        with c3:
+            temp = _t("Temp (Celsius)", "temp_celcius", pf, p, tok, "temp")
+            ppm_azufre = _n("Azufre (ppm)", "ppm_azufre", pf, p, tok, "az")
+            ppm_fosforo = _n("Fosforo (ppm)", "ppm_fosforo", pf, p, tok, "fos")
+        cier = _cierre(p, pf, tok, CAL_ARE, default_corriente="VEGETAL")
+        enviar = st.form_submit_button("GUARDAR", use_container_width=True)
+    if enviar:
+        data = dict(tipo_formulario="ARE", producto_lab="ARE",
+                    prc_acidez=prc_acidez, prc_sedimentos=prc_sedimentos,
+                    prc_agua=prc_agua, prc_producto=prc_producto,
+                    prc_poliglicerol=prc_poli, prc_glicerina=prc_gli, prc_hkf=prc_hkf,
+                    densidad__g_ml=densidad, temp_celcius=temp,
+                    ppm_azufre=ppm_azufre, ppm_fosforo=ppm_fosforo, **cab, **cier)
+        if _persistir("ARE", data, ctx, get_conn, usuario):
+            _reset(tok)
+
+
+def _form_AFE(pf, ctx, tok, get_conn, usuario):
+    p = "afe"
+    st.subheader("AFE · (Goma arriba / medio / abajo)")
+    with st.form(_k(p, tok, "form")):
+        cab = _cab(p, pf, tok)
+        st.markdown("**Analisis**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            prc_acidez = _n("Acidez (%)", "prc_acidez", pf, p, tok, "ac")
+            prc_sedimentos = _n("Sedimentos (%)", "prc_sedimentos", pf, p, tok, "sed")
+            prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
+            prc_producto = _n("Producto (%)", "prc_producto", pf, p, tok, "prod")
+        with c2:
+            ga = _n("Goma Arriba (%)", "prc_goma_arriba", pf, p, tok, "ga")
+            gm = _n("Goma Medio (%)", "prc_goma_medio", pf, p, tok, "gm")
+            gb = _n("Goma Abajo (%)", "prc_goma_abajo", pf, p, tok, "gb")
+            prc_hkf = _n("HKF (%)", "prc_hkf", pf, p, tok, "hkf")
