@@ -74,11 +74,25 @@ def render(USR, cat, conectar):
     c3.metric("Reactor", d["reactor"] or "—")
     c4.metric("Producto final", d["producto_final"] or "—")
 
+    # litros de MP a cargar (desde los movimientos planificados) y % de llenado del reactor
+    cap_l = float(d["capacidad_max_l"] or 0)
+    _mpq = cat(
+        "SELECT COALESCE(SUM(litros),0) lts, COALESCE(SUM(kg),0) kg "
+        "FROM produccion.fact_movimiento_stock "
+        "WHERE id_batch=%s AND rol='MP' AND anulado IS NOT TRUE", (id_batch,))
+    litros_mp = float(_mpq.iloc[0]["lts"]) if not _mpq.empty else 0.0
+    kg_mp = float(_mpq.iloc[0]["kg"]) if not _mpq.empty else 0.0
+    pct_llen = (litros_mp / cap_l * 100.0) if cap_l else 0.0
+
     c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Capacidad reactor (L)", f"{(d['capacidad_max_l'] or 0):,.0f}")
-    c6.metric("Kg objetivo", f"{float(params.get('kg_objetivo', 0)):,.0f}")
-    c7.metric("Temp. inicial (°C)", f"{float(params.get('temp_inicial_c', 0)):,.0f}")
+    c5.metric("MP a cargar", f"{litros_mp:,.0f} L", f"{kg_mp/1000:,.1f} TN")
+    c6.metric("Capacidad reactor", f"{cap_l:,.0f} L")
+    c7.metric("Llenado del reactor", f"{pct_llen:.0f}%")
     c8.metric("Tiempo estimado (h)", f"{float(d['tiempo_estimado_horas'] or 0):,.1f}")
+    st.progress(min(1.0, max(0.0, pct_llen / 100.0)))
+    cT1, cT2 = st.columns(2)
+    cT1.metric("Temp. inicial (°C)", f"{float(params.get('temp_inicial_c', 0)):,.0f}")
+    cT2.metric("Kg objetivo (ref.)", f"{float(params.get('kg_objetivo', 0)):,.0f} kg")
 
     # ---- movimientos de stock heredados (ticket + origen) ----
     st.markdown("##### 🔁 Movimientos de stock a ejecutar (origen MP e insumos)")

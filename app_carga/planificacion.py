@@ -78,9 +78,11 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     # ---------- Producto final / calidad ----------
     if proc == "PRODUCCION_ARE":
-        fin = cat("SELECT id_producto, codigo_producto, nombre_producto FROM produccion.dim_producto "
-                  "WHERE activo AND codigo_producto LIKE 'ARE-%%' AND (%s IS NULL OR corriente=%s) "
-                  "ORDER BY codigo_producto", (corr, corr))
+        fin = _productos_proceso(cat, sector, proc, "FINAL")  # ARE-A/B + poliglicerol (dic_proceso_producto)
+        if corr and not fin.empty and "corriente" in fin.columns:
+            _ff = fin[(fin["corriente"] == corr) | (fin["corriente"].isin(["", None]))]
+            if not _ff.empty:
+                fin = _ff
     else:
         fin = cat("SELECT id_producto, codigo_producto, nombre_producto FROM produccion.dim_producto "
                   "WHERE activo AND codigo_producto='AFE-S'")
@@ -123,8 +125,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         else:
             st.warning("No hay muestras de GLICERINA con glicerol en laboratorio. Cargá una para estimar la glicerina.")
         catal = st.radio("Catalizador (excluyente)", ["NAOH", "POTASIO"], index=1, horizontal=True,
-                         format_func=lambda x: "🧪 Soda cáustica (NaOH) — genera glicerina recuperada" if x == "NAOH" else "🧪 Potasio (KOH) — sin glicerina recuperada",
+                         format_func=lambda x: "🧪 Soda cáustica (NaOH)" if x == "NAOH" else "🧪 Hidróxido de potasio (KOH)",
                          key="pl_catal")
+        st.caption("La glicerina recuperada vuelve en la **decantación** (se registra ahí con su muestra de lab), "
+                   "con cualquiera de los dos catalizadores.")
 
     # ---------- Fuente de la MP (tanques filtrados por producto + lab ponderado) ----------
     st.markdown(f"#### 3 · Fuente de la materia prima ({mp})")
@@ -137,6 +141,15 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     lab_avg = lab_avg or {}
     kg_used = float(kg_src) if (kg_src and kg_src > 0) else float(q_ag)
     acidez = (float(lab_avg["prc_acidez"]) * 100) if lab_avg.get("prc_acidez") is not None else (acidez_obj or 0.0)
+
+    # ---------- Llenado del reactor (en LITROS) ----------
+    litros_mp = (kg_used / dens) if dens else 0.0
+    _pct_llen = (litros_mp / cap * 100.0) if cap else 0.0
+    lc1, lc2, lc3 = st.columns(3)
+    lc1.metric("MP cargada", f"{litros_mp:,.0f} L", f"{kg_used/1000:,.1f} TN")
+    lc2.metric("Capacidad reactor", f"{cap:,.0f} L")
+    lc3.metric("Llenado del reactor", f"{_pct_llen:.0f}%")
+    st.progress(min(1.0, max(0.0, _pct_llen / 100.0)))
 
     # ---------- Estimados por fórmula ----------
     st.markdown("#### 4 · Insumos estimados por fórmula")
@@ -151,15 +164,15 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             est_pot = tn * float(fila["consumo_potasio_kg_x_tn"] or 0) if catal == "POTASIO" else 0.0
             est_fuel = tn * float(fila["consumo_fuel_kg_x_tn"] or 0)
             e1, e2, e3, e4 = st.columns(4)
-            e1.metric("Glicerina a cargar", f"{est_gli:,.0f} kg", f"glicerol {glicerol_v:.0f}%")
+            _gli_l = (est_gli / 1.26)  # densidad glicerina ~1.26 g/ml
+            e1.metric("Glicerina a cargar", f"{_gli_l:,.0f} L", f"{est_gli:,.0f} kg · glicerol {glicerol_v:.0f}%")
             if catal == "NAOH":
                 e2.metric("NaOH (catalizador)", f"{est_naoh:,.1f} kg")
-                e3.metric("Glicerina recuperada", "Sí", "NaOH la genera")
             else:
-                e2.metric("Potasio (catalizador)", f"{est_pot:,.2f} kg")
-                e3.metric("Glicerina recuperada", "No", "Potasio no genera")
-            e4.metric("Fuel", f"{est_fuel:,.0f} kg")
-            st.metric("ARE estimado", f"{q_ag:,.0f} kg", f"~{q_ag/1000:.1f} TN")
+                e2.metric("KOH (catalizador)", f"{est_pot:,.2f} kg")
+            e3.metric("Glicerina recuperada", "Sí", "vuelve en decantación")
+            e4.metric("Fuel oil", f"{est_fuel:,.0f} kg")
+            st.metric("ARE estimado", f"{q_ag/0.88:,.0f} L", f"{q_ag:,.0f} kg · {q_ag/1000:.1f} TN")
             gli_mov = round(est_gli, 0)
             if catal == "NAOH":
                 insumos_calc.append(("soda_kg", "CATALIZADOR", round(est_naoh, 1)))
@@ -181,7 +194,21 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         for _p in (ports or []):
             if _p.get("fuente") == "TICKET" and _p.get("ticket"):
                 _tok += [t.strip() for t in _re.split(r"[;,\s]+", str(_p["ticket"])) if t.strip()]
+        # En desgomado (AFE-SG) la GOMA = SEDIMENTOS reportados en laboratorio (conclusión "SED = GOMA").
+        # Fuente primaria: prc_sedimentos de los tickets elegidos; luego prc_goma_*; luego sedimentos del promedio.
         if _tok:
+            try:
+                _gs = cat(
+                    "SELECT AVG(prc_sedimentos) sed, COUNT(prc_sedimentos) n"
+                    " FROM produccion.procesos_lab"
+                    " WHERE TRIM(ticket) = ANY(%s) AND prc_sedimentos IS NOT NULL AND prc_sedimentos > 0",
+                    (_tok,))
+                if not _gs.empty and _gs.iloc[0]["sed"] is not None:
+                    _goma_def = round(float(_gs.iloc[0]["sed"]) * 100, 2)
+                    _gtxt = f"sedimentos de lab · {int(_gs.iloc[0]['n'])} muestra(s)"
+            except Exception:
+                pass
+        if _goma_def == 0.0 and _tok:
             try:
                 _g = cat(
                     "SELECT AVG(gm) gm, COUNT(*) n FROM ("
@@ -193,14 +220,12 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                     ") s", (_tok,))
                 if not _g.empty and _g.iloc[0]["gm"] is not None:
                     _goma_def = round(float(_g.iloc[0]["gm"]) * 100, 2)
-                    _gtxt = f"de lab · {int(_g.iloc[0]['n'])} muestra(s)"
+                    _gtxt = f"goma de lab · {int(_g.iloc[0]['n'])} muestra(s)"
             except Exception:
                 pass
-        # Para AFE-SG el laboratorio mide la goma como SEDIMENTOS (conclusión "SED = GOMA").
-        # Si las columnas prc_goma_* están en 0, usamos prc_sedimentos de la fuente.
         if _goma_def == 0.0 and lab_avg.get("prc_sedimentos") is not None:
             _goma_def = round(float(lab_avg["prc_sedimentos"]) * 100, 2)
-            _gtxt = "sedimentos = goma (AFE-SG)"
+            _gtxt = "sedimentos = goma (promedio fuente)"
         pct_goma = st.number_input("% Goma (parámetro clave del desgomado)", min_value=0.0, step=0.1,
                                    value=_goma_def, key="pl_goma",
                                    help=f"Goma del laboratorio del AFE-SG ({_gtxt}). En AFE-SG la goma se mide como sedimentos. Ajustable.")

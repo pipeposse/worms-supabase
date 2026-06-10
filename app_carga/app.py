@@ -1135,6 +1135,26 @@ except Exception:
     CORR_EVAL = ["vegetal","animal","efluente_liquido","insumo"]
 CORR_EVAL_SQL = "(" + ",".join("'" + c.replace("'", "''") + "'" for c in CORR_EVAL) + ")" if CORR_EVAL else "('')"
 
+# Productos base NO evaluables aunque su corriente lo sea (editable: dic_producto_base_config)
+try:
+    _pbne = cat("SELECT producto_base FROM produccion.dic_producto_base_config WHERE NOT evaluable")
+    PROD_BASE_NO_EVAL = set(_pbne["producto_base"].str.upper().tolist()) if not _pbne.empty else set()
+except Exception:
+    PROD_BASE_NO_EVAL = {"GANADO"}
+
+def _es_evaluable(corriente, producto_base):
+    if corriente not in CORR_EVAL:
+        return False
+    if producto_base is not None and str(producto_base).upper() in PROD_BASE_NO_EVAL:
+        return False
+    return True
+
+# Cláusula SQL para excluir productos base no evaluables (ej. GANADO)
+PROD_BASE_NO_EVAL_SQL = (
+    " AND upper(producto_base) NOT IN (" +
+    ",".join("'" + p.replace("'", "''") + "'" for p in PROD_BASE_NO_EVAL) + ")"
+) if PROD_BASE_NO_EVAL else ""
+
 
 # ============================================================================
 # Si NO es la sección CARGAS, mostramos LAB o PORT y cortamos acá
@@ -1311,9 +1331,11 @@ if st.session_state.section != "CARGAS":
             if not df_d.empty:
                 kg_tot = pd.to_numeric(df_d["peso_neto"], errors="coerce").sum()
                 kd2.metric("TN netas del día", f"{kg_tot/1000:,.2f}")
+                df_d["_evbl"] = df_d.apply(
+                    lambda r: _es_evaluable(r["corriente"], r.get("producto_base")), axis=1)
                 df_d["eval_estado"] = df_d.apply(
-                    lambda r: ("no corresponde" if r["corriente"] not in CORR_EVAL else r["evaluado"]), axis=1)
-                df_evbl = df_d[df_d["corriente"].isin(CORR_EVAL)]
+                    lambda r: ("no corresponde" if not r["_evbl"] else r["evaluado"]), axis=1)
+                df_evbl = df_d[df_d["_evbl"]]
                 base_evbl = len(df_evbl)
                 n_eval = int((df_evbl["eval_estado"]=="SI").sum())
                 kd3.metric("Evaluados (evaluables)", f"{n_eval}/{base_evbl}")
@@ -1544,7 +1566,8 @@ if st.session_state.section != "CARGAS":
                            "Solo corrientes vegetal / animal / efluente_liquido / insumo "
                            "(el resto -solido, sin_declarar- no se evalua).")
 
-                df_eval = df_p[df_p["corriente"].isin(CORR_EVAL)].copy()
+                df_eval = df_p[df_p.apply(
+                    lambda r: _es_evaluable(r["corriente"], r.get("producto_base")), axis=1)].copy()
                 if df_eval.empty:
                     st.info("No hay llegadas de corrientes evaluables en el rango.")
                 else:
@@ -1583,7 +1606,7 @@ if st.session_state.section != "CARGAS":
                 st.markdown("### Detalle")
                 df_pd = df_p.copy()
                 df_pd["eval_estado"] = df_pd.apply(
-                    lambda r: ("no corresponde" if r["corriente"] not in CORR_EVAL else r["evaluado"]), axis=1)
+                    lambda r: ("no corresponde" if not _es_evaluable(r["corriente"], r.get("producto_base")) else r["evaluado"]), axis=1)
                 # ocultar columnas 100% vacías
                 df_pd = df_pd.dropna(axis=1, how="all")
                 _front = [c for c in ["transaccion","fecha_entrada","producto_base","lab_calidad","corriente",
@@ -1744,7 +1767,7 @@ if st.session_state.section != "CARGAS":
                 pbs = cat(f"""
                     SELECT DISTINCT producto_base FROM produccion.v_transacciones_limpias
                     WHERE evaluado='SI' AND {param_sel} IS NOT NULL AND producto_base IS NOT NULL
-                      AND corriente IN {CORR_EVAL_SQL}
+                      AND corriente IN {CORR_EVAL_SQL}{PROD_BASE_NO_EVAL_SQL}
                     ORDER BY 1
                 """)["producto_base"].tolist()
             except Exception: pbs = []
@@ -1761,7 +1784,7 @@ if st.session_state.section != "CARGAS":
 
             where = ["evaluado = 'SI'", f"{param_sel} IS NOT NULL", "procedencia IS NOT NULL",
                      "producto_base IS NOT NULL",
-                     f"corriente IN {CORR_EVAL_SQL}",
+                     f"corriente IN {CORR_EVAL_SQL}" + PROD_BASE_NO_EVAL_SQL,
                      "fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
             params = [lab_desde.isoformat(), lab_hasta.isoformat()]
             if sel_pbs:
@@ -4250,6 +4273,13 @@ with tab_objs[0]:
             if "GLICERINA_RECUP" in _tipos_pf: _sug_pf += ["GLICERINA", "GLICERINA-FE"]
             if "AGUA_PROCESO" in _tipos_pf: _sug_pf += ["AGUA-PROC"]
             _opt_dec_pf = [c for c in dict.fromkeys(_sug_pf) if c in productos["codigo_producto"].tolist()]
+            # mapa codigo_producto -> tipo_salida (para etiquetar el movimiento)
+            _tipo_por_cod = {row["codigo_producto"]: row["tipo_salida"]
+                             for _, row in _dec_pf.iterrows() if pd.notna(row["codigo_producto"])}
+            # muestras de glicerina evaluadas en lab (para la glicerina recuperada)
+            _gli_lab = ultimas_muestras_glicerina(8) if callable(ultimas_muestras_glicerina) else pd.DataFrame()
+            st.caption("La decantación genera **tickets de movimiento de stock** (entrada de subproducto al tanque destino). "
+                       "Para la **glicerina recuperada**, elegí la muestra de laboratorio que la representa.")
             if _opt_dec_pf:
                 n_sal_pf = st.number_input("Salidas a registrar", 0, 5, value=0, key="pf_ndec")
                 sal_pf = []
@@ -4257,25 +4287,37 @@ with tab_objs[0]:
                     d1, d2, d3 = st.columns(3)
                     cd = d1.selectbox(f"Producto #{i+1}", _opt_dec_pf, key=f"pf_dprod_{i}")
                     kgd = d2.number_input(f"kg #{i+1}", min_value=0, max_value=200000, step=50, value=0, key=f"pf_dkg_{i}")
-                    destd = d3.text_input(f"Destino #{i+1}", max_chars=40, key=f"pf_ddst_{i}")
+                    destd = d3.text_input(f"Destino (tanque) #{i+1}", max_chars=40, key=f"pf_ddst_{i}")
+                    _gli_pct = None; _gli_tk = None
+                    _es_gli = "GLICERINA" in str(cd).upper()
+                    if _es_gli and _gli_lab is not None and not _gli_lab.empty:
+                        _go = ["(sin muestra)"] + _gli_lab.apply(
+                            lambda r: f"ticket {r['ticket']} · glicerol {float(r['gli_glicerol'])*100:.2f}%", axis=1).tolist()
+                        _gs = st.selectbox(f"Muestra lab glicerina recuperada #{i+1}", _go, key=f"pf_dgli_{i}")
+                        if _gs != "(sin muestra)":
+                            _grow = _gli_lab.iloc[_go.index(_gs) - 1]
+                            _gli_pct = float(_grow["gli_glicerol"]) * 100
+                            _gli_tk = str(_grow["ticket"])
                     if kgd > 0:
-                        sal_pf.append((cd, float(kgd), destd or None))
+                        sal_pf.append((cd, float(kgd), destd or None, _tipo_por_cod.get(cd), _gli_pct, _gli_tk))
                 if sal_pf and st.button("💾 Guardar decantación", key="pf_dsave", use_container_width=True):
                     try:
                         with conectar(USR["id_usuario"]) as (conn, audit):
                             with conn.cursor() as cur:
-                                for cd, kgd, destd in sal_pf:
-                                    cur.execute("SELECT id_producto FROM dim_producto WHERE codigo_producto=%s", (cd,))
+                                for cd, kgd, destd, tsal, glipct, glitk in sal_pf:
+                                    cur.execute("SELECT id_producto, densidad_g_ml FROM dim_producto WHERE codigo_producto=%s", (cd,))
                                     _r = cur.fetchone()
                                     if not _r:
                                         continue
+                                    _ltsd = (kgd / float(_r[1])) if _r[1] else None
                                     cur.execute("""
                                         INSERT INTO fact_salida_decantacion
-                                        (id_batch, id_producto, kg, destino_tanque, id_usuario)
-                                        VALUES (%s,%s,%s,%s,%s)
-                                    """, (id_pf, _r[0], kgd, destd, int(USR["id_usuario"])))
+                                        (id_batch, id_producto, kg, lts, glicerol_pct, destino_tanque,
+                                         tipo_salida, ticket_lab, id_usuario)
+                                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                    """, (id_pf, _r[0], kgd, _ltsd, glipct, destd, tsal, glitk, int(USR["id_usuario"])))
                             audit.log("I", "fact_salida_decantacion", id_pf, {"n": len(sal_pf)})
-                        st.success("Decantación registrada.")
+                        st.success("Decantación registrada · se generaron los tickets de movimiento de stock.")
                     except Exception as e:
                         st.exception(e)
             else:
@@ -4283,16 +4325,18 @@ with tab_objs[0]:
 
     # ---------- SUB-TAB: CARGAR MUESTRA INTERMEDIA ----------
     with sub_eval:
-        st.caption("Evaluaciones internas **solo en Producción de ARE**: medís en distintas etapas para bajar la acidez de ~60 a 10 (especificación comercial). Parámetros: acidez, temperatura, fósforo.")
+        st.caption("Evaluaciones internas de reactores. **ARE**: medís acidez/temperatura/fósforo para bajar la acidez de ~60 a 10. "
+                   "**Desgomado acuoso**: cuando cargás **temperatura ≥ 85 °C** la reacción se corta y pasa a **reposo** (decantación).")
         df_rec2 = cat("""
             SELECT b.id_batch, b.identificador_unidad AS ticket, b.fecha,
                    b.tipo_proceso, b.etapa_actual
             FROM fact_batch_proceso b
-            WHERE NOT b.anulado AND b.sector='REACTORES' AND b.tipo_proceso='PRODUCCION_ARE'
+            WHERE NOT b.anulado AND b.sector='REACTORES'
+              AND b.tipo_proceso IN ('PRODUCCION_ARE','DESGOMADO_ACUOSO')
             ORDER BY b.creado_en DESC LIMIT 100
         """)
         if df_rec2.empty:
-            st.info("Sin reacciones de Producción ARE todavía. Las evaluaciones internas solo aplican a ARE.")
+            st.info("Sin reacciones de ARE ni desgomado todavía.")
         else:
             opt2 = df_rec2.apply(lambda r: f"#{r['id_batch']} · {r['ticket'] or '—'} · {r['tipo_proceso']}", axis=1).tolist()
             sel2 = st.selectbox("Reacción / ticket", opt2, key="m_sel")
@@ -4314,6 +4358,9 @@ with tab_objs[0]:
                     st.warning(f"🟦 Acidez ≤ 10 → la reacción pasó a **REPOSO**. "
                                f"🎫 Ticket de producto final: **{_tpf}** (a evaluar en laboratorio). "
                                f"Validación con ticket MP **{_tvl or '—'}**.")
+                elif _ef == "REPOSO":
+                    st.warning("🟦 Temperatura ≥ 85 °C → el desgomado **cortó la reacción y pasó a REPOSO**. "
+                               "En decantación vas a separar **fondo de tanque** y **AFE-S**.")
 
             _et_lbl_r = {"ARMADO": "Armado", "REACCION": "Reacción", "REPOSANDO": "Reposo",
                          "DECANTACION": "Decantación", "EN_TANQUE": "Acopio final"}
