@@ -2276,7 +2276,7 @@ if st.session_state.section != "CARGAS":
                 st.bar_chart(_byp.sort_values("_tn", ascending=False), x="producto_principal", y="_tn", use_container_width=True)
 
             st.divider()
-            g_cargar, g_aforo, g_editar, g_abm, g_hist = st.tabs(["✍️ Cargar medición (manual)", "📏 Medir por cm (aforo)", "✏️ Editar tanque", "➕ Alta / baja", "📈 Histórico / variación"])
+            g_cargar, g_aforo, g_editar, g_hist = st.tabs(["✍️ Cargar medición (manual)", "📏 Medir por cm (aforo)", "✏️ Editar tanque", "📈 Histórico / variación"])
 
             # ---------- Cargar medición: SOLO tanques manuales, con filtros ----------
             with g_cargar:
@@ -2502,108 +2502,6 @@ if st.session_state.section != "CARGAS":
                                 st.success("Tanque actualizado.")
                                 cat.clear(); st.rerun()
                             except Exception as e:
-                                st.exception(e)
-
-            # ---------- Alta / baja de tanques ----------
-            with g_abm:
-                if USR["rol"] not in ("SUPERVISOR", "ADMIN"):
-                    st.info("Solo supervisor o admin pueden dar de alta o baja tanques.")
-                else:
-                    st.markdown('<div class="section-title">➕ Nuevo tanque</div>', unsafe_allow_html=True)
-                    _secs_ex = sorted(_panel["sector"].dropna().unique().tolist())
-                    _tipos_ex = sorted(_panel["tipo_tanque"].dropna().unique().tolist()) or ["Cilíndrico"]
-                    _codes_a = _prods["codigo_producto"].tolist()
-                    with st.form("tq_alta_form"):
-                        a1, a2 = st.columns(2)
-                        _a_nom = a1.text_input("Nombre *", max_chars=80, placeholder="ej. Potasio cáustico 2")
-                        _a_cod = a2.text_input("Código único *", max_chars=60, placeholder="ej. CR-POTASIO-2")
-                        a3, a4 = st.columns(2)
-                        _a_sec = a3.selectbox("Sector *", _secs_ex + ["➕ Otro (escribirlo abajo)"])
-                        _a_sec_n = a4.text_input("Nuevo sector (solo si elegiste ➕ Otro)", max_chars=60)
-                        a5, a6 = st.columns(2)
-                        _a_tip = a5.selectbox("Tipo de tanque", _tipos_ex)
-                        _a_cap = a6.number_input("Capacidad (litros)", 0.0, 5_000_000.0, step=1000.0, value=0.0)
-                        a7, a8 = st.columns(2)
-                        _a_ppal = a7.selectbox("Producto principal", ["(sin asignar)"] + _codes_a)
-                        _a_perm = a8.multiselect("Otros productos que puede almacenar", _codes_a)
-                        _a_ok = st.form_submit_button("➕ Crear tanque", type="primary", use_container_width=True)
-                    if _a_ok:
-                        _sec_final = (_a_sec_n or "").strip() if _a_sec.startswith("➕") else _a_sec
-                        if not (_a_nom or "").strip() or not (_a_cod or "").strip():
-                            st.error("Completá nombre y código.")
-                        elif not _sec_final:
-                            st.error("Elegiste ➕ Otro: escribí el nombre del nuevo sector.")
-                        else:
-                            try:
-                                with conectar(USR["id_usuario"]) as (conn, audit):
-                                    with conn.cursor() as cur:
-                                        cur.execute("SELECT 1 FROM produccion.dim_tanque WHERE upper(codigo)=upper(%s)", (_a_cod.strip(),))
-                                        if cur.fetchone():
-                                            raise ValueError(f"Ya existe un tanque con código {_a_cod.strip()}.")
-                                        _pidn = None
-                                        if _a_ppal != "(sin asignar)":
-                                            cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s", (_a_ppal,))
-                                            _pidn = cur.fetchone()[0]
-                                        cur.execute(
-                                            "INSERT INTO produccion.dim_tanque "
-                                            "(codigo,nombre,sector,tipo_tanque,capacidad_litros,id_producto_principal,metodo_medicion,activo) "
-                                            "VALUES (%s,%s,%s,%s,%s,%s,'Manual',TRUE) RETURNING id_tanque",
-                                            (_a_cod.strip(), _a_nom.strip(), _sec_final, _a_tip,
-                                             (float(_a_cap) if _a_cap else None), _pidn))
-                                        _idn = cur.fetchone()[0]
-                                        _todos = set(_a_perm) | ({_a_ppal} if _a_ppal != "(sin asignar)" else set())
-                                        for c in _todos:
-                                            cur.execute("INSERT INTO produccion.dim_tanque_producto (id_tanque,id_producto,es_principal) "
-                                                        "SELECT %s, id_producto, %s FROM produccion.dim_producto WHERE codigo_producto=%s "
-                                                        "ON CONFLICT (id_tanque,id_producto) DO NOTHING",
-                                                        (_idn, c == _a_ppal, c))
-                                    audit.log("I", "dim_tanque", _idn, {"codigo": _a_cod.strip(), "sector": _sec_final, "tipo": _a_tip})
-                                st.success(f"Tanque creado: {_a_nom.strip()} · {_a_cod.strip()} · {_sec_final}.")
-                                cat.clear(); st.rerun()
-                            except ValueError as _ve:
-                                st.error(str(_ve))
-                            except Exception as e:
-                                st.exception(e)
-
-                    st.divider()
-                    st.markdown('<div class="section-title">🗑️ Borrar / desactivar tanque</div>', unsafe_allow_html=True)
-                    _ob = _panel.apply(lambda r: f"{r['nombre']} · {r['codigo']} · {r['sector']}" + ("" if bool(r["activo"]) else " · ⛔ inactivo"), axis=1).tolist()
-                    _sb = st.selectbox("Tanque", _ob, key="tq_sel_b")
-                    _rb = _panel.iloc[_ob.index(_sb)]
-                    _idb = int(_rb["id_tanque"])
-                    _nref = cat("SELECT (SELECT count(*) FROM produccion.fact_stock_tanque WHERE id_tanque=%s) med, "
-                                "(SELECT count(*) FROM produccion.fact_movimiento_tanque WHERE id_tanque=%s) mov", (_idb, _idb))
-                    _nmed = int(_nref.iloc[0]["med"]); _nmov = int(_nref.iloc[0]["mov"])
-                    st.caption(f"Historial: **{_nmed}** mediciones · **{_nmov}** movimientos de stock.")
-                    if bool(_rb["es_wedo"]):
-                        st.warning("🛰️ Tanque con sensor WeDo: solo se puede **desactivar** (para eliminarlo hay que desvincular el sensor primero).")
-                    _conf = st.checkbox("Confirmo que quiero dar de baja este tanque", key="tq_conf_b")
-                    b1, b2 = st.columns(2)
-                    if b1.button("⛔ Desactivar (recomendado)", use_container_width=True, key="tq_des_b", disabled=not _conf):
-                        try:
-                            with conectar(USR["id_usuario"]) as (conn, audit):
-                                with conn.cursor() as cur:
-                                    cur.execute("UPDATE produccion.dim_tanque SET activo=FALSE WHERE id_tanque=%s", (_idb,))
-                                audit.log("U", "dim_tanque", _idb, {"activo": False, "motivo": "baja"})
-                            st.success(f"Tanque desactivado: {_rb['nombre']}. Conserva todo su historial; se reactiva desde Editar tanque.")
-                            cat.clear(); st.rerun()
-                        except Exception as e:
-                            st.exception(e)
-                    if b2.button("🗑️ Eliminar definitivamente", type="primary", use_container_width=True, key="tq_del_b",
-                                 disabled=(not _conf) or bool(_rb["es_wedo"])):
-                        try:
-                            with conectar(USR["id_usuario"]) as (conn, audit):
-                                with conn.cursor() as cur:
-                                    cur.execute("DELETE FROM produccion.dim_tanque WHERE id_tanque=%s", (_idb,))
-                                audit.log("D", "dim_tanque", _idb, {"codigo": _rb["codigo"]})
-                            st.success(f"Tanque eliminado: {_rb['nombre']} · {_rb['codigo']}.")
-                            cat.clear(); st.rerun()
-                        except Exception as e:
-                            import psycopg2 as _pg2
-                            if isinstance(e, _pg2.Error) and getattr(e, "pgcode", None) == "23503":
-                                st.error("No se puede eliminar: el tanque tiene historial asociado (mediciones, movimientos, aforo o parámetros de lab). "
-                                         "Usá **Desactivar** para sacarlo de uso conservando los datos.")
-                            else:
                                 st.exception(e)
 
             # ---------- Histórico / variación diaria (manual + WeDo) ----------
