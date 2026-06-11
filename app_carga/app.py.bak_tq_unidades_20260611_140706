@@ -2310,54 +2310,27 @@ if st.session_state.section != "CARGAS":
                         _plist = _perm["codigo_producto"].tolist() or _prods["codigo_producto"].tolist()
                         _ppal = _prods[_prods["id_producto"] == _row["id_producto_principal"]]["codigo_producto"].tolist()
                         _defp = _ppal[0] if (_ppal and _ppal[0] in _plist) else _plist[0]
-                        KG_BOLSA = 25.0
-                        _es_bolsa = str(_row["tipo_tanque"] or "").strip().upper() == "BOLSA"
                         cc1, cc2 = st.columns(2)
-                        _defprod = _cpr if (_cpr != "Todos" and _cpr in _plist) else _defp
-                        _pcod = cc1.selectbox("Producto medido", _plist, index=_plist.index(_defprod), key="tq_prod_c")
-                        _unidades = ["Bolsas (25 kg)", "Kilos", "Litros"] if _es_bolsa else ["Litros", "Kilos", "Bolsas (25 kg)"]
-                        _unid = cc2.selectbox("Unidad de carga", _unidades, key=f"tq_unid_c_{_idt}")
+                        _pcod = cc1.selectbox("Producto medido", _plist, index=_plist.index(_defp), key="tq_prod_c")
+                        _lts = cc2.number_input("Litros medidos", 0.0, 5_000_000.0, step=100.0, value=0.0, key="tq_lts_c")
                         _densp = float(_prods[_prods["codigo_producto"] == _pcod]["dens"].iloc[0])
-                        _nbol = None
-                        if _unid.startswith("Bolsas"):
-                            _nbol = st.number_input("Bolsas medidas (25 kg c/u)", 0.0, 200_000.0, step=1.0, value=0.0, key="tq_bol_c")
-                            _kg = _nbol * KG_BOLSA
-                            _lts = (_kg / _densp) if _densp else None  # litros equivalentes: el panel y las vistas calculan TN desde litros
-                        elif _unid == "Kilos":
-                            _kg = st.number_input("Kilos medidos", 0.0, 5_000_000.0, step=25.0, value=0.0, key="tq_kg_c")
-                            _lts = (_kg / _densp) if _densp else None
-                        else:
-                            _lts = st.number_input("Litros medidos", 0.0, 5_000_000.0, step=100.0, value=0.0, key="tq_lts_c")
-                            _kg = _lts * _densp
-                        _ocup = (_lts / _cap * 100) if (_cap and _lts) else None
+                        _kg = _lts * _densp
+                        _ocup = (_lts / _cap * 100) if _cap else 0.0
                         m1, m2, m3 = st.columns(3)
                         m1.metric("Equivale a", f"{_kg/1000:,.2f} TN")
                         m2.metric("En kg", f"{_kg:,.0f} kg")
-                        m3.metric("Ocupación", f"{_ocup:.0f}%" if _ocup is not None else "—")
-                        _cap_txt = f"Densidad {_densp:g} kg/L · capacidad {int(_cap):,} L"
-                        if _unid.startswith("Bolsas"):
-                            _cap_txt = f"{KG_BOLSA:g} kg por bolsa · " + _cap_txt
-                        st.caption(_cap_txt)
+                        m3.metric("Ocupación", f"{_ocup:.0f}%" if _cap else "—")
+                        st.caption(f"Densidad {_densp:g} kg/L · capacidad {int(_cap):,} L")
                         cf, ch = st.columns(2)
                         _fch = cf.date_input("Fecha medición", date.today(), key="tq_fch_c")
                         _hr = ch.time_input("Hora medición", key="tq_hr_c")
                         from datetime import datetime as _dtq
                         _medido = _dtq.combine(_fch, _hr)
                         _obs = st.text_input("Observaciones", max_chars=200, key="tq_obs_c")
-                        _vacio = st.checkbox("El tanque está vacío (registrar 0)", key="tq_vacio_c")
                         if st.button("💾 Guardar medición", type="primary", use_container_width=True, key="tq_save_c"):
-                            if _vacio and _kg > 0:
-                                st.error("Marcaste 'tanque vacío' pero cargaste una cantidad. Corregí una de las dos.")
-                            elif not _vacio and _kg <= 0:
-                                st.error("Cargá una cantidad mayor a 0, o marcá 'El tanque está vacío' para registrar 0.")
+                            if (_lts or 0) <= 0:
+                                st.error("Cargá los litros (mayor a 0).")
                             else:
-                                if _vacio:
-                                    _kg = 0.0
-                                    _lts = 0.0
-                                    _nbol = 0.0 if _nbol is not None else None
-                                _obs_full = _obs or ""
-                                if _nbol is not None:
-                                    _obs_full = f"{_nbol:g} bolsas x {KG_BOLSA:g} kg" + (f" · {_obs_full}" if _obs_full else "")
                                 try:
                                     with conectar(USR["id_usuario"]) as (conn, audit):
                                         with conn.cursor() as cur:
@@ -2366,20 +2339,10 @@ if st.session_state.section != "CARGAS":
                                             cur.execute("INSERT INTO produccion.fact_stock_tanque "
                                                         "(id_tanque,id_producto,medido_en,litros,kg,id_usuario,observaciones) "
                                                         "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                                                        (_idt, _pid, _medido.isoformat(),
-                                                         (float(_lts) if _lts is not None else None), float(_kg),
-                                                         int(USR["id_usuario"]), _obs_full or None))
-                                        audit.log("I", "fact_stock_tanque", _idt,
-                                                  {"producto": _pcod, "kg": float(_kg),
-                                                   "litros": (float(_lts) if _lts is not None else None),
-                                                   "bolsas": (float(_nbol) if _nbol is not None else None)})
-                                    if _nbol is not None:
-                                        _det = f"{_nbol:g} bolsas · {_kg:,.0f} kg"
-                                    elif _lts is not None:
-                                        _det = f"{_lts:,.0f} L · {_kg/1000:,.2f} TN"
-                                    else:
-                                        _det = f"{_kg:,.0f} kg"
-                                    st.success(f"Medición guardada: {_row['nombre']} · {_pcod} · {_det}.")
+                                                        (_idt, _pid, _medido.isoformat(), float(_lts), float(_kg),
+                                                         int(USR["id_usuario"]), _obs or None))
+                                        audit.log("I", "fact_stock_tanque", _idt, {"producto": _pcod, "litros": float(_lts)})
+                                    st.success(f"Medición guardada: {_row['nombre']} · {_pcod} · {_lts:,.0f} L ({_kg/1000:,.2f} TN).")
                                     cat.clear()
                                 except Exception as e:
                                     st.exception(e)

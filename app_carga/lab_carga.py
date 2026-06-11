@@ -157,10 +157,11 @@ def insertar_evaluacion(data, get_conn=None):
     ph = ", ".join(["%s"] * len(cols))
     sql = f'insert into {_TABLE} ({", ".join(cols)}) values ({ph}) returning id'
     with _conn_cm(get_conn) as conn:
-        conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute(sql, [payload[c] for c in cols])
-            return cur.fetchone()[0]
+            new_id = cur.fetchone()[0]
+        conn.commit()
+        return new_id
 
 
 def actualizar_evaluacion(le_id, data, get_conn=None):
@@ -170,9 +171,9 @@ def actualizar_evaluacion(le_id, data, get_conn=None):
     sets = ", ".join(f"{c}=%s" for c in payload)
     sql = f"update {_TABLE} set {sets} where id=%s"
     with _conn_cm(get_conn) as conn:
-        conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute(sql, [payload[c] for c in payload] + [le_id])
+        conn.commit()
 
 
 def guardar_edicion(ctx, data, get_conn=None):
@@ -555,10 +556,67 @@ def _form_para_producto(producto_lab):
     return _form_GENERICO
 
 
+# ---------------------------------------------------------------------------
+# Tickets de porteria (v_transacciones_limpias) -> autollenar patente/chasis
+# ---------------------------------------------------------------------------
+# Sugerencia producto_base (porteria) -> producto_lab (editable; base->lab es N:N)
+_SUG_BASE_LAB = {
+    "AG": "AG", "ARE": "ARE", "AFE": "AFE",
+    "EFLUENTES LIQUIDOS": "EFLUENTE", "EFLIUENTES LIQUIDOS": "EFLUENTE",
+    "EFLUENTES SOLIDOS": "EFLUENTE", "COMPOST": "EFLUENTE", "RESIDUOS": "EFLUENTE",
+    "BORRA": "BORRA", "EMULSION": "BORRA",
+}
+
+
+def productos_base(dias=180, get_conn=None):
+    """Lista de producto_base presentes en porteria (para el filtro)."""
+    sql = ("select producto_base, count(*) c "
+           "from produccion.v_transacciones_limpias "
+           "where fecha_entrada >= current_date - %s and producto_base is not null "
+           "group by 1 order by c desc")
+    with _conn_cm(get_conn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (dias,))
+            return [r[0] for r in cur.fetchall()]
+
+
+def tickets_porteria(producto_base=None, ticket=None, dias=30, limite=300, get_conn=None):
+    """Tickets de porteria filtrados por producto_base / nro, con patentes."""
+    where = ["t.fecha_entrada >= current_date - %s"]
+    params = [dias]
+    if producto_base:
+        where.append("t.producto_base = ANY(%s)")
+        params.append(list(producto_base))
+    if ticket:
+        where.append("CAST(t.transaccion AS text) ILIKE %s")
+        params.append(f"%{str(ticket).strip()}%")
+    sql = (
+        "select t.transaccion, t.producto_base, t.producto, t.cliente, t.fecha_entrada, "
+        "t.patente_chasis, t.patente_acoplado, t.corriente, t.evaluado "
+        "from produccion.v_transacciones_limpias t "
+        f"where {' and '.join(where)} "
+        "order by t.fecha_entrada desc nulls last, t.transaccion desc limit %s"
+    )
+    params.append(limite)
+    with _conn_cm(get_conn) as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def _lbl_tk(t):
+    f = str(t.get("fecha_entrada") or "")[:10]
+    pat = "/".join([x for x in [t.get("patente_chasis"), t.get("patente_acoplado")] if x])
+    ev = "✓" if str(t.get("evaluado")).upper() == "SI" else "·"
+    return (f"#{t['transaccion']} {ev} · {t.get('producto_base') or '?'} · "
+            f"{(t.get('cliente') or '')[:22]} · {f} · {pat}")
+
+
 def _reset(tok):
     """Tras guardar: nuevo token (limpia widgets) y vuelve a modo alta."""
     st.session_state["lab_tok"] = uuid.uuid4().hex[:8]
     st.session_state["lab_edit_ctx"] = None
+    st.session_state.pop("lab_ticket_sel", None)
     st.rerun()
 
 
@@ -630,11 +688,59 @@ def render_laboratorio(get_conn=None):
             form_fn(full, ctx, ss["lab_tok"], get_conn, usuario)
         return
 
-    # -------- NUEVA CARGA --------
-    tipo = st.radio("Producto / formulario", list(_FORMS.keys()),
-                    horizontal=True, key="lab_tipo_nuevo")
+    # -------- NUEVA CARGA (vista unica, todos los productos) --------
+    st.markdown("**1) Ticket de portería** (opcional · autollena patente/chasis)")
+    cpa, cpb, cpc = st.columns([2, 2, 1])
+    try:
+        _pbases = productos_base(get_conn=get_conn)
+    except Exception as e:
+        _pbases = []
+        st.caption(f"(no pude leer productos base: {e})")
+    f_base = cpa.multiselect("Producto base (portería)", _pbases, key="lab_pb")
+    f_tk = cpb.text_input("Buscar Nº ticket", key="lab_ftk")
+    f_dias = cpc.number_input("Días", 1, 365, 30, key="lab_pdias")
+
+    tk_sel = None
+    try:
+        _ticks = tickets_porteria(f_base or None, f_tk or None, int(f_dias), get_conn=get_conn)
+    except Exception as e:
+        _ticks = []
+        st.caption(f"(no pude leer tickets: {e})")
+    if _ticks:
+        _opt = {"— sin ticket —": None}
+        for _t in _ticks:
+            _opt[_lbl_tk(_t)] = _t
+        _elec = st.selectbox(f"Ticket ({len(_ticks)})", list(_opt.keys()), key="lab_tksel_box")
+        tk_sel = _opt[_elec]
+    else:
+        st.caption("Sin tickets para ese filtro (ampliá los días o el producto base).")
+    ss["lab_ticket_sel"] = tk_sel
+
+    # prefill desde el ticket
+    pf_new = {}
+    if tk_sel:
+        pf_new = {"ticket": str(tk_sel["transaccion"]),
+                  "patente_chasis": tk_sel.get("patente_chasis"),
+                  "patente_acoplado": tk_sel.get("patente_acoplado")}
+        st.success(f"Ticket #{tk_sel['transaccion']} · {tk_sel.get('producto_base')} → "
+                   f"patentes {tk_sel.get('patente_chasis') or '-'}/{tk_sel.get('patente_acoplado') or '-'}")
+
     st.divider()
-    _FORMS[tipo](None, None, ss["lab_tok"], get_conn, usuario)
+    st.markdown("**2) Producto a evaluar** (define los obligatorios)")
+    _ui_opts = ["AG", "ARE", "AFE", "EFLUENTE", "BORRA", "OTRO (genérico)"]
+    _sug = _SUG_BASE_LAB.get(str((tk_sel or {}).get("producto_base") or "").upper())
+    _idx = _ui_opts.index(_sug) if _sug in _ui_opts else 0
+    prod_sel = st.selectbox("Producto", _ui_opts, index=_idx, key="lab_prod_nuevo",
+                            help="Sugerido por el ticket; podés cambiarlo (un producto base "
+                                 "puede evaluarse como varios productos de lab).")
+    if _sug and prod_sel != _sug:
+        st.caption(f"💡 El ticket sugiere **{_sug}** por su producto base.")
+
+    st.divider()
+    _tk_id = str(tk_sel["transaccion"]) if tk_sel else "blank"
+    _form_tok = f"{ss['lab_tok']}_{_tk_id}_{prod_sel}"
+    _fn = _FORMS.get(prod_sel, _form_GENERICO)
+    _fn(pf_new or None, None, _form_tok, get_conn, usuario)
 
 
 if __name__ == "__main__":
