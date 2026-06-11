@@ -342,14 +342,6 @@ with st.sidebar:
 
 # ---- estilo global: ya inyectado por inject_global_css() al inicio ----
 
-# ---- Botón Home visible en TODAS las secciones (además del de la sidebar) ----
-_hcol1, _hcol2 = st.columns([1, 4])
-with _hcol1:
-    if st.button("🏠 Inicio", key="btn_home_top", use_container_width=True,
-                 help="Volver a la pantalla principal"):
-        st.session_state.section = None
-        st.rerun()
-
 if st.session_state.get("show_chg_pin"):
     with st.expander("🔑 Cambiar mi PIN", expanded=True):
         with st.form("chg_pin"):
