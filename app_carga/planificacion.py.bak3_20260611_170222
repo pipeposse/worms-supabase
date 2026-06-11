@@ -159,8 +159,6 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
     # ---------- 4 · Estimados (litros primero, kg abajo) ----------
     st.markdown("#### 4 · Estimados")
     tn_mp = kg_used / 1000.0
-    est_form = {campo: tn_mp * float(rec[campo] or 0) for campo, _, _, _ in RECETA_INSUMOS}
-    kg_pf_form = kg_used * float(rec["rendimiento_pct"]) / 100.0
     est = {campo: tn_mp * float(e_ins[campo] or 0) for campo, _, _, _ in RECETA_INSUMOS}
     kg_pf = kg_used * (e_rend / 100.0)
     with st.expander("✏️ Ajustar estimados a mano (si la receta no te cierra)", expanded=False):
@@ -178,13 +176,6 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
             st.session_state.pop(f"rb_aj_pf_{_kk}", None)
             st.rerun()
 
-    ajustes = {}
-    for campo, cod, lbl, uni in RECETA_INSUMOS:
-        if abs(est[campo] - est_form[campo]) > 0.5:
-            ajustes[f"{lbl} ({uni})"] = {"receta": round(est_form[campo], 1), "ajustado": round(est[campo], 1)}
-    if abs(kg_pf - kg_pf_form) > 1:
-        ajustes["PF estimado (kg)"] = {"receta": round(kg_pf_form), "ajustado": round(kg_pf)}
-
     # resumen de TODO lo que se carga (litros primero)
     filas = [{"Item": f"MP · {mp}", "Litros": round(litros_mp, 0), "kg": round(kg_used, 0), "TN": round(kg_used / 1000, 2)}]
     for campo, cod, lbl, uni in RECETA_INSUMOS:
@@ -200,13 +191,6 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
     st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
     st.caption(f"⏱️ La bacha queda ocupada **{e_hpro + e_hrep:,.0f} h** ({e_hpro:g} h de proceso + {e_hrep:g} h de reposo).")
 
-    motivo_ajuste = ""
-    if ajustes:
-        st.warning("✏️ Cambiaste a mano: **" + ", ".join(ajustes.keys()) +
-                   "** (vs. receta guardada). Indicá el motivo — es obligatorio y queda registrado. "
-                   "Si el cambio es definitivo, mejor guardá la receta.")
-        motivo_ajuste = st.text_input("Motivo del ajuste *", key="plb_aj_motivo", max_chars=200,
-                                      placeholder="ej. borra con mucha agua, dosificamos más ácido")
     obs = st.text_input("Observaciones", key="plb_obs", placeholder="opcional")
     st.divider()
     if st.button("✅ Generar ID de producción + tickets de movimiento", type="primary",
@@ -214,9 +198,6 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
         mp_ports = [p for p in (ports or []) if float(p.get("kg", 0) or 0) > 0]
         if not mp_ports:
             st.error("Elegí una fuente de materia prima (portería o tanque) con cantidad > 0.")
-            return
-        if ajustes and not (motivo_ajuste or "").strip():
-            st.error("Cambiaste estimados a mano: **indicá el motivo del ajuste** antes de generar.")
             return
         mp_id = int(productos[productos["codigo_producto"] == mp].iloc[0]["id_producto"])
         ident = siguiente_identificador("BACHAS")
@@ -227,8 +208,6 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
             "insumos_estimados": {cod: round(est[campo], 1) for campo, cod, _, _ in RECETA_INSUMOS if est[campo] > 0},
             "pf_estimado_kg": round(kg_pf, 0),
             "horas_proceso": e_hpro, "horas_reposo": e_hrep,
-            "ajustes_manuales": (ajustes or None),
-            "motivo_ajuste": ((motivo_ajuste or "").strip() or None),
         }
         uid = int(USR["id_usuario"])
         try:
@@ -471,7 +450,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # ---------- Estimados por fórmula ----------
     st.markdown("#### 4 · Insumos estimados por fórmula")
     insumos_calc = []  # (codigo_insumo, rol, kg, fuente_default)
-    ajustes = {}       # ajustes manuales vs fórmula -> exigen motivo
     gli_mov = None     # glicerina como movimiento (sin codigo_insumo)
     gli_recup_kg = None  # glicerina recuperada estimada (kg) — vuelve en decantación
     if proc == "PRODUCCION_ARE":
@@ -518,12 +496,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             else:
                 est_pot = _cat_adj
             gli_recup_kg = max(0.0, (est_gli - gli_consumido) * f_recup)
-            if abs(_gli_l - _gli_l_form) > 0.5:
-                ajustes["glicerina (L)"] = {"formula": round(_gli_l_form), "ajustado": round(_gli_l)}
-            if abs(_cat_adj - _cat_form) > 0.01:
-                ajustes["NaOH (kg)" if catal == "NAOH" else "KOH (kg)"] = {"formula": round(_cat_form, 2), "ajustado": round(_cat_adj, 2)}
-            if abs(_fuel_l - _fuel_l_form) > 0.5:
-                ajustes["fuel (L)"] = {"formula": round(_fuel_l_form), "ajustado": round(_fuel_l)}
             e1, e2, e3, e4 = st.columns(4)
             e1.metric("Glicerina a cargar", f"{_gli_l:,.0f} L", f"{est_gli:,.0f} kg · glicerol {glicerol_v:.0f}%")
             if catal == "NAOH":
@@ -549,20 +521,16 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         cons = cat("SELECT codigo_insumo, consumo_por_tn FROM produccion.dic_consumo_proceso "
                    "WHERE tipo_proceso=%s AND codigo_insumo='FUEL_OIL'", (proc,))
         fuel_rate = float(cons.iloc[0]["consumo_por_tn"]) if not cons.empty else 8.7
-        # GOMA = SEDIMENTOS reportados. Prioridad 1: promedio ponderado de la fuente
-        # (lo mismo que muestra la sección de parámetros de lab). Fallback: lab de los tickets.
+        # % goma desde el laboratorio (procesos_lab) de los tickets de AFE-SG elegidos
         _goma_def = 0.0
         _gtxt = "—"
-        if lab_avg.get("prc_sedimentos") is not None and float(lab_avg["prc_sedimentos"]) > 0:
-            _goma_def = round(float(lab_avg["prc_sedimentos"]) * 100, 2)
-            _gtxt = "sedimentos de la fuente (promedio ponderado)"
         _tok = []
         for _p in (ports or []):
             if _p.get("fuente") == "TICKET" and _p.get("ticket"):
                 _tok += [t.strip() for t in _re.split(r"[;,\s]+", str(_p["ticket"])) if t.strip()]
         # En desgomado (AFE-SG) la GOMA = SEDIMENTOS reportados en laboratorio (conclusión "SED = GOMA").
         # Fuente primaria: prc_sedimentos de los tickets elegidos; luego prc_goma_*; luego sedimentos del promedio.
-        if _goma_def == 0.0 and _tok:
+        if _tok:
             try:
                 _gs = cat(
                     "SELECT AVG(prc_sedimentos) sed, COUNT(prc_sedimentos) n"
@@ -594,16 +562,13 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             _gtxt = "sedimentos = goma (promedio fuente)"
         pct_goma = st.number_input("% Goma (parámetro clave del desgomado)", min_value=0.0, step=0.1,
                                    value=_goma_def, key="pl_goma",
-                                   help=f"Goma = sedimentos reportados ({_gtxt}). Si la cambiás, vas a tener que indicar el motivo.")
-        if abs(pct_goma - _goma_def) > 0.005:
-            ajustes["% goma"] = {"formula": _goma_def, "ajustado": pct_goma}
+                                   help=f"Goma del laboratorio del AFE-SG ({_gtxt}). En AFE-SG la goma se mide como sedimentos. Ajustable.")
         if _tok and _goma_def == 0.0:
             st.caption("ℹ️ Los tickets elegidos no tienen % goma cargado en laboratorio (o está en 0).")
         agua_kg = round(kg_used * pct_agua / 100.0, 1)          # agua de proceso = 5% del peso de la MP
         fuel_kg = round(kg_used / 1000.0 * fuel_rate, 1)
         afe_s = round(kg_used * (1 - merma / 100.0), 0)         # AFE-S esperado (merma 5%)
         d_fuel = DENS_INSUMO["FUEL_OIL"]
-        _agua_form, _fuel_form = agua_kg, fuel_kg
         with st.expander("✏️ Ajustar estimados a mano (si la fórmula no te cierra)", expanded=False):
             aj1, aj2 = st.columns(2)
             _agua_l = aj1.number_input("Agua de proceso (L)", 0.0, 1_000_000.0,
@@ -616,10 +581,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                 st.rerun()
         agua_kg = round(_agua_l * 1.0, 1)
         fuel_kg = round(_fuel_l2 * d_fuel, 1)
-        if abs(agua_kg - _agua_form) > 1:
-            ajustes["agua (L)"] = {"formula": round(_agua_form), "ajustado": round(agua_kg)}
-        if abs(fuel_kg - _fuel_form) > 1:
-            ajustes["fuel (L)"] = {"formula": round(_fuel_form / d_fuel), "ajustado": round(fuel_kg / d_fuel)}
         _dens_afe = float(densidad_de("AFE-S") or 0.92) if callable(densidad_de) else 0.92
         d1, d2, d3, d4 = st.columns(4)
         d1.metric("% Goma", f"{pct_goma:.2f}%")
@@ -644,12 +605,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             else:
                 cols[i].metric(lbl, f"{float(v):.2f}")
 
-    motivo_ajuste = ""
-    if ajustes:
-        st.warning("✏️ Cambiaste a mano: **" + ", ".join(ajustes.keys()) +
-                   "** (vs. fórmula). Indicá el motivo — es obligatorio y queda registrado.")
-        motivo_ajuste = st.text_input("Motivo del ajuste *", key="pl_aj_motivo", max_chars=200,
-                                      placeholder="ej. la MP venía con más agua de lo normal")
     obs = st.text_input("Observaciones", key="pl_obs", placeholder="opcional")
 
     st.divider()
@@ -657,9 +612,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         mp_ports = [p for p in (ports or []) if float(p.get("kg", 0) or 0) > 0]
         if not mp_ports:
             st.error("Elegí una fuente de materia prima (portería o tanque) con cantidad > 0.")
-            return
-        if ajustes and not (motivo_ajuste or "").strip():
-            st.error("Cambiaste estimados a mano: **indicá el motivo del ajuste** antes de generar.")
             return
         mp_id = int(mp_df[mp_df["codigo_producto"] == mp].iloc[0]["id_producto"])
         ident = siguiente_identificador("REACTORES")
@@ -671,8 +623,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             "glicerina_fuente": ({"tipo": "TANQUE", "id_tanque": gli_idt} if gli_idt
                                  else {"tipo": "PORTERIA", "ticket": gli_tkp} if gli_tkp
                                  else {"tipo": "LAB", "ticket": gli_ticket}),
-            "ajustes_manuales": (ajustes or None),
-            "motivo_ajuste": ((motivo_ajuste or "").strip() or None),
         }
         uid = int(USR["id_usuario"])
         try:
