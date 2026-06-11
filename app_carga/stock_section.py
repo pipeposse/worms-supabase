@@ -1,5 +1,5 @@
 """Sección Stock: movimientos (libro mayor), stock por tanque en tiempo real,
-real-vs-teórico por día, y reconciliación. Todo descargable.
+real-vs-teórico por día, y conciliación. Todo descargable.
 render(USR, cat) recibe el helper cacheado de app.py.
 """
 import pandas as pd
@@ -12,7 +12,7 @@ def _dl(df, name, key):
 
 
 def render(USR, cat):
-    st.title("📦 Stock y movimientos")
+    st.title("📦 Stock")
     with st.expander("¿Cómo se calcula el stock teórico?", expanded=False):
         st.markdown(
             "**Stock estimado = última medición física + Σ movimientos ejecutados desde esa medición.**\n\n"
@@ -22,7 +22,7 @@ def render(USR, cat):
             "- **Real vs teórico**: comparamos la variación física medida contra lo que movió producción.")
 
     t1, t2, t4, t3 = st.tabs(["🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
-                              "⚖️ Real vs teórico (por día)", "🛡️ Reconciliación"])
+                              "⚖️ Real vs teórico (por día)", "🛡️ Conciliación"])
 
     # ---------- 1 · Stock por tanque ----------
     with t1:
@@ -113,15 +113,15 @@ def render(USR, cat):
         st.caption("**Medido** = variación física real del tanque (sensor/manual). **Teórico** = lo que movió producción ese día. "
                    "**Diferencia** = lo no explicado por producción (camiones a tanque, ventas, fugas).")
 
-    # ---------- 3 · Reconciliación ----------
+    # ---------- 3 · Conciliación ----------
     with t3:
         rc = cat("SELECT momento, tanque, litros_medido, litros_esperado, discrepancia_litros, "
                  "severidad, ajuste_ticket FROM reporting.v_reconciliacion_stock ORDER BY momento DESC")
         if rc.empty:
-            st.info("Todavía no hay reconciliaciones registradas (el job corre cada 30 min).")
+            st.info("Todavía no hay conciliaciones registradas (el job corre cada 30 min).")
         else:
             a1, a2 = st.columns(2)
-            a1.metric("Lecturas reconciliadas", len(rc))
+            a1.metric("Lecturas conciliadas", len(rc))
             a2.metric("Alertas", int((rc["severidad"] == "ALERTA").sum()))
             solo_alerta = st.toggle("Sólo alertas", value=False, key="rc_alerta")
             d = rc[rc["severidad"] == "ALERTA"] if solo_alerta else rc
@@ -131,5 +131,5 @@ def render(USR, cat):
                 "litros_esperado": st.column_config.NumberColumn("Esperado libro (L)", format="%.0f"),
                 "discrepancia_litros": st.column_config.NumberColumn("Discrepancia (L)", format="%.0f"),
             })
-            _dl(d, "reconciliacion_stock.csv", "dl_rc")
+            _dl(d, "conciliacion_stock.csv", "dl_rc")
             st.caption("ALERTA = discrepancia sobre el umbral (300 L o 2%). Se postea un AJUSTE con su ticket.")

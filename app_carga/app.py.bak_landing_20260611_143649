@@ -116,9 +116,6 @@ def inject_global_css():
       .pill{display:inline-block; padding:3px 10px; border-radius:999px; font-size:.72rem; font-weight:700;}
       .pill.ok{background:#d1fae5; color:#065f46;} .pill.warn{background:#fef3c7; color:#92400e;}
       .pill.info{background:#e0e7ff; color:#3730a3;} .pill.bad{background:#fee2e2; color:#991b1b;}
-      .tile-h{font-family:'Plus Jakarta Sans'; font-weight:800; font-size:1.15rem; color:var(--ink); margin:0 0 6px; line-height:1.25;}
-      .tile-d{color:var(--muted); font-size:.86rem; line-height:1.45; margin:0 0 12px;}
-      @media (min-width:741px){ .tile-h{min-height:2.9em;} .tile-d{min-height:4.4em;} }
       /* ---- ocultar chrome de Streamlit (look de app propia) ---- */
       #MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"],
       [data-testid="stStatusWidget"]{display:none !important;}
@@ -305,7 +302,7 @@ if st.session_state.section is None:
         ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
         ("🚛", "Portería", "Pesajes de portería: filtros, peso por producto y descarga.", "PORT", "land_port", False),
         ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
-        ("📦", "Stock", "Libro mayor de movimientos, stock estimado en tiempo real y conciliación. Todo descargable.", "STOCK", "land_stock", False),
+        ("📦", "Stock y movimientos", "Libro mayor de movimientos, stock estimado en tiempo real y reconciliación. Todo descargable.", "STOCK", "land_stock", False),
     ]
     if USR["rol"] in ("SUPERVISOR", "ADMIN"):
         tiles.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
@@ -318,9 +315,10 @@ if st.session_state.section is None:
         for col, (icon, tit, desc, sec, key, prim) in zip(cols, tiles[i:i+3]):
             with col:
                 with st.container(border=True):
-                    st.markdown(f'<div class="tile-h">{icon} {tit}</div><div class="tile-d">{desc}</div>',
-                                unsafe_allow_html=True)
-                    if st.button("Entrar", type="primary", use_container_width=True, key=key):
+                    st.markdown(f"#### {icon} {tit}")
+                    st.caption(desc)
+                    if st.button("Entrar", type=("primary" if prim else "secondary"),
+                                 use_container_width=True, key=key):
                         go_to(sec)
     st.stop()
 
