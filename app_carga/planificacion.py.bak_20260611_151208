@@ -17,186 +17,6 @@ import streamlit as st
 
 ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 
-BACHAS_PROC = "TRATAMIENTO_TERMOQUIMICO"
-BACHAS_MPS = ("SEBO-C-2DA", "BORRA-B", "FONDO-TK")
-# Densidades para mostrar litros (kg/L). Fuel de dic_insumo; ácido sulfúrico 98% ~1.84.
-DENS_INSUMO = {"FUEL_OIL": 0.95, "AGUA": 1.0, "soda_kg": 1.33, "acido_kg": 1.84}
-
-
-def _formula_bachas(cat):
-    df = cat("SELECT codigo_insumo, consumo_por_tn FROM produccion.dic_consumo_proceso "
-             "WHERE tipo_proceso=%s", (BACHAS_PROC,))
-    return {r.codigo_insumo: float(r.consumo_por_tn) for r in df.itertuples()}
-
-
-def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
-    """Planificación de bachas: tratamiento termoquímico con fórmula editable por TN de PF."""
-    fuente_mp_combinada = H.get("fuente_mp_combinada")
-    densidad_de = H.get("densidad_de")
-    K = H.get("K")
-    productos = H.get("productos")
-
-    st.markdown("#### 1 · Bacha y materia prima")
-    mp_df = productos[productos["codigo_producto"].isin(BACHAS_MPS)].copy()
-    if mp_df.empty:
-        st.error("No están cargados los productos de bachas (SEBO-C-2DA, BORRA-B, FONDO-TK).")
-        return
-    c1, c2 = st.columns(2)
-    mp = c1.selectbox("Materia prima", mp_df["codigo_producto"].tolist(), key="plb_mp")
-    n_bacha = c2.text_input("N° de bacha (opcional)", max_chars=20, key="plb_nb")
-    dens = float(densidad_de(mp) or 0.95) if callable(densidad_de) else 0.95
-
-    fin = cat("SELECT id_producto, codigo_producto, nombre_producto, COALESCE(densidad_g_ml,0.91) dens "
-              "FROM produccion.dim_producto WHERE activo AND tipo_producto='FINAL' ORDER BY codigo_producto")
-    fin_opts = {f"{r.codigo_producto} · {r.nombre_producto}": (int(r.id_producto), float(r.dens)) for r in fin.itertuples()}
-    pf_lbl = st.selectbox("Producto final buscado", list(fin_opts.keys()), key="plb_pf")
-    pf_id, dens_pf = fin_opts[pf_lbl]
-
-    st.markdown(f"#### 2 · Fuente de la materia prima ({mp})")
-    try:
-        kg_src, ports, lab_avg, _corr = fuente_mp_combinada(mp, key_prefix="plb_mpf")
-    except Exception as e:
-        st.error(f"No se pudo cargar la fuente de MP: {e}")
-        kg_src, ports, lab_avg = 0.0, [], {}
-    kg_used = float(kg_src or 0.0)
-    litros_mp = kg_used / dens if dens else 0.0
-    f1, f2 = st.columns(2)
-    f1.metric("MP a cargar", f"{litros_mp:,.0f} L", f"{kg_used:,.0f} kg · {kg_used/1000:,.2f} TN")
-    f2.metric("Densidad MP", f"{dens:g} kg/L")
-
-    # ---- Fórmula editable (kg por TN de producto final) ----
-    st.markdown("#### 3 · Fórmula del proceso (editable — vamos probando)")
-    F = _formula_bachas(cat)
-    pct_agua_def = float(K("bachas_pct_agua", 70) or 70) if callable(K) else 70.0
-    _mp_def = F.get("MP_X_TN", round(1000.0 / (1 - pct_agua_def / 100.0), 0))
-    with st.container(border=True):
-        st.caption(f"Consumos **teóricos por TN de producto final** (se guardan en `dic_consumo_proceso · {BACHAS_PROC}` "
-                   "y quedan para las próximas planificaciones).")
-        fc1, fc2, fc3 = st.columns(3)
-        f_mp = fc1.number_input("MP (kg / TN de PF)", 0.0, 50_000.0, value=float(_mp_def), step=50.0, key="plb_f_mp")
-        f_aci = fc2.number_input("Ácido sulfúrico (kg / TN de PF)", 0.0, 1_000.0, value=float(F.get("acido_kg", 0.0)), step=0.5, key="plb_f_aci")
-        f_fue = fc3.number_input("Fuel oil (kg / TN de PF)", 0.0, 1_000.0, value=float(F.get("FUEL_OIL", 0.0)), step=1.0, key="plb_f_fue")
-        if st.button("💾 Guardar fórmula", use_container_width=True, key="plb_f_save"):
-            try:
-                with conectar(int(USR["id_usuario"])) as (conn, audit):
-                    with conn.cursor() as cur:
-                        for cod, val in (("MP_X_TN", f_mp), ("acido_kg", f_aci), ("FUEL_OIL", f_fue)):
-                            if val and val > 0:
-                                cur.execute(
-                                    "INSERT INTO produccion.dic_consumo_proceso (tipo_proceso,codigo_insumo,consumo_por_tn) "
-                                    "VALUES (%s,%s,%s) "
-                                    "ON CONFLICT (tipo_proceso,codigo_insumo) DO UPDATE SET consumo_por_tn=EXCLUDED.consumo_por_tn",
-                                    (BACHAS_PROC, cod, float(val)))
-                            else:
-                                cur.execute("DELETE FROM produccion.dic_consumo_proceso "
-                                            "WHERE tipo_proceso=%s AND codigo_insumo=%s", (BACHAS_PROC, cod))
-                    audit.log("U", "dic_consumo_proceso", 0,
-                              {"proceso": BACHAS_PROC, "mp_x_tn": f_mp, "acido_kg": f_aci, "fuel_kg": f_fue})
-                st.success("Fórmula guardada.")
-                cat.clear(); st.rerun()
-            except Exception as e:
-                st.exception(e)
-
-    # ---- Estimados (litros primero, kg abajo) ----
-    st.markdown("#### 4 · Estimados")
-    kg_pf = (kg_used / (f_mp / 1000.0)) if (f_mp and f_mp > 0) else kg_used * (1 - pct_agua_def / 100.0)
-    tn_pf = kg_pf / 1000.0
-    aci_kg = tn_pf * (f_aci or 0.0)
-    fue_kg = tn_pf * (f_fue or 0.0)
-    d_aci = DENS_INSUMO["acido_kg"]; d_fue = DENS_INSUMO["FUEL_OIL"]
-    with st.expander("✏️ Ajustar estimados a mano (si la fórmula no te cierra)", expanded=False):
-        a1, a2 = st.columns(2)
-        aci_l_adj = a1.number_input("Ácido sulfúrico (L)", 0.0, 100_000.0,
-                                    value=float(round(aci_kg / d_aci, 1)), step=5.0, key="plb_aj_aci")
-        fue_l_adj = a2.number_input("Fuel oil (L)", 0.0, 500_000.0,
-                                    value=float(round(fue_kg / d_fue, 0)), step=25.0, key="plb_aj_fue")
-        st.caption(f"Fórmula: ácido {aci_kg/d_aci:,.1f} L ({aci_kg:,.1f} kg) · fuel {fue_kg/d_fue:,.0f} L ({fue_kg:,.0f} kg)")
-        if st.button("🔄 Volver a la fórmula", key="plb_aj_rst"):
-            st.session_state.pop("plb_aj_aci", None); st.session_state.pop("plb_aj_fue", None)
-            st.rerun()
-    aci_kg = aci_l_adj * d_aci
-    fue_kg = fue_l_adj * d_fue
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Ácido sulfúrico", f"{aci_kg/d_aci:,.0f} L", f"{aci_kg:,.0f} kg")
-    m2.metric("Fuel oil", f"{fue_kg/d_fue:,.0f} L", f"{fue_kg:,.0f} kg")
-    m3.metric("PF estimado", f"{(kg_pf/dens_pf):,.0f} L", f"{kg_pf:,.0f} kg · {tn_pf:,.2f} TN")
-    if f_mp and f_mp > 0:
-        st.caption(f"PF estimado = MP {kg_used:,.0f} kg ÷ {f_mp:,.0f} kg/TN de PF.")
-    else:
-        st.caption(f"PF estimado = MP × (1 − {pct_agua_def:g}% agua). Cargá la fórmula de MP para afinar.")
-
-    obs = st.text_input("Observaciones", key="plb_obs", placeholder="opcional")
-    st.divider()
-    if st.button("✅ Generar ID de producción + tickets de movimiento", type="primary",
-                 use_container_width=True, key="plb_go"):
-        mp_ports = [p for p in (ports or []) if float(p.get("kg", 0) or 0) > 0]
-        if not mp_ports:
-            st.error("Elegí una fuente de materia prima (portería o tanque) con cantidad > 0.")
-            return
-        mp_id = int(mp_df[mp_df["codigo_producto"] == mp].iloc[0]["id_producto"])
-        ident = siguiente_identificador("BACHAS")
-        params = {"kg_mp": round(kg_used, 0), "n_bacha": (n_bacha or None),
-                  "formula": {"MP_X_TN": f_mp, "acido_kg": f_aci, "FUEL_OIL": f_fue},
-                  "insumos_estimados": {"acido_kg": round(aci_kg, 1), "FUEL_OIL": round(fue_kg, 1)},
-                  "pf_estimado_kg": round(kg_pf, 0)}
-        uid = int(USR["id_usuario"])
-        try:
-            with conectar(uid) as (conn, audit):
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO fact_batch_proceso "
-                        "(fecha, sector, id_usuario_carga, identificador_unidad, id_bien_uso, tipo_proceso, "
-                        " id_producto_buscado, tiempo_estimado_horas, parametros_proceso, estado, "
-                        " id_usuario_estado, motivo_estado, observaciones) "
-                        "VALUES (CURRENT_DATE,'BACHAS',%s,%s,NULL,%s,%s,%s,%s::jsonb,'PLANIFICADO',%s,"
-                        " 'Planificado por dirección',%s) RETURNING id_batch",
-                        (uid, ident, BACHAS_PROC, pf_id, 4.0, _json.dumps(params), uid, (obs or None)))
-                    id_b = cur.fetchone()[0]
-                    n_mov = 0
-
-                    def _mov(rol, id_producto, prod_txt, cod_ins, fuente, idt, tkp, kg, litros):
-                        fmov = "TANQUE" if fuente == "TANQUE" else "PORTERIA"
-                        cur.execute(
-                            "INSERT INTO fact_movimiento_stock "
-                            "(momento,id_batch,identificador_prod,tipo_movimiento,rol,sentido,id_producto,producto,"
-                            " codigo_insumo,fuente,id_tanque,ticket_porteria,cantidad,unidad,kg,litros,id_usuario,"
-                            " origen,estado_mov,id_usuario_planifica,planificado_en) "
-                            "VALUES (now(),%s,%s,'SALIDA',%s,-1,%s,%s,%s,%s,%s,%s,%s,'KG',%s,%s,%s,"
-                            " 'planificacion','PLANIFICADO',%s,now())",
-                            (id_b, ident, rol, id_producto, prod_txt, cod_ins, fmov, idt, tkp,
-                             float(kg), float(kg), litros, uid, uid))
-
-                    for p in mp_ports:
-                        es_tk = (p.get("fuente") == "TANQUE")
-                        kgp = float(p["kg"])
-                        litros = round(kgp / dens, 1) if dens else None
-                        cur.execute(
-                            "INSERT INTO fact_batch_insumo (id_batch,rol,id_producto,cantidad,unidad,fuente,id_tanque,ticket_porteria,id_usuario) "
-                            "VALUES (%s,'MP',%s,%s,'KG',%s,%s,%s,%s)",
-                            (id_b, mp_id, kgp, ("TANQUE" if es_tk else "TICKET"),
-                             (int(p["id_tanque"]) if es_tk and p.get("id_tanque") else None),
-                             (None if es_tk else p.get("ticket")), uid))
-                        _mov("MP", mp_id, mp, None, ("TANQUE" if es_tk else "TICKET"),
-                             (int(p["id_tanque"]) if es_tk and p.get("id_tanque") else None),
-                             (None if es_tk else p.get("ticket")), kgp, litros)
-                        n_mov += 1
-
-                    for cod_ins, kgv in (("acido_kg", aci_kg), ("FUEL_OIL", fue_kg)):
-                        if kgv and kgv > 0:
-                            _dl_ = DENS_INSUMO.get(cod_ins)
-                            _mov("INSUMO", None, cod_ins, cod_ins, "PORTERIA", None, None, round(kgv, 1),
-                                 (round(kgv / _dl_, 1) if _dl_ else None))
-                            n_mov += 1
-            try:
-                cat.clear()
-            except Exception:
-                pass
-            st.success(f"Producción **{ident}** (batch #{id_b}, BACHAS) planificada con **{n_mov} movimiento(s)** PLANIFICADO.")
-            st.balloons()
-        except Exception as e:
-            st.error(f"No se pudo guardar la planificación: {e}")
-
-
 
 def _productos_proceso(cat, sector, tipo, rol):
     """Productos válidos para (proceso, rol) según dic_proceso_producto (patrones LIKE)."""
@@ -234,11 +54,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     if not all([callable(proceso_desde_mp), callable(fuente_mp_combinada), callable(densidad_de), callable(K)]) \
        or productos is None or bienes is None or getattr(productos, "empty", True) or getattr(bienes, "empty", True):
         st.error("No se pudieron cargar los catálogos/funciones de Cargas. Reintentá.")
-        return
-    modo = st.radio("Planificar en", ["🏭 Reactores", "🛁 Bachas (tratamiento termoquímico)"],
-                    horizontal=True, key="pl_modo")
-    if modo.startswith("🛁"):
-        _render_bachas(USR, cat, conectar, siguiente_identificador, H)
         return
     st.caption("Misma lógica que Cargas: elegí reactor y materia prima; el proceso, la capacidad y todas las fórmulas se calculan solos.")
 
@@ -310,8 +125,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     glicerol_v = None
     gli_ticket = None
     catal = None
-    gli_idt = None    # fuente física: tanque de glicerina
-    gli_tkp = None    # fuente física: ticket de portería
     if proc == "PRODUCCION_ARE":
         PMa = float(K("PMa", 282)); PMg = float(K("PMg", 92)); FE = float(K("factor_exceso_gli", 1.1))
         st.markdown("#### 2 · Glicerina (laboratorio) — define el % glicerol y la glicerina total")
@@ -330,22 +143,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                          key="pl_catal")
         st.caption("La glicerina recuperada vuelve en la **decantación** (se registra ahí con su muestra de lab), "
                    "con cualquiera de los dos catalizadores.")
-        st.markdown("**Fuente física de la glicerina a cargar** (de dónde sale)")
-        gli_fuente = st.radio("Fuente de la glicerina", ["Muestra de lab (solo ticket)", "Tanque", "Ticket de portería"],
-                              horizontal=True, key="pl_gli_src", label_visibility="collapsed")
-        if gli_fuente == "Tanque":
-            _gtk = cat("SELECT id_tanque, nombre, codigo, COALESCE(litros_actual,0) lt, COALESCE(kg_actual,0) kgs "
-                       "FROM produccion.vw_tanque_panel WHERE activo AND producto_principal ILIKE 'GLICER' || '%' "
-                       "ORDER BY litros_actual DESC NULLS LAST")
-            if _gtk.empty:
-                st.warning("No hay tanques activos con glicerina como producto principal.")
-            else:
-                _gop = _gtk.apply(lambda r: f"{r['nombre']} · {r['codigo']} · {r['lt']:,.0f} L ({r['kgs']:,.0f} kg)", axis=1).tolist()
-                _gse = st.selectbox("Tanque de glicerina", _gop, key="pl_gli_tk")
-                gli_idt = int(_gtk.iloc[_gop.index(_gse)]["id_tanque"])
-        elif gli_fuente == "Ticket de portería":
-            gli_tkp = (st.text_input("Ticket de portería de la glicerina", key="pl_gli_tkp",
-                                     placeholder="ej. 12345") or "").strip() or None
 
     # ---------- Fuente de la MP (tanques filtrados por producto + lab ponderado) ----------
     st.markdown(f"#### 3 · Fuente de la materia prima ({mp})")
@@ -393,38 +190,15 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             est_naoh = tn * float(fila["consumo_naoh_kg_x_tn"] or 0) if catal == "NAOH" else 0.0
             est_pot = tn * float(fila["consumo_potasio_kg_x_tn"] or 0) if catal == "POTASIO" else 0.0
             est_fuel = tn * float(fila["consumo_fuel_kg_x_tn"] or 0)
-            d_fuel = DENS_INSUMO["FUEL_OIL"]
-            _gli_l_form = est_gli / dens_gli
-            _fuel_l_form = est_fuel / d_fuel
-            _cat_form = est_naoh if catal == "NAOH" else est_pot
-            with st.expander("✏️ Ajustar estimados a mano (si la fórmula no te cierra)", expanded=False):
-                aj1, aj2, aj3 = st.columns(3)
-                _gli_l = aj1.number_input("Glicerina (L)", 0.0, 1_000_000.0,
-                                          value=float(round(_gli_l_form, 0)), step=50.0, key="pl_aj_gli")
-                _cat_adj = aj2.number_input(("NaOH (kg)" if catal == "NAOH" else "KOH (kg)"), 0.0, 100_000.0,
-                                            value=float(round(_cat_form, 2)), step=1.0, key=f"pl_aj_cat_{catal}")
-                _fuel_l = aj3.number_input("Fuel oil (L)", 0.0, 1_000_000.0,
-                                           value=float(round(_fuel_l_form, 0)), step=25.0, key="pl_aj_fuel")
-                st.caption(f"Fórmula: glicerina {_gli_l_form:,.0f} L · catalizador {_cat_form:,.2f} kg · fuel {_fuel_l_form:,.0f} L")
-                if st.button("🔄 Volver a los valores de fórmula", key="pl_aj_rst"):
-                    for _k in ("pl_aj_gli", f"pl_aj_cat_{catal}", "pl_aj_fuel"):
-                        st.session_state.pop(_k, None)
-                    st.rerun()
-            est_gli = _gli_l * dens_gli
-            est_fuel = _fuel_l * d_fuel
-            if catal == "NAOH":
-                est_naoh = _cat_adj
-            else:
-                est_pot = _cat_adj
-            gli_recup_kg = max(0.0, (est_gli - gli_consumido) * f_recup)
             e1, e2, e3, e4 = st.columns(4)
+            _gli_l = (est_gli / dens_gli)
             e1.metric("Glicerina a cargar", f"{_gli_l:,.0f} L", f"{est_gli:,.0f} kg · glicerol {glicerol_v:.0f}%")
             if catal == "NAOH":
                 e2.metric("NaOH (catalizador)", f"{est_naoh:,.1f} kg")
             else:
                 e2.metric("KOH (catalizador)", f"{est_pot:,.2f} kg")
             e3.metric("Glicerina recuperada", f"{gli_recup_kg/dens_gli:,.0f} L", f"{gli_recup_kg:,.0f} kg · factor {f_recup:.2f}")
-            e4.metric("Fuel oil", f"{_fuel_l:,.0f} L", f"{est_fuel:,.0f} kg")
+            e4.metric("Fuel oil", f"{est_fuel:,.0f} kg")
             st.metric("ARE estimado", f"{q_ag/0.88:,.0f} L", f"{q_ag:,.0f} kg · {q_ag/1000:.1f} TN")
             st.caption(f"Recuperada = (glicerina cargada {est_gli:,.0f} − glicerol consumido {gli_consumido:,.0f}) × {f_recup:.2f} "
                        f"(factor de **{fila['nombre_ui']}**). Editá por reactor en `dic_factor_recup_gli`.")
@@ -489,25 +263,11 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         agua_kg = round(kg_used * pct_agua / 100.0, 1)          # agua de proceso = 5% del peso de la MP
         fuel_kg = round(kg_used / 1000.0 * fuel_rate, 1)
         afe_s = round(kg_used * (1 - merma / 100.0), 0)         # AFE-S esperado (merma 5%)
-        d_fuel = DENS_INSUMO["FUEL_OIL"]
-        with st.expander("✏️ Ajustar estimados a mano (si la fórmula no te cierra)", expanded=False):
-            aj1, aj2 = st.columns(2)
-            _agua_l = aj1.number_input("Agua de proceso (L)", 0.0, 1_000_000.0,
-                                       value=float(round(agua_kg, 0)), step=50.0, key="pl_aj_agua")
-            _fuel_l2 = aj2.number_input("Fuel oil (L)", 0.0, 1_000_000.0,
-                                        value=float(round(fuel_kg / d_fuel, 0)), step=25.0, key="pl_aj_fuel2")
-            st.caption(f"Fórmula: agua {agua_kg:,.0f} L · fuel {fuel_kg/d_fuel:,.0f} L ({fuel_kg:,.0f} kg)")
-            if st.button("🔄 Volver a los valores de fórmula", key="pl_aj_rst2"):
-                st.session_state.pop("pl_aj_agua", None); st.session_state.pop("pl_aj_fuel2", None)
-                st.rerun()
-        agua_kg = round(_agua_l * 1.0, 1)
-        fuel_kg = round(_fuel_l2 * d_fuel, 1)
-        _dens_afe = float(densidad_de("AFE-S") or 0.92) if callable(densidad_de) else 0.92
         d1, d2, d3, d4 = st.columns(4)
         d1.metric("% Goma", f"{pct_goma:.2f}%")
-        d2.metric("Agua proceso", f"{_agua_l:,.0f} L", f"{agua_kg:,.0f} kg")
-        d3.metric("Fuel", f"{fuel_kg/d_fuel:,.0f} L", f"{fuel_kg:,.0f} kg")
-        d4.metric("AFE-S esperado", f"{afe_s/_dens_afe:,.0f} L", f"{afe_s:,.0f} kg")
+        d2.metric(f"Agua proceso ({pct_agua:.0f}%)", f"{agua_kg:,.0f} kg")
+        d3.metric("Fuel", f"{fuel_kg:,.0f} kg")
+        d4.metric("AFE-S esperado", f"{afe_s:,.0f} kg")
         insumos_calc.append(("AGUA", "INSUMO", agua_kg))
         insumos_calc.append(("FUEL_OIL", "INSUMO", fuel_kg))
 
@@ -541,9 +301,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             "acidez_pct": round(acidez, 3), "glicerol_pct": glicerol_v, "catalizador": catal,
             "glicerina_kg": gli_mov, "glicerina_recup_kg": gli_recup_kg, "pct_goma": pct_goma,
             "insumos_estimados": {c: k for c, _, k in insumos_calc},
-            "glicerina_fuente": ({"tipo": "TANQUE", "id_tanque": gli_idt} if gli_idt
-                                 else {"tipo": "PORTERIA", "ticket": gli_tkp} if gli_tkp
-                                 else {"tipo": "LAB", "ticket": gli_ticket}),
         }
         uid = int(USR["id_usuario"])
         try:
@@ -589,15 +346,9 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                              (None if es_tk else p.get("ticket")), kg, litros)
                         n_mov += 1
 
-                    # Glicerina: fuente física elegida (tanque / ticket de portería / muestra de lab)
+                    # Glicerina (movimiento, sin codigo_insumo) desde su ticket de lab
                     if gli_mov and gli_mov > 0:
-                        _gl_l = round(gli_mov / dens_gli, 1) if dens_gli else None
-                        if gli_idt:
-                            _mov("INSUMO", None, "Glicerina", None, "TANQUE", gli_idt, None, gli_mov, _gl_l)
-                        elif gli_tkp:
-                            _mov("INSUMO", None, "Glicerina", None, "TICKET", None, gli_tkp, gli_mov, _gl_l)
-                        else:
-                            _mov("INSUMO", None, "Glicerina", None, "TICKET", None, gli_ticket, gli_mov, _gl_l)
+                        _mov("INSUMO", None, "Glicerina", None, "TICKET", None, gli_ticket, gli_mov, None)
                         n_mov += 1
 
                     # Insumos estimados (glicerina ya arriba; catalizador/fuel) → sólo movimiento
@@ -606,9 +357,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                     for cod_ins, rol, kg in insumos_calc:
                         if not kg or kg <= 0:
                             continue
-                        _dl_ = DENS_INSUMO.get(cod_ins)
-                        _mov(rol, None, cod_ins, cod_ins, "PORTERIA", None, None, kg,
-                             (round(kg / _dl_, 1) if _dl_ else None))
+                        _mov(rol, None, cod_ins, cod_ins, "PORTERIA", None, None, kg, None)
                         n_mov += 1
             try:
                 cat.clear()

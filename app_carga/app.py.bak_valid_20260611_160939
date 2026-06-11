@@ -2201,6 +2201,22 @@ if st.session_state.section != "CARGAS":
                     return "✍️ Manual (días)"
                 return "⏰ Manual (vieja)"
             d["Estado"] = d.apply(_estado, axis=1)
+            def _valid(r):
+                # Validación: % llenado = litros / capacidad de cubicaje (o nominal). Alerta si supera.
+                cap = r.get("cap_aforo")
+                if pd.isna(cap) or not cap:
+                    cap = r.get("capacidad_litros")
+                if pd.isna(r["_litros"]):
+                    return "—"
+                if pd.isna(cap) or not cap:
+                    return "sin cubicaje"
+                pct = r["_litros"] / float(cap) * 100.0
+                if pct > 102:
+                    return f"⚠️ supera ({pct:.0f}%)"
+                if pct < -1:
+                    return "⚠️ negativo"
+                return f"✔️ {pct:.0f}%"
+            d["Validación"] = d.apply(_valid, axis=1)
 
             # ---------- KPIs ----------
             _tot = len(d)
@@ -2219,9 +2235,11 @@ if st.session_state.section != "CARGAS":
             # ---------- Alertas de medición ----------
             _n_sin = int((d["Estado"] == "❔ Sin medición").sum())
             _n_vieja = int(d["Estado"].isin(["⏰ Manual (vieja)", "📡 Sensor atrasado"]).sum())
+            _n_sup = int(d["Validación"].astype(str).str.startswith("⚠️").sum())
             _n_nom = int((d["Estado"] == "⛔ No medible").sum())
-            if (_n_sin + _n_vieja + _n_nom) > 0:
+            if (_n_sin + _n_vieja + _n_sup + _n_nom) > 0:
                 _bits = []
+                if _n_sup:   _bits.append(f"**{_n_sup}** superan capacidad / valor inválido")
                 if _n_sin:   _bits.append(f"**{_n_sin}** sin medición")
                 if _n_vieja: _bits.append(f"**{_n_vieja}** con medición atrasada")
                 if _n_nom:   _bits.append(f"**{_n_nom}** no medibles")
@@ -2231,7 +2249,7 @@ if st.session_state.section != "CARGAS":
             _t = d.copy()
             _t["Medidor"] = _t["fuente_medicion"].map({"WeDo": "📡 WeDo", "Manual": "✍️ Manual"})
             _t = _t[["codigo", "nombre", "tipo_tanque", "sector", "producto_principal", "Medidor", "wedo_label",
-                     "intervalo_real_min", "nivel_pct_actual", "_litros", "_tn", "capacidad_litros", "ultima_medicion", "Estado"]].rename(columns={
+                     "intervalo_real_min", "nivel_pct_actual", "_litros", "_tn", "capacidad_litros", "ultima_medicion", "Estado", "Validación"]].rename(columns={
                 "codigo": "Código", "nombre": "Tanque", "tipo_tanque": "Tipo", "sector": "Sector",
                 "producto_principal": "Producto", "wedo_label": "Sensor", "intervalo_real_min": "Intervalo (min)",
                 "nivel_pct_actual": "Nivel %",
@@ -2250,7 +2268,9 @@ if st.session_state.section != "CARGAS":
                 st.dataframe(_t, use_container_width=True, hide_index=True, height=470)
             st.caption("Stock en **litros** (medición real). El **kg/TN** se calcula por densidad del producto del tanque. "
                        "📡 WeDo = automático por sensor · ✍️ Manual = última medición cargada.")
-            st.caption("**Estado** = frescura de la medición (sensor al día / manual hoy-días-vieja / sin medición / no medible).")
+            st.caption("**Estado** = frescura de la medición (sensor al día / manual hoy-días-vieja / sin medición / no medible). "
+                       "**Validación** = `% llenado = litros ÷ capacidad de cubicaje`; ⚠️ si supera ~100% (medición inconsistente). "
+                       "La capacidad sale del aforo (`dim_tanque_aforo`); si el tanque no tiene cubicaje, dice *sin cubicaje*.")
 
             _byp = d.dropna(subset=["_tn"]).groupby("producto_principal", as_index=False)["_tn"].sum()
             if not _byp.empty:
