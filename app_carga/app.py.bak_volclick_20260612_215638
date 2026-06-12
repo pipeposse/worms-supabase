@@ -2217,56 +2217,12 @@ if st.session_state.section != "CARGAS":
                     _v = _v.sort_values(["cambios_dia", "rotacion_dia_pct"], ascending=False)
 
                     _vc = _v["Clasificación"].value_counts()
-                    _cls_all = ["🌪️ Muy volátil", "🔁 Activo", "🌊 Moderado", "🧊 Quieto"]
-                    _bcols = st.columns(4)
-                    for _bc, _lbl in zip(_bcols, _cls_all):
-                        _activo_b = (st.session_state.get("vol_cls") == _lbl)
-                        if _bc.button(f"{_lbl} · {int(_vc.get(_lbl, 0))}", key=f"vol_cls_{_lbl}",
-                                      use_container_width=True,
-                                      type=("primary" if _activo_b else "secondary"),
-                                      help="Click para ver cuáles son y sus últimas mediciones. Click de nuevo para cerrar."):
-                            st.session_state["vol_cls"] = (None if _activo_b else _lbl)
-                            st.rerun()
-                    _cls_sel = st.session_state.get("vol_cls")
-                    if _cls_sel:
-                        _lv = _v[_v["Clasificación"] == _cls_sel].sort_values("cambios_dia", ascending=False)
-                        if _lv.empty:
-                            st.info(f"No hay tanques {_cls_sel} con los filtros actuales.")
-                        else:
-                            st.markdown(f"**{_cls_sel} — {len(_lv)} tanque(s):**")
-                            st.dataframe(_lv[["nombre", "fuente", "sector", "n_med", "cambios_dia",
-                                              "prom_cambio", "max_cambio", "rotacion_dia_pct"]].rename(columns={
-                                "nombre": "Tanque", "fuente": "Fuente", "sector": "Sector", "n_med": "Mediciones",
-                                "cambios_dia": "Cambios/día", "prom_cambio": "Variación prom. (L)",
-                                "max_cambio": "Variación máx. (L)", "rotacion_dia_pct": "Rotación diaria (% cap.)"}),
-                                use_container_width=True, hide_index=True, column_config={
-                                    "Variación prom. (L)": st.column_config.NumberColumn(format="%.0f"),
-                                    "Variación máx. (L)": st.column_config.NumberColumn(format="%.0f"),
-                                    "Rotación diaria (% cap.)": st.column_config.NumberColumn(format="%.1f%%"),
-                                })
-                            _lop = _lv.apply(lambda r: f"{r['nombre']} · {r['fuente']} · {r['sector']}", axis=1).tolist()
-                            _lsel = st.selectbox("🔬 Últimas mediciones de", _lop, key="vol_cls_tq")
-                            _lid = int(_lv.iloc[_lop.index(_lsel)]["id_tanque"])
-                            _u10 = cat("""
-                                WITH d AS (
-                                  SELECT s.medido_en, s.litros::float AS litros, s.observaciones,
-                                         s.litros::float - LAG(s.litros::float) OVER (ORDER BY s.medido_en) AS delta
-                                  FROM produccion.fact_stock_tanque s
-                                  WHERE s.id_tanque = %s AND s.litros IS NOT NULL
-                                ) SELECT * FROM d ORDER BY medido_en DESC LIMIT 12
-                            """, (_lid,))
-                            if _u10.empty:
-                                st.info("Sin mediciones registradas.")
-                            else:
-                                _u10 = _u10.copy()
-                                _u10["Δ vs anterior (L)"] = pd.to_numeric(_u10["delta"], errors="coerce").round(0)
-                                st.dataframe(_u10[["medido_en", "litros", "Δ vs anterior (L)", "observaciones"]].rename(
-                                    columns={"medido_en": "Medición", "litros": "Litros", "observaciones": "Obs."}),
-                                    use_container_width=True, hide_index=True, column_config={
-                                        "Medición": st.column_config.DatetimeColumn(format="DD/MM HH:mm"),
-                                        "Litros": st.column_config.NumberColumn(format="%.0f"),
-                                    })
-                        st.divider()
+                    st.markdown(
+                        "<div class='kpi-grid'>" + "".join(
+                            f"<div class='kpi'><div class='l'>{lbl}</div><div class='v'>{int(_vc.get(lbl, 0))}</div>"
+                            f"<div class='s'>tanques</div></div>"
+                            for lbl in ["🌪️ Muy volátil", "🔁 Activo", "🌊 Moderado", "🧊 Quieto"]) + "</div>",
+                        unsafe_allow_html=True)
 
                     import altair as _alt
                     _top = _v.head(15).copy()
