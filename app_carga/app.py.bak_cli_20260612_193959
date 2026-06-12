@@ -1760,15 +1760,8 @@ if st.session_state.section != "CARGAS":
             except Exception as e:
                 st.exception(e); df_ef = pd.DataFrame()
 
-            if not df_ef.empty:
-                _clis = sorted(df_ef["cliente"].dropna().astype(str).str.strip().unique().tolist())
-                cli_sel = st.multiselect("Cliente (vacío = todos)", _clis, key="ef_cli",
-                                         help="Filtra todo el análisis (acumulados, comparaciones y CSV) a los clientes elegidos.")
-                if cli_sel:
-                    df_ef = df_ef[df_ef["cliente"].astype(str).str.strip().isin(cli_sel)]
-
             if df_ef.empty:
-                st.info(f"No hay registros de {pb_sel} en el rango (revisá el filtro de cliente).")
+                st.info(f"No hay registros de {pb_sel} en el rango.")
             else:
                 df_ef["peso_neto"] = pd.to_numeric(df_ef["peso_neto"], errors="coerce")
                 df_ef["fecha_entrada"] = pd.to_datetime(df_ef["fecha_entrada"])
