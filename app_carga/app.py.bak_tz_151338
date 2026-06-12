@@ -33,7 +33,7 @@ def _lab_conn():
     c = _pg.connect(DATABASE_URL)
     try:
         with c.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
+            cur.execute("SET search_path TO produccion, public")
         yield c
     finally:
         c.close()
@@ -156,7 +156,7 @@ def usuarios_disponibles():
         conn = psycopg2.connect(DATABASE_URL)
         try:
             with conn.cursor() as cur:
-                cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
+                cur.execute("SET search_path TO produccion, public")
                 cur.execute(
                     "SELECT nombre, nombre_full FROM dim_usuario "
                     "WHERE activo ORDER BY nombre_full"
@@ -254,7 +254,7 @@ def _landing_kpis():
         conn = psycopg2.connect(DATABASE_URL)
         try:
             with conn.cursor() as cur:
-                cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
+                cur.execute("SET search_path TO produccion, public")
                 cur.execute(sql)
                 row = cur.fetchone()
                 cols = ["tanques","stock_tn","en_proceso","en_reaccion","en_reposo","tickets_pend","esp_valid","hoy"]
@@ -377,7 +377,7 @@ def cat(query, params=None):
     conn = psycopg2.connect(DATABASE_URL)
     try:
         with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
+            cur.execute("SET search_path TO produccion, public")
         return pd.read_sql_query(query, conn, params=params)
     finally:
         conn.close()
@@ -767,7 +767,7 @@ def _load_prefs():
         try:
             conn = psycopg2.connect(DATABASE_URL)
             with conn.cursor() as cur:
-                cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
+                cur.execute("SET search_path TO produccion, public")
                 cur.execute("SELECT COALESCE(prefs,'{}'::jsonb) FROM dim_usuario WHERE id_usuario=%s",
                             (USR["id_usuario"],))
                 row = cur.fetchone()
@@ -790,7 +790,7 @@ def set_pref(key, value):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
+            cur.execute("SET search_path TO produccion, public")
             cur.execute("UPDATE dim_usuario SET prefs = COALESCE(prefs,'{}'::jsonb) || %s::jsonb WHERE id_usuario=%s",
                         (json.dumps({key: value}), USR["id_usuario"]))
         conn.commit(); conn.close()
@@ -1143,7 +1143,7 @@ def siguiente_identificador(sector):
         conn = psycopg2.connect(DATABASE_URL)
         try:
             with conn.cursor() as cur:
-                cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
+                cur.execute("SET search_path TO produccion, public")
                 cur.execute(
                     "SELECT identificador_unidad FROM fact_batch_proceso "
                     "WHERE identificador_unidad LIKE %s ORDER BY identificador_unidad DESC LIMIT 1",
@@ -1393,7 +1393,7 @@ if st.session_state.section != "CARGAS":
         st.title("\U0001f69b Porteria")
         sub_dia, sub_hist, sub_eflu, sub_labcmp = st.tabs([
             "\U0001f4c5 Entrada diaria", "\U0001f4ca Revision historica",
-            "\U0001f4c8 Por producto", "\U0001f9ea Lab por cliente"])
+            "\U0001f4a7 Efluentes liquidos", "\U0001f9ea Lab por cliente"])
 
         # ---------------- ENTRADA DIARIA ----------------
         with sub_dia:
@@ -1725,43 +1725,26 @@ if st.session_state.section != "CARGAS":
 
         # ---------------- EFLUENTES LIQUIDOS ----------------
         with sub_eflu:
-            st.caption("Apertura por **producto base** (los evaluables con más movimiento): acumulados, "
-                       "tendencia, comparación mensual y semanal. Efluentes líquidos es un producto más.")
-            try:
-                _topb = cat(
-                    "SELECT producto_base, SUM(ABS(peso_neto)) kg FROM produccion.v_transacciones_limpias "
-                    "WHERE fecha_entrada >= current_date - 365 AND peso_neto IS NOT NULL AND producto_base IS NOT NULL "
-                    "  AND corriente IN (SELECT corriente FROM produccion.dic_corriente_config WHERE evaluable) "
-                    "  AND upper(producto_base) NOT IN (SELECT upper(producto_base) FROM produccion.dic_producto_base_config WHERE NOT evaluable) "
-                    "GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 20")
-                _pb_opts = _topb["producto_base"].tolist()
-            except Exception:
-                _pb_opts = []
-            if "EFLUENTES LIQUIDOS" not in _pb_opts:
-                _pb_opts = ["EFLUENTES LIQUIDOS"] + _pb_opts
-            cE0, cE1, cE2 = st.columns(3)
-            pb_sel = cE0.selectbox("Producto base", _pb_opts,
-                                   index=_pb_opts.index("EFLUENTES LIQUIDOS"),
-                                   key="ef_pb",
-                                   help="Productos base evaluables ordenados por kg movidos en los últimos 12 meses.")
+            st.caption("Solo producto_base = EFLUENTES LIQUIDOS. Acumulados, tendencia y comparacion mensual.")
+            cE1, cE2 = st.columns(2)
             ef_desde = cE1.date_input("Desde", value=date(date.today().year,1,1), key="ef_desde")
             ef_hasta = cE2.date_input("Hasta", value=date.today(), key="ef_hasta")
             sql_ef = """
                 SELECT fecha_entrada, hora_e, patente_chasis, cliente, transporte, procedencia,
                        (peso_neto * -1) AS peso_neto, evaluado
                 FROM produccion.v_transacciones_limpias
-                WHERE producto_base = %s
+                WHERE producto_base = 'EFLUENTES LIQUIDOS'
                   AND fecha_entrada IS NOT NULL
                   AND fecha_entrada >= %s AND fecha_entrada <= %s
                 ORDER BY fecha_entrada
             """
             try:
-                df_ef = cat(sql_ef, (pb_sel, ef_desde.isoformat(), ef_hasta.isoformat()))
+                df_ef = cat(sql_ef, (ef_desde.isoformat(), ef_hasta.isoformat()))
             except Exception as e:
                 st.exception(e); df_ef = pd.DataFrame()
 
             if df_ef.empty:
-                st.info(f"No hay registros de {pb_sel} en el rango.")
+                st.info("No hay registros de EFLUENTES LIQUIDOS en el rango.")
             else:
                 df_ef["peso_neto"] = pd.to_numeric(df_ef["peso_neto"], errors="coerce")
                 df_ef["fecha_entrada"] = pd.to_datetime(df_ef["fecha_entrada"])
@@ -1839,34 +1822,6 @@ if st.session_state.section != "CARGAS":
                         cp2.metric("Proyección fin de mes (TN)", f"{proy_total/1000:,.2f}",
                                    help="Ritmo diario actual × días del mes")
 
-                # Comparación semanal: misma semana del mes, entre meses (barras)
-                st.markdown("**Comparación semanal — misma semana del mes, entre meses**")
-                dsem = df_ef.copy()
-                dsem["mes"] = dsem["fecha_entrada"].dt.to_period("M").astype(str)
-                dsem["sem_mes"] = ((dsem["fecha_entrada"].dt.day - 1) // 7 + 1).clip(upper=5)
-                _sem_hoy = min(5, (date.today().day - 1) // 7 + 1)
-                cs1, cs2 = st.columns(2)
-                sem_sel = cs1.selectbox("Semana del mes", [1, 2, 3, 4, 5], index=_sem_hoy - 1, key="ef_sem",
-                                        help="Semana 1 = días 1-7 · semana 2 = 8-14 · semana 3 = 15-21 · semana 4 = 22-28 · semana 5 = 29-31.")
-                meses_sem = cs2.multiselect("Meses a comparar", meses_disp, default=default_meses, key="ef_sem_meses")
-                dsem = dsem[(dsem["sem_mes"] == sem_sel) & (dsem["mes"].isin(meses_sem))]
-                if dsem.empty:
-                    st.info("Sin datos para esa semana en los meses elegidos.")
-                else:
-                    tot_sem = (dsem.groupby("mes")
-                               .agg(kg=("peso_neto", "sum"), viajes=("peso_neto", "size"))
-                               .reindex(sorted(meses_sem)).fillna(0).reset_index())
-                    tot_sem["TN"] = (tot_sem["kg"] / 1000).round(2)
-                    _bar_sem = alt.Chart(tot_sem).mark_bar().encode(
-                        x=alt.X("mes:N", title="mes", sort=sorted(meses_sem)),
-                        y=alt.Y("TN:Q", title=f"TN netas · semana {sem_sel} del mes"),
-                        tooltip=[alt.Tooltip("mes:N"), alt.Tooltip("TN:Q"), alt.Tooltip("viajes:Q")],
-                    ).properties(height=300)
-                    st.altair_chart(_bar_sem, use_container_width=True)
-                    _d1, _d2 = (sem_sel - 1) * 7 + 1, min(sem_sel * 7, 31) if sem_sel < 5 else 31
-                    st.caption(f"Compara los días {_d1}–{_d2} de cada mes ({pb_sel}). "
-                               "Ojo con el mes en curso si la semana todavía no terminó.")
-
                 # Estadisticas por procedencia
                 st.markdown("**Por cliente**")
                 by_proc = (df_ef.dropna(subset=["cliente"])
@@ -1881,9 +1836,9 @@ if st.session_state.section != "CARGAS":
                 st.bar_chart(by_proc.head(15), x="cliente", y="TN_total", use_container_width=True)
                 st.dataframe(by_proc, use_container_width=True, hide_index=True)
 
-                st.download_button(f"⬇️ Descargar CSV {pb_sel}",
+                st.download_button("⬇️ Descargar CSV efluentes",
                                    df_ef.to_csv(index=False).encode("utf-8"),
-                                   file_name=f"{pb_sel.lower().replace(' ', '_')}_{ef_desde}_{ef_hasta}.csv", mime="text/csv")
+                                   file_name=f"efluentes_{ef_desde}_{ef_hasta}.csv", mime="text/csv")
 
         # ---------------- LAB POR CLIENTE (procedencia) ----------------
         with sub_labcmp:

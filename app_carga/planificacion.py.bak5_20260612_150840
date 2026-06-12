@@ -39,20 +39,6 @@ def _ins_de(row):
         return {}
 
 
-def _params_de(row):
-    """Dict de parámetros estequiométricos de una fórmula (parametros jsonb)."""
-    try:
-        v = row["parametros"]
-    except Exception:
-        return {}
-    if isinstance(v, dict):
-        return v
-    try:
-        return _json.loads(v or "{}")
-    except Exception:
-        return {}
-
-
 def _selector_formula(df, key):
     """Selector de fórmula con nombre (⭐ = default, preseleccionada). Devuelve la fila elegida."""
     if df is None or len(df) == 0:
@@ -480,21 +466,11 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     gli_recup_kg = None  # glicerina recuperada estimada (kg) — vuelve en decantación
     if proc == "PRODUCCION_ARE":
         if kg_used > 0 and acidez > 0 and glicerol_v:
-            _Fa = _formulas_sector(cat, "REACTORES")
-            _Fa = _Fa[(_Fa["tipo_proceso"] == proc) & (_Fa["codigo_mp"].isin([mp, "*"]))] if not _Fa.empty else _Fa
-            _fx = _selector_formula(_Fa, key=f"pl_fx_{proc}_{mp}")
-            _fi = _ins_de(_fx) if _fx is not None else {}
-            _fp = _params_de(_fx) if _fx is not None else {}
-            # Parámetros estequiométricos: manda la FÓRMULA; fallback a dic_constante_proceso.
-            FE = float(_fp.get("factor_exceso_gli") or FE)
-            PMa = float(_fp.get("PMa") or PMa)
-            PMg = float(_fp.get("PMg") or PMg)
-            # La glicerina sale de la ACIDEZ (lab de la MP) y del %GLICEROL (muestra) — sobre MP CARGADA.
-            gli_consumido = kg_used * (acidez / 100) * (PMg / (PMa * 2))   # glicerol puro que reacciona
+            gli_consumido = kg_used * (acidez / 100) * (PMg / (PMa * 2))   # glicerol puro que reacciona (sobre MP CARGADA)
             gli_puro = gli_consumido * FE                               # glicerol cargado (con exceso)
             est_gli = gli_puro / (glicerol_v / 100)                     # glicerina total a cargar (según pureza)
             # Glicerina recuperada = (cargada - glicerol consumido) x eficiencia de decantación (ajustable POR REACTOR)
-            f_recup = float(_fp.get("factor_recuperacion_gli") or K("factor_recuperacion_gli", 0.9) or 0.9)
+            f_recup = float(K("factor_recuperacion_gli", 0.9) or 0.9)
             try:
                 _fr = cat("SELECT factor FROM produccion.dic_factor_recup_gli WHERE id_bien_uso=%s",
                           (int(fila["id_bien_uso"]),))
@@ -505,6 +481,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             gli_recup_kg = max(0.0, (est_gli - gli_consumido) * f_recup)
             dens_gli = float(K("densidad_glicerina", 1.25) or 1.25)
             tn = kg_used / 1000.0   # SIEMPRE sobre los kg de MP cargada (no la capacidad del reactor)
+            _Fa = _formulas_sector(cat, "REACTORES")
+            _Fa = _Fa[(_Fa["tipo_proceso"] == proc) & (_Fa["codigo_mp"].isin([mp, "*"]))] if not _Fa.empty else _Fa
+            _fx = _selector_formula(_Fa, key=f"pl_fx_{proc}_{mp}")
+            _fi = _ins_de(_fx) if _fx is not None else {}
 
             def _rate(cod, fallback):
                 x = _fi.get(cod)
@@ -553,9 +533,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             st.metric("ARE estimado", f"{kg_used/0.88:,.0f} L", f"{kg_used:,.0f} kg · {kg_used/1000:.1f} TN (sobre MP cargada)")
             st.caption(f"Recuperada = (glicerina cargada {est_gli:,.0f} − glicerol consumido {gli_consumido:,.0f}) × {f_recup:.2f} "
                        f"(factor de **{fila['nombre_ui']}**). Editá por reactor en `dic_factor_recup_gli`.")
-            st.caption(f"🧪 La glicerina sale de la **acidez {acidez:.2f}%** (lab de la fuente de MP) y del "
-                       f"**glicerol {glicerol_v:.2f}%** (muestra): MP × acidez × PMg/(2·PMa) × exceso ÷ glicerol. "
-                       f"Parámetros de la fórmula: exceso {FE:g} · PMa {PMa:g} · PMg {PMg:g}.")
             gli_mov = round(est_gli, 0)
             if catal == "NAOH":
                 insumos_calc.append(("soda_kg", "CATALIZADOR", round(est_naoh, 1)))

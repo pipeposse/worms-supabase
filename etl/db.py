@@ -19,7 +19,7 @@ def conectar(id_usuario):
     conn.autocommit = False
     try:
         with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public")
+            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
             cur.execute("SELECT set_config('app.user_id', %s, false)", (str(id_usuario),))
         yield conn, _Audit(conn, id_usuario)
         conn.commit()
@@ -37,7 +37,7 @@ def login(nombre, pin):
     conn = psycopg2.connect(DATABASE_URL)
     try:
         with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public")
+            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
             cur.execute(
                 "SELECT id_usuario, nombre, nombre_full, rol, sector, sectores "
                 "FROM dim_usuario WHERE nombre=%s AND pin_hash=%s AND activo=TRUE",
@@ -73,7 +73,7 @@ def crear_usuario(id_usuario_admin, nombre, nombre_full, pin, rol="OPERADOR", se
     conn = psycopg2.connect(DATABASE_URL)
     try:
         with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public")
+            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
         if not _es_admin(conn, id_usuario_admin):
             raise PermissionError("Solo ADMIN puede crear usuarios")
         with conn.cursor() as cur:
@@ -101,7 +101,7 @@ def _admin_update(id_usuario_admin, id_usuario_target, sql, args, audit_diff):
     conn = psycopg2.connect(DATABASE_URL)
     try:
         with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public")
+            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
         if not _es_admin(conn, id_usuario_admin):
             raise PermissionError("Solo ADMIN puede modificar usuarios")
         with conn.cursor() as cur:
@@ -159,7 +159,7 @@ def cambiar_mi_pin(id_usuario, pin_actual, pin_nuevo):
     conn = psycopg2.connect(DATABASE_URL)
     try:
         with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public")
+            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
             cur.execute("SELECT 1 FROM dim_usuario WHERE id_usuario=%s AND pin_hash=%s",
                         (id_usuario, h_act))
             if cur.fetchone() is None:
@@ -194,7 +194,7 @@ def listar_mis_cargas(id_usuario, rol, dias_atras=7):
     conn = psycopg2.connect(DATABASE_URL)
     try:
         with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public")
+            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
             filtro_user = "" if rol in ("SUPERVISOR","ADMIN") else " AND id_usuario_carga = %s "
             params_b = [dias_atras] + ([id_usuario] if rol == "OPERADOR" else [])
             params_e = [dias_atras] + ([id_usuario] if rol == "OPERADOR" else [])
@@ -252,7 +252,7 @@ def anular_registro(id_usuario, tabla, pk_valor, motivo):
     conn = psycopg2.connect(DATABASE_URL)
     try:
         with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public")
+            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
             # Obtener el registro original (creador, fecha, anulado actual)
             cur.execute(f"SELECT id_usuario_carga, creado_en, anulado FROM {tabla} WHERE {pk_col}=%s",
                         (pk_valor,))

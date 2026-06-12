@@ -127,6 +127,21 @@ def render(USR, cat, conectar):
                                    value=float(row["horas_reposo"]) if pd.notna(row["horas_reposo"]) else 0.0,
                                    step=1.0, key=f"fx_hr_{idf}")
             nuevo_ins = _editor_insumos(_ins_dict(row["insumos"]), f"fx_ins_{idf}", insumos_cat)
+            # Parámetros estequiométricos (clave en ARE: acidez del lab + % glicerol pegan acá)
+            nuevo_par = _ins_dict(row.get("parametros"))
+            if row["tipo_proceso"] == "PRODUCCION_ARE":
+                st.markdown("**Parámetros estequiométricos** — la glicerina se calcula con la **acidez** (lab de la MP) "
+                            "y el **% glicerol** (muestra): `MP × acidez × PMg/(2·PMa) × exceso ÷ glicerol`.")
+                p1, p2, p3, p4 = st.columns(4)
+                _fe = p1.number_input("Factor exceso glicerol", 0.5, 3.0,
+                                      value=float(nuevo_par.get("factor_exceso_gli") or 1.1), step=0.05, key=f"fx_fe_{idf}")
+                _pma = p2.number_input("PMa (ácido graso)", 100.0, 500.0,
+                                       value=float(nuevo_par.get("PMa") or 282), step=1.0, key=f"fx_pma_{idf}")
+                _pmg = p3.number_input("PMg (glicerol)", 50.0, 200.0,
+                                       value=float(nuevo_par.get("PMg") or 92), step=1.0, key=f"fx_pmg_{idf}")
+                _fr = p4.number_input("Factor recuperación gli.", 0.0, 1.0,
+                                      value=float(nuevo_par.get("factor_recuperacion_gli") or 0.9), step=0.05, key=f"fx_fr_{idf}")
+                nuevo_par.update({"factor_exceso_gli": _fe, "PMa": _pma, "PMg": _pmg, "factor_recuperacion_gli": _fr})
             e_not = st.text_input("Notas", value=row["notas"] or "", max_chars=200, key=f"fx_not_{idf}")
             b1, b2, b3 = st.columns(3)
             if b1.button("💾 Guardar cambios", type="primary", use_container_width=True, key=f"fx_save_{idf}"):
@@ -135,8 +150,9 @@ def render(USR, cat, conectar):
                         with conn.cursor() as cur:
                             cur.execute(
                                 "UPDATE produccion.dic_formula SET nombre=%s, rendimiento_pct=%s, insumos=%s::jsonb, "
-                                "horas_proceso=%s, horas_reposo=%s, notas=%s, actualizado_en=now() WHERE id_formula=%s",
-                                (e_nom.strip(), (e_rend or None), _json.dumps(nuevo_ins),
+                                "parametros=%s::jsonb, horas_proceso=%s, horas_reposo=%s, notas=%s, "
+                                "actualizado_en=now() WHERE id_formula=%s",
+                                (e_nom.strip(), (e_rend or None), _json.dumps(nuevo_ins), _json.dumps(nuevo_par),
                                  (e_hp or None), (e_hr or None), (e_not.strip() or None), idf))
                         audit.log("U", "dic_formula", idf, {"nombre": e_nom, "insumos": nuevo_ins})
                     st.success("Fórmula guardada.")
@@ -182,6 +198,15 @@ def render(USR, cat, conectar):
         nv_ins = _editor_insumos({}, "fxn_ins", insumos_cat)
         if nv_ins:
             st.caption("Insumos cargados: " + _fmt_ins(nv_ins))
+        nv_par = {}
+        if nv_pro == "PRODUCCION_ARE":
+            st.markdown("**Parámetros estequiométricos** — la glicerina se calcula con la **acidez** (lab de la MP) "
+                        "y el **% glicerol** (muestra): `MP × acidez × PMg/(2·PMa) × exceso ÷ glicerol`.")
+            q1, q2, q3, q4 = st.columns(4)
+            nv_par["factor_exceso_gli"] = q1.number_input("Factor exceso glicerol", 0.5, 3.0, value=1.1, step=0.05, key="fxn_fe")
+            nv_par["PMa"] = q2.number_input("PMa (ácido graso)", 100.0, 500.0, value=282.0, step=1.0, key="fxn_pma")
+            nv_par["PMg"] = q3.number_input("PMg (glicerol)", 50.0, 200.0, value=92.0, step=1.0, key="fxn_pmg")
+            nv_par["factor_recuperacion_gli"] = q4.number_input("Factor recuperación gli.", 0.0, 1.0, value=0.9, step=0.05, key="fxn_fr")
         nv_def = st.checkbox("⭐ Usar como default para su combinación", key="fxn_def")
         nv_not = st.text_input("Notas", max_chars=200, key="fxn_not")
         if st.button("➕ Crear fórmula", type="primary", use_container_width=True, key="fxn_go"):
@@ -198,11 +223,11 @@ def render(USR, cat, conectar):
                             cur.execute(
                                 "INSERT INTO produccion.dic_formula "
                                 "(nombre, sector, tipo_proceso, codigo_mp, codigo_pf, rendimiento_pct, insumos, "
-                                " horas_proceso, horas_reposo, es_default, notas) "
-                                "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s) RETURNING id_formula",
+                                " parametros, horas_proceso, horas_reposo, es_default, notas) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,%s) RETURNING id_formula",
                                 (nv_nom.strip(), nv_sec, nv_pro, nv_mp, nv_pf, (nv_rend or None),
-                                 _json.dumps(nv_ins), (nv_hp or None), (nv_hr or None), bool(nv_def),
-                                 (nv_not.strip() or None)))
+                                 _json.dumps(nv_ins), _json.dumps(nv_par), (nv_hp or None), (nv_hr or None),
+                                 bool(nv_def), (nv_not.strip() or None)))
                             _idn = cur.fetchone()[0]
                         audit.log("I", "dic_formula", _idn, {"nombre": nv_nom.strip(), "proceso": nv_pro})
                     st.success(f"Fórmula creada: {nv_nom.strip()}.")
