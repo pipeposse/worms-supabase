@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from etl.db import (
     conectar, convertir, login as login_db,
-    crear_usuario, reset_pin, cambiar_rol, cambiar_sector, cambiar_sectores, cambiar_secciones_app, set_activo,
+    crear_usuario, reset_pin, cambiar_rol, cambiar_sector, cambiar_sectores, set_activo,
     cambiar_mi_pin,
     listar_mis_cargas, anular_registro, puede_anular,
 )
@@ -228,31 +228,6 @@ if "user" not in st.session_state:
 
 USR = st.session_state.user
 
-# ---- Permisos por usuario sobre las secciones de la página ----
-SECCIONES_APP = [
-    ("CARGAS", "🏭 Cargas"), ("INICIAR", "▶️ Iniciar producción"), ("VISTAS", "📊 Vistas de producción"),
-    ("LAB", "🧪 Laboratorio"), ("PORT", "🚛 Portería"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"),
-    ("PLANIFICACION", "🗓️ Centro de Planificación"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
-    ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
-]
-
-
-def _secciones_default(rol):
-    base = ["CARGAS", "INICIAR", "VISTAS", "LAB", "PORT", "TANQUES", "STOCK"]
-    if rol in ("SUPERVISOR", "ADMIN"):
-        base += ["PLANIFICACION", "FORMULAS", "CHAT"]
-    if rol == "ADMIN":
-        base += ["DIRECCION", "ADMIN"]
-    return base
-
-
-def puede_seccion(sec):
-    """Acceso a una sección: lista explícita del usuario, o default del rol. Admin SIEMPRE exige rol ADMIN."""
-    if sec == "ADMIN" and USR.get("rol") != "ADMIN":
-        return False
-    _p = USR.get("secciones_app")
-    return sec in (_p if _p else _secciones_default(USR.get("rol")))
-
 # Login reciente: escribir cookie de sesion en el navegador
 if "_set_cookie" in st.session_state:
     _auth.set_cookie(st.session_state.pop("_set_cookie"))
@@ -341,12 +316,12 @@ if st.session_state.section is None:
         ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
         ("📦", "Stock", "Libro mayor de movimientos, stock estimado en tiempo real y conciliación. Todo descargable.", "STOCK", "land_stock", False),
     ]
-    tiles.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
-    tiles.append(("🧪", "Fórmulas", "Fórmulas con nombre por proceso/MP/producto: creá, editá y elegí la default que usa Planificación.", "FORMULAS", "land_formulas", False))
-    tiles.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
-    tiles.append(("🛂", "Dirección", "Aprobación de planificaciones fuera de norma (carga menor al 80% del equipo).", "DIRECCION", "land_direccion", False))
-    tiles.append(("⚙️", "Admin", "Gestión de usuarios: alta, roles, sectores, reset PIN y accesos a la página.", "ADMIN", "land_admin", False))
-    tiles = [t for t in tiles if puede_seccion(t[3])]
+    if USR["rol"] in ("SUPERVISOR", "ADMIN"):
+        tiles.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
+        tiles.append(("🧪", "Fórmulas", "Fórmulas con nombre por proceso/MP/producto: creá, editá y elegí la default que usa Planificación.", "FORMULAS", "land_formulas", False))
+        tiles.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
+    if USR["rol"] == "ADMIN":
+        tiles.append(("⚙️", "Admin", "Gestión de usuarios: alta, roles, sectores, reset PIN.", "ADMIN", "land_admin", False))
 
     for i in range(0, len(tiles), 3):
         cols = st.columns(3)
@@ -376,13 +351,6 @@ with st.sidebar:
     st.caption("Base: Supabase")
 
 # ---- estilo global: ya inyectado por inject_global_css() al inicio ----
-
-# ---- Guardia de permisos: si no puede entrar a esta sección, afuera ----
-if not puede_seccion(st.session_state.section):
-    st.error("⛔ No tenés acceso a esta sección. Pedile al administrador que te la habilite (Admin → Accesos a la página).")
-    st.session_state.section = None
-    st.button("🏠 Volver al inicio", key="no_acc_home")
-    st.stop()
 
 # ---- Recordar la sección actual (cookie): si la página se recarga, vuelve acá ----
 if st.session_state.get("_sec_cookie") != st.session_state.section:
@@ -2365,94 +2333,7 @@ if st.session_state.section != "CARGAS":
                 st.bar_chart(_byp.sort_values("_tn", ascending=False), x="producto_principal", y="_tn", use_container_width=True)
 
             st.divider()
-            g_ult, g_cargar, g_aforo, g_editar, g_abm, g_hist = st.tabs(["⏰ Última carga", "✍️ Cargar medición (manual)", "📏 Medir por cm (aforo)", "✏️ Editar tanque", "➕ Alta / baja", "📈 Histórico / variación"])
-
-            # ---------- Última carga: tanques MANUALES por antigüedad de la medición ----------
-            with g_ult:
-                _um = _panel[_panel["fuente_medicion"] == "Manual"].copy()
-                _um = _um[_um["activo"] == True] if "activo" in _um.columns else _um
-                if _um.empty:
-                    st.info("No hay tanques de carga manual.")
-                else:
-                    _now_ar = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires")
-                    _ts = pd.to_datetime(_um["ultima_medicion"], errors="coerce")
-                    try:
-                        _ts = _ts.dt.tz_convert("America/Argentina/Buenos_Aires")
-                    except Exception:
-                        try:
-                            _ts = _ts.dt.tz_localize("America/Argentina/Buenos_Aires")
-                        except Exception:
-                            pass
-                    _um["_h"] = (_now_ar - _ts).dt.total_seconds() / 3600.0
-
-                    def _bucket(h):
-                        if pd.isna(h):
-                            return "SIN"
-                        if h <= 24:
-                            return "HOY"
-                        if h <= 72:
-                            return "D3"
-                        if h <= 168:
-                            return "D7"
-                        return "VIEJO"
-                    _um["_b"] = _um["_h"].map(_bucket)
-                    _B = {
-                        "VIEJO": ("🔴", "#dc2626", "Más de 7 días"),
-                        "SIN":   ("⚫", "#475569", "Sin medición"),
-                        "D7":    ("🟠", "#d97706", "3 a 7 días"),
-                        "D3":    ("🟡", "#ca8a04", "1 a 3 días"),
-                        "HOY":   ("🟢", "#059669", "Últimas 24 h"),
-                    }
-                    _cts = _um["_b"].value_counts()
-                    st.markdown(
-                        "<div class='kpi-grid'>" + "".join(
-                            f"<div class='kpi'><div class='l'>{e} {lbl}</div>"
-                            f"<div class='v' style='color:{col};'>{int(_cts.get(b, 0))}</div>"
-                            f"<div class='s'>tanques manuales</div></div>"
-                            for b, (e, col, lbl) in _B.items()) + "</div>",
-                        unsafe_allow_html=True)
-
-                    uf1, uf2 = st.columns(2)
-                    _usec = uf1.selectbox("Sector", ["Todos"] + sorted(_um["sector"].dropna().unique().tolist()), key="ult_sec")
-                    _usolo = uf2.multiselect("Mostrar solo", [f"{e} {lbl}" for e, _, lbl in _B.values()], key="ult_solo",
-                                             help="Vacío = todos. Ej: elegí 🔴 y ⚫ para ver lo urgente.")
-                    _d = _um if _usec == "Todos" else _um[_um["sector"] == _usec]
-                    if _usolo:
-                        _keep = [b for b, (e, _, lbl) in _B.items() if f"{e} {lbl}" in _usolo]
-                        _d = _d[_d["_b"].isin(_keep)]
-                    _d = _d.sort_values("_h", ascending=False, na_position="first")
-
-                    def _hace(h):
-                        if pd.isna(h):
-                            return "nunca medido"
-                        if h < 1:
-                            return f"hace {int(h*60)} min"
-                        if h < 24:
-                            return f"hace {h:.0f} h"
-                        return f"hace {h/24:.0f} día(s)"
-
-                    _cards = []
-                    for _, r in _d.iterrows():
-                        e, col, _lbl = _B[r["_b"]]
-                        _lt = pd.to_numeric(pd.Series([r.get("litros_actual")]), errors="coerce").iloc[0]
-                        _lt_txt = f"{_lt:,.0f} L" if pd.notna(_lt) else "—"
-                        _prod = r.get("producto_principal") or "sin producto"
-                        _cards.append(
-                            f"<div style='background:var(--surface); border:1px solid var(--line); "
-                            f"border-left:6px solid {col}; border-radius:12px; padding:10px 12px;'>"
-                            f"<div style='font-weight:800; color:var(--ink); font-size:.95rem;'>{r['nombre']}</div>"
-                            f"<div style='color:var(--muted); font-size:.75rem;'>{r['codigo']} · {r['sector']}</div>"
-                            f"<div style='font-size:.82rem; margin-top:4px;'>{_prod} · <b>{_lt_txt}</b></div>"
-                            f"<div style='color:{col}; font-weight:800; font-size:1.02rem; margin-top:4px;'>{e} {_hace(r['_h'])}</div>"
-                            f"</div>")
-                    st.markdown(
-                        "<div style='display:grid; grid-template-columns:repeat(auto-fill,minmax(215px,1fr)); "
-                        "gap:10px; margin-top:8px;'>" + "".join(_cards) + "</div>",
-                        unsafe_allow_html=True)
-                    st.caption("Ordenado de lo más viejo a lo más reciente (lo urgente arriba). "
-                               "🔴 +7 días · 🟠 3-7 días · 🟡 1-3 días · 🟢 últimas 24 h · ⚫ nunca medido. "
-                               "Cargá la medición en la pestaña ✍️ o 📏.")
-
+            g_cargar, g_aforo, g_editar, g_abm, g_hist = st.tabs(["✍️ Cargar medición (manual)", "📏 Medir por cm (aforo)", "✏️ Editar tanque", "➕ Alta / baja", "📈 Histórico / variación"])
 
             # ---------- Cargar medición: SOLO tanques manuales, con filtros ----------
             with g_cargar:
@@ -2920,28 +2801,6 @@ if st.session_state.section != "CARGAS":
                             st.success("Cambios aplicados."); cat.clear(); st.rerun()
                         except Exception as e: st.error(str(e))
 
-            st.markdown("**🔐 Accesos a la página** — qué secciones ve este usuario")
-            with st.form(f"form_secc_{u_id}"):
-                _df_sa = cat("SELECT secciones_app FROM produccion.dim_usuario WHERE id_usuario=%s", (u_id,))
-                _sa_act = list(_df_sa.iloc[0]["secciones_app"]) if (not _df_sa.empty and _df_sa.iloc[0]["secciones_app"]) else None
-                _usa_def = st.checkbox(
-                    "Usar el default del rol", value=(_sa_act is None), key=f"sadef_{u_id}",
-                    help=f"Default {u_row['rol']}: " + ", ".join(_secciones_default(u_row["rol"])))
-                _sa_sel = st.multiselect(
-                    "Secciones permitidas (si NO usás el default)",
-                    [sc for sc, _ in SECCIONES_APP],
-                    default=(_sa_act or _secciones_default(u_row["rol"])),
-                    format_func=lambda sc: dict(SECCIONES_APP)[sc], key=f"sasel_{u_id}")
-                if st.form_submit_button("💾 Guardar accesos", use_container_width=True):
-                    try:
-                        cambiar_secciones_app(USR["id_usuario"], u_id, (None if _usa_def else _sa_sel))
-                        st.success("Accesos actualizados. Aplican en el próximo ingreso del usuario.")
-                        cat.clear(); st.rerun()
-                    except Exception as e:
-                        st.error(str(e))
-            st.caption("⚠️ La sección Admin siempre exige rol ADMIN, aunque esté marcada. "
-                       "Los cambios aplican cuando el usuario vuelve a entrar (o recarga la página).")
-
             st.divider()
             st.markdown("**🤖 Consultas IA — RAG semántico**")
             st.caption(
@@ -2997,17 +2856,6 @@ if st.session_state.section != "CARGAS":
             st.error(f"No se pudo cargar el Centro de Planificación: {_e}")
             with st.expander("🔧 Detalle técnico (para diagnóstico)"):
                 st.code(_tb.format_exc())
-
-    elif st.session_state.section == "DIRECCION":
-        # =================== DIRECCIÓN (aprobaciones fuera de norma) ===================
-        try:
-            from planificacion import _render_aprobaciones
-            st.title("🛂 Dirección")
-            st.caption("Aprobación de planificaciones **fuera de norma**: cargas menores al 80% de la capacidad "
-                       "del reactor o bacha. Mientras el ticket esté pendiente, el operario no puede iniciar la producción.")
-            _render_aprobaciones(USR, cat, conectar, compacto=False)
-        except Exception as _e:
-            st.error(f"No se pudo cargar Dirección: {_e}")
 
     elif st.session_state.section == "FORMULAS":
         # =================== FÓRMULAS (dirección) ===================

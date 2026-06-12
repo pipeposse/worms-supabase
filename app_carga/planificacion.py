@@ -87,8 +87,10 @@ def _render_planificadas(cat):
         "kg": "kg", "litros": "Litros"}), use_container_width=True, hide_index=True)
 
 
-def _render_aprobaciones(USR, cat, conectar):
-    """Tickets de aprobación por carga < 80% (falta grave). Resuelve el director (ADMIN)."""
+def _render_aprobaciones(USR, cat, conectar, compacto=True):
+    """Tickets de aprobación por carga < 80% (falta grave). Resuelve el director (ADMIN).
+    compacto=True: expander dentro de Planificación (se oculta si no hay tickets).
+    compacto=False: vista completa para la sección 🛂 Dirección (siempre visible)."""
     try:
         ap = cat("SELECT a.id_aprobacion, a.id_batch, a.identificador, a.sector, a.equipo, a.capacidad_l, "
                  "a.litros_cargados, a.pct_carga, a.motivo, a.estado, a.solicitado_en, "
@@ -97,13 +99,18 @@ def _render_aprobaciones(USR, cat, conectar):
                  "LEFT JOIN produccion.dim_usuario u ON u.id_usuario=a.solicitado_por "
                  "ORDER BY (a.estado='PENDIENTE') DESC, a.solicitado_en DESC LIMIT 100")
     except Exception:
+        ap = None
+    _vacio = ap is None or ap.empty
+    if compacto and _vacio:
         return
-    if ap is None or ap.empty:
-        return
-    n_pend = int((ap["estado"] == "PENDIENTE").sum())
+    n_pend = 0 if _vacio else int((ap["estado"] == "PENDIENTE").sum())
     es_director = USR.get("rol") == "ADMIN"
-    with st.expander(f"🛂 Aprobaciones de carga baja (<80%) — {n_pend} pendiente(s)",
-                     expanded=(n_pend > 0 and es_director)):
+    _ctx = (st.expander(f"🛂 Aprobaciones de carga baja (<80%) — {n_pend} pendiente(s)",
+                        expanded=(n_pend > 0 and es_director)) if compacto else st.container())
+    with _ctx:
+        if _vacio:
+            st.success("✔️ No hay planificaciones fuera de norma (todas las cargas ≥ 80% o sin tickets generados).")
+            return
         st.caption("Cargar un reactor/bacha a menos del 80% es una **falta grave** (induce pérdidas económicas). "
                    "El operario no puede iniciar la producción hasta que el **director** apruebe el ticket.")
         st.dataframe(ap.rename(columns={
@@ -411,8 +418,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     bienes = H.get("bienes_uso_full")
 
     st.title("🗓️ Centro de Planificación")
-    if USR.get("rol") not in ROLES_DIRECCION:
-        st.warning("Sección exclusiva de dirección (SUPERVISOR / ADMIN).")
+    if USR.get("rol") not in ROLES_DIRECCION and "PLANIFICACION" not in (USR.get("secciones_app") or []):
+        st.warning("Sección exclusiva de dirección (SUPERVISOR / ADMIN), salvo acceso otorgado por el administrador.")
         return
     if not all([callable(proceso_desde_mp), callable(fuente_mp_combinada), callable(densidad_de), callable(K)]) \
        or productos is None or bienes is None or getattr(productos, "empty", True) or getattr(bienes, "empty", True):

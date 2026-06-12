@@ -64,7 +64,7 @@ def usuario_por_id(id_usuario: int) -> dict | None:
             with conn.cursor() as cur:
                 cur.execute("SET search_path TO produccion, public")
                 cur.execute(
-                    "SELECT id_usuario, nombre, nombre_full, rol, sector, sectores "
+                    "SELECT id_usuario, nombre, nombre_full, rol, sector, sectores, secciones_app "
                     "FROM dim_usuario WHERE id_usuario=%s AND activo=TRUE",
                     (id_usuario,),
                 )
@@ -72,7 +72,8 @@ def usuario_por_id(id_usuario: int) -> dict | None:
             if not row:
                 return None
             return {"id_usuario": row[0], "nombre": row[1], "nombre_full": row[2],
-                    "rol": row[3], "sector": row[4], "sectores": row[5] or []}
+                    "rol": row[3], "sector": row[4], "sectores": row[5] or [],
+                    "secciones_app": row[6] or None}
         finally:
             conn.close()
     except Exception:

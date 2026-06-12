@@ -39,7 +39,7 @@ def login(nombre, pin):
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
             cur.execute(
-                "SELECT id_usuario, nombre, nombre_full, rol, sector, sectores "
+                "SELECT id_usuario, nombre, nombre_full, rol, sector, sectores, secciones_app "
                 "FROM dim_usuario WHERE nombre=%s AND pin_hash=%s AND activo=TRUE",
                 (nombre.strip(), h)
             )
@@ -49,7 +49,8 @@ def login(nombre, pin):
             cur.execute("UPDATE dim_usuario SET ultimo_login=NOW() WHERE id_usuario=%s", (row[0],))
             conn.commit()
             return {"id_usuario": row[0], "nombre": row[1], "nombre_full": row[2],
-                    "rol": row[3], "sector": row[4], "sectores": row[5] or []}
+                    "rol": row[3], "sector": row[4], "sectores": row[5] or [],
+                    "secciones_app": row[6] or None}
     finally:
         conn.close()
 
@@ -146,6 +147,15 @@ def cambiar_sectores(id_usuario_admin, id_usuario_target, sectores_lista):
         "UPDATE dim_usuario SET sectores=%s::jsonb WHERE id_usuario=%s",
         (json.dumps(sectores_lista), id_usuario_target),
         {"sectores_nuevos": sectores_lista})
+
+
+def cambiar_secciones_app(id_usuario_admin, id_usuario_target, secciones_lista):
+    """Asigna las SECCIONES DE LA APP visibles para el usuario.
+    None = usar el default del rol; lista = solo esas secciones."""
+    _admin_update(id_usuario_admin, id_usuario_target,
+        "UPDATE dim_usuario SET secciones_app=%s::jsonb WHERE id_usuario=%s",
+        ((json.dumps(secciones_lista) if secciones_lista is not None else None), id_usuario_target),
+        {"secciones_app": secciones_lista})
 
 
 def set_activo(id_usuario_admin, id_usuario_target, activo):

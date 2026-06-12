@@ -64,8 +64,8 @@ def _set_default(conectar, uid, id_formula, sector, proc, mp, pf):
 
 def render(USR, cat, conectar):
     st.title("🧪 Fórmulas de producción")
-    if USR.get("rol") not in ("SUPERVISOR", "ADMIN"):
-        st.warning("Sección exclusiva de dirección (SUPERVISOR / ADMIN).")
+    if USR.get("rol") not in ("SUPERVISOR", "ADMIN") and "FORMULAS" not in (USR.get("secciones_app") or []):
+        st.warning("Sección exclusiva de dirección (SUPERVISOR / ADMIN), salvo acceso otorgado por el administrador.")
         return
     st.caption("Cada fórmula define **insumos por TN de materia prima cargada**, rendimiento y tiempos, con un nombre. "
                "La marcada con ⭐ es la **default**: la que usa el Centro de Planificación para los estimados. "
