@@ -309,7 +309,6 @@ if st.session_state.section is None:
     ]
     if USR["rol"] in ("SUPERVISOR", "ADMIN"):
         tiles.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
-        tiles.append(("🧪", "Fórmulas", "Fórmulas con nombre por proceso/MP/producto: creá, editá y elegí la default que usa Planificación.", "FORMULAS", "land_formulas", False))
         tiles.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
     if USR["rol"] == "ADMIN":
         tiles.append(("⚙️", "Admin", "Gestión de usuarios: alta, roles, sectores, reset PIN.", "ADMIN", "land_admin", False))
@@ -2790,14 +2789,6 @@ if st.session_state.section != "CARGAS":
             st.error(f"No se pudo cargar el Centro de Planificación: {_e}")
             with st.expander("🔧 Detalle técnico (para diagnóstico)"):
                 st.code(_tb.format_exc())
-
-    elif st.session_state.section == "FORMULAS":
-        # =================== FÓRMULAS (dirección) ===================
-        try:
-            from formulas_section import render as _render_formulas
-            _render_formulas(USR, cat, conectar)
-        except Exception as _e:
-            st.error(f"No se pudo cargar Fórmulas: {_e}")
 
     elif st.session_state.section == "CHAT":
         # =================== CONSULTAS IA (chat, solo lectura) ===================

@@ -22,34 +22,19 @@ ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 DENS_INSUMO = {"FUEL_OIL": 0.95, "AGUA": 1.0, "soda_kg": 1.33, "acido_kg": 1.71,
                "GASOIL": 0.85, "ACIDO_CLORHIDRICO": 1.18}
 
-def _formulas_sector(cat, sector):
-    """Fórmulas activas de dic_formula para un sector (REACTORES/BACHAS)."""
-    return cat("SELECT * FROM produccion.dic_formula WHERE activo AND sector IN (%s, '*') "
-               "ORDER BY tipo_proceso, codigo_mp, codigo_pf, es_default DESC, nombre", (sector,))
+RECETA_INSUMOS = [
+    # (columna en dic_receta_bachas, codigo_insumo del movimiento, etiqueta, unidad de la receta)
+    ("sulfurico_l_x_tn",   "acido_kg",          "Ác. sulfúrico 78%", "L"),
+    ("fuel_l_x_tn",        "FUEL_OIL",          "Fuel oil",          "L"),
+    ("gasoil_l_x_tn",      "GASOIL",            "Gasoil",            "L"),
+    ("clorhidrico_l_x_tn", "ACIDO_CLORHIDRICO", "Ác. clorhídrico",   "L"),
+    ("nacl_kg_x_tn",       "cloruro_sodio",     "Cloruro de sodio",  "KG"),
+]
 
 
-def _ins_de(row):
-    """Dict de insumos {codigo: {cant, un}} de una fila de dic_formula (cant por TN de MP CARGADA)."""
-    v = row["insumos"]
-    if isinstance(v, dict):
-        return v
-    try:
-        return _json.loads(v or "{}")
-    except Exception:
-        return {}
-
-
-def _selector_formula(df, key):
-    """Selector de fórmula con nombre (⭐ = default, preseleccionada). Devuelve la fila elegida."""
-    if df is None or len(df) == 0:
-        return None
-    opts = df.apply(lambda r: f"{'⭐ ' if r['es_default'] else ''}{r['nombre']}", axis=1).tolist()
-    if len(opts) == 1:
-        st.caption(f"Fórmula: **{opts[0]}** · administrala en la sección 🧪 Fórmulas.")
-        return df.iloc[0]
-    sel = st.selectbox("Fórmula a usar", opts, key=key,
-                       help="⭐ = default. Creá variantes y cambiá la default en la sección 🧪 Fórmulas.")
-    return df.iloc[opts.index(sel)]
+def _recetas_bachas(cat):
+    return cat("SELECT * FROM produccion.dic_receta_bachas WHERE activo "
+               "ORDER BY tipo_proceso, codigo_mp, codigo_pf")
 
 
 def _render_planificadas(cat):
@@ -74,16 +59,14 @@ def _render_planificadas(cat):
 
 
 def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
-    """Planificación de bachas guiada por fórmula con nombre (dic_formula):
-    ubicación + proceso + MP -> PF, insumos por TN de MP CARGADA, y tiempo."""
+    """Planificación de bachas guiada por receta: ubicación + proceso + MP -> PF, insumos y tiempo."""
     fuente_mp_combinada = H.get("fuente_mp_combinada")
     densidad_de = H.get("densidad_de")
     productos = H.get("productos")
 
-    R = _formulas_sector(cat, "BACHAS")
-    R = R[R["sector"] == "BACHAS"] if (R is not None and not R.empty) else R
+    R = _recetas_bachas(cat)
     if R is None or R.empty:
-        st.error("No hay fórmulas de BACHAS activas. Creálas en la sección 🧪 Fórmulas.")
+        st.error("No hay recetas activas en `dic_receta_bachas`.")
         return
 
     # ---------- 1 · Ubicación + proceso + MP + PF ----------
@@ -104,10 +87,8 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
     c3, c4 = st.columns(2)
     mp = c3.selectbox("Materia prima (producto inicial)", sorted(Rp["codigo_mp"].unique().tolist()), key=f"plb_mp_{proc}")
     Rm = Rp[Rp["codigo_mp"] == mp]
-    pf = c4.selectbox("Producto final (según fórmula)", sorted(Rm["codigo_pf"].unique().tolist()), key=f"plb_pf_{proc}_{mp}")
-    rec = _selector_formula(Rm[Rm["codigo_pf"] == pf], key=f"plb_fx_{proc}_{mp}_{pf}")
-    ins_f = _ins_de(rec)
-    _kk = f"{proc}_{mp}_{pf}_{int(rec['id_formula'])}".replace(" ", "")
+    pf = c4.selectbox("Producto final (según receta)", Rm["codigo_pf"].tolist(), key=f"plb_pf_{proc}_{mp}")
+    rec = Rm[Rm["codigo_pf"] == pf].iloc[0]
 
     dens = float(densidad_de(mp) or 0.95) if callable(densidad_de) else 0.95
     _pfrow = productos[productos["codigo_producto"] == pf]
@@ -118,16 +99,14 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
     pf_id = int(_pfrow.iloc[0]["id_producto"])
     q_obj = cap * dens
 
-    e_rend = float(rec["rendimiento_pct"] or 0)
-    e_hpro = float(rec["horas_proceso"] or 8)
-    e_hrep = float(rec["horas_reposo"] or 0)
+    h_proc = float(rec["horas_proceso"] or 8); h_rep = float(rec["horas_reposo"] or 0)
     b1, b2, b3, b4 = st.columns(4)
     b1.metric("Capacidad bacha", f"{cap:,.0f} L" if cap else "—")
     b2.metric("Q MP si se llena", f"{q_obj:,.0f} kg" if cap else "—")
-    b3.metric("Rendimiento fórmula", f"{e_rend:.1f}%")
-    b4.metric("⏱️ Ocupación bacha", f"{e_hpro + e_hrep:,.0f} h", f"{e_hpro:g} h proceso + {e_hrep:g} h reposo")
-    if rec.get("notas"):
-        st.caption(f"📝 {rec['notas']}")
+    b3.metric("Rendimiento receta", f"{float(rec['rendimiento_pct']):.1f}%")
+    b4.metric("⏱️ Ocupación bacha", f"{h_proc + h_rep:,.0f} h", f"{h_proc:g} h proceso + {h_rep:g} h reposo")
+    if rec["n_muestras"] and float(rec["n_muestras"] or 0) > 0:
+        st.caption(f"Receta basada en la **mediana de {int(rec['n_muestras'])} tratamientos reales** (histórico de bachas). Editable abajo.")
 
     # ---------- 2 · Fuente MP ----------
     st.markdown(f"#### 2 · Fuente de la materia prima ({mp})")
@@ -146,56 +125,86 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
     if _pct is not None:
         st.progress(min(1.0, max(0.0, _pct / 100)))
 
-    # ---------- 3 · Estimados: fórmula × kg de MP CARGADA ----------
-    st.markdown("#### 3 · Estimados (fórmula × TN de MP cargada)")
+    # ---------- 3 · Receta editable ----------
+    st.markdown("#### 3 · Receta (editable — se ajusta con cada tratamiento)")
+    _kk = f"{proc}_{mp}_{pf}".replace(" ", "")
+    with st.container(border=True):
+        r1, r2, r3 = st.columns(3)
+        e_rend = r1.number_input("Rendimiento (% PF sobre MP)", 0.0, 100.0,
+                                 value=float(rec["rendimiento_pct"]), step=0.5, key=f"rb_rend_{_kk}")
+        e_hpro = r2.number_input("Horas de proceso", 0.0, 96.0, value=h_proc, step=1.0, key=f"rb_hp_{_kk}")
+        e_hrep = r3.number_input("Horas de reposo calefacc.", 0.0, 96.0, value=h_rep, step=1.0, key=f"rb_hr_{_kk}")
+        cols = st.columns(len(RECETA_INSUMOS))
+        e_ins = {}
+        for c, (campo, cod, lbl, uni) in zip(cols, RECETA_INSUMOS):
+            e_ins[campo] = c.number_input(f"{lbl} ({uni}/TN MP)", 0.0, 1000.0,
+                                          value=float(rec[campo] or 0), step=0.5, key=f"rb_{campo}_{_kk}")
+        if st.button("💾 Guardar receta para las próximas planificaciones", use_container_width=True, key=f"rb_save_{_kk}"):
+            try:
+                with conectar(int(USR["id_usuario"])) as (conn, audit):
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE produccion.dic_receta_bachas SET rendimiento_pct=%s, sulfurico_l_x_tn=%s, "
+                            "fuel_l_x_tn=%s, gasoil_l_x_tn=%s, clorhidrico_l_x_tn=%s, nacl_kg_x_tn=%s, "
+                            "horas_proceso=%s, horas_reposo=%s, actualizado_en=now() WHERE id_receta=%s",
+                            (e_rend, e_ins["sulfurico_l_x_tn"], e_ins["fuel_l_x_tn"], e_ins["gasoil_l_x_tn"],
+                             e_ins["clorhidrico_l_x_tn"], e_ins["nacl_kg_x_tn"], e_hpro, e_hrep, int(rec["id_receta"])))
+                    audit.log("U", "dic_receta_bachas", int(rec["id_receta"]),
+                              {"proc": proc, "mp": mp, "pf": pf, "rend": e_rend})
+                st.success("Receta guardada.")
+                cat.clear(); st.rerun()
+            except Exception as e:
+                st.exception(e)
+
+    # ---------- 4 · Estimados (litros primero, kg abajo) ----------
+    st.markdown("#### 4 · Estimados")
     tn_mp = kg_used / 1000.0
-    est_form = {cod: tn_mp * float(x.get("cant") or 0) for cod, x in ins_f.items()}
-    est_un = {cod: (x.get("un") or "L") for cod, x in ins_f.items()}
-    kg_pf_form = kg_used * e_rend / 100.0
-    est = dict(est_form)
-    kg_pf = kg_pf_form
-    with st.expander("✏️ Ajustar estimados a mano (si la fórmula no te cierra)", expanded=False):
-        if est:
-            cols = st.columns(len(est))
-            for c, cod in zip(cols, list(est.keys())):
-                est[cod] = c.number_input(f"{cod} ({est_un[cod]})", 0.0, 1_000_000.0,
-                                          value=float(round(est_form[cod], 1)), step=5.0, key=f"rb_aj_{cod}_{_kk}")
+    est_form = {campo: tn_mp * float(rec[campo] or 0) for campo, _, _, _ in RECETA_INSUMOS}
+    kg_pf_form = kg_used * float(rec["rendimiento_pct"]) / 100.0
+    est = {campo: tn_mp * float(e_ins[campo] or 0) for campo, _, _, _ in RECETA_INSUMOS}
+    kg_pf = kg_used * (e_rend / 100.0)
+    with st.expander("✏️ Ajustar estimados a mano (si la receta no te cierra)", expanded=False):
+        _act = [(campo, cod, lbl, uni) for campo, cod, lbl, uni in RECETA_INSUMOS if est[campo] > 0]
+        if _act:
+            cols = st.columns(len(_act))
+            for c, (campo, cod, lbl, uni) in zip(cols, _act):
+                est[campo] = c.number_input(f"{lbl} ({uni})", 0.0, 1_000_000.0,
+                                            value=float(round(est[campo], 1)), step=5.0, key=f"rb_aj_{campo}_{_kk}")
         kg_pf = st.number_input("Producto final estimado (kg)", 0.0, 10_000_000.0,
-                                value=float(round(kg_pf_form, 0)), step=100.0, key=f"rb_aj_pf_{_kk}")
-        if st.button("🔄 Volver a la fórmula", key=f"rb_aj_rst_{_kk}"):
-            for cod in est_form:
-                st.session_state.pop(f"rb_aj_{cod}_{_kk}", None)
+                                value=float(round(kg_pf, 0)), step=100.0, key=f"rb_aj_pf_{_kk}")
+        if st.button("🔄 Volver a la receta", key=f"rb_aj_rst_{_kk}"):
+            for campo, _, _, _ in RECETA_INSUMOS:
+                st.session_state.pop(f"rb_aj_{campo}_{_kk}", None)
             st.session_state.pop(f"rb_aj_pf_{_kk}", None)
             st.rerun()
 
     ajustes = {}
-    for cod in est_form:
-        if abs(est[cod] - est_form[cod]) > 0.5:
-            ajustes[f"{cod} ({est_un[cod]})"] = {"formula": round(est_form[cod], 1), "ajustado": round(est[cod], 1)}
+    for campo, cod, lbl, uni in RECETA_INSUMOS:
+        if abs(est[campo] - est_form[campo]) > 0.5:
+            ajustes[f"{lbl} ({uni})"] = {"receta": round(est_form[campo], 1), "ajustado": round(est[campo], 1)}
     if abs(kg_pf - kg_pf_form) > 1:
-        ajustes["PF estimado (kg)"] = {"formula": round(kg_pf_form), "ajustado": round(kg_pf)}
+        ajustes["PF estimado (kg)"] = {"receta": round(kg_pf_form), "ajustado": round(kg_pf)}
 
     # resumen de TODO lo que se carga (litros primero)
     filas = [{"Item": f"MP · {mp}", "Litros": round(litros_mp, 0), "kg": round(kg_used, 0), "TN": round(kg_used / 1000, 2)}]
-    for cod, q in est.items():
-        if q <= 0:
+    for campo, cod, lbl, uni in RECETA_INSUMOS:
+        if est[campo] <= 0:
             continue
-        _d = DENS_INSUMO.get(cod)
-        if est_un[cod] == "L":
-            filas.append({"Item": cod, "Litros": round(q, 0), "kg": round(q * (_d or 1.0), 0), "TN": round(q * (_d or 1.0) / 1000, 2)})
+        if uni == "L":
+            _d = DENS_INSUMO.get(cod) or 1.0
+            filas.append({"Item": lbl, "Litros": round(est[campo], 0), "kg": round(est[campo] * _d, 0), "TN": round(est[campo] * _d / 1000, 2)})
         else:
-            filas.append({"Item": cod, "Litros": (round(q / _d, 0) if _d else None), "kg": round(q, 0), "TN": round(q / 1000, 2)})
+            filas.append({"Item": lbl, "Litros": None, "kg": round(est[campo], 0), "TN": round(est[campo] / 1000, 2)})
     filas.append({"Item": f"PF estimado · {pf}", "Litros": round(kg_pf / dens_pf, 0) if dens_pf else None,
                   "kg": round(kg_pf, 0), "TN": round(kg_pf / 1000, 2)})
     st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
-    st.caption(f"⏱️ La bacha queda ocupada **{e_hpro + e_hrep:,.0f} h** ({e_hpro:g} h de proceso + {e_hrep:g} h de reposo). "
-               "Para cambiar la fórmula de forma permanente usá la sección 🧪 Fórmulas.")
+    st.caption(f"⏱️ La bacha queda ocupada **{e_hpro + e_hrep:,.0f} h** ({e_hpro:g} h de proceso + {e_hrep:g} h de reposo).")
 
     motivo_ajuste = ""
     if ajustes:
         st.warning("✏️ Cambiaste a mano: **" + ", ".join(ajustes.keys()) +
-                   "** (vs. fórmula). Indicá el motivo — es obligatorio y queda registrado. "
-                   "Si el cambio es definitivo, guardá una fórmula nueva en 🧪 Fórmulas.")
+                   "** (vs. receta guardada). Indicá el motivo — es obligatorio y queda registrado. "
+                   "Si el cambio es definitivo, mejor guardá la receta.")
         motivo_ajuste = st.text_input("Motivo del ajuste *", key="plb_aj_motivo", max_chars=200,
                                       placeholder="ej. borra con mucha agua, dosificamos más ácido")
     obs = st.text_input("Observaciones", key="plb_obs", placeholder="opcional")
@@ -213,9 +222,9 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
         ident = siguiente_identificador("BACHAS")
         params = {
             "kg_mp": round(kg_used, 0), "ubicacion": _brow["nombre_ui"],
-            "formula": {"id_formula": int(rec["id_formula"]), "nombre": rec["nombre"],
-                        "rendimiento_pct": e_rend, "insumos": ins_f},
-            "insumos_estimados": {cod: round(q, 1) for cod, q in est.items() if q > 0},
+            "receta": {"id_receta": int(rec["id_receta"]), "rendimiento_pct": e_rend,
+                       **{campo: e_ins[campo] for campo, _, _, _ in RECETA_INSUMOS}},
+            "insumos_estimados": {cod: round(est[campo], 1) for campo, cod, _, _ in RECETA_INSUMOS if est[campo] > 0},
             "pf_estimado_kg": round(kg_pf, 0),
             "horas_proceso": e_hpro, "horas_reposo": e_hrep,
             "ajustes_manuales": (ajustes or None),
@@ -264,14 +273,15 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
                              (None if es_tk else p.get("ticket")), kgp, litros)
                         n_mov += 1
 
-                    for cod, q in est.items():
+                    for campo, cod, lbl, uni in RECETA_INSUMOS:
+                        q = est[campo]
                         if not q or q <= 0:
                             continue
-                        _d = DENS_INSUMO.get(cod)
-                        if est_un[cod] == "L":
-                            kgv, lts = round(q * (_d or 1.0), 1), round(q, 1)
+                        if uni == "L":
+                            _d = DENS_INSUMO.get(cod) or 1.0
+                            kgv, lts = round(q * _d, 1), round(q, 1)
                         else:
-                            kgv, lts = round(q, 1), (round(q / _d, 1) if _d else None)
+                            kgv, lts = round(q, 1), None
                         _mov("INSUMO", None, cod, cod, "PORTERIA", None, None, kgv, lts)
                         n_mov += 1
             try:
@@ -465,8 +475,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     gli_mov = None     # glicerina como movimiento (sin codigo_insumo)
     gli_recup_kg = None  # glicerina recuperada estimada (kg) — vuelve en decantación
     if proc == "PRODUCCION_ARE":
-        if kg_used > 0 and acidez > 0 and glicerol_v:
-            gli_consumido = kg_used * (acidez / 100) * (PMg / (PMa * 2))   # glicerol puro que reacciona (sobre MP CARGADA)
+        if q_ag > 0 and acidez > 0 and glicerol_v:
+            gli_consumido = q_ag * (acidez / 100) * (PMg / (PMa * 2))   # glicerol puro que reacciona (estequiométrico)
             gli_puro = gli_consumido * FE                               # glicerol cargado (con exceso)
             est_gli = gli_puro / (glicerol_v / 100)                     # glicerina total a cargar (según pureza)
             # Glicerina recuperada = (cargada - glicerol consumido) x eficiencia de decantación (ajustable POR REACTOR)
@@ -480,18 +490,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                 pass
             gli_recup_kg = max(0.0, (est_gli - gli_consumido) * f_recup)
             dens_gli = float(K("densidad_glicerina", 1.25) or 1.25)
-            tn = kg_used / 1000.0   # SIEMPRE sobre los kg de MP cargada (no la capacidad del reactor)
-            _Fa = _formulas_sector(cat, "REACTORES")
-            _Fa = _Fa[(_Fa["tipo_proceso"] == proc) & (_Fa["codigo_mp"].isin([mp, "*"]))] if not _Fa.empty else _Fa
-            _fx = _selector_formula(_Fa, key=f"pl_fx_{proc}_{mp}")
-            _fi = _ins_de(_fx) if _fx is not None else {}
-
-            def _rate(cod, fallback):
-                x = _fi.get(cod)
-                return float(x.get("cant")) if (x and x.get("cant") is not None) else float(fallback or 0)
-            est_naoh = tn * _rate("soda_kg", fila["consumo_naoh_kg_x_tn"]) if catal == "NAOH" else 0.0
-            est_pot = tn * _rate("POTASIO", fila["consumo_potasio_kg_x_tn"]) if catal == "POTASIO" else 0.0
-            est_fuel = tn * _rate("FUEL_OIL", fila["consumo_fuel_kg_x_tn"])
+            tn = q_ag / 1000.0
+            est_naoh = tn * float(fila["consumo_naoh_kg_x_tn"] or 0) if catal == "NAOH" else 0.0
+            est_pot = tn * float(fila["consumo_potasio_kg_x_tn"] or 0) if catal == "POTASIO" else 0.0
+            est_fuel = tn * float(fila["consumo_fuel_kg_x_tn"] or 0)
             d_fuel = DENS_INSUMO["FUEL_OIL"]
             _gli_l_form = est_gli / dens_gli
             _fuel_l_form = est_fuel / d_fuel
@@ -530,7 +532,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                 e2.metric("KOH (catalizador)", f"{est_pot:,.2f} kg")
             e3.metric("Glicerina recuperada", f"{gli_recup_kg/dens_gli:,.0f} L", f"{gli_recup_kg:,.0f} kg · factor {f_recup:.2f}")
             e4.metric("Fuel oil", f"{_fuel_l:,.0f} L", f"{est_fuel:,.0f} kg")
-            st.metric("ARE estimado", f"{kg_used/0.88:,.0f} L", f"{kg_used:,.0f} kg · {kg_used/1000:.1f} TN (sobre MP cargada)")
+            st.metric("ARE estimado", f"{q_ag/0.88:,.0f} L", f"{q_ag:,.0f} kg · {q_ag/1000:.1f} TN")
             st.caption(f"Recuperada = (glicerina cargada {est_gli:,.0f} − glicerol consumido {gli_consumido:,.0f}) × {f_recup:.2f} "
                        f"(factor de **{fila['nombre_ui']}**). Editá por reactor en `dic_factor_recup_gli`.")
             gli_mov = round(est_gli, 0)
@@ -542,16 +544,11 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         else:
             st.info("Elegí la fuente de MP (para la acidez) y la muestra de glicerina (para el % glicerol) para ver los estimados.")
     else:  # DESGOMADO_ACUOSO
-        _Fd = _formulas_sector(cat, "REACTORES")
-        _Fd = _Fd[(_Fd["tipo_proceso"] == proc) & (_Fd["codigo_mp"].isin([mp, "*"]))] if not _Fd.empty else _Fd
-        _fx = _selector_formula(_Fd, key=f"pl_fx_{proc}_{mp}")
-        _fi = _ins_de(_fx) if _fx is not None else {}
-        _rend_d = (float(_fx["rendimiento_pct"]) if (_fx is not None and pd.notna(_fx["rendimiento_pct"]))
-                   else 100.0 - float(K("desgomado_merma_pct_esperada", 5) or 5))
-        _agua_l_x_tn = float((_fi.get("AGUA") or {}).get("cant") or (float(K("desgomado_pct_agua", 5) or 5) * 10))
-        fuel_rate = float((_fi.get("FUEL_OIL") or {}).get("cant") or 8.7)   # kg por TN de MP cargada
-        pct_agua = _agua_l_x_tn / 10.0
-        merma = 100.0 - _rend_d
+        pct_agua = float(K("desgomado_pct_agua", 5) or 5)
+        merma = float(K("desgomado_merma_pct_esperada", 5) or 5)
+        cons = cat("SELECT codigo_insumo, consumo_por_tn FROM produccion.dic_consumo_proceso "
+                   "WHERE tipo_proceso=%s AND codigo_insumo='FUEL_OIL'", (proc,))
+        fuel_rate = float(cons.iloc[0]["consumo_por_tn"]) if not cons.empty else 8.7
         # GOMA = SEDIMENTOS reportados. Prioridad 1: promedio ponderado de la fuente
         # (lo mismo que muestra la sección de parámetros de lab). Fallback: lab de los tickets.
         _goma_def = 0.0
