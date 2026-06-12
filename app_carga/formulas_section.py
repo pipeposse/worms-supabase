@@ -142,6 +142,23 @@ def render(USR, cat, conectar):
                 _fr = p4.number_input("Factor recuperación gli.", 0.0, 1.0,
                                       value=float(nuevo_par.get("factor_recuperacion_gli") or 0.9), step=0.05, key=f"fx_fr_{idf}")
                 nuevo_par.update({"factor_exceso_gli": _fe, "PMa": _pma, "PMg": _pmg, "factor_recuperacion_gli": _fr})
+                with st.container(border=True):
+                    st.markdown("**🧮 Probá cómo pegan la acidez y el glicerol** (con los parámetros de arriba):")
+                    s1, s2c, s3 = st.columns(3)
+                    _sa = s1.number_input("Acidez de la MP (%)", 0.0, 100.0, value=12.0, step=0.5, key=f"fx_sim_a_{idf}",
+                                          help="Sale del laboratorio de la fuente de MP elegida en Planificación.")
+                    _sg = s2c.number_input("Glicerol de la muestra (%)", 1.0, 100.0, value=80.0, step=1.0, key=f"fx_sim_g_{idf}",
+                                           help="Pureza de la glicerina según la muestra de lab.")
+                    _sk = s3.number_input("MP cargada (kg)", 0.0, 1_000_000.0, value=25000.0, step=1000.0, key=f"fx_sim_k_{idf}")
+                    _gc = _sk * (_sa / 100.0) * (_pmg / (2 * _pma))
+                    _gt = (_gc * _fe) / (_sg / 100.0)
+                    r1c, r2c, r3c = st.columns(3)
+                    r1c.metric("Glicerol que reacciona", f"{_gc:,.0f} kg")
+                    r2c.metric("Glicerina a cargar", f"{_gt/1.25:,.0f} L", f"{_gt:,.0f} kg")
+                    r3c.metric("Extra por impureza", f"{_gt - _gc*_fe:,.0f} kg")
+                    st.caption("➡️ **Más acidez = más glicerina** (proporcional: el doble de acidez pide el doble de glicerina). "
+                               "**Menos pureza de glicerol = más litros** para aportar el mismo glicerol "
+                               "(al 50% de pureza cargás el doble que al 100%). El exceso multiplica todo al final.")
             e_not = st.text_input("Notas", value=row["notas"] or "", max_chars=200, key=f"fx_not_{idf}")
             b1, b2, b3 = st.columns(3)
             if b1.button("💾 Guardar cambios", type="primary", use_container_width=True, key=f"fx_save_{idf}"):

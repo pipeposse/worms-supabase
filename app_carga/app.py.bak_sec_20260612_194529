@@ -210,18 +210,12 @@ def cerrar_sesion():
 # Logout pendiente: borrar cookie en el navegador
 if st.session_state.pop("_clear_cookie", False):
     _auth.clear_cookie()
-    _auth.set_section_cookie(None)
-    st.session_state._sec_cookie = None
 
 # Restaurar sesion desde cookie firmada (sobrevive bloqueo del celular / recarga)
 if "user" not in st.session_state and not st.session_state.get("_logged_out"):
     _u_rest = _auth.restaurar_sesion()
     if _u_rest is not None:
         st.session_state.user = _u_rest
-        # volver a la sección donde estaba trabajando (cookie worms_section)
-        _sec_rest = _auth.get_section_cookie()
-        if _sec_rest and "section" not in st.session_state:
-            st.session_state.section = _sec_rest
 
 if "user" not in st.session_state:
     pantalla_login(); st.stop()
@@ -271,9 +265,6 @@ def _landing_kpis():
         return None
 
 if st.session_state.section is None:
-    if st.session_state.get("_sec_cookie"):
-        _auth.set_section_cookie(None)
-        st.session_state._sec_cookie = None
     _hoy_txt = date.today().strftime("%d/%m/%Y")
     st.markdown(f"""
     <div class="worms-hero">
@@ -351,11 +342,6 @@ with st.sidebar:
     st.caption("Base: Supabase")
 
 # ---- estilo global: ya inyectado por inject_global_css() al inicio ----
-
-# ---- Recordar la sección actual (cookie): si la página se recarga, vuelve acá ----
-if st.session_state.get("_sec_cookie") != st.session_state.section:
-    _auth.set_section_cookie(st.session_state.section)
-    st.session_state._sec_cookie = st.session_state.section
 
 # ---- Botón Home visible en TODAS las secciones (además del de la sidebar) ----
 _hcol1, _hcol2 = st.columns([1, 4])

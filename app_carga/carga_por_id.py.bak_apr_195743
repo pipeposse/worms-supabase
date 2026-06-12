@@ -49,27 +49,6 @@ def render(USR, cat, conectar):
     sel = st.selectbox("Producción planificada", list(opts.keys()), key="cid_sel")
     id_batch = opts[sel]
 
-    # ---- Bloqueo por carga baja (<80%): requiere aprobación del director ----
-    _bloq_apr = False
-    try:
-        _apr = cat("SELECT estado, pct_carga, motivo FROM produccion.fact_aprobacion_carga "
-                   "WHERE id_batch=%s ORDER BY id_aprobacion DESC LIMIT 1", (id_batch,))
-    except Exception:
-        _apr = None
-    if _apr is not None and not _apr.empty:
-        _ea = str(_apr.iloc[0]["estado"])
-        if _ea == "PENDIENTE":
-            _bloq_apr = True
-            st.error(f"🛂 Esta producción se planificó con carga al {float(_apr.iloc[0]['pct_carga']):.0f}% "
-                     "(menos del 80% del equipo) y está **pendiente de aprobación del director**. "
-                     "No se puede iniciar hasta que la apruebe en el Centro de Planificación.")
-        elif _ea == "RECHAZADO":
-            _bloq_apr = True
-            st.error("⛔ El director **rechazó** la carga baja de esta producción. No se puede iniciar. "
-                     "La dirección debe re-planificarla.")
-        else:
-            st.success(f"🛂 Carga baja ({float(_apr.iloc[0]['pct_carga']):.0f}%) **aprobada por el director**.")
-
     # ---- detalle heredado del batch ----
     det = cat(
         "SELECT b.identificador_unidad, b.sector, b.tipo_proceso, b.calidad_buscada, "
@@ -166,8 +145,7 @@ def render(USR, cat, conectar):
     if not all(estados.values()):
         st.info("Marcá todos los ítems del checklist para habilitar el inicio.")
 
-    if st.button("🔥 Iniciar reacción", type="primary", use_container_width=True,
-                 disabled=(not todo_ok) or _bloq_apr):
+    if st.button("🔥 Iniciar reacción", type="primary", use_container_width=True, disabled=not todo_ok):
         uid = int(USR["id_usuario"])
         try:
             with conectar(uid) as (conn, audit):

@@ -103,6 +103,32 @@ def clear_cookie() -> None:
     )
 
 
+SECTION_COOKIE = "worms_section"
+
+
+def set_section_cookie(section: str | None) -> None:
+    """Guarda (o borra si section es None) la sección actual para volver ahí tras una recarga."""
+    val = (section or "").strip()
+    maxage = 30 * 86400 if val else 0
+    components.html(
+        f"""<script>
+        try {{
+          const c = "{SECTION_COOKIE}={val}; max-age={maxage}; path=/; SameSite=Lax";
+          try {{ parent.document.cookie = c; }} catch (e) {{ document.cookie = c; }}
+        }} catch (e) {{}}
+        </script>""",
+        height=0,
+    )
+
+
+def get_section_cookie() -> str | None:
+    try:
+        v = st.context.cookies.get(SECTION_COOKIE)
+        return (v or "").strip() or None
+    except Exception:
+        return None
+
+
 def restaurar_sesion() -> dict | None:
     """Lee la cookie del request actual y devuelve el usuario si el token es válido."""
     try:

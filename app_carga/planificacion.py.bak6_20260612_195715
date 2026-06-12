@@ -87,69 +87,6 @@ def _render_planificadas(cat):
         "kg": "kg", "litros": "Litros"}), use_container_width=True, hide_index=True)
 
 
-def _render_aprobaciones(USR, cat, conectar):
-    """Tickets de aprobación por carga < 80% (falta grave). Resuelve el director (ADMIN)."""
-    try:
-        ap = cat("SELECT a.id_aprobacion, a.id_batch, a.identificador, a.sector, a.equipo, a.capacidad_l, "
-                 "a.litros_cargados, a.pct_carga, a.motivo, a.estado, a.solicitado_en, "
-                 "u.nombre_full AS solicitante, a.comentario_resolucion "
-                 "FROM produccion.fact_aprobacion_carga a "
-                 "LEFT JOIN produccion.dim_usuario u ON u.id_usuario=a.solicitado_por "
-                 "ORDER BY (a.estado='PENDIENTE') DESC, a.solicitado_en DESC LIMIT 100")
-    except Exception:
-        return
-    if ap is None or ap.empty:
-        return
-    n_pend = int((ap["estado"] == "PENDIENTE").sum())
-    es_director = USR.get("rol") == "ADMIN"
-    with st.expander(f"🛂 Aprobaciones de carga baja (<80%) — {n_pend} pendiente(s)",
-                     expanded=(n_pend > 0 and es_director)):
-        st.caption("Cargar un reactor/bacha a menos del 80% es una **falta grave** (induce pérdidas económicas). "
-                   "El operario no puede iniciar la producción hasta que el **director** apruebe el ticket.")
-        st.dataframe(ap.rename(columns={
-            "id_aprobacion": "Ticket", "identificador": "ID prod.", "sector": "Sector", "equipo": "Equipo",
-            "capacidad_l": "Capacidad (L)", "litros_cargados": "Cargado (L)", "pct_carga": "% carga",
-            "motivo": "Justificación", "estado": "Estado", "solicitado_en": "Solicitado",
-            "solicitante": "Por", "comentario_resolucion": "Comentario director"}).drop(columns=["id_batch"]),
-            use_container_width=True, hide_index=True,
-            column_config={"Solicitado": st.column_config.DatetimeColumn(format="DD/MM HH:mm"),
-                           "% carga": st.column_config.NumberColumn(format="%.0f%%")})
-        if not es_director:
-            st.info("Solo el director (ADMIN) puede aprobar o rechazar estos tickets.")
-            return
-        pend = ap[ap["estado"] == "PENDIENTE"]
-        if pend.empty:
-            return
-        opts = pend.apply(lambda r: f"#{r['id_aprobacion']} · {r['identificador']} · {r['equipo']} · {float(r['pct_carga']):.0f}%", axis=1).tolist()
-        sel = st.selectbox("Ticket a resolver", opts, key="apr_sel")
-        row = pend.iloc[opts.index(sel)]
-        st.markdown(f"**Justificación de la supervisora:** {row['motivo']}")
-        com = st.text_input("Comentario del director (opcional)", key="apr_com", max_chars=200)
-
-        def _resolver(estado):
-            with conectar(int(USR["id_usuario"])) as (conn, audit):
-                with conn.cursor() as cur:
-                    cur.execute("UPDATE produccion.fact_aprobacion_carga SET estado=%s, resuelto_por=%s, "
-                                "resuelto_en=now(), comentario_resolucion=%s WHERE id_aprobacion=%s",
-                                (estado, int(USR["id_usuario"]), ((com or "").strip() or None), int(row["id_aprobacion"])))
-                audit.log("U", "fact_aprobacion_carga", int(row["id_aprobacion"]),
-                          {"estado": estado, "batch": int(row["id_batch"])})
-
-        a1, a2 = st.columns(2)
-        if a1.button("✅ Aprobar carga baja", type="primary", use_container_width=True, key="apr_ok"):
-            try:
-                _resolver("APROBADO"); st.success("Aprobado: el operario ya puede iniciar la producción.")
-                cat.clear(); st.rerun()
-            except Exception as e:
-                st.exception(e)
-        if a2.button("⛔ Rechazar", use_container_width=True, key="apr_no"):
-            try:
-                _resolver("RECHAZADO"); st.success("Rechazado: la producción queda bloqueada.")
-                cat.clear(); st.rerun()
-            except Exception as e:
-                st.exception(e)
-
-
 def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
     """Planificación de bachas guiada por fórmula con nombre (dic_formula):
     ubicación + proceso + MP -> PF, insumos por TN de MP CARGADA, y tiempo."""
@@ -222,14 +159,6 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
     f3.metric("Densidad MP", f"{dens:g} kg/L")
     if _pct is not None:
         st.progress(min(1.0, max(0.0, _pct / 100)))
-    just_carga = ""
-    _carga_baja = bool(_pct is not None and kg_used > 0 and _pct < 80.0)
-    if _carga_baja:
-        st.error(f"🚨 **Carga al {_pct:.0f}%** de la capacidad de la bacha (mínimo: 80%). "
-                 "Cargar de menos es una falta grave: justificá el motivo. "
-                 "Se genera un ticket que el **director debe aprobar** antes de poder iniciar.")
-        just_carga = st.text_input("Justificación de carga baja (<80%) *", key="plb_just_carga", max_chars=250,
-                                   placeholder="ej. no hay más MP disponible")
 
     # ---------- 3 · Estimados: fórmula × kg de MP CARGADA ----------
     st.markdown("#### 3 · Estimados (fórmula × TN de MP cargada)")
@@ -294,9 +223,6 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
         if ajustes and not (motivo_ajuste or "").strip():
             st.error("Cambiaste estimados a mano: **indicá el motivo del ajuste** antes de generar.")
             return
-        if _carga_baja and not (just_carga or "").strip():
-            st.error("Carga menor al 80%: **justificá el motivo** para generar el ticket de aprobación del director.")
-            return
         mp_id = int(productos[productos["codigo_producto"] == mp].iloc[0]["id_producto"])
         ident = siguiente_identificador("BACHAS")
         params = {
@@ -308,7 +234,6 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
             "horas_proceso": e_hpro, "horas_reposo": e_hrep,
             "ajustes_manuales": (ajustes or None),
             "motivo_ajuste": ((motivo_ajuste or "").strip() or None),
-            "carga_baja": ({"pct": round(_pct, 1), "motivo": just_carga.strip()} if _carga_baja else None),
         }
         uid = int(USR["id_usuario"])
         try:
@@ -325,13 +250,6 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
                          _json.dumps(params), uid, (obs or None)))
                     id_b = cur.fetchone()[0]
                     n_mov = 0
-                    if _carga_baja:
-                        cur.execute(
-                            "INSERT INTO produccion.fact_aprobacion_carga "
-                            "(id_batch, identificador, sector, equipo, capacidad_l, litros_cargados, pct_carga, motivo, solicitado_por) "
-                            "VALUES (%s,%s,'BACHAS',%s,%s,%s,%s,%s,%s)",
-                            (id_b, ident, _brow["nombre_ui"], cap, round(litros_mp, 1), round(_pct, 1),
-                             just_carga.strip(), uid))
 
                     def _mov(rol, id_producto, prod_txt, cod_ins, fuente, idt, tkp, kg, litros):
                         fmov = "TANQUE" if fuente == "TANQUE" else "PORTERIA"
@@ -420,7 +338,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         return
     with st.expander("📋 Ver planificadas y sus movimientos (todo lo cargado)", expanded=False):
         _render_planificadas(cat)
-    _render_aprobaciones(USR, cat, conectar)
 
     modo = st.radio("Planificar en", ["🏭 Reactores", "🛁 Bachas"],
                     horizontal=True, key="pl_modo")
@@ -554,14 +471,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     lc2.metric("Capacidad reactor", f"{cap:,.0f} L")
     lc3.metric("Llenado del reactor", f"{_pct_llen:.0f}%")
     st.progress(min(1.0, max(0.0, _pct_llen / 100.0)))
-    just_carga = ""
-    _carga_baja = bool(cap and kg_used > 0 and _pct_llen < 80.0)
-    if _carga_baja:
-        st.error(f"🚨 **Carga al {_pct_llen:.0f}%** de la capacidad del reactor (mínimo: 80%). "
-                 "Cargar de menos es una falta grave (induce pérdidas económicas): justificá el motivo. "
-                 "Se genera un ticket que el **director debe aprobar** antes de poder iniciar la producción.")
-        just_carga = st.text_input("Justificación de carga baja (<80%) *", key="pl_just_carga", max_chars=250,
-                                   placeholder="ej. no hay más MP disponible de esta calidad")
 
     # ---------- Estimados por fórmula ----------
     st.markdown("#### 4 · Insumos estimados por fórmula")
@@ -584,9 +493,16 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             gli_consumido = kg_used * (acidez / 100) * (PMg / (PMa * 2))   # glicerol puro que reacciona
             gli_puro = gli_consumido * FE                               # glicerol cargado (con exceso)
             est_gli = gli_puro / (glicerol_v / 100)                     # glicerina total a cargar (según pureza)
-            # Glicerina recuperada: la fórmula NO la incluye por ahora -> default 0.
-            # Solo se carga a mano en "Ajustar estimados" (exige motivo y queda registrada).
-            gli_recup_kg = 0.0
+            # Glicerina recuperada = (cargada - glicerol consumido) x eficiencia de decantación (ajustable POR REACTOR)
+            f_recup = float(_fp.get("factor_recuperacion_gli") or K("factor_recuperacion_gli", 0.9) or 0.9)
+            try:
+                _fr = cat("SELECT factor FROM produccion.dic_factor_recup_gli WHERE id_bien_uso=%s",
+                          (int(fila["id_bien_uso"]),))
+                if not _fr.empty and _fr.iloc[0]["factor"] is not None:
+                    f_recup = float(_fr.iloc[0]["factor"])
+            except Exception:
+                pass
+            gli_recup_kg = max(0.0, (est_gli - gli_consumido) * f_recup)
             dens_gli = float(K("densidad_glicerina", 1.25) or 1.25)
             tn = kg_used / 1000.0   # SIEMPRE sobre los kg de MP cargada (no la capacidad del reactor)
 
@@ -601,20 +517,16 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             _fuel_l_form = est_fuel / d_fuel
             _cat_form = est_naoh if catal == "NAOH" else est_pot
             with st.expander("✏️ Ajustar estimados a mano (si la fórmula no te cierra)", expanded=False):
-                aj1, aj2, aj3, aj4 = st.columns(4)
+                aj1, aj2, aj3 = st.columns(3)
                 _gli_l = aj1.number_input("Glicerina (L)", 0.0, 1_000_000.0,
                                           value=float(round(_gli_l_form, 0)), step=50.0, key="pl_aj_gli")
                 _cat_adj = aj2.number_input(("NaOH (kg)" if catal == "NAOH" else "KOH (kg)"), 0.0, 100_000.0,
                                             value=float(round(_cat_form, 2)), step=1.0, key=f"pl_aj_cat_{catal}")
                 _fuel_l = aj3.number_input("Fuel oil (L)", 0.0, 1_000_000.0,
                                            value=float(round(_fuel_l_form, 0)), step=25.0, key="pl_aj_fuel")
-                _recup_l = aj4.number_input("Glicerina recuperada (L)", 0.0, 1_000_000.0, value=0.0, step=25.0,
-                                            key="pl_aj_recup",
-                                            help="La fórmula no incluye recuperada por ahora (default 0). Si esperás recuperar, cargala acá: pide motivo.")
-                st.caption(f"Fórmula: glicerina {_gli_l_form:,.0f} L · catalizador {_cat_form:,.2f} kg · "
-                           f"fuel {_fuel_l_form:,.0f} L · recuperada 0 L (no incluida en la fórmula)")
+                st.caption(f"Fórmula: glicerina {_gli_l_form:,.0f} L · catalizador {_cat_form:,.2f} kg · fuel {_fuel_l_form:,.0f} L")
                 if st.button("🔄 Volver a los valores de fórmula", key="pl_aj_rst"):
-                    for _k in ("pl_aj_gli", f"pl_aj_cat_{catal}", "pl_aj_fuel", "pl_aj_recup"):
+                    for _k in ("pl_aj_gli", f"pl_aj_cat_{catal}", "pl_aj_fuel"):
                         st.session_state.pop(_k, None)
                     st.rerun()
             est_gli = _gli_l * dens_gli
@@ -623,9 +535,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                 est_naoh = _cat_adj
             else:
                 est_pot = _cat_adj
-            gli_recup_kg = _recup_l * dens_gli
-            if _recup_l > 0.5:
-                ajustes["glicerina recuperada (L)"] = {"formula": 0, "ajustado": round(_recup_l)}
+            gli_recup_kg = max(0.0, (est_gli - gli_consumido) * f_recup)
             if abs(_gli_l - _gli_l_form) > 0.5:
                 ajustes["glicerina (L)"] = {"formula": round(_gli_l_form), "ajustado": round(_gli_l)}
             if abs(_cat_adj - _cat_form) > 0.01:
@@ -638,12 +548,11 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                 e2.metric("NaOH (catalizador)", f"{est_naoh:,.1f} kg")
             else:
                 e2.metric("KOH (catalizador)", f"{est_pot:,.2f} kg")
-            e3.metric("Glicerina recuperada", f"{gli_recup_kg/dens_gli:,.0f} L",
-                      f"{gli_recup_kg:,.0f} kg · " + ("manual" if gli_recup_kg > 0 else "no incluida en fórmula"))
+            e3.metric("Glicerina recuperada", f"{gli_recup_kg/dens_gli:,.0f} L", f"{gli_recup_kg:,.0f} kg · factor {f_recup:.2f}")
             e4.metric("Fuel oil", f"{_fuel_l:,.0f} L", f"{est_fuel:,.0f} kg")
             st.metric("ARE estimado", f"{kg_used/0.88:,.0f} L", f"{kg_used:,.0f} kg · {kg_used/1000:.1f} TN (sobre MP cargada)")
-            st.caption("Glicerina recuperada: **la fórmula no la incluye por ahora** (default 0). "
-                       "Si esperás recuperar, cargala en ✏️ Ajustar estimados — exige motivo y queda registrada.")
+            st.caption(f"Recuperada = (glicerina cargada {est_gli:,.0f} − glicerol consumido {gli_consumido:,.0f}) × {f_recup:.2f} "
+                       f"(factor de **{fila['nombre_ui']}**). Editá por reactor en `dic_factor_recup_gli`.")
             st.caption(f"🧪 La glicerina sale de la **acidez {acidez:.2f}%** (lab de la fuente de MP) y del "
                        f"**glicerol {glicerol_v:.2f}%** (muestra): MP × acidez × PMg/(2·PMa) × exceso ÷ glicerol. "
                        f"Parámetros de la fórmula: exceso {FE:g} · PMa {PMa:g} · PMg {PMg:g}.")
@@ -778,9 +687,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         if ajustes and not (motivo_ajuste or "").strip():
             st.error("Cambiaste estimados a mano: **indicá el motivo del ajuste** antes de generar.")
             return
-        if _carga_baja and not (just_carga or "").strip():
-            st.error("Carga menor al 80%: **justificá el motivo** para generar el ticket de aprobación del director.")
-            return
         mp_id = int(mp_df[mp_df["codigo_producto"] == mp].iloc[0]["id_producto"])
         ident = siguiente_identificador("REACTORES")
         params = {
@@ -793,7 +699,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                                  else {"tipo": "LAB", "ticket": gli_ticket}),
             "ajustes_manuales": (ajustes or None),
             "motivo_ajuste": ((motivo_ajuste or "").strip() or None),
-            "carga_baja": ({"pct": round(_pct_llen, 1), "motivo": just_carga.strip()} if _carga_baja else None),
         }
         uid = int(USR["id_usuario"])
         try:
@@ -810,13 +715,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                          horas, _json.dumps(params), uid, (obs or None)))
                     id_b = cur.fetchone()[0]
                     n_mov = 0
-                    if _carga_baja:
-                        cur.execute(
-                            "INSERT INTO produccion.fact_aprobacion_carga "
-                            "(id_batch, identificador, sector, equipo, capacidad_l, litros_cargados, pct_carga, motivo, solicitado_por) "
-                            "VALUES (%s,%s,'REACTORES',%s,%s,%s,%s,%s,%s)",
-                            (id_b, ident, fila["nombre_ui"], cap, round(litros_mp, 1), round(_pct_llen, 1),
-                             just_carga.strip(), uid))
 
                     def _mov(rol, id_producto, prod_txt, cod_ins, fuente, idt, tkp, kg, litros):
                         fmov = "TANQUE" if fuente == "TANQUE" else "PORTERIA"
