@@ -233,8 +233,10 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
     _carga_baja = bool(_pct is not None and kg_used > 0 and _pct < 80.0)
     if _carga_baja:
         st.error(f"🚨 **Carga al {_pct:.0f}%** de la capacidad de la bacha (mínimo: 80%). "
-                 "Cargar de menos es una falta grave. Abajo, junto al botón Generar, "
-                 "tenés que **justificar el motivo**: lo aprueba el director.")
+                 "Cargar de menos es una falta grave: justificá el motivo. "
+                 "Se genera un ticket que el **director debe aprobar** antes de poder iniciar.")
+        just_carga = st.text_input("Justificación de carga baja (<80%) *", key="plb_just_carga", max_chars=250,
+                                   placeholder="ej. no hay más MP disponible")
 
     # ---------- 3 · Estimados: fórmula × kg de MP CARGADA ----------
     st.markdown("#### 3 · Estimados (fórmula × TN de MP cargada)")
@@ -288,10 +290,6 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
                    "Si el cambio es definitivo, guardá una fórmula nueva en 🧪 Fórmulas.")
         motivo_ajuste = st.text_input("Motivo del ajuste *", key="plb_aj_motivo", max_chars=200,
                                       placeholder="ej. borra con mucha agua, dosificamos más ácido")
-    if _carga_baja:
-        st.error(f"🚨 Carga al {_pct:.0f}% de la bacha (<80%): justificá el motivo — va al ticket de aprobación del director.")
-        just_carga = st.text_input("Justificación de carga baja (<80%) *", key="plb_just_carga", max_chars=250,
-                                   placeholder="ej. no hay más MP disponible")
     obs = st.text_input("Observaciones", key="plb_obs", placeholder="opcional")
     st.divider()
     if st.button("✅ Generar ID de producción + tickets de movimiento", type="primary",
@@ -567,9 +565,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     _carga_baja = bool(cap and kg_used > 0 and _pct_llen < 80.0)
     if _carga_baja:
         st.error(f"🚨 **Carga al {_pct_llen:.0f}%** de la capacidad del reactor (mínimo: 80%). "
-                 "Cargar de menos es una falta grave (induce pérdidas económicas). "
-                 "Abajo, junto al botón Generar, tenés que **justificar el motivo**: "
-                 "se genera un ticket que el director debe aprobar antes de poder iniciar.")
+                 "Cargar de menos es una falta grave (induce pérdidas económicas): justificá el motivo. "
+                 "Se genera un ticket que el **director debe aprobar** antes de poder iniciar la producción.")
+        just_carga = st.text_input("Justificación de carga baja (<80%) *", key="pl_just_carga", max_chars=250,
+                                   placeholder="ej. no hay más MP disponible de esta calidad")
 
     # ---------- Estimados por fórmula ----------
     st.markdown("#### 4 · Insumos estimados por fórmula")
@@ -775,10 +774,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                    "** (vs. fórmula). Indicá el motivo — es obligatorio y queda registrado.")
         motivo_ajuste = st.text_input("Motivo del ajuste *", key="pl_aj_motivo", max_chars=200,
                                       placeholder="ej. la MP venía con más agua de lo normal")
-    if _carga_baja:
-        st.error(f"🚨 Carga al {_pct_llen:.0f}% del reactor (<80%): justificá el motivo — va al ticket de aprobación del director.")
-        just_carga = st.text_input("Justificación de carga baja (<80%) *", key="pl_just_carga", max_chars=250,
-                                   placeholder="ej. no hay más MP disponible de esta calidad")
     obs = st.text_input("Observaciones", key="pl_obs", placeholder="opcional")
 
     st.divider()

@@ -4913,77 +4913,6 @@ with tab_objs[0]:
                     st.warning("🟦 Temperatura ≥ 85 °C → el desgomado **cortó la reacción y pasó a REPOSO**. "
                                "En decantación vas a separar **fondo de tanque** y **AFE-S**.")
 
-            # ---------- Cronograma de evaluación (definido al iniciar la carga) ----------
-            id_prog_sel = None
-            _prog = cat("SELECT id_prog, secuencia, etapa, programado_ts, estado, id_eval "
-                        "FROM produccion.fact_eval_programada WHERE id_batch=%s ORDER BY secuencia",
-                        (int(r2["id_batch"]),))
-            if not _prog.empty:
-                st.markdown("##### 🗓️ Cronograma de evaluación de esta reacción")
-                _nowp = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires")
-                _pts = pd.to_datetime(_prog["programado_ts"], errors="coerce")
-                try:
-                    _pts = _pts.dt.tz_convert("America/Argentina/Buenos_Aires")
-                except Exception:
-                    pass
-                _etq_lbl = {"ARMADO": "Armado", "REACCION": "Reacción", "REPOSANDO": "Reposo",
-                            "DECANTACION": "Decantación", "EN_TANQUE": "Acopio final"}
-
-                def _est_prog(i):
-                    r = _prog.iloc[i]
-                    ts = _pts.iloc[i]
-                    if pd.notna(r["id_eval"]) or str(r["estado"]).upper() == "REALIZADA":
-                        return "✅ realizada"
-                    if pd.isna(ts):
-                        return "⏳ pendiente"
-                    _dm = (ts - _nowp).total_seconds() / 60.0
-                    if _dm < -15:
-                        return f"🔴 vencida · hace {abs(_dm)/60:.1f} h" if abs(_dm) >= 60 else f"🔴 vencida · hace {abs(_dm):.0f} min"
-                    if _dm <= 30:
-                        return "🟡 le toca AHORA"
-                    return f"⏳ en {_dm/60:.1f} h" if _dm >= 60 else f"⏳ en {_dm:.0f} min"
-
-                _ev_disp = pd.DataFrame({
-                    "Muestra": _prog["secuencia"].map(lambda x: f"#{int(x)}"),
-                    "Hora programada": _pts.dt.strftime("%d/%m %H:%M"),
-                    "Etapa": _prog["etapa"].map(lambda c: _etq_lbl.get(c, c)),
-                    "Estado": [_est_prog(i) for i in range(len(_prog))],
-                })
-                _selev = st.dataframe(_ev_disp, use_container_width=True, hide_index=True,
-                                      on_select="rerun", selection_mode="single-row",
-                                      key=f"m_prog_{int(r2['id_batch'])}")
-                _rows_sel = []
-                try:
-                    _rows_sel = list((_selev.get("selection", {}) or {}).get("rows", []))
-                except Exception:
-                    _rows_sel = []
-                _pendientes = [i for i in range(len(_prog))
-                               if pd.isna(_prog.iloc[i]["id_eval"]) and str(_prog.iloc[i]["estado"]).upper() != "REALIZADA"]
-                if _rows_sel:
-                    _i = _rows_sel[0]
-                    _pr = _prog.iloc[_i]
-                    if _i in _pendientes:
-                        id_prog_sel = int(_pr["id_prog"])
-                        st.session_state[f"m_etapa_{int(r2['id_batch'])}"] = (_pr["etapa"] if _pr["etapa"] else None) or st.session_state.get(f"m_etapa_{int(r2['id_batch'])}")
-                        st.info(f"🎯 Estás cargando la **muestra programada #{int(_pr['secuencia'])}** "
-                                f"({_etq_lbl.get(_pr['etapa'], _pr['etapa'])} · {_ev_disp.iloc[_i]['Hora programada']}). "
-                                "Al guardar queda tildada ✅ en el cronograma.")
-                    else:
-                        st.warning(f"La muestra #{int(_pr['secuencia'])} ya está ✅ realizada: "
-                                   "lo que guardes ahora entra como muestra extra (sin vincular).")
-                elif _pendientes:
-                    _np = _prog.iloc[_pendientes[0]]
-                    st.caption(f"👉 Próxima programada: **#{int(_np['secuencia'])} · "
-                               f"{_ev_disp.iloc[_pendientes[0]]['Hora programada']} · "
-                               f"{_etq_lbl.get(_np['etapa'], _np['etapa'])}** — "
-                               "tocá esa fila en la tabla para vincular la muestra que vas a cargar.")
-                else:
-                    st.success("✅ Cronograma completo: todas las muestras programadas están realizadas. "
-                               "Podés cargar muestras extra igual.")
-            else:
-                st.caption("Esta reacción no tiene cronograma de evaluación (se genera al Iniciar producción). "
-                           "Las muestras se cargan sueltas, como siempre.")
-
             _et_lbl_r = {"ARMADO": "Armado", "REACCION": "Reacción", "REPOSANDO": "Reposo",
                          "DECANTACION": "Decantación", "EN_TANQUE": "Acopio final"}
             _et_eval = etapas_de_proceso(tipo_actual)
@@ -4991,9 +4920,6 @@ with tab_objs[0]:
             if not _et_eval_codes:
                 _et_eval_codes = ["REACCION"]
             _cur_et = r2["etapa_actual"] if r2["etapa_actual"] in _et_eval_codes else _et_eval_codes[0]
-            _k_et = f"m_etapa_{int(r2['id_batch'])}"
-            if st.session_state.get(_k_et) not in _et_eval_codes:
-                st.session_state.pop(_k_et, None)
             etapa_m = st.selectbox(
                 "Etapa de la muestra (por defecto, la etapa actual de la reacción)",
                 _et_eval_codes, index=_et_eval_codes.index(_cur_et),
@@ -5031,10 +4957,6 @@ with tab_objs[0]:
                                     VALUES (%s,%s,%s::jsonb,%s,%s) RETURNING id_eval
                                 """, (int(r2["id_batch"]), etapa_m, json.dumps(med), obs_m or None, int(USR["id_usuario"])))
                                 id_m = cur.fetchone()[0]
-                                if id_prog_sel:
-                                    cur.execute("UPDATE produccion.fact_eval_programada "
-                                                "SET estado='REALIZADA', id_eval=%s WHERE id_prog=%s",
-                                                (int(id_m), int(id_prog_sel)))
                             audit.insert("fact_evaluacion_interna", id_m, med)
                         st.session_state["m_flash"] = {"id": int(id_m), "batch": int(r2["id_batch"])}
                         cat.clear()
