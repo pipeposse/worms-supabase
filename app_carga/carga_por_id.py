@@ -34,13 +34,15 @@ def _ahora():
 
 
 def _eval_interna(USR, cat, conectar, etapas_de_proceso, params_proceso):
-    if etapas_de_proceso is None or params_proceso is None:
-        return
+    if etapas_de_proceso is not None and params_proceso is not None:
+        st.divider()
+        st.header("🧪 Evaluación interna")
+        st.caption("De ahora en más las evaluaciones internas de las reacciones se cargan en esta sección.")
+        import eval_interna
+        eval_interna.render(USR, cat, conectar, etapas_de_proceso, params_proceso)
     st.divider()
-    st.header("🧪 Evaluación interna")
-    st.caption("De ahora en más las evaluaciones internas de las reacciones se cargan en esta sección.")
-    import eval_interna
-    eval_interna.render(USR, cat, conectar, etapas_de_proceso, params_proceso)
+    import decantacion
+    decantacion.produccion(USR, cat, conectar)
 
 
 def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):

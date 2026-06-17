@@ -475,10 +475,14 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
 
-    modo = st.radio("Planificar en", ["🏭 Reactores", "🛁 Bachas"],
+    modo = st.radio("Planificar en", ["🏭 Reactores", "🛁 Bachas", "🧴 Decantación ARE"],
                     horizontal=True, key="pl_modo")
     if modo.startswith("🛁"):
         _render_bachas(USR, cat, conectar, siguiente_identificador, H)
+        return
+    if modo.startswith("🧴"):
+        import decantacion
+        decantacion.destinos(USR, cat, conectar)
         return
     st.caption("Misma lógica que Cargas: elegí reactor y materia prima; el proceso, la capacidad y todas las fórmulas se calculan solos.")
 
