@@ -2905,9 +2905,20 @@ if st.session_state.section != "CARGAS":
                                     cat.clear(); st.rerun()
                                 except Exception as e:
                                     st.exception(e)
-                    _o2 = _panel.apply(lambda r: f"{r['nombre']} · {r['codigo']}" + (" · 📡 WeDo" if r["fuente_medicion"] == "WeDo" else ""), axis=1).tolist()
-                    _s2 = st.selectbox("Tanque a editar", _o2, key="tq_sel_e")
-                    _r2 = _panel.iloc[_o2.index(_s2)]
+                    _fe1, _fe2 = st.columns(2)
+                    _esec = _fe1.selectbox("Sector", ["Todos"] + sorted(_panel["sector"].dropna().unique().tolist()), key="tqe_sec")
+                    _emed = _fe2.selectbox("Tipo de medición", ["Todos", "Manual", "WeDo"], key="tqe_med")
+                    _pe = _panel.copy()
+                    if _esec != "Todos":
+                        _pe = _pe[_pe["sector"] == _esec]
+                    if _emed != "Todos":
+                        _pe = _pe[_pe["fuente_medicion"] == _emed]
+                    if _pe.empty:
+                        st.warning("No hay tanques con esos filtros; se muestran todos.")
+                        _pe = _panel
+                    _o2 = _pe.apply(lambda r: f"{r['nombre']} · {r['codigo']}" + (" · 📡 WeDo" if r["fuente_medicion"] == "WeDo" else ""), axis=1).tolist()
+                    _s2 = st.selectbox(f"Tanque a editar ({len(_pe)})", _o2, key="tq_sel_e")
+                    _r2 = _pe.iloc[_o2.index(_s2)]
                     _idt2 = int(_r2["id_tanque"])
                     _es_wedo = (_r2["fuente_medicion"] == "WeDo")
                     _cap = st.number_input("Capacidad (litros)", 0.0, 5_000_000.0, step=100.0,
