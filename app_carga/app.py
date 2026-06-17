@@ -2692,11 +2692,17 @@ if st.session_state.section != "CARGAS":
 
             # ---------- Cargar medición: SOLO tanques manuales, con filtros ----------
             with g_cargar:
-                _man = _panel[_panel["fuente_medicion"] == "Manual"]
+                _inc_wedo = st.checkbox("Incluir tanques WeDo (corrección / override manual del sensor)",
+                                        value=False, key="tqc_incwedo")
+                _man = _panel.copy() if _inc_wedo else _panel[_panel["fuente_medicion"] == "Manual"]
                 if _man.empty:
-                    st.info("No hay tanques manuales (todos miden por sensor WeDo).")
+                    st.info("No hay tanques para cargar con ese criterio.")
                 else:
-                    st.caption("Solo **tanques manuales**. Filtrá para encontrar el tanque rápido.")
+                    if _inc_wedo:
+                        st.caption("Incluye **tanques WeDo**: lo que cargues acá **reemplaza el valor del sensor** "
+                                   "hasta la próxima sincronización del radar. Filtrá para encontrar el tanque.")
+                    else:
+                        st.caption("Solo **tanques manuales**. Filtrá para encontrar el tanque rápido.")
                     ff1, ff2, ff3 = st.columns(3)
                     _csec = ff1.selectbox("Sector", ["Todos"] + sorted(_man["sector"].dropna().unique().tolist()), key="tqc_sec")
                     _ctip = ff2.selectbox("Tipo", ["Todos"] + sorted(_man["tipo_tanque"].dropna().unique().tolist()), key="tqc_tip")
@@ -2715,6 +2721,9 @@ if st.session_state.section != "CARGAS":
                         _selt = st.selectbox(f"Tanque ({len(_mm)})", _opt, key="tq_sel_c")
                         _row = _mm.iloc[_opt.index(_selt)]
                         _idt = int(_row["id_tanque"])
+                        if str(_row.get("fuente_medicion")) == "WeDo":
+                            st.warning("🛰️ Tanque **WeDo**: esta carga es un **override manual**; el sensor radar "
+                                       "lo sobreescribe en su próxima medición.")
                         _cap = float(_row["capacidad_litros"]) if pd.notna(_row["capacidad_litros"]) else 0.0
                         _perm = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
                                     "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
