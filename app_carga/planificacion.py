@@ -419,7 +419,7 @@ def _gli_tanques(cat, codigo):
         "WHERE t.activo AND p.codigo_producto=%s ORDER BY t.nombre", (codigo,))
 
 
-def _pick_gli(cat, codigo, key, densidad_de=None):
+def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
     """Selector de un tanque de glicerina + litros a cargar. Devuelve dict con sus parámetros."""
     res = {"idt": None, "nombre": None, "l": 0.0, "dens": None, "glicerina_pct": None,
            "glicerol_pct": None, "glicerol_kg": 0.0, "kg": 0.0, "agua_pct": None}
@@ -436,7 +436,7 @@ def _pick_gli(cat, codigo, key, densidad_de=None):
     npct = float(r["glicerina"]) if pd.notna(r["glicerina"]) else None
     dens = float(r["densidad_g_ml"]) if pd.notna(r["densidad_g_ml"]) else \
         (float(densidad_de(codigo)) if (callable(densidad_de) and densidad_de(codigo)) else 1.1)
-    l = st.number_input("Litros a cargar", 0.0, 1_000_000.0, value=0.0, step=50.0, key=f"{key}_l")
+    l = st.number_input("Litros a cargar", 0.0, 1_000_000.0, value=float(default_l or 0.0), step=50.0, key=f"{key}_l")
     st.caption(f"glicerina {npct or 0:.0f}% · glicerol {gpct or 0:.0f}% · "
                f"agua {float(r['agua_pct'] or 0):.1f}% · dens {dens:g} kg/L")
     res.update({"idt": int(r["id_tanque"]), "nombre": r["nombre"], "l": float(l), "dens": dens,
@@ -557,19 +557,31 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     gli_tkp = None
     gli_fresca = {"idt": None, "l": 0.0, "glicerol_kg": 0.0, "kg": 0.0, "dens": None}
     gli_recup = {"idt": None, "l": 0.0, "glicerol_kg": 0.0, "kg": 0.0, "dens": None}
+    are_formula_id = None
+    are_formula_nombre = None
     if proc == "PRODUCCION_ARE":
         PMa = float(K("PMa", 282)); PMg = float(K("PMg", 92)); FE = float(K("factor_exceso_gli", 1.1))
-        st.markdown("#### 2 · Glicerina a cargar (fresca + recuperada)")
-        st.caption("Elegí de qué tanque sale cada glicerina y **cuántos litros**. La **fresca** es ~100% glicerina "
-                   "(≈80% glicerol); la **recuperada** es ~20% glicerina (≈60% glicerol). El glicerol de **ambas suma** "
-                   "para alcanzar el objetivo (la recuperada ya se cuenta en el total).")
+        st.markdown("#### 2 · Fórmula y glicerina a cargar (fresca + recuperada)")
+        _Fare = _formulas_sector(cat, "REACTORES")
+        _Fare = _Fare[_Fare["tipo_proceso"] == "PRODUCCION_ARE"] if (_Fare is not None and not _Fare.empty) else _Fare
+        _are_fx = _selector_formula(_Fare, key="pl_fx_are")
+        _are_fi = _ins_de(_are_fx) if _are_fx is not None else {}
+        _fresca_def = float((_are_fi.get("GLICERINA_FRESCA") or {}).get("cant") or 0)
+        _recup_def = float((_are_fi.get("GLICERINA_RECUP") or {}).get("cant") or 0)
+        if _are_fx is not None:
+            are_formula_id = int(_are_fx["id_formula"])
+            are_formula_nombre = str(_are_fx["nombre"])
+        st.caption(f"Fórmula **{are_formula_nombre or '—'}** → carga fresca **{_fresca_def:,.0f} L** + recuperada "
+                   f"**{_recup_def:,.0f} L** (editá litros y tanque abajo). Fresca ~100% glicerina (≈80% glicerol); "
+                   "recuperada ~20% glicerina (≈60% glicerol). El glicerol de **ambas suma** al objetivo. "
+                   "Administrá nombres/valores en la sección 🧪 Fórmulas.")
         _gcf, _gcr = st.columns(2)
         with _gcf:
             st.markdown("**🟢 Glicerina fresca**")
-            gli_fresca = _pick_gli(cat, "GLICERINA", "pl_fresca", densidad_de)
+            gli_fresca = _pick_gli(cat, "GLICERINA", "pl_fresca", densidad_de, default_l=_fresca_def)
         with _gcr:
             st.markdown("**🟡 Glicerina recuperada**")
-            gli_recup = _pick_gli(cat, "GLICERINA-RECUP", "pl_recup", densidad_de)
+            gli_recup = _pick_gli(cat, "GLICERINA-RECUP", "pl_recup", densidad_de, default_l=_recup_def)
         glicerol_v = gli_fresca.get("glicerol_pct")
         gli_idt = gli_fresca.get("idt")
 
@@ -843,6 +855,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             "fuel_l": round(_fuel_l, 0) if proc == "PRODUCCION_ARE" else None,
             "are_objetivo_kg": round(are_kg, 0) if proc == "PRODUCCION_ARE" else None,
             "agua_agc_pct": round(agua_frac * 100, 2) if proc == "PRODUCCION_ARE" else None,
+            "formula_id": are_formula_id, "formula_nombre": are_formula_nombre,
             "glicerina_fuente": {"fresca_tanque": gli_fresca.get("idt"),
                                  "recuperada_tanque": gli_recup.get("idt")},
             "ajustes_manuales": (ajustes or None),

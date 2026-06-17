@@ -115,8 +115,17 @@ def render(USR, cat, conectar):
     cT1.metric("Temp. inicial (°C)", f"{float(params.get('temp_inicial_c', 0)):,.0f}")
     cT2.metric("Kg objetivo (ref.)", f"{float(params.get('kg_objetivo', 0)):,.0f} kg")
 
-    # ---- movimientos de stock heredados (ticket + origen) ----
-    st.markdown("##### 🔁 Movimientos de stock a ejecutar (origen MP e insumos)")
+    _fnom = params.get("formula_nombre")
+    if _fnom:
+        _extra = ""
+        if params.get("glicerina_fresca_l") is not None:
+            _extra = (f" · fresca {float(params.get('glicerina_fresca_l') or 0):,.0f} L · "
+                      f"recuperada {float(params.get('glicerina_recup_l') or 0):,.0f} L · "
+                      f"KOH {float(params.get('koh_kg') or 0):,.0f} kg · fuel {float(params.get('fuel_l') or 0):,.0f} L")
+        st.info(f"🧪 Fórmula usada: **{_fnom}**{_extra}")
+
+    # ---- de qué tanque/ticket viene cada materia prima e insumo ----
+    st.markdown("##### 📍 Origen de cada materia prima e insumo (tanque / ticket)")
     movs = listar_movimientos_plan(cat, id_batch)
     if movs.empty:
         st.warning("Esta producción no tiene movimientos de stock cargados.")
