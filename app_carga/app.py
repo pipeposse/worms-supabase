@@ -2865,6 +2865,37 @@ if st.session_state.section != "CARGAS":
                 if USR["rol"] not in ("SUPERVISOR", "ADMIN"):
                     st.info("Solo supervisor o admin pueden editar tanques.")
                 else:
+                    with st.expander("➕ Dar de alta un producto nuevo (no registrado en la base)", expanded=False):
+                        st.caption("Creá un producto que todavía no existe para poder asignarlo a un tanque. "
+                                   "Una vez creado, aparece en los selectores de producto.")
+                        _npc1, _npc2 = st.columns(2)
+                        _np_cod = (_npc1.text_input("Código *", key="np_cod", placeholder="ej. ACEITE-X") or "").strip().upper()
+                        _np_nom = (_npc2.text_input("Nombre *", key="np_nom", placeholder="ej. Aceite X") or "").strip()
+                        _npc3, _npc4, _npc5 = st.columns(3)
+                        _np_tipo = _npc3.selectbox("Tipo", ["MP", "INSUMO", "FINAL", "SUBPRODUCTO"], key="np_tipo")
+                        _np_corr = _npc4.selectbox("Corriente", ["", "VEGETAL", "ANIMAL"], key="np_corr")
+                        _np_dens = _npc5.number_input("Densidad (kg/L)", 0.0, 5.0, value=0.0, step=0.01, key="np_dens")
+                        if st.button("➕ Crear producto", key="np_crear"):
+                            if not _np_cod or not _np_nom:
+                                st.error("Código y nombre son obligatorios.")
+                            else:
+                                try:
+                                    with conectar(USR["id_usuario"]) as (conn, audit):
+                                        with conn.cursor() as cur:
+                                            cur.execute("SELECT 1 FROM produccion.dim_producto WHERE UPPER(codigo_producto)=%s", (_np_cod,))
+                                            if cur.fetchone():
+                                                raise RuntimeError(f"Ya existe un producto con código {_np_cod}.")
+                                            cur.execute(
+                                                "INSERT INTO produccion.dim_producto "
+                                                "(codigo_producto,nombre_producto,tipo_producto,corriente,densidad_g_ml,activo,creado_en,actualizado_en) "
+                                                "VALUES (%s,%s,%s,%s,%s,true,now(),now()) RETURNING id_producto",
+                                                (_np_cod, _np_nom, _np_tipo, (_np_corr or ""), (float(_np_dens) if _np_dens else None)))
+                                            _npid = cur.fetchone()[0]
+                                        audit.log("I", "dim_producto", int(_npid), {"codigo": _np_cod, "nombre": _np_nom})
+                                    st.success(f"Producto **{_np_cod}** creado. Ya podés asignarlo al tanque abajo.")
+                                    cat.clear(); st.rerun()
+                                except Exception as e:
+                                    st.exception(e)
                     _o2 = _panel.apply(lambda r: f"{r['nombre']} · {r['codigo']}" + (" · 📡 WeDo" if r["fuente_medicion"] == "WeDo" else ""), axis=1).tolist()
                     _s2 = st.selectbox("Tanque a editar", _o2, key="tq_sel_e")
                     _r2 = _panel.iloc[_o2.index(_s2)]
