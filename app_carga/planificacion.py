@@ -974,10 +974,12 @@ def listar_planificadas(cat):
 
 def listar_movimientos_plan(cat, id_batch):
     return cat(
-        "SELECT ticket_mov, estado_mov, rol, COALESCE(producto,codigo_insumo) AS item, "
-        "       fuente, COALESCE(tanque_label,ticket_porteria) AS origen, cantidad, unidad, kg, litros "
-        "FROM produccion.fact_movimiento_stock "
-        "WHERE id_batch=%s AND anulado IS NOT TRUE ORDER BY id_mov_stock", (int(id_batch),))
+        "SELECT m.ticket_mov, m.estado_mov, m.rol, COALESCE(m.producto,m.codigo_insumo) AS item, "
+        "       m.fuente, COALESCE(t.nombre, m.tanque_label, m.ticket_porteria) AS origen, "
+        "       m.cantidad, m.unidad, m.kg, m.litros "
+        "FROM produccion.fact_movimiento_stock m "
+        "LEFT JOIN produccion.dim_tanque t ON t.id_tanque=m.id_tanque "
+        "WHERE m.id_batch=%s AND m.anulado IS NOT TRUE ORDER BY m.id_mov_stock", (int(id_batch),))
 
 
 def confirmar_movimientos_plan(cur, id_batch, uid):

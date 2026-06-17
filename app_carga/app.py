@@ -3211,7 +3211,9 @@ if st.session_state.section != "CARGAS":
             from carga_por_id import render as _render_iniciar
             _render_iniciar(USR, cat, conectar, etapas_de_proceso, params_proceso)
         except Exception as _e:
+            import traceback as _tb
             st.error(f"No se pudo cargar Producción en planta: {_e}")
+            st.code(_tb.format_exc())
 
     elif st.session_state.section == "PLANIFICACION":
         # =================== CENTRO DE PLANIFICACIÓN (dirección) ===================
