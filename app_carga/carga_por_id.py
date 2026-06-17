@@ -33,13 +33,24 @@ def _ahora():
     return datetime.now(TZ_AR) if TZ_AR else datetime.now()
 
 
-def render(USR, cat, conectar):
+def _eval_interna(USR, cat, conectar, etapas_de_proceso, params_proceso):
+    if etapas_de_proceso is None or params_proceso is None:
+        return
+    st.divider()
+    st.header("🧪 Evaluación interna")
+    st.caption("De ahora en más las evaluaciones internas de las reacciones se cargan en esta sección.")
+    import eval_interna
+    eval_interna.render(USR, cat, conectar, etapas_de_proceso, params_proceso)
+
+
+def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
     st.title("▶️ Iniciar producción")
     st.caption("Elegí la producción planificada por dirección. Heredás todos los datos; sólo confirmás el checklist y la caldera.")
 
     planificadas = listar_planificadas(cat)
     if planificadas.empty:
         st.info("No hay producciones planificadas pendientes. La dirección las crea en el Centro de Planificación.")
+        _eval_interna(USR, cat, conectar, etapas_de_proceso, params_proceso)
         return
 
     opts = {
@@ -247,3 +258,4 @@ def render(USR, cat, conectar):
             st.balloons()
         except Exception as e:
             st.error(f"No se pudo iniciar: {e}")
+    _eval_interna(USR, cat, conectar, etapas_de_proceso, params_proceso)
