@@ -44,7 +44,7 @@ def _eval_interna(USR, cat, conectar, etapas_de_proceso, params_proceso):
 
 
 def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
-    st.title("▶️ Iniciar producción")
+    st.title("👷 Producción en planta")
     st.caption("Elegí la producción planificada por dirección. Heredás todos los datos; sólo confirmás el checklist y la caldera.")
 
     planificadas = listar_planificadas(cat)

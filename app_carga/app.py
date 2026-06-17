@@ -230,7 +230,7 @@ USR = st.session_state.user
 
 # ---- Permisos por usuario sobre las secciones de la página ----
 SECCIONES_APP = [
-    ("CARGAS", "🏭 Cargas"), ("INICIAR", "▶️ Iniciar producción"), ("VISTAS", "📊 Vistas de producción"),
+    ("CARGAS", "🏭 Cargas"), ("INICIAR", "👷 Producción en planta"), ("VISTAS", "📊 Vistas de producción"),
     ("LAB", "🧪 Laboratorio"), ("PORT", "🚛 Portería"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"),
     ("PLANIFICACION", "🗓️ Centro de Planificación"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
     ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
@@ -334,7 +334,7 @@ if st.session_state.section is None:
 
     tiles = [
         ("🏭", "Cargas", "Carga de producción: armado, etapas, producto final y anulaciones.", "CARGAS", "land_cargas", True),
-        ("▶️", "Iniciar producción", "Elegí una producción planificada por dirección y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
+        ("👷", "Producción en planta", "Elegí una producción planificada por dirección y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
         ("📊", "Vistas de producción", "Producción, consumos y tiempos por sector + informe mensual (kg/L/TN).", "VISTAS", "land_vistas", True),
         ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
         ("🚛", "Portería", "Pesajes de portería: filtros, peso por producto y descarga.", "PORT", "land_port", False),
@@ -3208,7 +3208,7 @@ if st.session_state.section != "CARGAS":
             from carga_por_id import render as _render_iniciar
             _render_iniciar(USR, cat, conectar, etapas_de_proceso, params_proceso)
         except Exception as _e:
-            st.error(f"No se pudo cargar Iniciar producción: {_e}")
+            st.error(f"No se pudo cargar Producción en planta: {_e}")
 
     elif st.session_state.section == "PLANIFICACION":
         # =================== CENTRO DE PLANIFICACIÓN (dirección) ===================
