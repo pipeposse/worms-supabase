@@ -1039,6 +1039,7 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
             try:
                 df = cat(
                     "SELECT v.id_tanque, v.codigo, v.nombre, COALESCE(v.kg_actual,0) kg, COALESCE(v.litros_actual,0) lt, "
+                    "p.codigo_producto prod_cod, p.nombre_producto prod_nombre, "
                     "pt.acidez_pct, pt.agua_pct, pt.sedimentos_pct, pt.densidad_g_ml, pt.ppm_azufre, pt.ppm_fosforo, "
                     "pt.ultima_evaluacion_ts, pt.corriente, (pt.id_param IS NOT NULL) tiene_param "
                     "FROM produccion.vw_stock_tanque_actual v "
@@ -1053,48 +1054,54 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                 st.caption(f"Sin tanques **con stock** de {cod}.")
             else:
                 def _tlab(r):
-                    s = f"{r['codigo']} · {float(r['kg'])/1000:,.1f} TN"
+                    s = f"{r['prod_cod']} · {r['codigo']} ({r['nombre']}) · {float(r['lt']):,.0f} L"
                     if pd.notna(r.get('corriente')):
                         s += f" · {str(r['corriente']).lower()}"
                     s += f" · ac {float(r['acidez_pct']):.2f}%" if pd.notna(r.get('acidez_pct')) else " · ac s/d"
                     s += " · ✅ parámetros" if r.get('tiene_param') else " · ⚠️ SIN parámetros"
                     return s
                 opts = df.apply(_tlab, axis=1).tolist()
-                sel = st.selectbox(f"Tanque con {cod}", opts, key=f"{key_prefix}_tksel")
-                row = df.iloc[opts.index(sel)]
-                _stock = float(row["kg"] or 0)
-                if not row.get("tiene_param"):
-                    st.warning(f"⚠️ **{row['codigo']}** no tiene parámetros de laboratorio cargados. "
-                               "La receta no podrá heredar acidez/agua/azufre. Cargalos en *Tanques → 🧪 Laboratorio*.")
-                _tank_avg = {}
-                for _k, _dst, _div in [("acidez_pct", "prc_acidez", 100.0), ("agua_pct", "prc_agua", 100.0),
-                                       ("sedimentos_pct", "prc_sedimentos", 100.0), ("densidad_g_ml", "densidad__g_ml", 1.0),
-                                       ("ppm_azufre", "ppm_azufre", 1.0), ("ppm_fosforo", "ppm_fosforo", 1.0)]:
-                    _v = row.get(_k)
-                    if pd.notna(_v):
-                        _tank_avg[_dst] = float(_v) / _div
-                _ev = row.get("ultima_evaluacion_ts")
-                _ev_txt = pd.to_datetime(_ev).strftime("%d/%m/%Y") if pd.notna(_ev) else "sin evaluación"
-                _ac_txt = f"{float(row['acidez_pct']):.2f}%" if pd.notna(row.get("acidez_pct")) else "s/d"
-                _stock_lt = float(row.get("lt") or 0)
-                _denst = (_stock / _stock_lt) if _stock_lt > 0 else (float(row["densidad_g_ml"]) if pd.notna(row.get("densidad_g_ml")) else (densidad_de(cod) or 0.92))
-                st.caption(f"Disponible: {_stock_lt:,.0f} L · {_stock:,.0f} kg ({_stock/1000:,.1f} TN) · acidez {_ac_txt} · última eval: {_ev_txt}")
-                _falta_kg = (target_kg - kg_port) if target_kg else _stock
-                _falta_lt = (_falta_kg / _denst) if _denst else 0.0
-                lt_tk = float(st.number_input(
-                    "Litros desde tanque", min_value=0.0,
-                    value=float(max(0.0, round(_falta_lt))) if (_falta_lt and _falta_lt > 0) else 0.0,
-                    step=100.0, key=f"{key_prefix}_tklt"))
-                kg_tk = lt_tk * _denst
-                if kg_tk > 0:
-                    st.caption(f"≈ {kg_tk:,.0f} kg · densidad {_denst:.3f} kg/L")
-                    portions.append({"fuente": "TANQUE", "ticket": None, "id_tanque": int(row["id_tanque"]), "kg": kg_tk})
-                    parts_lab.append((kg_tk, _tank_avg))
-                    _tcorr = str(row.get("corriente")).upper() if pd.notna(row.get("corriente")) else None
-                    if _tcorr:
-                        parts_corr.append((kg_tk, _tcorr))
-                if kg_tk > _stock:
-                    st.warning("⚠️ Supera el stock del tanque (se registra el movimiento igual).")
+                sels = st.multiselect(f"Tanques con {cod} (hasta 2)", opts, key=f"{key_prefix}_tksel",
+                                      help="Combiná hasta 2 tanques. El producto del tanque se ve al inicio de cada opción.")
+                if len(sels) > 2:
+                    st.warning("Máximo 2 tanques: se toman los primeros 2.")
+                    sels = sels[:2]
+                for _i, _s in enumerate(sels):
+                    row = df.iloc[opts.index(_s)]
+                    _stock = float(row["kg"] or 0)
+                    _stock_lt = float(row.get("lt") or 0)
+                    _denst = (_stock / _stock_lt) if _stock_lt > 0 else (float(row["densidad_g_ml"]) if pd.notna(row.get("densidad_g_ml")) else (densidad_de(cod) or 0.92))
+                    if not row.get("tiene_param"):
+                        st.warning(f"⚠️ **{row['codigo']}** no tiene parámetros de laboratorio cargados. "
+                                   "La receta no podrá heredar acidez/agua/azufre. Cargalos en *Tanques → 🧪 Laboratorio*.")
+                    _tank_avg = {}
+                    for _k, _dst, _div in [("acidez_pct", "prc_acidez", 100.0), ("agua_pct", "prc_agua", 100.0),
+                                           ("sedimentos_pct", "prc_sedimentos", 100.0), ("densidad_g_ml", "densidad__g_ml", 1.0),
+                                           ("ppm_azufre", "ppm_azufre", 1.0), ("ppm_fosforo", "ppm_fosforo", 1.0)]:
+                        _v = row.get(_k)
+                        if pd.notna(_v):
+                            _tank_avg[_dst] = float(_v) / _div
+                    _ev = row.get("ultima_evaluacion_ts")
+                    _ev_txt = pd.to_datetime(_ev).strftime("%d/%m/%Y") if pd.notna(_ev) else "sin evaluación"
+                    _ac_txt = f"{float(row['acidez_pct']):.2f}%" if pd.notna(row.get("acidez_pct")) else "s/d"
+                    st.caption(f"**{row['codigo']}** — Disponible: {_stock_lt:,.0f} L · {_stock:,.0f} kg ({_stock/1000:,.1f} TN) · acidez {_ac_txt} · última eval: {_ev_txt}")
+                    _falta_kg = (target_kg - kg_port - kg_tk) if target_kg else _stock
+                    _falta_lt = (_falta_kg / _denst) if _denst else 0.0
+                    lt_tk = float(st.number_input(
+                        f"Litros desde {row['codigo']}", min_value=0.0,
+                        value=float(max(0.0, round(_falta_lt))) if (_falta_lt and _falta_lt > 0) else 0.0,
+                        step=100.0, key=f"{key_prefix}_tklt_{_i}"))
+                    _kg_this = lt_tk * _denst
+                    if _kg_this > 0:
+                        st.caption(f"≈ {_kg_this:,.0f} kg · densidad {_denst:.3f} kg/L")
+                        portions.append({"fuente": "TANQUE", "ticket": None, "id_tanque": int(row["id_tanque"]), "kg": _kg_this})
+                        parts_lab.append((_kg_this, _tank_avg))
+                        _tcorr = str(row.get("corriente")).upper() if pd.notna(row.get("corriente")) else None
+                        if _tcorr:
+                            parts_corr.append((_kg_this, _tcorr))
+                        kg_tk += _kg_this
+                    if _kg_this > _stock:
+                        st.warning(f"⚠️ {row['codigo']}: supera el stock del tanque (se registra igual).")
     total = kg_port + kg_tk
     # Promedio ponderado por kg de cada parámetro entre todas las fuentes
     lab_avg = {}
