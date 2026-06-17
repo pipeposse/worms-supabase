@@ -592,13 +592,13 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     _pct_llen = (litros_carga / cap * 100.0) if cap else 0.0
     if proc == "PRODUCCION_ARE":
         lc1, lc2, lc3, lc4 = st.columns(4)
-        lc1.metric("MP cargada", f"{litros_mp:,.0f} L", f"{kg_used/1000:,.1f} TN")
+        lc1.metric("MP cargada", f"{litros_mp:,.0f} L", f"{kg_used:,.0f} kg · {kg_used/1000:,.1f} TN")
         lc2.metric("Glicerina (fresca+recup.)", f"{litros_gli:,.0f} L")
         lc3.metric("Capacidad reactor", f"{cap:,.0f} L")
         lc4.metric("Llenado del reactor", f"{_pct_llen:.0f}%", help="Incluye MP + glicerina fresca + recuperada")
     else:
         lc1, lc2, lc3 = st.columns(3)
-        lc1.metric("MP cargada", f"{litros_mp:,.0f} L", f"{kg_used/1000:,.1f} TN")
+        lc1.metric("MP cargada", f"{litros_mp:,.0f} L", f"{kg_used:,.0f} kg · {kg_used/1000:,.1f} TN")
         lc2.metric("Capacidad reactor", f"{cap:,.0f} L")
         lc3.metric("Llenado del reactor", f"{_pct_llen:.0f}%")
     st.progress(min(1.0, max(0.0, _pct_llen / 100.0)))

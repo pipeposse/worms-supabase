@@ -106,7 +106,7 @@ def render(USR, cat, conectar):
     pct_llen = (litros_mp / cap_l * 100.0) if cap_l else 0.0
 
     c5, c6, c7, c8 = st.columns(4)
-    c5.metric("MP a cargar", f"{litros_mp:,.0f} L", f"{kg_mp/1000:,.1f} TN")
+    c5.metric("MP a cargar", f"{litros_mp:,.0f} L", f"{kg_mp:,.0f} kg · {kg_mp/1000:,.1f} TN")
     c6.metric("Capacidad reactor", f"{cap_l:,.0f} L")
     c7.metric("Llenado del reactor", f"{pct_llen:.0f}%")
     c8.metric("Tiempo estimado (h)", f"{float(d['tiempo_estimado_horas'] or 0):,.1f}")

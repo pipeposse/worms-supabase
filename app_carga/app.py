@@ -980,18 +980,22 @@ def selector_fuente_mp(cod, key_prefix):
     sel = st.selectbox(f"Tanque con {cod}", opts, key=f"{key_prefix}_tk")
     row = df.iloc[opts.index(sel)]
     _stock_kg = float(row["kg"] or 0)
+    _stock_lt = float(row["lt"] or 0)
+    _dens = (_stock_kg / _stock_lt) if _stock_lt > 0 else (densidad_de(cod) or 0.92)
     if not row.get("tiene_param"):
         st.warning(f"⚠️ **{row['codigo']}** no tiene parámetros de laboratorio cargados. "
                    "Cargalos en *Tanques → 🧪 Laboratorio* para que la receta herede acidez/agua/azufre.")
     st.markdown(
         f"<div class='kpi' style='margin:6px 0'><div class='l'>Stock disponible en tanque</div>"
-        f"<div class='v'>{_stock_kg/1000:,.1f}<span style='font-size:1rem;font-weight:700'> TN</span></div>"
-        f"<div class='s'>{float(row['lt']):,.0f} L · capacidad {int(row['cap'] or 0):,} L</div></div>",
+        f"<div class='v'>{_stock_lt:,.0f}<span style='font-size:1rem;font-weight:700'> L</span></div>"
+        f"<div class='s'>{_stock_kg:,.0f} kg · {_stock_kg/1000:,.1f} TN · capacidad {int(row['cap'] or 0):,} L</div></div>",
         unsafe_allow_html=True)
-    kg = float(st.number_input(
-        f"Kg a usar de {cod}", min_value=0.0,
-        value=float(round(_stock_kg)) if _stock_kg else 0.0, step=100.0, key=f"{key_prefix}_kg"))
-    if kg > _stock_kg:
+    lt = float(st.number_input(
+        f"Litros a usar de {cod}", min_value=0.0,
+        value=float(round(_stock_lt)) if _stock_lt else 0.0, step=100.0, key=f"{key_prefix}_lt"))
+    kg = lt * _dens
+    st.caption(f"≈ {kg:,.0f} kg · {kg/1000:,.2f} TN  ·  densidad {_dens:.3f} kg/L")
+    if lt > _stock_lt:
         st.warning("⚠️ La cantidad supera el stock actual del tanque (igual se registrará el movimiento).")
     return {"fuente": "TANQUE", "id_tanque": int(row["id_tanque"]), "kg": kg, "ticket": None, "stock_kg": _stock_kg}
 
@@ -1014,7 +1018,8 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
             _det, _avg, _ml, _mp, _mapp = params_de_tickets_lab(tkstr, cod)
             kg_port = float(pd.to_numeric(_det["kg"], errors="coerce").sum()) if (not _det.empty and "kg" in _det.columns) else 0.0
             if kg_port > 0:
-                st.caption(f"Portería: **{kg_port:,.0f} kg · {kg_port/1000:,.2f} TN**")
+                _dpc = densidad_de(cod) or 0.92
+                st.caption(f"Portería: **{kg_port/_dpc:,.0f} L** · {kg_port:,.0f} kg · {kg_port/1000:,.2f} TN")
                 portions.append({"fuente": "TICKET", "ticket": (tkstr or None), "id_tanque": None, "kg": kg_port})
                 parts_lab.append((kg_port, _avg or {}))
                 try:
@@ -1071,13 +1076,18 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                 _ev = row.get("ultima_evaluacion_ts")
                 _ev_txt = pd.to_datetime(_ev).strftime("%d/%m/%Y") if pd.notna(_ev) else "sin evaluación"
                 _ac_txt = f"{float(row['acidez_pct']):.2f}%" if pd.notna(row.get("acidez_pct")) else "s/d"
-                st.caption(f"Disponible: {_stock/1000:,.1f} TN · acidez {_ac_txt} · última eval: {_ev_txt}")
-                _falta = (target_kg - kg_port) if target_kg else _stock
-                kg_tk = float(st.number_input(
-                    "Kg desde tanque", min_value=0.0,
-                    value=float(max(0.0, round(_falta))) if (_falta and _falta > 0) else 0.0,
-                    step=100.0, key=f"{key_prefix}_tkkg"))
+                _stock_lt = float(row.get("lt") or 0)
+                _denst = (_stock / _stock_lt) if _stock_lt > 0 else (float(row["densidad_g_ml"]) if pd.notna(row.get("densidad_g_ml")) else (densidad_de(cod) or 0.92))
+                st.caption(f"Disponible: {_stock_lt:,.0f} L · {_stock:,.0f} kg ({_stock/1000:,.1f} TN) · acidez {_ac_txt} · última eval: {_ev_txt}")
+                _falta_kg = (target_kg - kg_port) if target_kg else _stock
+                _falta_lt = (_falta_kg / _denst) if _denst else 0.0
+                lt_tk = float(st.number_input(
+                    "Litros desde tanque", min_value=0.0,
+                    value=float(max(0.0, round(_falta_lt))) if (_falta_lt and _falta_lt > 0) else 0.0,
+                    step=100.0, key=f"{key_prefix}_tklt"))
+                kg_tk = lt_tk * _denst
                 if kg_tk > 0:
+                    st.caption(f"≈ {kg_tk:,.0f} kg · densidad {_denst:.3f} kg/L")
                     portions.append({"fuente": "TANQUE", "ticket": None, "id_tanque": int(row["id_tanque"]), "kg": kg_tk})
                     parts_lab.append((kg_tk, _tank_avg))
                     _tcorr = str(row.get("corriente")).upper() if pd.notna(row.get("corriente")) else None
