@@ -2924,48 +2924,38 @@ if st.session_state.section != "CARGAS":
                     _cap = st.number_input("Capacidad (litros)", 0.0, 5_000_000.0, step=100.0,
                                            value=float(_r2["capacidad_litros"]) if pd.notna(_r2["capacidad_litros"]) else 0.0, key="tq_cap_e")
                     if _es_wedo:
-                        st.info("🛰️ Tanque **WeDo**: el stock lo maneja el sensor radar. Acá solo se edita la **capacidad**.")
-                        if st.button("Guardar capacidad", type="primary", use_container_width=True, key="tq_save_e"):
-                            try:
-                                with conectar(USR["id_usuario"]) as (conn, audit):
-                                    with conn.cursor() as cur:
-                                        cur.execute("UPDATE produccion.dim_tanque SET capacidad_litros=%s WHERE id_tanque=%s",
-                                                    (float(_cap) if _cap else None, _idt2))
-                                    audit.log("U", "dim_tanque", _idt2, {"capacidad": float(_cap) if _cap else None})
-                                st.success("Capacidad actualizada.")
-                                cat.clear(); st.rerun()
-                            except Exception as e:
-                                st.exception(e)
-                    else:
-                        _codes = _prods["codigo_producto"].tolist()
-                        _pp2 = _prods[_prods["id_producto"] == _r2["id_producto_principal"]]["codigo_producto"].tolist()
-                        _ppal_sel = st.selectbox("Producto que contiene (principal)", ["(sin asignar)"] + _codes,
-                                                 index=(_codes.index(_pp2[0]) + 1 if _pp2 else 0), key="tq_ppal_e")
-                        _curp = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
-                                    "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto WHERE tp.id_tanque=%s", (_idt2,))["codigo_producto"].tolist()
-                        _puede = st.multiselect("Productos que puede almacenar", _codes, default=_curp, key="tq_puede_e")
-                        _act = st.checkbox("Tanque activo (en uso)", value=bool(_r2["activo"]), key="tq_act_e")
-                        if st.button("Guardar tanque", type="primary", use_container_width=True, key="tq_save_e"):
-                            try:
-                                with conectar(USR["id_usuario"]) as (conn, audit):
-                                    with conn.cursor() as cur:
-                                        _pidp = None
-                                        if _ppal_sel != "(sin asignar)":
-                                            cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s", (_ppal_sel,))
-                                            _pidp = cur.fetchone()[0]
-                                        cur.execute("UPDATE produccion.dim_tanque SET id_producto_principal=%s, capacidad_litros=%s, activo=%s WHERE id_tanque=%s",
-                                                    (_pidp, (float(_cap) if _cap else None), bool(_act), _idt2))
-                                        cur.execute("DELETE FROM produccion.dim_tanque_producto WHERE id_tanque=%s", (_idt2,))
-                                        for c in _puede:
-                                            cur.execute("INSERT INTO produccion.dim_tanque_producto (id_tanque,id_producto,es_principal) "
-                                                        "SELECT %s, id_producto, %s FROM produccion.dim_producto WHERE codigo_producto=%s "
-                                                        "ON CONFLICT (id_tanque,id_producto) DO NOTHING",
-                                                        (_idt2, (c == _ppal_sel), c))
-                                    audit.log("U", "dim_tanque", _idt2, {"principal": _ppal_sel, "puede": len(_puede)})
-                                st.success("Tanque actualizado.")
-                                cat.clear(); st.rerun()
-                            except Exception as e:
-                                st.exception(e)
+                        st.info("🛰️ Tanque **WeDo**: el **stock** lo maneja el sensor radar "
+                                "(se corrige en *Cargar medición → incluir WeDo*). Acá podés editar "
+                                "**producto, capacidad y estado**.")
+                    _codes = _prods["codigo_producto"].tolist()
+                    _pp2 = _prods[_prods["id_producto"] == _r2["id_producto_principal"]]["codigo_producto"].tolist()
+                    _ppal_sel = st.selectbox("Producto que contiene (principal)", ["(sin asignar)"] + _codes,
+                                             index=(_codes.index(_pp2[0]) + 1 if _pp2 else 0), key="tq_ppal_e")
+                    _curp = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
+                                "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto WHERE tp.id_tanque=%s", (_idt2,))["codigo_producto"].tolist()
+                    _puede = st.multiselect("Productos que puede almacenar", _codes, default=_curp, key="tq_puede_e")
+                    _act = st.checkbox("Tanque activo (en uso)", value=bool(_r2["activo"]), key="tq_act_e")
+                    if st.button("Guardar tanque", type="primary", use_container_width=True, key="tq_save_e"):
+                        try:
+                            with conectar(USR["id_usuario"]) as (conn, audit):
+                                with conn.cursor() as cur:
+                                    _pidp = None
+                                    if _ppal_sel != "(sin asignar)":
+                                        cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s", (_ppal_sel,))
+                                        _pidp = cur.fetchone()[0]
+                                    cur.execute("UPDATE produccion.dim_tanque SET id_producto_principal=%s, capacidad_litros=%s, activo=%s WHERE id_tanque=%s",
+                                                (_pidp, (float(_cap) if _cap else None), bool(_act), _idt2))
+                                    cur.execute("DELETE FROM produccion.dim_tanque_producto WHERE id_tanque=%s", (_idt2,))
+                                    for c in _puede:
+                                        cur.execute("INSERT INTO produccion.dim_tanque_producto (id_tanque,id_producto,es_principal) "
+                                                    "SELECT %s, id_producto, %s FROM produccion.dim_producto WHERE codigo_producto=%s "
+                                                    "ON CONFLICT (id_tanque,id_producto) DO NOTHING",
+                                                    (_idt2, (c == _ppal_sel), c))
+                                audit.log("U", "dim_tanque", _idt2, {"principal": _ppal_sel, "puede": len(_puede)})
+                            st.success("Tanque actualizado.")
+                            cat.clear(); st.rerun()
+                        except Exception as e:
+                            st.exception(e)
 
             # ---------- Alta / baja de tanques ----------
             with g_abm:
