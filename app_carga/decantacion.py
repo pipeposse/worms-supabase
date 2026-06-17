@@ -208,8 +208,12 @@ def produccion(USR, cat, conectar):
     if cno.button("❌ No flota (seguir)", use_container_width=True, key="dec_flota_no"):
         _set_flota(USR, cat, conectar, int(b["id_batch"]), False)
         st.rerun()
-    if pd.notna(b["solubilidad_flota"]):
-        st.info("Última prueba: **flota ✅ → terminado**" if b["solubilidad_flota"] else "Última prueba: **no flota** (seguir decantando)")
+    _sh = cat("SELECT to_char(ts,'DD/MM HH24:MI') AS \"Hora\", "
+              "CASE WHEN flota THEN 'Flota ✅ (terminado)' ELSE 'No flota' END AS \"Resultado\" "
+              "FROM produccion.fact_decant_solubilidad WHERE id_batch=%s ORDER BY ts DESC", (int(b["id_batch"]),))
+    if _sh is not None and not _sh.empty:
+        st.caption("Historial de pruebas de solubilidad (con horario):")
+        st.dataframe(_sh, use_container_width=True, hide_index=True)
 
     if st.button("📤 Enviar muestra de purga a laboratorio", key="dec_envio_lab"):
         st.success("Muestra de purga marcada para laboratorio. La verás en la sección Laboratorio "
@@ -220,9 +224,15 @@ def produccion(USR, cat, conectar):
     if pd.isna(gp) or gp is None:
         st.caption("Laboratorio todavía no cargó el % de glicerina del material purgado.")
     elif bool(b["purga_ok"]):
-        st.success(f"✅ Glicerina del purgado **{float(gp):.1f}% (< {PURGA_CORTE:.0f}%)** → **purga OK**. Podés confirmar y enviar a destino.")
+        st.success(f"✅ Última purga **{float(gp):.1f}% (< {PURGA_CORTE:.0f}%)** → **purga OK**. Podés confirmar y enviar a destino.")
     else:
-        st.warning(f"🔴 Glicerina del purgado **{float(gp):.1f}% (≥ {PURGA_CORTE:.0f}%)** → **seguí decantando**.")
+        st.warning(f"🔴 Última purga **{float(gp):.1f}% (≥ {PURGA_CORTE:.0f}%)** → **seguí decantando**.")
+    _ph = cat("SELECT to_char(ts,'DD/MM HH24:MI') AS \"Hora\", glicerina_pct AS \"Glicerina %%\", "
+              "CASE WHEN purga_ok THEN 'Purga OK ✅' ELSE 'Seguir' END AS \"Resultado\" "
+              "FROM produccion.fact_decant_purga WHERE id_batch=%s ORDER BY ts DESC", (int(b["id_batch"]),))
+    if _ph is not None and not _ph.empty:
+        st.caption("Historial de evaluaciones de purga (laboratorio, con horario):")
+        st.dataframe(_ph, use_container_width=True, hide_index=True)
 
     st.divider()
     st.markdown("##### ✅ Confirmar decantación y enviar a destino")
@@ -286,9 +296,11 @@ def _set_flota(USR, cat, conectar, id_batch, flota):
     try:
         with conectar(int(USR["id_usuario"])) as (conn, audit):
             with conn.cursor() as cur:
+                cur.execute("INSERT INTO produccion.fact_decant_solubilidad (id_batch, flota, id_usuario) "
+                            "VALUES (%s,%s,%s)", (int(id_batch), bool(flota), int(USR["id_usuario"])))
                 cur.execute("UPDATE produccion.fact_batch_proceso SET solubilidad_flota=%s, solubilidad_ts=now() "
                             "WHERE id_batch=%s", (bool(flota), int(id_batch)))
-            audit.log("U", "fact_batch_proceso", int(id_batch), {"flota": bool(flota)})
+            audit.log("I", "fact_decant_solubilidad", int(id_batch), {"flota": bool(flota)})
         cat.clear()
     except Exception as e:
         st.exception(e)
@@ -306,45 +318,107 @@ def laboratorio(USR, cat, conectar):
     uid = int(USR["id_usuario"])
 
     st.markdown("##### 🧴 Purga: % de glicerina del material purgado")
-    gp = st.number_input("% glicerina del purgado", 0.0, 100.0,
-                         value=float(b["purga_glicerina_pct"]) if pd.notna(b["purga_glicerina_pct"]) else 0.0,
-                         step=0.1, key="dec_lab_gli")
+    gp = st.number_input("% glicerina del purgado", 0.0, 100.0, value=0.0, step=0.1, key="dec_lab_gli")
+    _obsp = st.text_input("Observación (opcional)", key="dec_lab_purga_obs")
     if st.button("💾 Guardar % glicerina (purga)", type="primary", key="dec_lab_save_gli"):
         ok = gp < PURGA_CORTE
         try:
             with conectar(uid) as (conn, audit):
                 with conn.cursor() as cur:
+                    cur.execute("INSERT INTO produccion.fact_decant_purga (id_batch, glicerina_pct, purga_ok, observacion, id_usuario) "
+                                "VALUES (%s,%s,%s,%s,%s)", (int(b["id_batch"]), float(gp), bool(ok), (_obsp or None), uid))
                     cur.execute("UPDATE produccion.fact_batch_proceso "
                                 "SET purga_glicerina_pct=%s, purga_ok=%s, purga_lab_ts=now() WHERE id_batch=%s",
                                 (float(gp), bool(ok), int(b["id_batch"])))
-                audit.log("U", "fact_batch_proceso", int(b["id_batch"]), {"purga_pct": gp, "ok": ok})
+                audit.log("I", "fact_decant_purga", int(b["id_batch"]), {"purga_pct": gp, "ok": ok})
             st.success(f"Glicerina {gp:.1f}% → " + ("✅ purga OK (< 3%)" if ok else "🔴 seguir decantando (≥ 3%)"))
             cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
+    _ph = cat("SELECT to_char(ts,'DD/MM HH24:MI') AS \"Hora\", glicerina_pct AS \"Glicerina %%\", "
+              "CASE WHEN purga_ok THEN 'Purga OK ✅' ELSE 'Seguir' END AS \"Resultado\", "
+              "COALESCE(observacion,'') AS \"Obs\" "
+              "FROM produccion.fact_decant_purga WHERE id_batch=%s ORDER BY ts DESC", (int(b["id_batch"]),))
+    if _ph is not None and not _ph.empty:
+        st.caption("Historial de evaluaciones de purga (con horario):")
+        st.dataframe(_ph, use_container_width=True, hide_index=True)
 
     st.markdown("##### 🎯 Evaluación del producto final (ticket " + (b["ticket_producto_final"] or "—") + ")")
-    fl = _params(b).get("final_lab") or {}
-    e1, e2 = st.columns(2)
-    az = e1.number_input("Azufre (ppm)", 0.0, 100000.0,
-                         value=float(fl.get("azufre") or 0.0), step=1.0, key="dec_lab_az")
-    fo = e2.number_input("Fósforo (ppm)", 0.0, 100000.0,
-                         value=float(fl.get("fosforo") or 0.0), step=1.0, key="dec_lab_fo")
-    if az and fo:
-        if az < SP_EXPORT and fo < SP_EXPORT:
-            st.success(f"✅ Azufre {az:.0f} · Fósforo {fo:.0f} (< {SP_EXPORT:.0f}) → **apto exportación** (tanques de exportación recomendados).")
-        else:
-            st.warning(f"Azufre {az:.0f} · Fósforo {fo:.0f} → no apto exportación.")
-    if st.button("💾 Guardar lab del producto final", key="dec_lab_save_fin"):
+    st.caption("Evaluación COMPLETA: producto, calidad y todos los parámetros. Se guarda en laboratorio "
+               "(lab_evaluaciones → procesos_lab) e impacta la base total. Puede haber varias (incluidos rechazos).")
+    _tkfin = b["ticket_producto_final"]
+    if not _tkfin:
+        st.info("Esta producción todavía no tiene ticket de producto final.")
+    else:
         try:
-            with conectar(uid) as (conn, audit):
-                with conn.cursor() as cur:
-                    cur.execute("UPDATE produccion.fact_batch_proceso "
-                                "SET parametros_proceso = COALESCE(parametros_proceso,'{}'::jsonb) "
-                                "      || jsonb_build_object('final_lab', jsonb_build_object('azufre',%s,'fosforo',%s)) "
-                                "WHERE id_batch=%s", (float(az), float(fo), int(b["id_batch"])))
-                audit.log("U", "fact_batch_proceso", int(b["id_batch"]), {"final_az": az, "final_fo": fo})
-            st.success("Evaluación del producto final guardada.")
-            cat.clear(); st.rerun()
-        except Exception as e:
-            st.exception(e)
+            _cals = cat("SELECT codigo FROM produccion.dic_calidad WHERE activo ORDER BY orden")["codigo"].tolist()
+        except Exception:
+            _cals = ["UNICA", "A", "B", "C", "D", "E"]
+        ef1, ef2, ef3, ef4 = st.columns(4)
+        _pbase = ef1.selectbox("Producto base", ["ARE", "AFE", "AG"], key="dec_fin_pbase")
+        _cal = ef2.selectbox("Calidad final", [""] + _cals, key="dec_fin_cal")
+        _rech = ef3.selectbox("Resultado", ["ACEPTADO", "RECHAZADO", "REMUESTREO"], key="dec_fin_rech")
+        _color = ef4.text_input("Color", key="dec_fin_color")
+        st.markdown("**Parámetros (%)**")
+        q1, q2, q3, q4 = st.columns(4)
+        _ac = q1.number_input("Acidez (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_ac")
+        _ag = q2.number_input("Agua (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_ag")
+        _sed = q3.number_input("Sedimentos (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_sed")
+        _prodp = q4.number_input("Producto (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_prodp")
+        q5, q6, q7, q8 = st.columns(4)
+        _hkf = q5.number_input("HKF (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_hkf")
+        _hex = q6.number_input("Hexano/imp. (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_hex")
+        _gliP = q7.number_input("Glicerina (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_gliP")
+        _poli = q8.number_input("Poliglicerol (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_poli")
+        st.markdown("**Otros**")
+        r1, r2, r3, r4 = st.columns(4)
+        _dens = r1.number_input("Densidad (kg/L)", 0.0, 5.0, value=0.0, step=0.001, key="dec_fin_dens")
+        _az = r2.number_input("Azufre (ppm)", 0.0, 100000.0, value=0.0, step=1.0, key="dec_fin_az")
+        _fo = r3.number_input("Fósforo (ppm)", 0.0, 100000.0, value=0.0, step=1.0, key="dec_fin_fo")
+        _temp = r4.number_input("Temp (°C)", 0.0, 300.0, value=0.0, step=1.0, key="dec_fin_temp")
+        _concl = st.text_input("Conclusión / observación", key="dec_fin_concl")
+        if _az and _fo:
+            if _az < SP_EXPORT and _fo < SP_EXPORT:
+                st.success(f"✅ Azufre {_az:.0f} · Fósforo {_fo:.0f} (< {SP_EXPORT:.0f}) → **apto exportación**.")
+            else:
+                st.warning(f"Azufre {_az:.0f} · Fósforo {_fo:.0f} → no apto exportación.")
+        if st.button("💾 Guardar evaluación del producto final", type="primary", key="dec_fin_save"):
+            try:
+                import lab_carga
+                _data = {"tipo_formulario": "GENERICO",
+                         "usuario_app": str(USR.get("nombre_full") or USR.get("id_usuario") or ""),
+                         "ticket": str(_tkfin), "producto_lab": _pbase,
+                         "calidad_final_lab": (_cal or None), "rechazado": _rech, "color": (_color or None),
+                         "prc_acidez": (_ac or None), "prc_agua": (_ag or None), "prc_sedimentos": (_sed or None),
+                         "prc_producto": (_prodp or None), "prc_hkf": (_hkf or None), "prc_hexano_impurezas": (_hex or None),
+                         "prc_glicerina": (_gliP or None), "prc_poliglicerol": (_poli or None),
+                         "densidad__g_ml": (_dens or None), "ppm_azufre": (_az or None), "ppm_fosforo": (_fo or None),
+                         "temp_celcius": (_temp or None), "conclusion": (_concl or None),
+                         "id_tanque_1": (int(b["id_tanque_are_final"]) if pd.notna(b["id_tanque_are_final"]) else None)}
+                _newid = lab_carga.insertar_evaluacion(_data)
+                with conectar(uid) as (conn, audit):
+                    with conn.cursor() as cur:
+                        try:
+                            cur.execute("UPDATE produccion.lab_evaluaciones SET fecha=now() WHERE id=%s AND fecha IS NULL", (int(_newid),))
+                        except Exception:
+                            pass
+                        cur.execute("UPDATE produccion.fact_batch_proceso "
+                                    "SET parametros_proceso = COALESCE(parametros_proceso,'{}'::jsonb) "
+                                    "  || jsonb_build_object('final_lab', jsonb_build_object('azufre',%s,'fosforo',%s,'calidad',%s,'producto',%s,'rechazado',%s)) "
+                                    "WHERE id_batch=%s",
+                                    (float(_az or 0), float(_fo or 0), (_cal or None), _pbase, _rech, int(b["id_batch"])))
+                    audit.log("U", "fact_batch_proceso", int(b["id_batch"]), {"final_lab_eval": int(_newid)})
+                st.success(f"Evaluación guardada en laboratorio (id {_newid}, ticket {_tkfin}). Espejada a procesos_lab.")
+                cat.clear(); st.rerun()
+            except Exception as e:
+                st.exception(e)
+        try:
+            _le = cat("SELECT to_char(fecha,'DD/MM HH24:MI') AS \"Fecha\", producto_lab AS \"Producto\", "
+                      "calidad_final_lab AS \"Calidad\", rechazado AS \"Resultado\", "
+                      "prc_acidez AS \"Acidez\", prc_agua AS \"Agua\", ppm_azufre AS \"Azufre\", ppm_fosforo AS \"Fósforo\" "
+                      "FROM produccion.v_procesos_lab_efectivo WHERE ticket=%s ORDER BY fecha DESC NULLS LAST", (str(_tkfin),))
+        except Exception:
+            _le = None
+        if _le is not None and not _le.empty:
+            st.caption("Historial de evaluaciones del ticket final (con horario; puede incluir rechazos):")
+            st.dataframe(_le, use_container_width=True, hide_index=True)
