@@ -403,6 +403,50 @@ def _productos_proceso(cat, sector, tipo, rol):
         "ORDER BY p.codigo_producto", (rol, tipo, sector))
 
 
+def _gli_tanques(cat, codigo):
+    """Tanques activos de un producto de glicerina, con stock y parámetros de lab del tanque."""
+    return cat(
+        "SELECT t.id_tanque, t.nombre, t.codigo, COALESCE(s.litros_actual,0) lt, COALESCE(s.kg_actual,0) kg, "
+        "       f.densidad_g_ml, f.agua_pct, "
+        "       (f.parametros_extra->>'glicerol_pct')::numeric AS glicerol, "
+        "       (f.parametros_extra->>'glicerina_pct')::numeric AS glicerina "
+        "FROM produccion.dim_tanque t "
+        "JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
+        "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
+        "LEFT JOIN LATERAL (SELECT densidad_g_ml, agua_pct, parametros_extra FROM produccion.fact_param_tanque fp "
+        "                   WHERE fp.id_tanque=t.id_tanque AND fp.id_producto=t.id_producto_principal "
+        "                   ORDER BY actualizado_en DESC NULLS LAST LIMIT 1) f ON true "
+        "WHERE t.activo AND p.codigo_producto=%s ORDER BY t.nombre", (codigo,))
+
+
+def _pick_gli(cat, codigo, key, densidad_de=None):
+    """Selector de un tanque de glicerina + litros a cargar. Devuelve dict con sus parámetros."""
+    res = {"idt": None, "nombre": None, "l": 0.0, "dens": None, "glicerina_pct": None,
+           "glicerol_pct": None, "glicerol_kg": 0.0, "kg": 0.0, "agua_pct": None}
+    df = _gli_tanques(cat, codigo)
+    if df is None or df.empty:
+        st.info("Sin tanques activos.")
+        return res
+    opts = ["(no usar)"] + df.apply(lambda r: f"{r['nombre']} · {float(r['lt'] or 0):,.0f} L disp.", axis=1).tolist()
+    sel = st.selectbox("Tanque", opts, key=f"{key}_tk", label_visibility="collapsed")
+    if sel == "(no usar)":
+        return res
+    r = df.iloc[opts.index(sel) - 1]
+    gpct = float(r["glicerol"]) if pd.notna(r["glicerol"]) else None
+    npct = float(r["glicerina"]) if pd.notna(r["glicerina"]) else None
+    dens = float(r["densidad_g_ml"]) if pd.notna(r["densidad_g_ml"]) else \
+        (float(densidad_de(codigo)) if (callable(densidad_de) and densidad_de(codigo)) else 1.1)
+    l = st.number_input("Litros a cargar", 0.0, 1_000_000.0, value=0.0, step=50.0, key=f"{key}_l")
+    st.caption(f"glicerina {npct or 0:.0f}% · glicerol {gpct or 0:.0f}% · "
+               f"agua {float(r['agua_pct'] or 0):.1f}% · dens {dens:g} kg/L")
+    res.update({"idt": int(r["id_tanque"]), "nombre": r["nombre"], "l": float(l), "dens": dens,
+                "glicerina_pct": npct, "glicerol_pct": gpct,
+                "agua_pct": (float(r["agua_pct"]) if pd.notna(r["agua_pct"]) else None),
+                "kg": float(l) * dens,
+                "glicerol_kg": float(l) * dens * ((npct or 0) / 100.0) * ((gpct or 0) / 100.0)})
+    return res
+
+
 def render(USR, cat, conectar, siguiente_identificador, H=None):
     if H is None:
         try:
@@ -490,7 +534,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         pf_lbl = list(fin_opts.keys())[0]
         st.info(f"Producto final: **{pf_lbl}**")
     else:
-        pf_lbl = st.selectbox("Producto final / calidad", list(fin_opts.keys()), key="pl_pf")
+        _keys = list(fin_opts.keys())
+        # PRODUCCION_ARE: ARE-B (id 41) es el predefinido
+        _def_i = next((i for i, k in enumerate(_keys) if fin_opts[k] == 41), 0) if proc == "PRODUCCION_ARE" else 0
+        pf_lbl = st.selectbox("Producto final / calidad", _keys, index=_def_i, key="pl_pf")
     pf_id = fin_opts[pf_lbl]
     _cal_codes = set(cat("SELECT codigo FROM produccion.dic_calidad")["codigo"].tolist())
     _raw = (fin_code.get(pf_id, "").split("-")[-1] or "").upper()
@@ -502,46 +549,29 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         calidad = "UNICA" if "UNICA" in _cal_codes else None
     pct_goma = None
 
-    # ---------- PRODUCCION_ARE: glicerina (lab) + catalizador ----------
-    glicerol_v = None
+    # ---------- PRODUCCION_ARE: glicerina a cargar (fresca + recuperada) ----------
+    glicerol_v = None              # % glicerol de referencia (fresca) — compatibilidad
     gli_ticket = None
-    catal = None
-    gli_idt = None    # fuente física: tanque de glicerina
-    gli_tkp = None    # fuente física: ticket de portería
+    catal = "POTASIO"              # ARE: catalizador hidróxido de potasio (KOH), cantidad fija por reactor
+    gli_idt = None
+    gli_tkp = None
+    gli_fresca = {"idt": None, "l": 0.0, "glicerol_kg": 0.0, "kg": 0.0, "dens": None}
+    gli_recup = {"idt": None, "l": 0.0, "glicerol_kg": 0.0, "kg": 0.0, "dens": None}
     if proc == "PRODUCCION_ARE":
         PMa = float(K("PMa", 282)); PMg = float(K("PMg", 92)); FE = float(K("factor_exceso_gli", 1.1))
-        st.markdown("#### 2 · Glicerina (laboratorio) — define el % glicerol y la glicerina total")
-        gdf = ultimas_muestras_glicerina(3) if callable(ultimas_muestras_glicerina) else pd.DataFrame()
-        if gdf is not None and not gdf.empty:
-            gopts = gdf.apply(lambda r: f"ticket {r['ticket']} · {r['fecha']} · glicerol {float(r['gli_glicerol'])*100:.2f}%", axis=1).tolist()
-            gsel = st.selectbox("Muestra de glicerina (lab)", gopts, key="pl_gli")
-            grow = gdf.iloc[gopts.index(gsel)]
-            glicerol_v = float(grow["gli_glicerol"]) * 100
-            gli_ticket = str(grow["ticket"])
-            st.caption(f"% glicerol de la muestra: **{glicerol_v:.2f}%** (ticket {gli_ticket}).")
-        else:
-            st.warning("No hay muestras de GLICERINA con glicerol en laboratorio. Cargá una para estimar la glicerina.")
-        catal = st.radio("Catalizador (excluyente)", ["NAOH", "POTASIO"], index=1, horizontal=True,
-                         format_func=lambda x: "🧪 Soda cáustica (NaOH)" if x == "NAOH" else "🧪 Hidróxido de potasio (KOH)",
-                         key="pl_catal")
-        st.caption("La glicerina recuperada vuelve en la **decantación** (se registra ahí con su muestra de lab), "
-                   "con cualquiera de los dos catalizadores.")
-        st.markdown("**Fuente física de la glicerina a cargar** (de dónde sale)")
-        gli_fuente = st.radio("Fuente de la glicerina", ["Muestra de lab (solo ticket)", "Tanque", "Ticket de portería"],
-                              horizontal=True, key="pl_gli_src", label_visibility="collapsed")
-        if gli_fuente == "Tanque":
-            _gtk = cat("SELECT id_tanque, nombre, codigo, COALESCE(litros_actual,0) lt, COALESCE(kg_actual,0) kgs "
-                       "FROM produccion.vw_tanque_panel WHERE activo AND producto_principal ILIKE 'GLICER' || '%' "
-                       "ORDER BY litros_actual DESC NULLS LAST")
-            if _gtk.empty:
-                st.warning("No hay tanques activos con glicerina como producto principal.")
-            else:
-                _gop = _gtk.apply(lambda r: f"{r['nombre']} · {r['codigo']} · {r['lt']:,.0f} L ({r['kgs']:,.0f} kg)", axis=1).tolist()
-                _gse = st.selectbox("Tanque de glicerina", _gop, key="pl_gli_tk")
-                gli_idt = int(_gtk.iloc[_gop.index(_gse)]["id_tanque"])
-        elif gli_fuente == "Ticket de portería":
-            gli_tkp = (st.text_input("Ticket de portería de la glicerina", key="pl_gli_tkp",
-                                     placeholder="ej. 12345") or "").strip() or None
+        st.markdown("#### 2 · Glicerina a cargar (fresca + recuperada)")
+        st.caption("Elegí de qué tanque sale cada glicerina y **cuántos litros**. La **fresca** es ~100% glicerina "
+                   "(≈80% glicerol); la **recuperada** es ~20% glicerina (≈60% glicerol). El glicerol de **ambas suma** "
+                   "para alcanzar el objetivo (la recuperada ya se cuenta en el total).")
+        _gcf, _gcr = st.columns(2)
+        with _gcf:
+            st.markdown("**🟢 Glicerina fresca**")
+            gli_fresca = _pick_gli(cat, "GLICERINA", "pl_fresca", densidad_de)
+        with _gcr:
+            st.markdown("**🟡 Glicerina recuperada**")
+            gli_recup = _pick_gli(cat, "GLICERINA-RECUP", "pl_recup", densidad_de)
+        glicerol_v = gli_fresca.get("glicerol_pct")
+        gli_idt = gli_fresca.get("idt")
 
     # ---------- Fuente de la MP (tanques filtrados por producto + lab ponderado) ----------
     st.markdown(f"#### 3 · Fuente de la materia prima ({mp})")
@@ -555,13 +585,22 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     kg_used = float(kg_src) if (kg_src and kg_src > 0) else float(q_ag)
     acidez = (float(lab_avg["prc_acidez"]) * 100) if lab_avg.get("prc_acidez") is not None else (acidez_obj or 0.0)
 
-    # ---------- Llenado del reactor (en LITROS) ----------
+    # ---------- Llenado del reactor (en LITROS) — incluye MP + glicerina ----------
     litros_mp = (kg_used / dens) if dens else 0.0
-    _pct_llen = (litros_mp / cap * 100.0) if cap else 0.0
-    lc1, lc2, lc3 = st.columns(3)
-    lc1.metric("MP cargada", f"{litros_mp:,.0f} L", f"{kg_used/1000:,.1f} TN")
-    lc2.metric("Capacidad reactor", f"{cap:,.0f} L")
-    lc3.metric("Llenado del reactor", f"{_pct_llen:.0f}%")
+    litros_gli = (float(gli_fresca.get("l") or 0) + float(gli_recup.get("l") or 0)) if proc == "PRODUCCION_ARE" else 0.0
+    litros_carga = litros_mp + litros_gli
+    _pct_llen = (litros_carga / cap * 100.0) if cap else 0.0
+    if proc == "PRODUCCION_ARE":
+        lc1, lc2, lc3, lc4 = st.columns(4)
+        lc1.metric("MP cargada", f"{litros_mp:,.0f} L", f"{kg_used/1000:,.1f} TN")
+        lc2.metric("Glicerina (fresca+recup.)", f"{litros_gli:,.0f} L")
+        lc3.metric("Capacidad reactor", f"{cap:,.0f} L")
+        lc4.metric("Llenado del reactor", f"{_pct_llen:.0f}%", help="Incluye MP + glicerina fresca + recuperada")
+    else:
+        lc1, lc2, lc3 = st.columns(3)
+        lc1.metric("MP cargada", f"{litros_mp:,.0f} L", f"{kg_used/1000:,.1f} TN")
+        lc2.metric("Capacidad reactor", f"{cap:,.0f} L")
+        lc3.metric("Llenado del reactor", f"{_pct_llen:.0f}%")
     st.progress(min(1.0, max(0.0, _pct_llen / 100.0)))
     just_carga = ""
     _carga_baja = bool(cap and kg_used > 0 and _pct_llen < 80.0)
@@ -571,98 +610,67 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                  "Abajo, junto al botón Generar, tenés que **justificar el motivo**: "
                  "se genera un ticket que el director debe aprobar antes de poder iniciar.")
 
-    # ---------- Estimados por fórmula ----------
-    st.markdown("#### 4 · Insumos estimados por fórmula")
-    insumos_calc = []  # (codigo_insumo, rol, kg, fuente_default)
-    ajustes = {}       # ajustes manuales vs fórmula -> exigen motivo
-    gli_mov = None     # glicerina como movimiento (sin codigo_insumo)
-    gli_recup_kg = None  # glicerina recuperada estimada (kg) — vuelve en decantación
+    # ---------- Insumos y objetivo ----------
+    st.markdown("#### 4 · Insumos y objetivo")
+    insumos_calc = []  # (codigo_insumo, rol, kg)
+    ajustes = {}       # ajustes manuales vs default -> exigen motivo
+    gli_mov = None
+    gli_recup_kg = None
+    dens_gli = float(K("densidad_glicerina", 1.25) or 1.25)
+    glol_cargado = glol_req = are_kg = agua_kg = 0.0
+    agua_frac = 0.0
+    est_pot = 0.0
+    _fuel_l = 0.0
     if proc == "PRODUCCION_ARE":
-        if kg_used > 0 and acidez > 0 and glicerol_v:
-            _Fa = _formulas_sector(cat, "REACTORES")
-            _Fa = _Fa[(_Fa["tipo_proceso"] == proc) & (_Fa["codigo_mp"].isin([mp, "*"]))] if not _Fa.empty else _Fa
-            _fx = _selector_formula(_Fa, key=f"pl_fx_{proc}_{mp}")
-            _fi = _ins_de(_fx) if _fx is not None else {}
-            _fp = _params_de(_fx) if _fx is not None else {}
-            # Parámetros estequiométricos: manda la FÓRMULA; fallback a dic_constante_proceso.
-            FE = float(_fp.get("factor_exceso_gli") or FE)
-            PMa = float(_fp.get("PMa") or PMa)
-            PMg = float(_fp.get("PMg") or PMg)
-            # La glicerina sale de la ACIDEZ (lab de la MP) y del %GLICEROL (muestra) — sobre MP CARGADA.
-            gli_consumido = kg_used * (acidez / 100) * (PMg / (PMa * 2))   # glicerol puro que reacciona
-            gli_puro = gli_consumido * FE                               # glicerol cargado (con exceso)
-            est_gli = gli_puro / (glicerol_v / 100)                     # glicerina total a cargar (según pureza)
-            # Glicerina recuperada: la fórmula NO la incluye por ahora -> default 0.
-            # Solo se carga a mano en "Ajustar estimados" (exige motivo y queda registrada).
-            gli_recup_kg = 0.0
-            dens_gli = float(K("densidad_glicerina", 1.25) or 1.25)
-            tn = kg_used / 1000.0   # SIEMPRE sobre los kg de MP cargada (no la capacidad del reactor)
-
-            def _rate(cod, fallback):
-                x = _fi.get(cod)
-                return float(x.get("cant")) if (x and x.get("cant") is not None) else float(fallback or 0)
-            est_naoh = tn * _rate("soda_kg", fila["consumo_naoh_kg_x_tn"]) if catal == "NAOH" else 0.0
-            est_pot = tn * _rate("POTASIO", fila["consumo_potasio_kg_x_tn"]) if catal == "POTASIO" else 0.0
-            est_fuel = tn * _rate("FUEL_OIL", fila["consumo_fuel_kg_x_tn"])
-            d_fuel = DENS_INSUMO["FUEL_OIL"]
-            _gli_l_form = est_gli / dens_gli
-            _fuel_l_form = est_fuel / d_fuel
-            _cat_form = est_naoh if catal == "NAOH" else est_pot
-            with st.expander("✏️ Ajustar estimados a mano (si la fórmula no te cierra)", expanded=False):
-                aj1, aj2, aj3, aj4 = st.columns(4)
-                _gli_l = aj1.number_input("Glicerina (L)", 0.0, 1_000_000.0,
-                                          value=float(round(_gli_l_form, 0)), step=50.0, key="pl_aj_gli")
-                _cat_adj = aj2.number_input(("NaOH (kg)" if catal == "NAOH" else "KOH (kg)"), 0.0, 100_000.0,
-                                            value=float(round(_cat_form, 2)), step=1.0, key=f"pl_aj_cat_{catal}")
-                _fuel_l = aj3.number_input("Fuel oil (L)", 0.0, 1_000_000.0,
-                                           value=float(round(_fuel_l_form, 0)), step=25.0, key="pl_aj_fuel")
-                _recup_l = aj4.number_input("Glicerina recuperada (L)", 0.0, 1_000_000.0, value=0.0, step=25.0,
-                                            key="pl_aj_recup",
-                                            help="La fórmula no incluye recuperada por ahora (default 0). Si esperás recuperar, cargala acá: pide motivo.")
-                st.caption(f"Fórmula: glicerina {_gli_l_form:,.0f} L · catalizador {_cat_form:,.2f} kg · "
-                           f"fuel {_fuel_l_form:,.0f} L · recuperada 0 L (no incluida en la fórmula)")
-                if st.button("🔄 Volver a los valores de fórmula", key="pl_aj_rst"):
-                    for _k in ("pl_aj_gli", f"pl_aj_cat_{catal}", "pl_aj_fuel", "pl_aj_recup"):
-                        st.session_state.pop(_k, None)
-                    st.rerun()
-            est_gli = _gli_l * dens_gli
-            est_fuel = _fuel_l * d_fuel
-            if catal == "NAOH":
-                est_naoh = _cat_adj
-            else:
-                est_pot = _cat_adj
-            gli_recup_kg = _recup_l * dens_gli
-            if _recup_l > 0.5:
-                ajustes["glicerina recuperada (L)"] = {"formula": 0, "ajustado": round(_recup_l)}
-            if abs(_gli_l - _gli_l_form) > 0.5:
-                ajustes["glicerina (L)"] = {"formula": round(_gli_l_form), "ajustado": round(_gli_l)}
-            if abs(_cat_adj - _cat_form) > 0.01:
-                ajustes["NaOH (kg)" if catal == "NAOH" else "KOH (kg)"] = {"formula": round(_cat_form, 2), "ajustado": round(_cat_adj, 2)}
-            if abs(_fuel_l - _fuel_l_form) > 0.5:
-                ajustes["fuel (L)"] = {"formula": round(_fuel_l_form), "ajustado": round(_fuel_l)}
-            e1, e2, e3, e4 = st.columns(4)
-            e1.metric("Glicerina a cargar", f"{_gli_l:,.0f} L", f"{est_gli:,.0f} kg · glicerol {glicerol_v:.0f}%")
-            if catal == "NAOH":
-                e2.metric("NaOH (catalizador)", f"{est_naoh:,.1f} kg")
-            else:
-                e2.metric("KOH (catalizador)", f"{est_pot:,.2f} kg")
-            e3.metric("Glicerina recuperada", f"{gli_recup_kg/dens_gli:,.0f} L",
-                      f"{gli_recup_kg:,.0f} kg · " + ("manual" if gli_recup_kg > 0 else "no incluida en fórmula"))
-            e4.metric("Fuel oil", f"{_fuel_l:,.0f} L", f"{est_fuel:,.0f} kg")
-            st.metric("ARE estimado", f"{kg_used/0.88:,.0f} L", f"{kg_used:,.0f} kg · {kg_used/1000:.1f} TN (sobre MP cargada)")
-            st.caption("Glicerina recuperada: **la fórmula no la incluye por ahora** (default 0). "
-                       "Si esperás recuperar, cargala en ✏️ Ajustar estimados — exige motivo y queda registrada.")
-            st.caption(f"🧪 La glicerina sale de la **acidez {acidez:.2f}%** (lab de la fuente de MP) y del "
-                       f"**glicerol {glicerol_v:.2f}%** (muestra): MP × acidez × PMg/(2·PMa) × exceso ÷ glicerol. "
-                       f"Parámetros de la fórmula: exceso {FE:g} · PMa {PMa:g} · PMg {PMg:g}.")
-            gli_mov = round(est_gli, 0)
-            if catal == "NAOH":
-                insumos_calc.append(("soda_kg", "CATALIZADOR", round(est_naoh, 1)))
-            else:
-                insumos_calc.append(("POTASIO", "CATALIZADOR", round(est_pot, 2)))
-            insumos_calc.append(("FUEL_OIL", "INSUMO", round(est_fuel, 0)))
+        # Glicerol cargado = fresca + recuperada (ambas SUMAN para el objetivo)
+        glol_fresca = float(gli_fresca.get("glicerol_kg") or 0.0)
+        glol_recup = float(gli_recup.get("glicerol_kg") or 0.0)
+        glol_cargado = glol_fresca + glol_recup
+        gli_recup_kg = float(gli_recup.get("kg") or 0.0)
+        # Glicerol requerido por la acidez de la MP (referencia estequiométrica)
+        if kg_used > 0 and acidez > 0:
+            glol_req = kg_used * (acidez / 100.0) * (PMg / (PMa * 2.0)) * FE
+        # KOH y fuel: FIJOS por reactor (editables a mano)
+        koh_def = float(fila["koh_kg_fijo"]) if ("koh_kg_fijo" in fila.index and pd.notna(fila["koh_kg_fijo"])) else 0.0
+        fuel_def = float(fila["fuel_oil_l_fijo"]) if ("fuel_oil_l_fijo" in fila.index and pd.notna(fila["fuel_oil_l_fijo"])) else 0.0
+        st.markdown("##### ✏️ Formulación de iniciación (editable)")
+        fz1, fz2, fz3, fz4 = st.columns(4)
+        fz1.metric("Glicerina fresca", f"{float(gli_fresca.get('l') or 0):,.0f} L")
+        fz2.metric("Glicerina recuperada", f"{float(gli_recup.get('l') or 0):,.0f} L")
+        _koh = fz3.number_input("KOH (kg)", 0.0, 100_000.0, value=float(round(koh_def, 1)), step=1.0, key="pl_koh")
+        _fuel_l = fz4.number_input("Fuel oil (L)", 0.0, 1_000_000.0, value=float(round(fuel_def, 0)), step=25.0, key="pl_fuel")
+        st.caption(f"KOH y fuel son **fijos por reactor** ({fila['nombre_ui']}: KOH {koh_def:g} kg · fuel {fuel_def:g} L). "
+                   "Los podés ajustar a mano; el cambio queda registrado. La glicerina se define arriba (sección 2).")
+        if abs(_koh - koh_def) > 0.01:
+            ajustes["KOH (kg)"] = {"formula": round(koh_def, 1), "ajustado": round(_koh, 1)}
+        if abs(_fuel_l - fuel_def) > 0.5:
+            ajustes["fuel (L)"] = {"formula": round(fuel_def), "ajustado": round(_fuel_l)}
+        est_pot = _koh
+        est_fuel = _fuel_l * DENS_INSUMO["FUEL_OIL"]
+        # Objetivo ARE-B = AG-C (kg) − agua del AG-C (lab) + 10% de litros de glicerina (fresca+recup)
+        agua_frac = float(lab_avg.get("prc_agua")) if lab_avg.get("prc_agua") is not None else 0.0
+        agua_kg = kg_used * agua_frac
+        litros_gli_tot = float(gli_fresca.get("l") or 0) + float(gli_recup.get("l") or 0)
+        are_kg = max(0.0, kg_used - agua_kg + 0.10 * litros_gli_tot)
+        dens_are = 0.88
+        g1, g2, g3 = st.columns(3)
+        g1.metric("Glicerol cargado", f"{glol_cargado:,.0f} kg",
+                  f"fresca {glol_fresca:,.0f} + recup {glol_recup:,.0f}")
+        if glol_req > 0:
+            _cob = (glol_cargado / glol_req * 100.0)
+            g2.metric("Glicerol requerido", f"{glol_req:,.0f} kg", f"cobertura {_cob:.0f}%")
         else:
-            st.info("Elegí la fuente de MP (para la acidez) y la muestra de glicerina (para el % glicerol) para ver los estimados.")
+            g2.metric("Glicerol requerido", "—", "falta acidez de la MP")
+        g3.metric("KOH · Fuel", f"{_koh:,.0f} kg · {_fuel_l:,.0f} L")
+        st.metric("🎯 ARE-B objetivo", f"{are_kg/dens_are:,.0f} L", f"{are_kg:,.0f} kg")
+        st.caption(f"Objetivo ARE-B = AG-C ({kg_used:,.0f} kg) − agua AG-C ({agua_kg:,.0f} kg · {agua_frac*100:.1f}%) "
+                   f"+ 10% de litros de glicerina ({litros_gli_tot:,.0f} L → +{0.10*litros_gli_tot:,.0f}). "
+                   "El glicerol de la **recuperada suma** al requerido por la acidez.")
+        if glol_req > 0 and glol_cargado < glol_req * 0.999:
+            st.warning(f"⚠️ Glicerol cargado ({glol_cargado:,.0f} kg) < requerido ({glol_req:,.0f} kg). "
+                       "Agregá litros de glicerina fresca o recuperada en la sección 2.")
+        insumos_calc.append(("POTASIO", "CATALIZADOR", round(est_pot, 2)))
+        insumos_calc.append(("FUEL_OIL", "INSUMO", round(est_fuel, 0)))
     else:  # DESGOMADO_ACUOSO
         _Fd = _formulas_sector(cat, "REACTORES")
         _Fd = _Fd[(_Fd["tipo_proceso"] == proc) & (_Fd["codigo_mp"].isin([mp, "*"]))] if not _Fd.empty else _Fd
@@ -769,6 +777,33 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             else:
                 cols[i].metric(lbl, f"{float(v):.2f}")
 
+    # ---------- Parámetros de laboratorio POR TANQUE (MP e insumos elegidos) ----------
+    _lab_tids = [int(p["id_tanque"]) for p in (ports or [])
+                 if p.get("fuente") == "TANQUE" and p.get("id_tanque")]
+    if proc == "PRODUCCION_ARE":
+        for _s in (gli_fresca, gli_recup):
+            if _s.get("idt"):
+                _lab_tids.append(int(_s["idt"]))
+    if _lab_tids:
+        try:
+            _pl = cat(
+                "SELECT t.nombre AS \"Tanque\", p.codigo_producto AS \"Producto\", "
+                "       f.acidez_pct AS \"Acidez %\", f.agua_pct AS \"Agua %\", f.sedimentos_pct AS \"Sedim. %\", "
+                "       f.densidad_g_ml AS \"Densidad\", "
+                "       (f.parametros_extra->>'glicerina_pct')::numeric AS \"Glicerina %\", "
+                "       (f.parametros_extra->>'glicerol_pct')::numeric AS \"Glicerol %\" "
+                "FROM produccion.fact_param_tanque f "
+                "JOIN produccion.dim_tanque t ON t.id_tanque=f.id_tanque "
+                "JOIN produccion.dim_producto p ON p.id_producto=f.id_producto "
+                "WHERE f.id_tanque = ANY(%s) AND f.id_producto = t.id_producto_principal "
+                "ORDER BY t.nombre", (_lab_tids,))
+        except Exception:
+            _pl = None
+        if _pl is not None and not _pl.empty:
+            st.markdown("#### 📋 Parámetros de laboratorio por tanque (MP + insumos)")
+            st.dataframe(_pl, use_container_width=True, hide_index=True)
+            st.caption("Cada tanque trae sus parámetros medidos en laboratorio (o sembrados dentro de los promedios por producto).")
+
     motivo_ajuste = ""
     if ajustes:
         st.warning("✏️ Cambiaste a mano: **" + ", ".join(ajustes.keys()) +
@@ -800,9 +835,16 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             "acidez_pct": round(acidez, 3), "glicerol_pct": glicerol_v, "catalizador": catal,
             "glicerina_kg": gli_mov, "glicerina_recup_kg": gli_recup_kg, "pct_goma": pct_goma,
             "insumos_estimados": {c: k for c, _, k in insumos_calc},
-            "glicerina_fuente": ({"tipo": "TANQUE", "id_tanque": gli_idt} if gli_idt
-                                 else {"tipo": "PORTERIA", "ticket": gli_tkp} if gli_tkp
-                                 else {"tipo": "LAB", "ticket": gli_ticket}),
+            "glicerina_fresca_l": round(float(gli_fresca.get("l") or 0), 1) if proc == "PRODUCCION_ARE" else None,
+            "glicerina_recup_l": round(float(gli_recup.get("l") or 0), 1) if proc == "PRODUCCION_ARE" else None,
+            "glicerol_cargado_kg": round(glol_cargado, 1) if proc == "PRODUCCION_ARE" else None,
+            "glicerol_requerido_kg": round(glol_req, 1) if (proc == "PRODUCCION_ARE" and glol_req) else None,
+            "koh_kg": round(est_pot, 2) if proc == "PRODUCCION_ARE" else None,
+            "fuel_l": round(_fuel_l, 0) if proc == "PRODUCCION_ARE" else None,
+            "are_objetivo_kg": round(are_kg, 0) if proc == "PRODUCCION_ARE" else None,
+            "agua_agc_pct": round(agua_frac * 100, 2) if proc == "PRODUCCION_ARE" else None,
+            "glicerina_fuente": {"fresca_tanque": gli_fresca.get("idt"),
+                                 "recuperada_tanque": gli_recup.get("idt")},
             "ajustes_manuales": (ajustes or None),
             "motivo_ajuste": ((motivo_ajuste or "").strip() or None),
             "carga_baja": ({"pct": round(_pct_llen, 1), "motivo": just_carga.strip()} if _carga_baja else None),
@@ -858,16 +900,23 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                              (None if es_tk else p.get("ticket")), kg, litros)
                         n_mov += 1
 
-                    # Glicerina: fuente física elegida (tanque / ticket de portería / muestra de lab)
-                    if gli_mov and gli_mov > 0:
-                        _gl_l = round(gli_mov / dens_gli, 1) if dens_gli else None
-                        if gli_idt:
-                            _mov("INSUMO", None, "Glicerina", None, "TANQUE", gli_idt, None, gli_mov, _gl_l)
-                        elif gli_tkp:
-                            _mov("INSUMO", None, "Glicerina", None, "TICKET", None, gli_tkp, gli_mov, _gl_l)
-                        else:
-                            _mov("INSUMO", None, "Glicerina", None, "TICKET", None, gli_ticket, gli_mov, _gl_l)
-                        n_mov += 1
+                    # Glicerina: fresca y recuperada, cada una como movimiento desde su tanque
+                    if proc == "PRODUCCION_ARE":
+                        for _src, _txt, _pcode in ((gli_fresca, "Glicerina fresca", "GLICERINA"),
+                                                   (gli_recup, "Glicerina recuperada", "GLICERINA-RECUP")):
+                            _ll = float(_src.get("l") or 0)
+                            if _ll <= 0:
+                                continue
+                            _dn = float(_src.get("dens") or dens_gli)
+                            _pid = None
+                            try:
+                                _pr = productos[productos["codigo_producto"] == _pcode]
+                                _pid = int(_pr.iloc[0]["id_producto"]) if not _pr.empty else None
+                            except Exception:
+                                _pid = None
+                            _mov("INSUMO", _pid, _txt, None, ("TANQUE" if _src.get("idt") else "PORTERIA"),
+                                 _src.get("idt"), None, round(_ll * _dn, 1), round(_ll, 1))
+                            n_mov += 1
 
                     # Insumos estimados (glicerina ya arriba; catalizador/fuel) → sólo movimiento
                     # (en la planificación aún no tienen ticket/tanque confirmado; la fuente real

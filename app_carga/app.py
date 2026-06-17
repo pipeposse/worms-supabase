@@ -926,7 +926,7 @@ def K(cod, default=None):
     """Lookup de constante química."""
     r = constantes[constantes["codigo"]==cod]
     return float(r.iloc[0]["valor"]) if not r.empty else default
-bienes_uso_full = cat("SELECT id_bien_uso, codigo, nombre_ui, capacidad_max_l, consumo_fuel_kg_x_tn, consumo_naoh_kg_x_tn, consumo_potasio_kg_x_tn FROM dim_bien_uso WHERE activo ORDER BY codigo")
+bienes_uso_full = cat("SELECT id_bien_uso, codigo, nombre_ui, capacidad_max_l, consumo_fuel_kg_x_tn, consumo_naoh_kg_x_tn, consumo_potasio_kg_x_tn, koh_kg_fijo, fuel_oil_l_fijo FROM dim_bien_uso WHERE activo ORDER BY codigo")
 sectores = cat("SELECT codigo, nombre_ui FROM dic_sector WHERE activo ORDER BY codigo")
 calidades = cat("SELECT codigo, descripcion FROM dic_calidad WHERE activo ORDER BY orden")
 turnos = cat("SELECT codigo FROM dic_turno WHERE activo")

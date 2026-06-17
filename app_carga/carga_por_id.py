@@ -124,6 +124,25 @@ def render(USR, cat, conectar):
         st.dataframe(movs, use_container_width=True, hide_index=True)
         st.caption("Al iniciar, estos tickets pasan de **PLANIFICADO** a **EJECUTADO** y descuentan/ingresan stock.")
 
+    # ---- parámetros de laboratorio de la MP e insumos (por tanque de origen) ----
+    parm = cat(
+        "SELECT DISTINCT t.nombre AS \"Tanque\", pr.codigo_producto AS \"Producto\", m.rol AS \"Rol\", "
+        "       f.acidez_pct AS \"Acidez %\", f.agua_pct AS \"Agua %\", f.sedimentos_pct AS \"Sedim. %\", "
+        "       f.densidad_g_ml AS \"Densidad\", "
+        "       (f.parametros_extra->>'glicerina_pct')::numeric AS \"Glicerina %\", "
+        "       (f.parametros_extra->>'glicerol_pct')::numeric AS \"Glicerol %\" "
+        "FROM produccion.fact_movimiento_stock m "
+        "JOIN produccion.dim_tanque t ON t.id_tanque=m.id_tanque "
+        "JOIN produccion.dim_producto pr ON pr.id_producto=t.id_producto_principal "
+        "LEFT JOIN produccion.fact_param_tanque f "
+        "  ON f.id_tanque=t.id_tanque AND f.id_producto=t.id_producto_principal "
+        "WHERE m.id_batch=%s AND m.id_tanque IS NOT NULL AND m.anulado IS NOT TRUE "
+        "ORDER BY m.rol, t.nombre", (id_batch,))
+    if parm is not None and not parm.empty:
+        st.markdown("##### 🧪 Parámetros de laboratorio (MP e insumos por tanque)")
+        st.dataframe(parm, use_container_width=True, hide_index=True)
+        st.caption("Cada tanque de origen trae sus parámetros medidos en laboratorio.")
+
     # ---- cronograma de etapas heredado ----
     crono = cat(
         "SELECT pe.orden AS \"#\", pe.etapa AS \"Etapa\", COALESCE(e.descripcion,'') AS \"Descripción\", "
