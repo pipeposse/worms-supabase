@@ -136,6 +136,9 @@ def render(USR, cat, conectar, etapas_de_proceso, params_proceso):
         aplicables_m = params_proceso[params_proceso["aplica_a"].apply(
             lambda lst: tipo_actual in (lst if isinstance(lst, list) else [])
         )]
+        # PRODUCCION_ARE: en evaluación interna solo se carga acidez y temperatura (+ observación)
+        if tipo_actual == "PRODUCCION_ARE":
+            aplicables_m = aplicables_m[aplicables_m["codigo"].isin(["acidez", "temperatura"])]
         med = {}
         cols_per_row = 3
         rows = [aplicables_m.iloc[i:i+cols_per_row] for i in range(0, len(aplicables_m), cols_per_row)]

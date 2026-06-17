@@ -233,12 +233,18 @@ def produccion(USR, cat, conectar):
         st.warning("Falta que dirección defina los tanques destino (glicerina recuperada y ARE final).")
         return
     p = _params(b)
-    _are_def = float(p.get("are_objetivo_kg") or 0) / 0.88
+    _are_kg = float(p.get("are_objetivo_kg") or 0)
+    _lit_gli_tot = float(p.get("litros_glicerina_total") or 0)
+    _aporte = float(p.get("aporte_glicerina_pct") or 10)
+    l_are = _are_kg / 0.88
+    l_gli = (1.0 - _aporte / 100.0) * _lit_gli_tot
     cc1, cc2 = st.columns(2)
-    l_gli = cc1.number_input("Litros de glicerina recuperada → " + (_nm.get(int(dg)) or "destino"),
-                             0.0, 1_000_000.0, value=0.0, step=50.0, key="dec_l_gli")
-    l_are = cc2.number_input("Litros de ARE final → " + (_nm.get(int(df_)) or "destino"),
-                             0.0, 1_000_000.0, value=float(round(_are_def, 0)), step=50.0, key="dec_l_are")
+    cc1.metric("Glicerina recuperada → " + (_nm.get(int(dg)) or "destino"),
+               f"{l_gli:,.0f} L", f"{100 - _aporte:.0f}% de {_lit_gli_tot:,.0f} L cargados")
+    cc2.metric("ARE final → " + (_nm.get(int(df_)) or "destino"),
+               f"{l_are:,.0f} L", f"{_are_kg:,.0f} kg (fórmula)")
+    st.caption("Calculado por la fórmula: ARE = AG-C − agua(AG-C, lab) + aporte%·L glicerina · "
+               "glicerina recuperada = (100−aporte)%·L glicerina cargada.")
     if st.button("🚚 Confirmar y generar movimientos de stock", type="primary", use_container_width=True, key="dec_confirm"):
         try:
             with conectar(uid) as (conn, audit):

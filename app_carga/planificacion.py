@@ -563,6 +563,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     gli_recup = {"idt": None, "l": 0.0, "glicerol_kg": 0.0, "kg": 0.0, "dens": None}
     are_formula_id = None
     are_formula_nombre = None
+    _aporte = 10.0
     if proc == "PRODUCCION_ARE":
         PMa = float(K("PMa", 282)); PMg = float(K("PMg", 92)); FE = float(K("factor_exceso_gli", 1.1))
         st.markdown("#### 2 · Fórmula y glicerina a cargar (fresca + recuperada)")
@@ -572,6 +573,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _are_fi = _ins_de(_are_fx) if _are_fx is not None else {}
         _fresca_def = float((_are_fi.get("GLICERINA_FRESCA") or {}).get("cant") or 0)
         _recup_def = float((_are_fi.get("GLICERINA_RECUP") or {}).get("cant") or 0)
+        _are_fp = _params_de(_are_fx) if _are_fx is not None else {}
+        _aporte = float(_are_fp.get("aporte_glicerina_pct") or 10.0)
         if _are_fx is not None:
             are_formula_id = int(_are_fx["id_formula"])
             are_formula_nombre = str(_are_fx["nombre"])
@@ -667,7 +670,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         agua_frac = float(lab_avg.get("prc_agua")) if lab_avg.get("prc_agua") is not None else 0.0
         agua_kg = kg_used * agua_frac
         litros_gli_tot = float(gli_fresca.get("l") or 0) + float(gli_recup.get("l") or 0)
-        are_kg = max(0.0, kg_used - agua_kg + 0.10 * litros_gli_tot)
+        are_kg = max(0.0, kg_used - agua_kg + (_aporte / 100.0) * litros_gli_tot)
         dens_are = 0.88
         g1, g2, g3 = st.columns(3)
         g1.metric("Glicerol cargado", f"{glol_cargado:,.0f} kg",
@@ -679,9 +682,9 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             g2.metric("Glicerol requerido", "—", "falta acidez de la MP")
         g3.metric("KOH · Fuel", f"{_koh:,.0f} kg · {_fuel_l:,.0f} L")
         st.metric("🎯 ARE-B objetivo", f"{are_kg/dens_are:,.0f} L", f"{are_kg:,.0f} kg")
-        st.caption(f"Objetivo ARE-B = AG-C ({kg_used:,.0f} kg) − agua AG-C ({agua_kg:,.0f} kg · {agua_frac*100:.1f}%) "
-                   f"+ 10% de litros de glicerina ({litros_gli_tot:,.0f} L → +{0.10*litros_gli_tot:,.0f}). "
-                   "El glicerol de la **recuperada suma** al requerido por la acidez.")
+        st.caption(f"Objetivo ARE-B (fórmula) = AG-C ({kg_used:,.0f} kg) − agua AG-C ({agua_kg:,.0f} kg · {agua_frac*100:.1f}%) "
+                   f"+ {_aporte:.0f}% de litros de glicerina ({litros_gli_tot:,.0f} L → +{(_aporte/100.0)*litros_gli_tot:,.0f}). "
+                   f"En decantación, la glicerina recuperada = {100-_aporte:.0f}% de los litros cargados (se contrarresta con el aporte).")
         if glol_req > 0 and glol_cargado < glol_req * 0.999:
             st.warning(f"⚠️ Glicerol cargado ({glol_cargado:,.0f} kg) < requerido ({glol_req:,.0f} kg). "
                        "Agregá litros de glicerina fresca o recuperada en la sección 2.")
@@ -859,6 +862,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             "fuel_l": round(_fuel_l, 0) if proc == "PRODUCCION_ARE" else None,
             "are_objetivo_kg": round(are_kg, 0) if proc == "PRODUCCION_ARE" else None,
             "agua_agc_pct": round(agua_frac * 100, 2) if proc == "PRODUCCION_ARE" else None,
+            "aporte_glicerina_pct": _aporte if proc == "PRODUCCION_ARE" else None,
+            "litros_glicerina_total": round(litros_gli_tot, 1) if proc == "PRODUCCION_ARE" else None,
             "formula_id": are_formula_id, "formula_nombre": are_formula_nombre,
             "glicerina_fuente": {"fresca_tanque": gli_fresca.get("idt"),
                                  "recuperada_tanque": gli_recup.get("idt")},
