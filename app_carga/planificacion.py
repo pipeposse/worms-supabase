@@ -807,10 +807,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         try:
             _pl = cat(
                 "SELECT t.nombre AS \"Tanque\", p.codigo_producto AS \"Producto\", "
-                "       f.acidez_pct AS \"Acidez %\", f.agua_pct AS \"Agua %\", f.sedimentos_pct AS \"Sedim. %\", "
+                "       f.acidez_pct AS \"Acidez %%\", f.agua_pct AS \"Agua %%\", f.sedimentos_pct AS \"Sedim. %%\", "
                 "       f.densidad_g_ml AS \"Densidad\", "
-                "       (f.parametros_extra->>'glicerina_pct')::numeric AS \"Glicerina %\", "
-                "       (f.parametros_extra->>'glicerol_pct')::numeric AS \"Glicerol %\" "
+                "       (f.parametros_extra->>'glicerina_pct')::numeric AS \"Glicerina %%\", "
+                "       (f.parametros_extra->>'glicerol_pct')::numeric AS \"Glicerol %%\" "
                 "FROM produccion.fact_param_tanque f "
                 "JOIN produccion.dim_tanque t ON t.id_tanque=f.id_tanque "
                 "JOIN produccion.dim_producto p ON p.id_producto=f.id_producto "

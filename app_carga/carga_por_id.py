@@ -149,10 +149,10 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
     # ---- parámetros de laboratorio de la MP e insumos (por tanque de origen) ----
     parm = cat(
         "SELECT DISTINCT t.nombre AS \"Tanque\", pr.codigo_producto AS \"Producto\", m.rol AS \"Rol\", "
-        "       f.acidez_pct AS \"Acidez %\", f.agua_pct AS \"Agua %\", f.sedimentos_pct AS \"Sedim. %\", "
+        "       f.acidez_pct AS \"Acidez %%\", f.agua_pct AS \"Agua %%\", f.sedimentos_pct AS \"Sedim. %%\", "
         "       f.densidad_g_ml AS \"Densidad\", "
-        "       (f.parametros_extra->>'glicerina_pct')::numeric AS \"Glicerina %\", "
-        "       (f.parametros_extra->>'glicerol_pct')::numeric AS \"Glicerol %\" "
+        "       (f.parametros_extra->>'glicerina_pct')::numeric AS \"Glicerina %%\", "
+        "       (f.parametros_extra->>'glicerol_pct')::numeric AS \"Glicerol %%\" "
         "FROM produccion.fact_movimiento_stock m "
         "JOIN produccion.dim_tanque t ON t.id_tanque=m.id_tanque "
         "JOIN produccion.dim_producto pr ON pr.id_producto=t.id_producto_principal "
