@@ -3275,7 +3275,7 @@ tab_objs = st.tabs(tabs)
 # =========================================================================
 with tab_objs[0]:
     st.subheader("🏭 Carga de producción")
-    sub_nueva, sub_edit, sub_pfinal, sub_eval, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "\U0001F4CA Dashboard de reacciones", "\U0001f3c1 Acopio final", "\U0001f9ea Evaluación interna", "⚠️ Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
+    sub_nueva, sub_edit, sub_pfinal, sub_gasto, sub_etapas, sub_evins = st.tabs(["➕ Nueva carga", "\U0001F4CA Dashboard de reacciones", "\U0001f3c1 Acopio final", "⚠️ Gasto extraordinario", "\U0001f6e0️ Etapas/tiempos", "\U0001f9f4 Evaluar insumo"])
 
     # ---------- SUB-TAB: NUEVA CARGA ----------
     with sub_nueva:
@@ -5108,12 +5108,6 @@ with tab_objs[0]:
                 st.caption("Este proceso no tiene decantaciones configuradas.")
 
     # ---------- SUB-TAB: CARGAR MUESTRA INTERMEDIA ----------
-    with sub_eval:
-        import eval_interna as _evi
-        _evi.render(USR, cat, conectar, etapas_de_proceso, params_proceso)
-
-
-
 
     # ---------- SUB-TAB: GASTO EXTRAORDINARIO ----------
     with sub_gasto:
