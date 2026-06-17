@@ -652,7 +652,7 @@ def _render_tickets_lab_panel(det, avg, missing_lab, missing_port, mapping, st_c
 # corriente, procedencia, fecha de entrada y métricas de lab para mostrarlos
 # en un multiselect tipo "ticket · 22.280 kg · vegetal · CORDOBA · 25/05".
 # ===========================================================================
-def tickets_lab_disponibles_por_codigo(codigo_producto, dias=180, limit=30):
+def tickets_lab_disponibles_por_codigo(codigo_producto, dias=180, limit=30, solo_evaluados=True):
     if not codigo_producto:
         return pd.DataFrame()
     try:
@@ -675,10 +675,12 @@ def tickets_lab_disponibles_por_codigo(codigo_producto, dias=180, limit=30):
     if lc:
         where.append("UPPER(TRIM(t.lab_calidad)) = UPPER(%s)")
         params.append(lc)
+    if solo_evaluados:
+        where.append("t.lab_fecha IS NOT NULL")
     sql = (
         "SELECT t.transaccion AS ticket, ABS(t.peso_neto) AS kg, "
         "       LOWER(t.corriente) AS corriente, t.procedencia, "
-        "       t.fecha_entrada, t.lab_fecha, "
+        "       t.fecha_entrada, t.lab_fecha, t.lab_producto, t.lab_calidad, "
         "       t.lab_prc_acidez, t.lab_prc_agua "
         "FROM produccion.v_transacciones_limpias t "
         "WHERE " + " AND ".join(where) + " "
@@ -695,10 +697,15 @@ def _ui_multiselect_tickets(codigo_producto, key_prefix, dias=180, limit=30, max
     """Renderiza multiselect de tickets disponibles + cuadro de tickets manuales
     extra. Devuelve string compuesto de todos los tickets separados por coma.
     Aplica un tope de `max_tickets` (default 3) entre seleccionados + manuales."""
-    _df = tickets_lab_disponibles_por_codigo(codigo_producto, dias=dias, limit=limit)
+    _solo_ev = st.checkbox("Solo tickets evaluados en calidad por laboratorio", value=True,
+                           key=f"{key_prefix}_soloev",
+                           help="Garantiza que el producto del ticket fue verificado en laboratorio y "
+                                "coincide con la materia prima que se busca tratar.")
+    _df = tickets_lab_disponibles_por_codigo(codigo_producto, dias=dias, limit=limit, solo_evaluados=_solo_ev)
     _selected_str = ""
     if _df.empty:
-        st.caption("Sin tickets recientes con lab cargado para este producto. Usá el campo manual.")
+        st.caption("Sin tickets evaluados en calidad para este producto en el período. "
+                   "Desmarcá el filtro de arriba para ver todos, o usá el campo manual.")
     else:
         def _fmt(r):
             _f = r["fecha_entrada"]
@@ -710,9 +717,14 @@ def _ui_multiselect_tickets(codigo_producto, key_prefix, dias=180, limit=30, max
             _ac_txt = f" · ac {float(_ac)*100:.2f}%" if pd.notna(_ac) else ""
             _ag = r.get("lab_prc_agua")
             _ag_txt = f" · agua {float(_ag)*100:.2f}%" if pd.notna(_ag) else ""
-            return (f"{codigo_producto} · #{int(r['ticket'])} · {float(r['kg']):,.0f} kg neto · "
+            _lf = r.get("lab_fecha")
+            _ev_txt = (f" · ✅ eval {pd.to_datetime(_lf).strftime('%d/%m/%y')}" if pd.notna(_lf)
+                       else " · ⚠️ sin evaluación de calidad")
+            _prod = (str(r.get("lab_producto")).strip() if pd.notna(r.get("lab_producto")) else codigo_producto)
+            _cal = f"/{str(r.get('lab_calidad')).strip()}" if pd.notna(r.get("lab_calidad")) else ""
+            return (f"{_prod}{_cal} · #{int(r['ticket'])} · {float(r['kg']):,.0f} kg neto · "
                     f"{(r['corriente'] or '—')} · {(r['procedencia'] or '—')} · "
-                    f"{_f}{_ac_txt}{_ag_txt}")
+                    f"{_f}{_ac_txt}{_ag_txt}{_ev_txt}")
         _df = _df.copy()
         _df["_label"] = _df.apply(_fmt, axis=1)
         _opts = _df["_label"].tolist()
