@@ -264,7 +264,7 @@ def produccion(USR, cat, conectar):
                     cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto='ARE-B'")
                     _r = cur.fetchone(); id_are = _r[0] if _r else None
                     _mov(cur, b, uid, "SUBPRODUCTO", id_gli, "Glicerina recuperada", int(dg), l_gli, 1.05)
-                    _mov(cur, b, uid, "FINAL", id_are, "ARE-B", int(df_), l_are, 0.88)
+                    _mov(cur, b, uid, "PRODUCTO_FINAL", id_are, "ARE-B", int(df_), l_are, 0.88)
                     cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL",
                                 (int(b["id_batch"]),))
                     cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,fin_ts,id_usuario) "
@@ -287,7 +287,7 @@ def _mov(cur, b, uid, rol, id_prod, prod_txt, id_tanque, litros, dens):
         "INSERT INTO produccion.fact_movimiento_stock "
         "(momento,id_batch,identificador_prod,tipo_movimiento,rol,sentido,id_producto,producto,"
         " fuente,id_tanque,cantidad,unidad,kg,litros,id_usuario,origen,estado_mov) "
-        "VALUES (now(),%s,%s,'INGRESO',%s,1,%s,%s,'TANQUE',%s,%s,'L',%s,%s,%s,'decantacion','EJECUTADO')",
+        "VALUES (now(),%s,%s,'ENTRADA',%s,1,%s,%s,'TANQUE',%s,%s,'LT',%s,%s,%s,'decantacion','EJECUTADO')",
         (int(b["id_batch"]), b["ident"], rol, id_prod, prod_txt, int(id_tanque),
          float(litros), float(litros)*float(dens), float(litros), uid))
 
