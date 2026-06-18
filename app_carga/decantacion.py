@@ -36,6 +36,23 @@ def _batches(cat):
         "ORDER BY b.creado_en DESC")
 
 
+def _batch_one(cat, id_batch):
+    df = cat(
+        "SELECT b.id_batch, b.identificador_unidad AS ident, b.estado, b.etapa_actual, "
+        "       bu.nombre_ui AS reactor, bu.reposo_horas, "
+        "       b.id_tanque_gli_recup, b.id_tanque_are_final, "
+        "       b.ticket_producto_final, b.ticket_validacion_lab, "
+        "       b.solubilidad_flota, b.purga_glicerina_pct, b.purga_ok, "
+        "       b.parametros_proceso, b.id_producto_buscado, "
+        "       (SELECT inicio_ts FROM produccion.fact_etapa_evento e "
+        "          WHERE e.id_batch=b.id_batch AND e.etapa='REPOSANDO' "
+        "          ORDER BY e.inicio_ts DESC LIMIT 1) AS reposo_ini "
+        "FROM produccion.fact_batch_proceso b "
+        "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+        "WHERE b.id_batch=%s", (int(id_batch),))
+    return df.iloc[0] if (df is not None and not df.empty) else None
+
+
 def _params(b):
     p = b.get("parametros_proceso") or {}
     if isinstance(p, str):
@@ -180,13 +197,19 @@ def destinos(USR, cat, conectar):
 
 
 # ---------------------------------------------------------------- PRODUCCIÓN
-def produccion(USR, cat, conectar):
+def produccion(USR, cat, conectar, id_batch=None):
     st.header("🧴 Decantación (purga ARE)")
     st.caption("Durante la decantación hacés la **prueba de solubilidad**: si el material purgado **flota**, "
                "ese proceso terminó. Mandás muestra a laboratorio: corta cuando la glicerina del purgado es < 3%.")
-    b, _ = _sel_batch(cat, "dec_prod_sel")
-    if b is None:
-        return
+    if id_batch is not None:
+        b = _batch_one(cat, int(id_batch))
+        if b is None:
+            st.info("No se encontró la producción.")
+            return
+    else:
+        b, _ = _sel_batch(cat, "dec_prod_sel")
+        if b is None:
+            return
     _cabecera(b)
     uid = int(USR["id_usuario"])
 
