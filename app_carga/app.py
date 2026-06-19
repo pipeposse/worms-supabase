@@ -2610,10 +2610,11 @@ if st.session_state.section != "CARGAS":
                 st.bar_chart(_byp.sort_values("_tn", ascending=False), x="producto_principal", y="_tn", use_container_width=True)
 
             st.divider()
-            g_ult, g_cargar, g_aforo, g_editar, g_abm, g_hist = st.tabs(["⏰ Última carga", "✍️ Cargar medición (manual)", "📏 Medir por cm (aforo)", "✏️ Editar tanque", "➕ Alta / baja", "📈 Histórico / variación"])
+            _TQV = ["⏰ Última carga", "✍️ Cargar medición (manual)", "📏 Medir por cm (aforo)", "✏️ Editar tanque", "➕ Alta / baja", "📈 Histórico / variación"]
+            _vtab = st.radio("Vista de tanque", _TQV, horizontal=True, key="tq_vtab", label_visibility="collapsed")
 
             # ---------- Última carga: tanques MANUALES por antigüedad de la medición ----------
-            with g_ult:
+            if _vtab == "⏰ Última carga":
                 _um = _panel[_panel["fuente_medicion"] == "Manual"].copy()
                 _um = _um[_um["activo"] == True] if "activo" in _um.columns else _um
                 if _um.empty:
@@ -2700,7 +2701,7 @@ if st.session_state.section != "CARGAS":
 
 
             # ---------- Cargar medición: SOLO tanques manuales, con filtros ----------
-            with g_cargar:
+            if _vtab == "✍️ Cargar medición (manual)":
                 _inc_wedo = st.checkbox("Incluir tanques WeDo (corrección / override manual del sensor)",
                                         value=False, key="tqc_incwedo")
                 _man = _panel.copy() if _inc_wedo else _panel[_panel["fuente_medicion"] == "Manual"]
@@ -2828,7 +2829,7 @@ if st.session_state.section != "CARGAS":
                                     st.exception(e)
 
             # ---------- Medir por cm (aforo / cubicaje) ----------
-            with g_aforo:
+            if _vtab == "📏 Medir por cm (aforo)":
                 _af = cat("SELECT t.id_tanque, t.codigo, t.nombre, t.sector, a.tipo_curva, a.altura_total_cm, "
                           "a.capacidad_litros, a.medible, a.observacion, t.id_producto_principal "
                           "FROM produccion.dim_tanque_aforo a JOIN produccion.dim_tanque t USING(id_tanque) "
@@ -2892,7 +2893,7 @@ if st.session_state.section != "CARGAS":
                                     st.exception(e)
 
             # ---------- Editar tanque (WeDo: solo capacidad) ----------
-            with g_editar:
+            if _vtab == "✏️ Editar tanque":
                 if USR["rol"] not in ("SUPERVISOR", "ADMIN"):
                     st.info("Solo supervisor o admin pueden editar tanques.")
                 else:
@@ -2980,7 +2981,7 @@ if st.session_state.section != "CARGAS":
                             st.exception(e)
 
             # ---------- Alta / baja de tanques ----------
-            with g_abm:
+            if _vtab == "➕ Alta / baja":
                 if USR["rol"] not in ("SUPERVISOR", "ADMIN"):
                     st.info("Solo supervisor o admin pueden dar de alta o baja tanques.")
                 else:
@@ -3082,7 +3083,7 @@ if st.session_state.section != "CARGAS":
                                 st.exception(e)
 
             # ---------- Histórico / variación diaria (manual + WeDo) ----------
-            with g_hist:
+            if _vtab == "📈 Histórico / variación":
                 _oh = _panel.apply(lambda r: f"{r['nombre']} · {r['codigo']} · {r['fuente_medicion']}", axis=1).tolist()
                 _selh = st.selectbox("Tanque", _oh, key="tq_hist_sel")
                 _rh = _panel.iloc[_oh.index(_selh)]
