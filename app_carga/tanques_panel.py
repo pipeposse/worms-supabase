@@ -13,6 +13,17 @@ def _fmt_l(x):
         return "—"
 
 
+def _art_naive_col(df, col):
+    """Convierte una columna timestamptz a hora Argentina sin tz (para mostrar bien en Streamlit)."""
+    if col in df.columns:
+        _s = pd.to_datetime(df[col], errors="coerce", utc=True)
+        try:
+            df[col] = _s.dt.tz_convert("America/Argentina/Buenos_Aires").dt.tz_localize(None)
+        except Exception:
+            df[col] = _s
+    return df
+
+
 def _panel(cat):
     df = cat("SELECT * FROM produccion.vw_tanque_panel ORDER BY sector, nombre")
     if df.empty:
@@ -80,6 +91,7 @@ def vista_por_sector(cat):
         with st.expander(f"🛢️ {sec} · {len(sub)} tanques · {_fmt_l(sto)} / {_fmt_l(cap)} L ({occ:.0f}%)",
                          expanded=False):
             show = sub[[c for c in _cols if c in sub.columns]].rename(columns=_ren)
+            show = _art_naive_col(show, "Últ. actualización")
             st.dataframe(show, use_container_width=True, hide_index=True,
                          column_config={
                              "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
@@ -153,6 +165,7 @@ def resumen_filtrado(cat):
            "ultima_medicion": "Últ. actualización", "acidez": "Acidez", "fosforo": "Fósforo",
            "azufre": "Azufre", "agua_sedimento": "Agua+Sed"}
     show = d[[c for c in cols if c in d.columns]].rename(columns=ren)
+    show = _art_naive_col(show, "Últ. actualización")
     st.dataframe(show, use_container_width=True, hide_index=True,
                  column_config={"Stock (L)": st.column_config.NumberColumn(format="%.0f"),
                                 "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),

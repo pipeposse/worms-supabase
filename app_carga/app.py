@@ -2580,6 +2580,11 @@ if st.session_state.section != "CARGAS":
                 "nivel_pct_actual": "Nivel %",
                 "_litros": "Litros", "_tn": "TN", "capacidad_litros": "Capac. (L)", "ultima_medicion": "Última medición"})
             try:
+                _t["Última medición"] = pd.to_datetime(_t["Última medición"], errors="coerce", utc=True)\
+                    .dt.tz_convert("America/Argentina/Buenos_Aires").dt.tz_localize(None)
+            except Exception:
+                pass
+            try:
                 _cfg = {
                     "Nivel %": st.column_config.ProgressColumn("Nivel %", min_value=0, max_value=100, format="%.0f%%"),
                     "Intervalo (min)": st.column_config.NumberColumn("Intervalo (min)", format="%.0f", help="Cada cuántos minutos reporta el sensor WeDo (intervalo real observado)."),
@@ -2760,8 +2765,9 @@ if st.session_state.section != "CARGAS":
                             _cap_txt = f"{KG_BOLSA:g} kg por bolsa · " + _cap_txt
                         st.caption(_cap_txt)
                         cf, ch = st.columns(2)
-                        _fch = cf.date_input("Fecha medición", date.today(), key="tq_fch_c")
-                        _hr = ch.time_input("Hora medición", key="tq_hr_c")
+                        _now_ar = _dtmod.now(_tzmod(_tdmod(hours=-3)))
+                        _fch = cf.date_input("Fecha medición", _now_ar.date(), key="tq_fch_c")
+                        _hr = ch.time_input("Hora medición", value=_now_ar.time().replace(microsecond=0), key="tq_hr_c")
                         from datetime import datetime as _dtq
                         _medido = _dtq.combine(_fch, _hr)
                         _obs = st.text_input("Observaciones", max_chars=200, key="tq_obs_c")
