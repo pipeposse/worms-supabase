@@ -870,6 +870,37 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                    f"(reposo del reactor: {(_repo_h or 0):g} h). Las etapas se calculan desde el inicio.")
     _inicio_iso = _inicio.isoformat()
 
+    # ---------- Destino del producto (ARE): se decide desde el inicio ----------
+    dest_are_final = None
+    dest_gli_recup = None
+    if proc == "PRODUCCION_ARE":
+        st.markdown("#### 🎯 Destino del producto (acopio final)")
+        st.caption("Definí desde ahora a qué tanque va el **ARE final** y la **glicerina recuperada**. "
+                   "Queda computado; después, en Decantación, se puede cambiar.")
+        _ftq = cat("SELECT t.id_tanque, t.nombre, t.sector, COALESCE(s.litros_actual,0) lt, COALESCE(t.capacidad_litros,0) cap "
+                   "FROM produccion.dim_tanque t JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
+                   "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
+                   "WHERE COALESCE(t.activo,true) AND (p.codigo_producto='ARE-B' OR t.sector ILIKE 'Exporta%%') "
+                   "ORDER BY (t.sector ILIKE 'Exporta%%') DESC, t.nombre")
+        _gtq = cat("SELECT t.id_tanque, t.nombre, COALESCE(s.litros_actual,0) lt, COALESCE(t.capacidad_litros,0) cap "
+                   "FROM produccion.dim_tanque t LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
+                   "WHERE t.id_tanque IN (88,87,81) ORDER BY t.nombre")
+        _dc1, _dc2 = st.columns(2)
+        with _dc1:
+            if _ftq is not None and not _ftq.empty:
+                _fop = _ftq.apply(lambda r: f"{r['nombre']} · {r['sector']} · {float(r['lt']):,.0f}/{float(r['cap']):,.0f} L", axis=1).tolist()
+                _fs = st.selectbox("Tanque destino ARE final", _fop, key="pl_dest_final")
+                dest_are_final = int(_ftq.iloc[_fop.index(_fs)]["id_tanque"])
+            else:
+                st.warning("No hay tanques destino para ARE-B.")
+        with _dc2:
+            if _gtq is not None and not _gtq.empty:
+                _gop = _gtq.apply(lambda r: f"{r['nombre']} · {float(r['lt']):,.0f}/{float(r['cap']):,.0f} L", axis=1).tolist()
+                _gs = st.selectbox("Tanque destino glicerina recuperada", _gop, key="pl_dest_recup")
+                dest_gli_recup = int(_gtq.iloc[_gop.index(_gs)]["id_tanque"])
+            else:
+                st.warning("No hay tanques de glicerina recuperada.")
+
     motivo_ajuste = ""
     if ajustes:
         st.warning("✏️ Cambiaste a mano: **" + ", ".join(ajustes.keys()) +
@@ -930,11 +961,12 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                         "INSERT INTO fact_batch_proceso "
                         "(fecha, sector, id_usuario_carga, identificador_unidad, id_bien_uso, tipo_proceso, "
                         " id_producto_buscado, calidad_buscada, corriente, catalizador_tipo, "
-                        " tiempo_estimado_horas, parametros_proceso, estado, id_usuario_estado, motivo_estado, observaciones) "
-                        "VALUES (CURRENT_DATE,'REACTORES',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,"
+                        " tiempo_estimado_horas, parametros_proceso, id_tanque_are_final, id_tanque_gli_recup, "
+                        " estado, id_usuario_estado, motivo_estado, observaciones) "
+                        "VALUES (CURRENT_DATE,'REACTORES',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,"
                         " 'PLANIFICADO',%s,'Planificado por dirección',%s) RETURNING id_batch",
                         (uid, ident, int(fila["id_bien_uso"]), proc, pf_id, calidad, corr, catal,
-                         horas, _json.dumps(params), uid, (obs or None)))
+                         horas, _json.dumps(params), dest_are_final, dest_gli_recup, uid, (obs or None)))
                     id_b = cur.fetchone()[0]
                     n_mov = 0
                     if _carga_baja:
