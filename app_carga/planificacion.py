@@ -447,6 +447,61 @@ def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
     return res
 
 
+_PLAN_TEXT_KEYS = {"pl_obs", "pl_aj_motivo", "pl_just_carga", "plb_obs", "plb_aj_motivo", "plb_just_carga"}
+
+
+def _borrador_restaurar(cat, USR):
+    """Restaura el borrador (números/notas) para no perder lo cargado tras un reinicio de la app."""
+    try:
+        if st.session_state.get("_plan_borr_cargado"):
+            return
+        st.session_state["_plan_borr_cargado"] = True
+        df = cat("SELECT payload FROM produccion.plan_borrador WHERE id_usuario=%s", (int(USR["id_usuario"]),))
+        if df is None or df.empty:
+            return
+        pl = df.iloc[0]["payload"] or {}
+        if isinstance(pl, str):
+            pl = _json.loads(pl)
+        for k, v in (pl.items() if isinstance(pl, dict) else []):
+            if k in st.session_state:
+                continue
+            if isinstance(v, bool) or isinstance(v, (int, float)):
+                st.session_state[k] = v
+            elif isinstance(v, str) and k in _PLAN_TEXT_KEYS:
+                st.session_state[k] = v
+    except Exception:
+        pass
+
+
+def _borrador_guardar(conectar, USR):
+    try:
+        snap = {k: v for k, v in st.session_state.items()
+                if (k.startswith("pl_") or k.startswith("plb_"))
+                and isinstance(v, (bool, int, float, str))}
+        _js = _json.dumps(snap, sort_keys=True, default=str)
+        if st.session_state.get("_plan_borr_last") == _js:
+            return
+        st.session_state["_plan_borr_last"] = _js
+        with conectar(int(USR["id_usuario"])) as (conn, audit):
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO produccion.plan_borrador (id_usuario, payload, actualizado) "
+                            "VALUES (%s,%s::jsonb,now()) "
+                            "ON CONFLICT (id_usuario) DO UPDATE SET payload=EXCLUDED.payload, actualizado=now()",
+                            (int(USR["id_usuario"]), _js))
+    except Exception:
+        pass
+
+
+def _borrador_limpiar(conectar, USR):
+    try:
+        st.session_state["_plan_borr_last"] = None
+        with conectar(int(USR["id_usuario"])) as (conn, audit):
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM produccion.plan_borrador WHERE id_usuario=%s", (int(USR["id_usuario"]),))
+    except Exception:
+        pass
+
+
 def render(USR, cat, conectar, siguiente_identificador, H=None):
     if H is None:
         try:
@@ -471,6 +526,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
        or productos is None or bienes is None or getattr(productos, "empty", True) or getattr(bienes, "empty", True):
         st.error("No se pudieron cargar los catálogos/funciones de Cargas. Reintentá.")
         return
+    _borrador_restaurar(cat, USR)
     with st.expander("📋 Ver planificadas y sus movimientos (todo lo cargado)", expanded=False):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
@@ -912,6 +968,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         just_carga = st.text_input("Justificación de carga baja (<80%) *", key="pl_just_carga", max_chars=250,
                                    placeholder="ej. no hay más MP disponible de esta calidad")
     obs = st.text_input("Observaciones", key="pl_obs", placeholder="opcional")
+    _borrador_guardar(conectar, USR)
 
     st.divider()
     if st.button("✅ Generar ID de producción + tickets de movimiento", type="primary", use_container_width=True):
@@ -1038,6 +1095,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                 cat.clear()
             except Exception:
                 pass
+            _borrador_limpiar(conectar, USR)
             st.success(f"Producción **{ident}** (batch #{id_b}) planificada con **{n_mov} movimiento(s)** PLANIFICADO. "
                        "El operario los confirma al iniciar.")
             st.balloons()
