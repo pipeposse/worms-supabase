@@ -465,7 +465,9 @@ def _borrador_restaurar(cat, USR):
         for k, v in (pl.items() if isinstance(pl, dict) else []):
             if k in st.session_state:
                 continue
-            if isinstance(v, bool) or isinstance(v, (int, float)):
+            if isinstance(v, bool):
+                continue  # botones/checkbox: no se pueden (ni conviene) restaurar
+            if isinstance(v, (int, float)):
                 st.session_state[k] = v
             elif isinstance(v, str) and k in _PLAN_TEXT_KEYS:
                 st.session_state[k] = v
