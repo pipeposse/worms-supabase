@@ -502,6 +502,65 @@ def _borrador_limpiar(conectar, USR):
         pass
 
 
+def _render_cronogramas(USR, cat, conectar):
+    st.subheader("⚙️ Editar cronogramas de etapas (por proceso)")
+    st.caption("Cambiá el **nombre** de cada etapa y su **duración** (horas y minutos). "
+               "Esto define los horarios calculados del cronograma de producción. "
+               "El **código** de la etapa no se toca (lo usa el sistema); el nombre es global por etapa.")
+    _procs = cat("SELECT DISTINCT proceso_key FROM produccion.dic_proceso_etapa ORDER BY proceso_key")
+    if _procs is None or _procs.empty:
+        st.info("No hay cronogramas cargados.")
+        return
+    _pk = st.selectbox("Proceso", _procs["proceso_key"].tolist(),
+                       format_func=lambda p: str(p).replace("_", " ").title(), key="cr_proc")
+    _et = cat("SELECT pe.orden, pe.etapa, COALESCE(e.descripcion, pe.etapa) AS nombre, "
+              "COALESCE(pe.duracion_target_min,0) AS dur "
+              "FROM produccion.dic_proceso_etapa pe "
+              "LEFT JOIN produccion.dic_etapa_proceso e ON e.codigo=pe.etapa "
+              "WHERE pe.proceso_key=%s ORDER BY pe.orden", (_pk,))
+    if _et is None or _et.empty:
+        st.info("Este proceso no tiene etapas.")
+        return
+    _df = pd.DataFrame({
+        "Orden": _et["orden"].astype(int),
+        "Etapa (código)": _et["etapa"].astype(str),
+        "Nombre": _et["nombre"].astype(str),
+        "Horas": (_et["dur"].astype(float) // 60).astype(int),
+        "Minutos": (_et["dur"].astype(float) % 60).astype(int),
+    })
+    _ed = st.data_editor(
+        _df, hide_index=True, use_container_width=True, key=f"cr_ed_{_pk}",
+        disabled=["Orden", "Etapa (código)"],
+        column_config={
+            "Nombre": st.column_config.TextColumn("Nombre de la etapa", required=True),
+            "Horas": st.column_config.NumberColumn("Horas", min_value=0, max_value=336, step=1),
+            "Minutos": st.column_config.NumberColumn("Minutos", min_value=0, max_value=59, step=5),
+        })
+    if st.button("💾 Guardar cronograma", type="primary", use_container_width=True, key=f"cr_save_{_pk}"):
+        try:
+            uid = int(USR["id_usuario"])
+            with conectar(uid) as (conn, audit):
+                with conn.cursor() as cur:
+                    for _, r in _ed.iterrows():
+                        _dur = int(r["Horas"]) * 60 + int(r["Minutos"])
+                        _cod = str(r["Etapa (código)"])
+                        cur.execute("UPDATE produccion.dic_proceso_etapa SET duracion_target_min=%s "
+                                    "WHERE proceso_key=%s AND etapa=%s", (_dur, _pk, _cod))
+                        _nom = (str(r["Nombre"]) or "").strip()
+                        if _nom:
+                            cur.execute("UPDATE produccion.dic_etapa_proceso SET descripcion=%s WHERE codigo=%s",
+                                        (_nom, _cod))
+                            if cur.rowcount == 0:
+                                cur.execute("INSERT INTO produccion.dic_etapa_proceso (codigo, descripcion, orden, activo) "
+                                            "VALUES (%s,%s,%s,true) ON CONFLICT (codigo) DO UPDATE SET descripcion=EXCLUDED.descripcion",
+                                            (_cod, _nom, int(r["Orden"])))
+                audit.log("U", "dic_proceso_etapa", 0, {"proceso": _pk})
+            st.success("Cronograma actualizado. Los nuevos nombres y duraciones se usan al planificar.")
+            cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+
+
 def render(USR, cat, conectar, siguiente_identificador, H=None):
     if H is None:
         try:
@@ -531,7 +590,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
 
-    modo = st.radio("Planificar en", ["🏭 Reactores", "🛁 Bachas", "🧴 Decantación ARE"],
+    modo = st.radio("Planificar en", ["🏭 Reactores", "🛁 Bachas", "🧴 Decantación ARE", "⚙️ Cronogramas"],
                     horizontal=True, key="pl_modo")
     if modo.startswith("🛁"):
         _render_bachas(USR, cat, conectar, siguiente_identificador, H)
@@ -539,6 +598,9 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     if modo.startswith("🧴"):
         import decantacion
         decantacion.destinos(USR, cat, conectar)
+        return
+    if modo.startswith("⚙️"):
+        _render_cronogramas(USR, cat, conectar)
         return
     st.caption("Misma lógica que Cargas: elegí reactor y materia prima; el proceso, la capacidad y todas las fórmulas se calculan solos.")
 
@@ -907,8 +969,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     _ini_f = _cc1.date_input("Fecha de inicio", key="pl_crono_f")
     _ini_h = _cc2.time_input("Hora de inicio", value=_dtm.time(8, 0), step=1800, key="pl_crono_h")
     _inicio = _dtm.datetime.combine(_ini_f, _ini_h)
-    _et = cat("SELECT etapa, duracion_target_min FROM produccion.dic_proceso_etapa "
-              "WHERE proceso_key=%s ORDER BY orden", (proc,))
+    _et = cat("SELECT pe.etapa, COALESCE(e.descripcion, pe.etapa) AS nombre, pe.duracion_target_min "
+              "FROM produccion.dic_proceso_etapa pe "
+              "LEFT JOIN produccion.dic_etapa_proceso e ON e.codigo=pe.etapa "
+              "WHERE pe.proceso_key=%s ORDER BY pe.orden", (proc,))
     _repo_h = float(fila["reposo_horas"]) if ("reposo_horas" in fila.index and pd.notna(fila["reposo_horas"])) else None
     _crono_rows = []
     _cur = _inicio
@@ -918,7 +982,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             if str(_e["etapa"]) == "REPOSANDO" and _repo_h:
                 _dur = _repo_h * 60.0
             _fin = _cur + _dtm.timedelta(minutes=_dur)
-            _crono_rows.append({"Etapa": _e["etapa"], "Inicio": _cur.strftime("%d/%m %H:%M"),
+            _crono_rows.append({"Etapa": _e["nombre"], "Inicio": _cur.strftime("%d/%m %H:%M"),
                                 "Fin": _fin.strftime("%d/%m %H:%M"), "Duración (h)": round(_dur / 60.0, 1)})
             _cur = _fin
         st.dataframe(pd.DataFrame(_crono_rows), use_container_width=True, hide_index=True)
