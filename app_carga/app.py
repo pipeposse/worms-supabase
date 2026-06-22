@@ -2746,8 +2746,12 @@ if st.session_state.section != "CARGAS":
                         cc1, cc2 = st.columns(2)
                         _defprod = _cpr if (_cpr != "Todos" and _cpr in _plist) else _defp
                         _pcod = cc1.selectbox("Producto medido", _plist, index=_plist.index(_defprod), key="tq_prod_c")
+                        _cambiar_prod = False
                         if _ppal and _pcod != _ppal[0]:
-                            st.warning(f"⚠️ Al guardar, el **producto del tanque** pasa de **{_ppal[0]}** a **{_pcod}**.")
+                            _cambiar_prod = st.checkbox(
+                                f"🔄 Cambiar el PRODUCTO del tanque de {_ppal[0]} a {_pcod}", value=False, key="tq_cambprod",
+                                help="Por defecto NO se cambia el producto del tanque: solo se registra la medición. "
+                                     "Marcá esto SOLO si el tanque ahora contiene otro producto.")
                         _unidades = ["Bolsas (25 kg)", "Kilos", "Litros"] if _es_bolsa else ["Litros", "Kilos", "Bolsas (25 kg)"]
                         _unid = cc2.selectbox("Unidad de carga", _unidades, key=f"tq_unid_c_{_idt}")
                         _densp = float(_prods[_prods["codigo_producto"] == _pcod]["dens"].iloc[0])
@@ -2803,9 +2807,9 @@ if st.session_state.section != "CARGAS":
                                                         (_idt, _pid, _medido.isoformat(),
                                                          (float(_lts) if _lts is not None else None), float(_kg),
                                                          int(USR["id_usuario"]), _obs_full or None))
-                                            # Si el producto medido difiere del principal, actualizar el producto del tanque
+                                            # Solo si el operario marcó "cambiar producto del tanque"
                                             _ppid = _row.get("id_producto_principal")
-                                            if pd.isna(_ppid) or int(_ppid) != int(_pid):
+                                            if _cambiar_prod and (pd.isna(_ppid) or int(_ppid) != int(_pid)):
                                                 cur.execute("UPDATE produccion.dim_tanque SET id_producto_principal=%s WHERE id_tanque=%s",
                                                             (int(_pid), _idt))
                                                 cur.execute("INSERT INTO produccion.dim_tanque_producto (id_tanque,id_producto,es_principal) "
