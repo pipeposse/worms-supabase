@@ -2755,16 +2755,24 @@ if st.session_state.section != "CARGAS":
                         _unidades = ["Bolsas (25 kg)", "Kilos", "Litros"] if _es_bolsa else ["Litros", "Kilos", "Bolsas (25 kg)"]
                         _unid = cc2.selectbox("Unidad de carga", _unidades, key=f"tq_unid_c_{_idt}")
                         _densp = float(_prods[_prods["codigo_producto"] == _pcod]["dens"].iloc[0])
+                        _last_lts = float(_row.get("litros_actual")) if pd.notna(_row.get("litros_actual")) else 0.0
+                        _last_kg = float(_row.get("kg_actual")) if pd.notna(_row.get("kg_actual")) else 0.0
+                        if _last_lts > 0 or _last_kg > 0:
+                            st.caption(f"📌 Predefinido con el **último valor cargado** del tanque "
+                                       f"({_last_lts:,.0f} L · {_last_kg/1000:,.2f} TN). Si no cambió, guardá igual.")
                         _nbol = None
                         if _unid.startswith("Bolsas"):
-                            _nbol = st.number_input("Bolsas medidas (25 kg c/u)", 0.0, 200_000.0, step=1.0, value=0.0, key="tq_bol_c")
+                            _nbol = st.number_input("Bolsas medidas (25 kg c/u)", 0.0, 200_000.0, step=1.0,
+                                                    value=float(round(_last_kg / KG_BOLSA, 0)), key=f"tq_bol_c_{_idt}")
                             _kg = _nbol * KG_BOLSA
                             _lts = (_kg / _densp) if _densp else None  # litros equivalentes: el panel y las vistas calculan TN desde litros
                         elif _unid == "Kilos":
-                            _kg = st.number_input("Kilos medidos", 0.0, 5_000_000.0, step=25.0, value=0.0, key="tq_kg_c")
+                            _kg = st.number_input("Kilos medidos", 0.0, 5_000_000.0, step=25.0,
+                                                  value=float(round(_last_kg, 0)), key=f"tq_kg_c_{_idt}")
                             _lts = (_kg / _densp) if _densp else None
                         else:
-                            _lts = st.number_input("Litros medidos", 0.0, 5_000_000.0, step=100.0, value=0.0, key="tq_lts_c")
+                            _lts = st.number_input("Litros medidos", 0.0, 5_000_000.0, step=100.0,
+                                                   value=float(round(_last_lts, 0)), key=f"tq_lts_c_{_idt}")
                             _kg = _lts * _densp
                         _ocup = (_lts / _cap * 100) if (_cap and _lts) else None
                         m1, m2, m3 = st.columns(3)
