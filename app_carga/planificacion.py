@@ -505,7 +505,7 @@ def _borrador_limpiar(conectar, USR):
 
 
 def _render_cronogramas(USR, cat, conectar):
-    st.subheader("⚙️ Editar cronogramas de etapas (por proceso)")
+    st.subheader("⚙️ Editar cronogramas de etapas (por proceso y por reactor)")
     st.caption("Cambiá el **nombre** de cada etapa y su **duración** (horas y minutos). "
                "Esto define los horarios calculados del cronograma de producción. "
                "El **código** de la etapa no se toca (lo usa el sistema); el nombre es global por etapa.")
@@ -515,11 +515,30 @@ def _render_cronogramas(USR, cat, conectar):
         return
     _pk = st.selectbox("Proceso", _procs["proceso_key"].tolist(),
                        format_func=lambda p: str(p).replace("_", " ").title(), key="cr_proc")
-    _et = cat("SELECT pe.orden, pe.etapa, COALESCE(e.descripcion, pe.etapa) AS nombre, "
-              "COALESCE(pe.duracion_target_min,0) AS dur "
-              "FROM produccion.dic_proceso_etapa pe "
-              "LEFT JOIN produccion.dic_etapa_proceso e ON e.codigo=pe.etapa "
-              "WHERE pe.proceso_key=%s ORDER BY pe.orden", (_pk,))
+    _REACTOR_PROCS = {"PRODUCCION_ARE", "DESGOMADO_ACUOSO"}
+    _id_bu = None
+    _scope = "BASE"
+    if _pk in _REACTOR_PROCS:
+        _rx = cat("SELECT id_bien_uso, nombre_ui FROM produccion.dim_bien_uso WHERE tipo='REACTOR' ORDER BY codigo")
+        _ropts = ["Base (todos los reactores)"] + (_rx["nombre_ui"].tolist() if (_rx is not None and not _rx.empty) else [])
+        _rsel = st.radio("Aplicar a", _ropts, horizontal=True, key=f"cr_scope_{_pk}")
+        if _rsel != "Base (todos los reactores)" and _rx is not None and not _rx.empty:
+            _id_bu = int(_rx[_rx["nombre_ui"] == _rsel].iloc[0]["id_bien_uso"])
+            _scope = "REACTOR"
+            st.caption(f"Editás el cronograma **solo de {_rsel}**. Si este reactor no tiene uno propio, se usa el Base.")
+    if _scope == "REACTOR":
+        _et = cat("SELECT r.orden, r.etapa, COALESCE(e.descripcion, r.etapa) AS nombre, COALESCE(r.duracion_target_min,0) AS dur "
+                  "FROM produccion.dic_proceso_etapa_reactor r LEFT JOIN produccion.dic_etapa_proceso e ON e.codigo=r.etapa "
+                  "WHERE r.proceso_key=%s AND r.id_bien_uso=%s ORDER BY r.orden", (_pk, _id_bu))
+        if _et is None or _et.empty:
+            st.info("Este reactor todavía no tiene cronograma propio: te cargo el **Base** para que lo edites y lo guardes para este reactor.")
+            _et = cat("SELECT pe.orden, pe.etapa, COALESCE(e.descripcion, pe.etapa) AS nombre, COALESCE(pe.duracion_target_min,0) AS dur "
+                      "FROM produccion.dic_proceso_etapa pe LEFT JOIN produccion.dic_etapa_proceso e ON e.codigo=pe.etapa "
+                      "WHERE pe.proceso_key=%s ORDER BY pe.orden", (_pk,))
+    else:
+        _et = cat("SELECT pe.orden, pe.etapa, COALESCE(e.descripcion, pe.etapa) AS nombre, COALESCE(pe.duracion_target_min,0) AS dur "
+                  "FROM produccion.dic_proceso_etapa pe LEFT JOIN produccion.dic_etapa_proceso e ON e.codigo=pe.etapa "
+                  "WHERE pe.proceso_key=%s ORDER BY pe.orden", (_pk,))
     if _et is None or _et.empty:
         st.info("Este proceso no tiene etapas.")
         return
@@ -530,18 +549,18 @@ def _render_cronogramas(USR, cat, conectar):
         "Horas": (_et["dur"].astype(float) // 60).astype(int),
         "Minutos": (_et["dur"].astype(float) % 60).astype(int),
     })
-    st.caption("Podés **agregar** etapas (botón ➕ abajo de la tabla) y **borrar** (seleccioná la fila y 🗑). "
-               "Para una etapa nueva escribí un **código** corto en MAYÚSCULAS sin espacios; si lo dejás vacío, se genera del nombre.")
+    st.caption("Podés **agregar** etapas (➕ abajo) y **borrar** (seleccioná la fila y 🗑). "
+               "Código en MAYÚSCULAS sin espacios; si lo dejás vacío, se genera del nombre.")
     _ed = st.data_editor(
-        _df, hide_index=True, use_container_width=True, key=f"cr_ed_{_pk}", num_rows="dynamic",
+        _df, hide_index=True, use_container_width=True, key=f"cr_ed_{_pk}_{_id_bu or 0}", num_rows="dynamic",
         column_config={
             "Orden": st.column_config.NumberColumn("Orden", min_value=1, step=1),
-            "Etapa (código)": st.column_config.TextColumn("Código", help="Identificador interno (sin espacios). Cuidado al cambiar códigos existentes; los usan las reglas."),
+            "Etapa (código)": st.column_config.TextColumn("Código", help="Identificador interno (sin espacios)."),
             "Nombre": st.column_config.TextColumn("Nombre de la etapa"),
             "Horas": st.column_config.NumberColumn("Horas", min_value=0, max_value=336, step=1),
             "Minutos": st.column_config.NumberColumn("Minutos", min_value=0, max_value=59, step=5),
         })
-    if st.button("💾 Guardar cronograma", type="primary", use_container_width=True, key=f"cr_save_{_pk}"):
+    if st.button("💾 Guardar cronograma", type="primary", use_container_width=True, key=f"cr_save_{_pk}_{_id_bu or 0}"):
         try:
             import re as _re
             uid = int(USR["id_usuario"])
@@ -561,15 +580,22 @@ def _render_cronogramas(USR, cat, conectar):
             else:
                 with conectar(uid) as (conn, audit):
                     with conn.cursor() as cur:
-                        cur.execute("DELETE FROM produccion.dic_proceso_etapa WHERE proceso_key=%s", (_pk,))
-                        for _ord, _cod, _nom, _dur in _rows:
-                            cur.execute("INSERT INTO produccion.dic_proceso_etapa (proceso_key, etapa, orden, duracion_target_min) "
-                                        "VALUES (%s,%s,%s,%s)", (_pk, _cod, _ord, _dur))
-                            cur.execute("INSERT INTO produccion.dic_etapa_proceso (codigo, descripcion, orden, activo) "
-                                        "VALUES (%s,%s,%s,true) ON CONFLICT (codigo) DO UPDATE SET descripcion=EXCLUDED.descripcion",
-                                        (_cod, _nom, _ord))
-                    audit.log("U", "dic_proceso_etapa", 0, {"proceso": _pk, "etapas": len(_rows)})
-                st.success("Cronograma actualizado (etapas, nombres y duraciones).")
+                        if _scope == "REACTOR":
+                            cur.execute("DELETE FROM produccion.dic_proceso_etapa_reactor WHERE proceso_key=%s AND id_bien_uso=%s", (_pk, _id_bu))
+                            for _ord, _cod, _nom, _dur in _rows:
+                                cur.execute("INSERT INTO produccion.dic_proceso_etapa_reactor (proceso_key, id_bien_uso, etapa, orden, duracion_target_min) "
+                                            "VALUES (%s,%s,%s,%s,%s)", (_pk, _id_bu, _cod, _ord, _dur))
+                                cur.execute("INSERT INTO produccion.dic_etapa_proceso (codigo, descripcion, orden, activo) "
+                                            "VALUES (%s,%s,%s,true) ON CONFLICT (codigo) DO UPDATE SET descripcion=EXCLUDED.descripcion", (_cod, _nom, _ord))
+                        else:
+                            cur.execute("DELETE FROM produccion.dic_proceso_etapa WHERE proceso_key=%s", (_pk,))
+                            for _ord, _cod, _nom, _dur in _rows:
+                                cur.execute("INSERT INTO produccion.dic_proceso_etapa (proceso_key, etapa, orden, duracion_target_min) "
+                                            "VALUES (%s,%s,%s,%s)", (_pk, _cod, _ord, _dur))
+                                cur.execute("INSERT INTO produccion.dic_etapa_proceso (codigo, descripcion, orden, activo) "
+                                            "VALUES (%s,%s,%s,true) ON CONFLICT (codigo) DO UPDATE SET descripcion=EXCLUDED.descripcion", (_cod, _nom, _ord))
+                    audit.log("U", "dic_proceso_etapa", 0, {"proceso": _pk, "scope": _scope, "etapas": len(_rows)})
+                st.success(f"Cronograma actualizado ({'Base' if _scope=='BASE' else _rsel}).")
                 cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
@@ -982,10 +1008,16 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     _ini_f = _cc1.date_input("Fecha de inicio", key="pl_crono_f")
     _ini_h = _cc2.time_input("Hora de inicio", value=_dtm.time(8, 0), step=1800, key="pl_crono_h")
     _inicio = _dtm.datetime.combine(_ini_f, _ini_h)
-    _et = cat("SELECT pe.etapa, COALESCE(e.descripcion, pe.etapa) AS nombre, pe.duracion_target_min "
-              "FROM produccion.dic_proceso_etapa pe "
-              "LEFT JOIN produccion.dic_etapa_proceso e ON e.codigo=pe.etapa "
-              "WHERE pe.proceso_key=%s ORDER BY pe.orden", (proc,))
+    _id_bu_cr = int(fila["id_bien_uso"]) if ("id_bien_uso" in fila.index and pd.notna(fila["id_bien_uso"])) else None
+    _et = cat("SELECT r.etapa, COALESCE(e.descripcion, r.etapa) AS nombre, r.duracion_target_min "
+              "FROM produccion.dic_proceso_etapa_reactor r "
+              "LEFT JOIN produccion.dic_etapa_proceso e ON e.codigo=r.etapa "
+              "WHERE r.proceso_key=%s AND r.id_bien_uso=%s ORDER BY r.orden", (proc, _id_bu_cr)) if _id_bu_cr else None
+    if _et is None or _et.empty:
+        _et = cat("SELECT pe.etapa, COALESCE(e.descripcion, pe.etapa) AS nombre, pe.duracion_target_min "
+                  "FROM produccion.dic_proceso_etapa pe "
+                  "LEFT JOIN produccion.dic_etapa_proceso e ON e.codigo=pe.etapa "
+                  "WHERE pe.proceso_key=%s ORDER BY pe.orden", (proc,))
     _repo_h = float(fila["reposo_horas"]) if ("reposo_horas" in fila.index and pd.notna(fila["reposo_horas"])) else None
     _crono_rows = []
     _cur = _inicio
