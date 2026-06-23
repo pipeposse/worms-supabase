@@ -11,6 +11,7 @@ import datetime as dt
 import streamlit as st
 
 import db
+import auth
 
 st.set_page_config(page_title="GAPRE · Carga Canal 2", page_icon="📑", layout="centered")
 
@@ -18,6 +19,11 @@ UNIDADES = ["Toneladas", "Unidad(es)", "Kilogramos", "Litros", "Servicio"]
 MONEDAS = ["ARS", "USD"]
 EMPRESA_DEF = "Worms Arg SA-Ej 2024"
 NUEVO = "➕ Crear nuevo…"
+
+# --- Autenticación (bloquea hasta iniciar sesión) ---
+usuario = auth.require_login()
+auth.boton_logout()
+auth.panel_usuarios()
 
 st.title("📑 GAPRE · Carga de documentos")
 st.caption("Canal 2 — alta de líneas en Supabase (esquema `gapre`)")

@@ -38,6 +38,12 @@ def q(sql, params=None):
         return cur.fetchall()
 
 
+def execute(sql, params=None):
+    """INSERT/UPDATE/DELETE sin retorno."""
+    with get_conn().cursor() as cur:
+        cur.execute(sql, params or [])
+
+
 def insert_returning_id(table, data: dict) -> int:
     cols = list(data.keys())
     vals = [data[c] for c in cols]
