@@ -2910,6 +2910,27 @@ if st.session_state.section != "CARGAS":
                         if _allp is not None and not _allp.empty:
                             st.markdown(f"**Productos ya creados ({len(_allp)})** — revisá antes de crear uno nuevo:")
                             st.dataframe(_allp, use_container_width=True, hide_index=True, height=240)
+                            _del_sel = st.selectbox("🗑️ Borrar un producto cargado", ["—"] + _allp["Código"].tolist(), key="np_del_sel")
+                            if _del_sel != "—":
+                                _del_ok = st.checkbox(f"Confirmo borrar **{_del_sel}**", key="np_del_ok")
+                                if st.button("🗑️ Borrar producto", disabled=not _del_ok, key="np_del_btn"):
+                                    try:
+                                        with conectar(USR["id_usuario"]) as (conn, audit):
+                                            with conn.cursor() as cur:
+                                                cur.execute("DELETE FROM produccion.dim_producto WHERE codigo_producto=%s", (_del_sel,))
+                                            audit.log("D", "dim_producto", 0, {"codigo": _del_sel})
+                                        st.success(f"Producto {_del_sel} borrado.")
+                                        cat.clear(); st.rerun()
+                                    except Exception:
+                                        try:
+                                            with conectar(USR["id_usuario"]) as (conn, audit):
+                                                with conn.cursor() as cur:
+                                                    cur.execute("UPDATE produccion.dim_producto SET activo=false WHERE codigo_producto=%s", (_del_sel,))
+                                                audit.log("U", "dim_producto", 0, {"codigo": _del_sel, "desactivado": True})
+                                            st.warning(f"**{_del_sel}** está en uso (tanques o movimientos): no se puede borrar del todo, así que lo **desactivé** (deja de aparecer).")
+                                            cat.clear(); st.rerun()
+                                        except Exception as e:
+                                            st.exception(e)
                         _npc1, _npc2 = st.columns(2)
                         _np_cod = (_npc1.text_input("Código *", key="np_cod", placeholder="ej. ACEITE-X") or "").strip().upper()
                         _np_nom = (_npc2.text_input("Nombre *", key="np_nom", placeholder="ej. Aceite X") or "").strip()
