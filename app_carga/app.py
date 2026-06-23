@@ -2904,6 +2904,12 @@ if st.session_state.section != "CARGAS":
                     with st.expander("➕ Dar de alta un producto nuevo (no registrado en la base)", expanded=False):
                         st.caption("Creá un producto que todavía no existe para poder asignarlo a un tanque. "
                                    "Una vez creado, aparece en los selectores de producto.")
+                        _allp = cat("SELECT codigo_producto AS \"Código\", nombre_producto AS \"Nombre\", "
+                                    "COALESCE(corriente,'') AS \"Corriente\", tipo_producto AS \"Tipo\" "
+                                    "FROM produccion.dim_producto WHERE COALESCE(activo,true) ORDER BY codigo_producto")
+                        if _allp is not None and not _allp.empty:
+                            st.markdown(f"**Productos ya creados ({len(_allp)})** — revisá antes de crear uno nuevo:")
+                            st.dataframe(_allp, use_container_width=True, hide_index=True, height=240)
                         _npc1, _npc2 = st.columns(2)
                         _np_cod = (_npc1.text_input("Código *", key="np_cod", placeholder="ej. ACEITE-X") or "").strip().upper()
                         _np_nom = (_npc2.text_input("Nombre *", key="np_nom", placeholder="ej. Aceite X") or "").strip()
