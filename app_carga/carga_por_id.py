@@ -120,6 +120,11 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
     estado = str(b["estado"])
     id_batch = int(b["id_batch"])
 
+    st.markdown(
+        f"<div style='background:#1e293b;border-radius:14px;padding:14px 18px;margin:6px 0 10px;text-align:center'>"
+        f"<div style='color:#94a3b8;font-size:.8rem;font-weight:700;letter-spacing:1px'>N° DE PRODUCCIÓN / REACCIÓN (no cambia)</div>"
+        f"<div style='color:#fff;font-size:2.1rem;font-weight:900;letter-spacing:1px'>{b['ident']}</div></div>",
+        unsafe_allow_html=True)
     st.markdown(_stepper(estado), unsafe_allow_html=True)
     _banner_corriente(b["corriente"])
 
