@@ -1,0 +1,16 @@
+# Secrets reales (NUNCA subir)
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# SO / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
