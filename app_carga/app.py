@@ -1480,7 +1480,7 @@ if st.session_state.section != "CARGAS":
             _form_param_tanque(cat, conectar, USR)
         elif _lab_view.startswith("➕"):
             from lab_carga import render_laboratorio
-            render_laboratorio(get_conn=_lab_conn)
+            render_laboratorio(get_conn=_lab_conn, usr=USR)
         else:
             with st.expander("Filtros", expanded=True):
                 c1, c2, c3 = st.columns(3)

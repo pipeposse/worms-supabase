@@ -580,7 +580,18 @@ def productos_base(dias=180, get_conn=None):
             return [r[0] for r in cur.fetchall()]
 
 
-def tickets_porteria(producto_base=None, ticket=None, dias=30, limite=300, get_conn=None):
+def proveedores(dias=180, get_conn=None):
+    """Lista de proveedores (cliente) presentes en portería, para el primer filtro."""
+    sql = ("select cliente, count(*) c from produccion.v_transacciones_limpias "
+           "where fecha_entrada >= current_date - %s and cliente is not null and cliente <> '' "
+           "group by 1 order by c desc")
+    with _conn_cm(get_conn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (dias,))
+            return [r[0] for r in cur.fetchall()]
+
+
+def tickets_porteria(producto_base=None, ticket=None, dias=30, limite=300, get_conn=None, cliente=None):
     """Tickets de porteria filtrados por producto_base / nro, con patentes."""
     where = ["t.fecha_entrada >= current_date - %s"]
     params = [dias]
@@ -590,6 +601,9 @@ def tickets_porteria(producto_base=None, ticket=None, dias=30, limite=300, get_c
     if ticket:
         where.append("CAST(t.transaccion AS text) ILIKE %s")
         params.append(f"%{str(ticket).strip()}%")
+    if cliente:
+        where.append("t.cliente = %s")
+        params.append(cliente)
     sql = (
         "select t.transaccion, t.producto_base, t.producto, t.cliente, t.fecha_entrada, "
         "t.patente_chasis, t.patente_acoplado, t.corriente, t.evaluado "
@@ -620,7 +634,7 @@ def _reset(tok):
     st.rerun()
 
 
-def render_laboratorio(get_conn=None):
+def render_laboratorio(get_conn=None, usr=None):
     st.header("🧪 Laboratorio · Carga y edicion")
     st.caption("Alta nueva o edicion. Al editar un registro de Access, la app lo adopta "
                "y tu version prevalece (aunque Access lo reescriba a diario).")
@@ -629,7 +643,11 @@ def render_laboratorio(get_conn=None):
     ss.setdefault("lab_tok", uuid.uuid4().hex[:8])
     ss.setdefault("lab_edit_ctx", None)
 
-    usuario = st.text_input("Tu usuario (auditoria, opcional)", key="lab_user")
+    _uname = ""
+    if usr:
+        _uname = str(usr.get("nombre_full") or usr.get("nombre") or usr.get("id_usuario") or "")
+    usuario = st.text_input("Empleado / usuario que carga (queda registrado en la base)",
+                            value=_uname, key="lab_user")
 
     modo = st.radio("Modo", ["➕ Nueva carga", "✏️ Buscar y editar"], horizontal=True,
                     key="lab_modo")
@@ -689,20 +707,27 @@ def render_laboratorio(get_conn=None):
         return
 
     # -------- NUEVA CARGA (vista unica, todos los productos) --------
-    st.markdown("**1) Ticket de portería** (opcional · autollena patente/chasis)")
-    cpa, cpb, cpc = st.columns([2, 2, 1])
+    st.markdown("**1) Proveedor y ticket de portería** (el ticket autollena patente/chasis/proveedor)")
     try:
         _pbases = productos_base(get_conn=get_conn)
     except Exception as e:
         _pbases = []
         st.caption(f"(no pude leer productos base: {e})")
-    f_base = cpa.multiselect("Producto base (portería)", _pbases, key="lab_pb")
+    try:
+        _provs = proveedores(get_conn=get_conn)
+    except Exception:
+        _provs = []
+    cpp, cpd = st.columns([3, 1])
+    f_prov = cpp.selectbox("Proveedor (primer filtro)", ["(todos)"] + _provs, key="lab_prov")
+    f_dias = cpd.number_input("Días", 1, 365, 30, key="lab_pdias")
+    cpa, cpb = st.columns([2, 2])
+    f_base = cpa.multiselect("Producto base (opcional)", _pbases, key="lab_pb")
     f_tk = cpb.text_input("Buscar Nº ticket", key="lab_ftk")
-    f_dias = cpc.number_input("Días", 1, 365, 30, key="lab_pdias")
 
     tk_sel = None
     try:
-        _ticks = tickets_porteria(f_base or None, f_tk or None, int(f_dias), get_conn=get_conn)
+        _ticks = tickets_porteria(f_base or None, f_tk or None, int(f_dias), get_conn=get_conn,
+                                  cliente=(None if f_prov == "(todos)" else f_prov))
     except Exception as e:
         _ticks = []
         st.caption(f"(no pude leer tickets: {e})")
@@ -722,8 +747,9 @@ def render_laboratorio(get_conn=None):
         pf_new = {"ticket": str(tk_sel["transaccion"]),
                   "patente_chasis": tk_sel.get("patente_chasis"),
                   "patente_acoplado": tk_sel.get("patente_acoplado")}
-        st.success(f"Ticket #{tk_sel['transaccion']} · {tk_sel.get('producto_base')} → "
-                   f"patentes {tk_sel.get('patente_chasis') or '-'}/{tk_sel.get('patente_acoplado') or '-'}")
+        st.success(f"Ticket #{tk_sel['transaccion']} · {tk_sel.get('producto_base')} · "
+                   f"proveedor {tk_sel.get('cliente') or '-'} → patentes "
+                   f"{tk_sel.get('patente_chasis') or '-'}/{tk_sel.get('patente_acoplado') or '-'}")
 
     st.divider()
     st.markdown("**2) Producto a evaluar** (define los obligatorios)")
