@@ -5,8 +5,8 @@ Tres paneles que comparten datos del batch:
   - produccion(...)    → Producción en planta: prueba de solubilidad (¿el material purgado flota?),
                          envío de muestra a lab, ver purga/ticket, confirmar + generar movimientos.
   - laboratorio(...)   → Laboratorio: ver producciones en marcha que requieren evaluación y cargar
-                         el % de glicerina del purgado (<3% = purga OK) y azufre/fósforo del final.
-Corta cuando glicerina del purgado < 3%. Recomienda exportación si azufre y fósforo < 200.
+                         el % de glicerina del purgado (≤2% = purga OK) y azufre/fósforo del final.
+Corta cuando glicerina del purgado ≤ 2%. Recomienda exportación si azufre y fósforo < 200.
 """
 import json
 import pandas as pd
@@ -14,7 +14,7 @@ import streamlit as st
 
 REPOSO_DECANT = ("REPOSO", "DECANTACION")
 GLI_RECUP_TANQUES = (88, 87, 81)   # cónico 20-2, cónico 20-1, Minion
-PURGA_CORTE = 3.0                  # glicerina < 3% => purga OK
+PURGA_CORTE = 2.0                  # glicerina <= 2% => purga OK
 SP_EXPORT = 200.0                  # azufre y fósforo < 200 => apto exportación
 
 
@@ -136,6 +136,44 @@ def destinos(USR, cat, conectar):
             except Exception as e:
                 st.exception(e)
 
+    # ---- Producto producido + parámetros de laboratorio (para decidir el destino) ----
+    p = _params(b)
+    _are_kg = float(p.get("are_objetivo_kg") or 0)
+    _lit_gli = float(p.get("litros_glicerina_total") or 0)
+    _aporte = float(p.get("aporte_glicerina_pct") or 10)
+    _gli_recup_l = (1 - _aporte / 100.0) * _lit_gli
+    _le = None
+    if b["ticket_producto_final"]:
+        try:
+            _le = cat("SELECT calidad_final_lab, rechazado, prc_acidez, prc_hkf, prc_sedimentos, "
+                      "ppm_azufre, ppm_fosforo, densidad__g_ml, prc_glicerina, color, to_char(fecha,'DD/MM HH24:MI') fecha "
+                      "FROM produccion.v_procesos_lab_efectivo WHERE ticket=%s ORDER BY fecha DESC NULLS LAST LIMIT 1",
+                      (str(b["ticket_producto_final"]),))
+        except Exception:
+            _le = None
+    st.markdown("##### 📦 ARE producido (evaluado por laboratorio)")
+    _a1, _a2, _a3 = st.columns(3)
+    _a1.metric("ARE producido", f"{_are_kg/0.88:,.0f} L", f"{_are_kg:,.0f} kg")
+    if _le is not None and not _le.empty:
+        _r = _le.iloc[0]
+        _a2.metric("Calidad final", str(_r["calidad_final_lab"] or "—"))
+        _a3.metric("Resultado lab", str(_r["rechazado"] or "—"))
+        _par = {"Acidez %": _r["prc_acidez"], "HKF %": _r["prc_hkf"], "Sedim. %": _r["prc_sedimentos"],
+                "Azufre ppm": _r["ppm_azufre"], "Fósforo ppm": _r["ppm_fosforo"],
+                "Densidad": _r["densidad__g_ml"], "Color": _r["color"]}
+        _par = {k: v for k, v in _par.items() if v is not None and str(v).strip() != ""}
+        if _par:
+            st.dataframe(pd.DataFrame([_par]), use_container_width=True, hide_index=True)
+        st.caption(f"Evaluado por laboratorio · {_r['fecha']}. Guía: azufre y fósforo < {SP_EXPORT:.0f} ppm = apto exportación.")
+    else:
+        _a2.metric("Calidad final", "—")
+        st.caption(f"Laboratorio todavía no evaluó el producto final (ticket {b['ticket_producto_final'] or '—'}).")
+    st.markdown("##### 🟡 Glicerina recuperada producida")
+    _g1, _g2 = st.columns(2)
+    _g1.metric("Glicerina recuperada", f"{_gli_recup_l:,.0f} L", f"{100 - _aporte:.0f}% de la cargada")
+    _g2.metric("Glicerina del purgado (lab)",
+               f"{float(b['purga_glicerina_pct']):.1f}%" if pd.notna(b["purga_glicerina_pct"]) else "—")
+
     st.markdown("##### 🟡 Destino de la glicerina recuperada (purga)")
     gt = _tanques(cat, GLI_RECUP_TANQUES)
     if gt is None or gt.empty:
@@ -152,25 +190,13 @@ def destinos(USR, cat, conectar):
         gsel = st.selectbox("Tanque destino (elegí por stock disponible)", gop, index=_ix, key="dec_gli_tk")
         dest_gli = int(gt.iloc[gop.index(gsel)]["id_tanque"])
 
-    st.markdown("##### 🎯 Destino final del ARE")
-    fl = _params(b).get("final_lab") or {}
-    _az = fl.get("azufre"); _fo = fl.get("fosforo")
-    apto = (_az is not None and _fo is not None and float(_az) < SP_EXPORT and float(_fo) < SP_EXPORT)
-    if _az is not None:
-        if apto:
-            st.success(f"✅ Lab final: azufre {float(_az):.0f} · fósforo {float(_fo):.0f} ppm (< {SP_EXPORT:.0f}) → "
-                       "**apto para exportación**: se recomiendan tanques de exportación.")
-        else:
-            st.warning(f"Lab final: azufre {float(_az or 0):.0f} · fósforo {float(_fo or 0):.0f} ppm → "
-                       "no apto para exportación; usar tanques de ARE.")
-    else:
-        st.caption("Aún sin azufre/fósforo del final (lo carga laboratorio). La recomendación de exportación aparece al tenerlos.")
+    st.markdown("##### 🎯 Tanque destino del ARE final")
     ft = cat(
         "SELECT t.id_tanque, t.nombre, t.codigo, t.sector, COALESCE(s.litros_actual,0) lt, COALESCE(t.capacidad_litros,0) cap "
         "FROM produccion.dim_tanque t JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
         "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
-        "WHERE COALESCE(t.activo,true) AND (p.codigo_producto='ARE-B' OR (%s AND t.sector ILIKE 'Exporta%%')) "
-        "ORDER BY (t.sector ILIKE 'Exporta%%') DESC, t.nombre", (apto,))
+        "WHERE COALESCE(t.activo,true) AND (p.codigo_producto='ARE-B' OR t.sector ILIKE 'Exporta%%' OR t.codigo='FORM-AG-E') "
+        "ORDER BY (t.sector ILIKE 'Exporta%%') DESC, t.nombre")
     if ft is None or ft.empty:
         st.warning("No hay tanques destino para ARE-B.")
         dest_fin = None
@@ -200,7 +226,7 @@ def destinos(USR, cat, conectar):
 def produccion(USR, cat, conectar, id_batch=None):
     st.header("🧴 Decantación (purga ARE)")
     st.caption("Durante la decantación hacés la **prueba de solubilidad**: si el material purgado **flota**, "
-               "ese proceso terminó. Mandás muestra a laboratorio: corta cuando la glicerina del purgado es < 3%.")
+               "ese proceso terminó. Mandás muestra a laboratorio: corta cuando la glicerina del purgado es ≤ 2%.")
     if id_batch is not None:
         b = _batch_one(cat, int(id_batch))
         if b is None:
@@ -240,16 +266,16 @@ def produccion(USR, cat, conectar, id_batch=None):
 
     if st.button("📤 Enviar muestra de purga a laboratorio", key="dec_envio_lab"):
         st.success("Muestra de purga marcada para laboratorio. La verás en la sección Laboratorio "
-                   "(carga el % de glicerina; corta en < 3%).")
+                   "(carga el % de glicerina; corta en ≤ 2%).")
 
     st.markdown("##### 🔬 Resultado de laboratorio (purga)")
     gp = b["purga_glicerina_pct"]
     if pd.isna(gp) or gp is None:
         st.caption("Laboratorio todavía no cargó el % de glicerina del material purgado.")
     elif bool(b["purga_ok"]):
-        st.success(f"✅ Última purga **{float(gp):.1f}% (< {PURGA_CORTE:.0f}%)** → **purga OK**. Podés confirmar y enviar a destino.")
+        st.success(f"✅ Última purga **{float(gp):.1f}% (≤ {PURGA_CORTE:.0f}%)** → **purga OK**. Podés confirmar y enviar a destino.")
     else:
-        st.warning(f"🔴 Última purga **{float(gp):.1f}% (≥ {PURGA_CORTE:.0f}%)** → **seguí decantando**.")
+        st.warning(f"🔴 Última purga **{float(gp):.1f}% (> {PURGA_CORTE:.0f}%)** → **seguí decantando**.")
     _ph = cat("SELECT to_char(ts,'DD/MM HH24:MI') AS \"Hora\", glicerina_pct AS \"Glicerina %%\", "
               "CASE WHEN purga_ok THEN 'Purga OK ✅' ELSE 'Seguir' END AS \"Resultado\" "
               "FROM produccion.fact_decant_purga WHERE id_batch=%s ORDER BY ts DESC", (int(b["id_batch"]),))
@@ -260,7 +286,7 @@ def produccion(USR, cat, conectar, id_batch=None):
     st.divider()
     st.markdown("##### ✅ Confirmar decantación y enviar a destino")
     if not bool(b["purga_ok"]):
-        st.info("Disponible cuando laboratorio confirme purga OK (< 3%).")
+        st.info("Disponible cuando laboratorio confirme purga OK (≤ 2%).")
         return
     if pd.isna(dg) or pd.isna(df_):
         st.warning("Falta que dirección defina los tanques destino (glicerina recuperada y ARE final).")
@@ -333,7 +359,7 @@ def _set_flota(USR, cat, conectar, id_batch, flota):
 def laboratorio(USR, cat, conectar):
     st.subheader("🔬 Evaluaciones de producciones en marcha (ARE en decantación)")
     st.caption("Producciones que requieren evaluación de laboratorio. Cargá el **% de glicerina del material purgado** "
-               f"(corta en < {PURGA_CORTE:.0f}%) y, para el producto final, azufre/fósforo (apto exportación si < {SP_EXPORT:.0f}).")
+               f"(corta en ≤ {PURGA_CORTE:.0f}%) y, para el producto final, azufre/fósforo (apto exportación si < {SP_EXPORT:.0f}).")
     b, df = _sel_batch(cat, "dec_lab_sel")
     if b is None:
         return
@@ -344,7 +370,7 @@ def laboratorio(USR, cat, conectar):
     gp = st.number_input("% glicerina del purgado", 0.0, 100.0, value=0.0, step=0.1, key="dec_lab_gli")
     _obsp = st.text_input("Observación (opcional)", key="dec_lab_purga_obs")
     if st.button("💾 Guardar % glicerina (purga)", type="primary", key="dec_lab_save_gli"):
-        ok = gp < PURGA_CORTE
+        ok = gp <= PURGA_CORTE
         try:
             with conectar(uid) as (conn, audit):
                 with conn.cursor() as cur:
@@ -354,7 +380,7 @@ def laboratorio(USR, cat, conectar):
                                 "SET purga_glicerina_pct=%s, purga_ok=%s, purga_lab_ts=now() WHERE id_batch=%s",
                                 (float(gp), bool(ok), int(b["id_batch"])))
                 audit.log("I", "fact_decant_purga", int(b["id_batch"]), {"purga_pct": gp, "ok": ok})
-            st.success(f"Glicerina {gp:.1f}% → " + ("✅ purga OK (< 3%)" if ok else "🔴 seguir decantando (≥ 3%)"))
+            st.success(f"Glicerina {gp:.1f}% → " + ("✅ purga OK (≤ 2%)" if ok else "🔴 seguir decantando (> 2%)"))
             cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
@@ -382,15 +408,18 @@ def laboratorio(USR, cat, conectar):
         _cal = ef2.selectbox("Calidad final", [""] + _cals, key="dec_fin_cal")
         _rech = ef3.selectbox("Resultado", ["ACEPTADO", "RECHAZADO", "REMUESTREO"], key="dec_fin_rech")
         _color = ef4.text_input("Color", key="dec_fin_color")
+        _es_are = (_pbase == "ARE")
+        if _es_are:
+            st.caption("ℹ️ Para **ARE** no se miden Agua ni Hexano/impurezas; se usa **HKF**.")
         st.markdown("**Parámetros (%)**")
         q1, q2, q3, q4 = st.columns(4)
         _ac = q1.number_input("Acidez (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_ac")
-        _ag = q2.number_input("Agua (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_ag")
+        _ag = 0.0 if _es_are else q2.number_input("Agua (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_ag")
         _sed = q3.number_input("Sedimentos (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_sed")
         _prodp = q4.number_input("Producto (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_prodp")
         q5, q6, q7, q8 = st.columns(4)
         _hkf = q5.number_input("HKF (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_hkf")
-        _hex = q6.number_input("Hexano/imp. (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_hex")
+        _hex = 0.0 if _es_are else q6.number_input("Hexano/imp. (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_hex")
         _gliP = q7.number_input("Glicerina (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_gliP")
         _poli = q8.number_input("Poliglicerol (%)", 0.0, 100.0, value=0.0, step=0.1, key="dec_fin_poli")
         st.markdown("**Otros**")
