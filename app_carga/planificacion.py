@@ -530,35 +530,47 @@ def _render_cronogramas(USR, cat, conectar):
         "Horas": (_et["dur"].astype(float) // 60).astype(int),
         "Minutos": (_et["dur"].astype(float) % 60).astype(int),
     })
+    st.caption("Podés **agregar** etapas (botón ➕ abajo de la tabla) y **borrar** (seleccioná la fila y 🗑). "
+               "Para una etapa nueva escribí un **código** corto en MAYÚSCULAS sin espacios; si lo dejás vacío, se genera del nombre.")
     _ed = st.data_editor(
-        _df, hide_index=True, use_container_width=True, key=f"cr_ed_{_pk}",
-        disabled=["Orden", "Etapa (código)"],
+        _df, hide_index=True, use_container_width=True, key=f"cr_ed_{_pk}", num_rows="dynamic",
         column_config={
-            "Nombre": st.column_config.TextColumn("Nombre de la etapa", required=True),
+            "Orden": st.column_config.NumberColumn("Orden", min_value=1, step=1),
+            "Etapa (código)": st.column_config.TextColumn("Código", help="Identificador interno (sin espacios). Cuidado al cambiar códigos existentes; los usan las reglas."),
+            "Nombre": st.column_config.TextColumn("Nombre de la etapa"),
             "Horas": st.column_config.NumberColumn("Horas", min_value=0, max_value=336, step=1),
             "Minutos": st.column_config.NumberColumn("Minutos", min_value=0, max_value=59, step=5),
         })
     if st.button("💾 Guardar cronograma", type="primary", use_container_width=True, key=f"cr_save_{_pk}"):
         try:
+            import re as _re
             uid = int(USR["id_usuario"])
-            with conectar(uid) as (conn, audit):
-                with conn.cursor() as cur:
-                    for _, r in _ed.iterrows():
-                        _dur = int(r["Horas"]) * 60 + int(r["Minutos"])
-                        _cod = str(r["Etapa (código)"])
-                        cur.execute("UPDATE produccion.dic_proceso_etapa SET duracion_target_min=%s "
-                                    "WHERE proceso_key=%s AND etapa=%s", (_dur, _pk, _cod))
-                        _nom = (str(r["Nombre"]) or "").strip()
-                        if _nom:
-                            cur.execute("UPDATE produccion.dic_etapa_proceso SET descripcion=%s WHERE codigo=%s",
-                                        (_nom, _cod))
-                            if cur.rowcount == 0:
-                                cur.execute("INSERT INTO produccion.dic_etapa_proceso (codigo, descripcion, orden, activo) "
-                                            "VALUES (%s,%s,%s,true) ON CONFLICT (codigo) DO UPDATE SET descripcion=EXCLUDED.descripcion",
-                                            (_cod, _nom, int(r["Orden"])))
-                audit.log("U", "dic_proceso_etapa", 0, {"proceso": _pk})
-            st.success("Cronograma actualizado. Los nuevos nombres y duraciones se usan al planificar.")
-            cat.clear(); st.rerun()
+            _rows = []
+            for _, r in _ed.iterrows():
+                _nom = (str(r.get("Nombre") or "")).strip()
+                _cod = (str(r.get("Etapa (código)") or "")).strip().upper()
+                if not _cod:
+                    _cod = _re.sub(r"[^A-Z0-9]+", "_", (_nom or "ETAPA").upper()).strip("_") or "ETAPA"
+                if not _nom and not _cod:
+                    continue
+                _h = int(r.get("Horas") or 0); _m = int(r.get("Minutos") or 0)
+                _ord = int(r.get("Orden") or (len(_rows) + 1))
+                _rows.append((_ord, _cod, (_nom or _cod), _h * 60 + _m))
+            if not _rows:
+                st.error("Tiene que quedar al menos una etapa.")
+            else:
+                with conectar(uid) as (conn, audit):
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM produccion.dic_proceso_etapa WHERE proceso_key=%s", (_pk,))
+                        for _ord, _cod, _nom, _dur in _rows:
+                            cur.execute("INSERT INTO produccion.dic_proceso_etapa (proceso_key, etapa, orden, duracion_target_min) "
+                                        "VALUES (%s,%s,%s,%s)", (_pk, _cod, _ord, _dur))
+                            cur.execute("INSERT INTO produccion.dic_etapa_proceso (codigo, descripcion, orden, activo) "
+                                        "VALUES (%s,%s,%s,true) ON CONFLICT (codigo) DO UPDATE SET descripcion=EXCLUDED.descripcion",
+                                        (_cod, _nom, _ord))
+                    audit.log("U", "dic_proceso_etapa", 0, {"proceso": _pk, "etapas": len(_rows)})
+                st.success("Cronograma actualizado (etapas, nombres y duraciones).")
+                cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
 
@@ -631,13 +643,12 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     horas = float(par.iloc[0]["tiempo_total_horas"]) if (not par.empty and par.iloc[0]["tiempo_total_horas"] is not None) else 4.0
     acidez_obj = float(par.iloc[0]["acidez_objetivo_pct"]) if (not par.empty and par.iloc[0]["acidez_objetivo_pct"] is not None) else None
 
-    b1, b2, b3, b4, b5 = st.columns(5)
+    b1, b2, b3, b4 = st.columns(4)
     b1.metric("Proceso", proc or "—")
     b2.metric("Corriente", corr or "—")
     b3.metric("Capacidad", f"{cap:,.0f} L")
     b4.metric("Q MP objetivo", f"{q_ag:,.0f} kg")
-    b5.metric("Temp · Tiempo", f"{temp:.0f}°C · {horas:.0f} h")
-    st.caption("Temp, tiempo y acidez objetivo vienen de `dic_proceso_parametros`. Q = capacidad × densidad de la MP (se recalcula).")
+    st.caption("Q = capacidad × densidad de la MP (se recalcula).")
 
     # ---------- Producto final / calidad ----------
     if proc == "PRODUCCION_ARE":
