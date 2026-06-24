@@ -947,7 +947,7 @@ def _lab_asignacion(cat):
     df = cat("SELECT fecha, ticket, producto, calidad, cliente, kg_ticket, "
              "prc_acidez, prc_agua, prc_sedimentos, ppm_azufre, ppm_fosforo, "
              "tanque_asignado, tanque_codigo, kg_asignados, litros_asignados, capacidad_litros, "
-             "stock_antes_l, stock_despues_l, disponible_antes_l, disponible_despues_l, estado_mov "
+             "stock_antes_l, stock_despues_l, disponible_antes_l, disponible_despues_l, estado_mov, motivo "
              "FROM produccion.v_lab_asignacion_tanque ORDER BY fecha DESC NULLS LAST LIMIT 300")
     if df is None or df.empty:
         st.info("Todavía no hay evaluaciones de tickets de portería con asignación.")
@@ -966,10 +966,12 @@ def _lab_asignacion(cat):
         "Kg asign.": df["kg_asignados"], "Litros asign.": df["litros_asignados"],
         "Cap. L": df["capacidad_litros"],
         "Disp. antes L": df["disponible_antes_l"], "Disp. después L": df["disponible_despues_l"],
+        "Motivo": df["motivo"],
     })
     _nf = st.column_config.NumberColumn(format="%.0f")
     st.dataframe(_show, hide_index=True, use_container_width=True,
-                 column_config={k: _nf for k in ["Kg ticket","Kg asign.","Litros asign.","Cap. L","Disp. antes L","Disp. después L"]})
+                 column_config={**{k: _nf for k in ["Kg ticket","Kg asign.","Litros asign.","Cap. L","Disp. antes L","Disp. después L"]},
+                                "Motivo": st.column_config.TextColumn("Motivo", width="large")})
     _conf = df[df["tanque_asignado"].notna()].reset_index(drop=True)
     if not _conf.empty:
         _opts = (_conf["ticket"].astype(str) + " · " + _conf["producto"].fillna("") + " → " + _conf["tanque_asignado"]).tolist()
