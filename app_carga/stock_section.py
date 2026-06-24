@@ -21,8 +21,56 @@ def render(USR, cat):
             "- Así, incluso un tanque medido 1 vez al día queda **vivo**. La **confianza** indica qué tan fresco es el dato.\n"
             "- **Real vs teórico**: comparamos la variación física medida contra lo que movió producción.")
 
-    t1, t2, t4, t3 = st.tabs(["🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
-                              "⚖️ Real vs teórico (por día)", "🛡️ Conciliación"])
+    tp, t1, t2, t4, t3 = st.tabs(["📊 Por producto", "🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
+                                 "⚖️ Real vs teórico (por día)", "🛡️ Conciliación"])
+
+    # ---------- 0 · Stock por producto ----------
+    with tp:
+        st.caption("Cuánto hay de cada producto, cuánta **capacidad de acopio aperturada** (tanques asignados) "
+                   "y cuánto **queda disponible** — total y abierto por tanque.")
+        pp = cat("SELECT producto_principal AS producto, count(*) tanques, "
+                 "SUM(COALESCE(litros_actual,0)) litros, SUM(COALESCE(kg_actual,0)) kg, "
+                 "SUM(COALESCE(capacidad_litros,0)) capacidad "
+                 "FROM produccion.vw_tanque_panel WHERE activo AND producto_principal IS NOT NULL "
+                 "GROUP BY producto_principal ORDER BY litros DESC NULLS LAST")
+        if pp is None or pp.empty:
+            st.info("Sin datos de stock por producto.")
+        else:
+            pp = pp.copy()
+            _lt = pd.to_numeric(pp["litros"], errors="coerce").fillna(0)
+            _cap = pd.to_numeric(pp["capacidad"], errors="coerce").fillna(0)
+            pp["disponible"] = (_cap - _lt).clip(lower=0)
+            pp["ocupacion"] = (_lt / _cap.replace(0, pd.NA) * 100).fillna(0)
+            t_lt = float(_lt.sum()); t_cap = float(_cap.sum()); t_disp = float(pp["disponible"].sum())
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Stock total (L)", f"{t_lt:,.0f}")
+            m2.metric("Capacidad aperturada (L)", f"{t_cap:,.0f}")
+            m3.metric("Disponible (L)", f"{t_disp:,.0f}")
+            m4.metric("Ocupación total", f"{(t_lt/t_cap*100 if t_cap else 0):.0f}%")
+            _disp = pp.rename(columns={"producto": "Producto", "tanques": "Tanques", "litros": "Stock (L)",
+                                       "kg": "Stock (kg)", "capacidad": "Capacidad (L)",
+                                       "disponible": "Disponible (L)", "ocupacion": "Ocupación %"})
+            st.dataframe(_disp[["Producto", "Tanques", "Stock (L)", "Capacidad (L)", "Disponible (L)", "Ocupación %"]],
+                         use_container_width=True, hide_index=True, column_config={
+                "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
+                "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
+                "Disponible (L)": st.column_config.NumberColumn(format="%.0f"),
+                "Ocupación %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
+            _dl(_disp, "stock_por_producto.csv", "dl_pp")
+            st.markdown("**🛢️ Aperturado por tanque**")
+            _psel = st.selectbox("Producto", pp["producto"].tolist(), key="stk_pp_sel")
+            tq = cat("SELECT nombre AS \"Tanque\", codigo AS \"Código\", sector AS \"Sector\", "
+                     "COALESCE(litros_actual,0) AS \"Stock (L)\", COALESCE(capacidad_litros,0) AS \"Capacidad (L)\", "
+                     "GREATEST(COALESCE(capacidad_litros,0)-COALESCE(litros_actual,0),0) AS \"Disponible (L)\", "
+                     "COALESCE(nivel_pct_actual,0) AS \"Ocupación %\" "
+                     "FROM produccion.vw_tanque_panel WHERE activo AND producto_principal=%s "
+                     "ORDER BY litros_actual DESC NULLS LAST", (_psel,))
+            if tq is not None and not tq.empty:
+                st.dataframe(tq, use_container_width=True, hide_index=True, column_config={
+                    "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
+                    "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
+                    "Disponible (L)": st.column_config.NumberColumn(format="%.0f"),
+                    "Ocupación %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
 
     # ---------- 1 · Stock por tanque ----------
     with t1:
