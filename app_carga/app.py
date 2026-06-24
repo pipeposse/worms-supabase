@@ -938,6 +938,54 @@ def K(cod, default=None):
     """Lookup de constante química."""
     r = constantes[constantes["codigo"]==cod]
     return float(r.iloc[0]["valor"]) if not r.empty else default
+def _lab_asignacion(cat):
+    """Visualización en Laboratorio: ticket → tanque asignado por el sistema + capacidad antes/después."""
+    import pandas as pd
+    st.subheader("📦 Asignación automática a tanque de acopio")
+    st.caption("Lo evaluado por portería con su tanque final: el sistema lo elige por **parámetros aceptables** y **capacidad** "
+               "para los kg del ticket. Ves cómo queda el tanque antes y después del ingreso.")
+    df = cat("SELECT fecha, ticket, producto, calidad, cliente, kg_ticket, "
+             "prc_acidez, prc_agua, prc_sedimentos, ppm_azufre, ppm_fosforo, "
+             "tanque_asignado, tanque_codigo, kg_asignados, litros_asignados, capacidad_litros, "
+             "stock_antes_l, stock_despues_l, disponible_antes_l, disponible_despues_l, estado_mov "
+             "FROM produccion.v_lab_asignacion_tanque ORDER BY fecha DESC NULLS LAST LIMIT 300")
+    if df is None or df.empty:
+        st.info("Todavía no hay evaluaciones de tickets de portería con asignación.")
+        return
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Evaluaciones", len(df))
+    c2.metric("Con tanque asignado", int(df["tanque_asignado"].notna().sum()))
+    c3.metric("Sin tanque (revisar)", int(df["tanque_asignado"].isna().sum()))
+    _show = pd.DataFrame({
+        "Fecha": pd.to_datetime(df["fecha"], errors="coerce").dt.strftime("%d/%m %H:%M"),
+        "Ticket": df["ticket"], "Producto": df["producto"], "Calidad": df["calidad"],
+        "Cliente": df["cliente"], "Kg ticket": df["kg_ticket"],
+        "Acidez %": df["prc_acidez"], "Agua %": df["prc_agua"], "Sedim %": df["prc_sedimentos"],
+        "Azufre ppm": df["ppm_azufre"], "Fósforo ppm": df["ppm_fosforo"],
+        "Tanque asignado": df["tanque_asignado"].fillna("— sin tanque —"),
+        "Kg asign.": df["kg_asignados"], "Litros asign.": df["litros_asignados"],
+        "Cap. L": df["capacidad_litros"],
+        "Disp. antes L": df["disponible_antes_l"], "Disp. después L": df["disponible_despues_l"],
+    })
+    _nf = st.column_config.NumberColumn(format="%.0f")
+    st.dataframe(_show, hide_index=True, use_container_width=True,
+                 column_config={k: _nf for k in ["Kg ticket","Kg asign.","Litros asign.","Cap. L","Disp. antes L","Disp. después L"]})
+    _conf = df[df["tanque_asignado"].notna()].reset_index(drop=True)
+    if not _conf.empty:
+        _opts = (_conf["ticket"].astype(str) + " · " + _conf["producto"].fillna("") + " → " + _conf["tanque_asignado"]).tolist()
+        _sel = st.selectbox("Ver capacidad del tanque (antes → después)", _opts, key="lab_asig_sel")
+        r = _conf.iloc[_opts.index(_sel)]
+        cap = float(r["capacidad_litros"] or 0)
+        a = float(r["stock_antes_l"] or 0); d = float(r["stock_despues_l"] or 0)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Capacidad tanque", f"{cap:,.0f} L")
+        m2.metric("Ocupado antes", f"{a:,.0f} L", help=f"{(a/cap*100 if cap else 0):.0f}% ocupación")
+        m3.metric("Entra (ticket)", f"+{float(r['litros_asignados'] or 0):,.0f} L", f"{float(r['kg_asignados'] or 0):,.0f} kg")
+        m4.metric("Ocupado después", f"{d:,.0f} L", help=f"{(d/cap*100 if cap else 0):.0f}% ocupación")
+        st.progress(min(d/cap, 1.0) if cap else 0.0,
+                    text=f"Disponible tras el ingreso: {float(r['disponible_despues_l'] or 0):,.0f} L de {cap:,.0f} L")
+
+
 def _form_param_tanque(cat, conectar, USR):
     st.markdown("### 🧪 Cargar parámetros de laboratorio por tanque")
     st.caption("El laboratorio actualiza acá los parámetros del tanque. Queda histórico con fecha y usuario, "
@@ -1471,13 +1519,15 @@ if st.session_state.section != "CARGAS":
     if st.session_state.section == "LAB":
         # =================== LABORATORIO ===================
         st.title("🧪 Laboratorio")
-        _lab_view = st.radio("Vista", ["🔬 Producciones en marcha", "🛢️ Parámetros por tanque", "📊 Resultados", "➕ Carga / Edición"],
+        _lab_view = st.radio("Vista", ["🔬 Producciones en marcha", "🛢️ Parámetros por tanque", "📦 Asignación a tanque", "📊 Resultados", "➕ Carga / Edición"],
                              horizontal=True, key="lab_view_sel", label_visibility="collapsed")
         if _lab_view.startswith("🔬"):
             import decantacion
             decantacion.laboratorio(USR, cat, conectar)
         elif _lab_view.startswith("🛢️"):
             _form_param_tanque(cat, conectar, USR)
+        elif _lab_view.startswith("📦"):
+            _lab_asignacion(cat)
         elif _lab_view.startswith("➕"):
             from lab_carga import render_laboratorio
             render_laboratorio(get_conn=_lab_conn, usr=USR)
