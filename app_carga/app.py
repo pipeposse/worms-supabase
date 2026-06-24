@@ -232,7 +232,7 @@ USR = st.session_state.user
 SECCIONES_APP = [
     ("CARGAS", "🏭 Cargas"), ("INICIAR", "👷 Producción en planta"), ("VISTAS", "📊 Vistas de producción"),
     ("LAB", "🧪 Laboratorio"), ("PORT", "🚛 Portería"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"),
-    ("PLANIFICACION", "🗓️ Centro de Planificación"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
+    ("PLANIFICACION", "🗓️ Centro de Planificación"), ("CONDICIONALES", "🧮 Condicionales"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
     ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
 ]
 
@@ -240,7 +240,7 @@ SECCIONES_APP = [
 def _secciones_default(rol):
     base = ["CARGAS", "INICIAR", "VISTAS", "LAB", "PORT", "TANQUES", "STOCK"]
     if rol in ("SUPERVISOR", "ADMIN"):
-        base += ["PLANIFICACION", "FORMULAS", "CHAT"]
+        base += ["PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT"]
     if rol == "ADMIN":
         base += ["DIRECCION", "ADMIN"]
     return base
@@ -3307,6 +3307,16 @@ if st.session_state.section != "CARGAS":
             _render_stock(USR, cat)
         except Exception as _e:
             st.error(f"No se pudo cargar Stock: {_e}")
+
+    elif st.session_state.section == "CONDICIONALES":
+        try:
+            from condicionales import render as _render_cond
+            _render_cond(USR, cat, conectar)
+        except Exception as _e:
+            import traceback as _tbc
+            st.error(f"No se pudo cargar Condicionales: {_e}")
+            with st.expander("Detalle"):
+                st.code(_tbc.format_exc())
 
     elif st.session_state.section == "INICIAR":
         # =================== INICIAR PRODUCCIÓN (operario, por ID planificado) ===================
