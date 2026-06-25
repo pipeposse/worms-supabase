@@ -261,6 +261,12 @@ if "_set_cookie" in st.session_state:
 if "section" not in st.session_state:
     st.session_state.section = None
 
+# Usuarios con UNA sola sección habilitada quedan anclados a ella (sin landing ni cambio de sección).
+_ALLOWED_SECS = USR.get("secciones_app") or _secciones_default(USR.get("rol"))
+_LOCKED_ONE = len(_ALLOWED_SECS) == 1
+if _LOCKED_ONE:
+    st.session_state.section = _ALLOWED_SECS[0]
+
 def go_to(sec):
     st.session_state.section = sec
     st.rerun()
@@ -362,9 +368,10 @@ if st.session_state.section is None:
 with st.sidebar:
     st.markdown(f"### 👤 {USR['nombre_full']}")
     st.caption(f"`{USR['nombre']}` · rol **{USR['rol']}**")
-    if st.button("← Cambiar de sección", use_container_width=True, key="sb_back"):
-        st.session_state.section = None
-        st.rerun()
+    if not _LOCKED_ONE:
+        if st.button("← Cambiar de sección", use_container_width=True, key="sb_back"):
+            st.session_state.section = None
+            st.rerun()
     if USR.get("sector"):
         st.caption(f"Sector default: **{USR['sector']}**")
     if USR.get("sectores"):
