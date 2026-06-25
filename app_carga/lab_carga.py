@@ -86,7 +86,7 @@ def _conn_cm(get_conn):
 # Catalogos (valores reales de produccion.procesos_lab)
 # ---------------------------------------------------------------------------
 EMPLEADOS = ["Cielo", "Manu", "Rich", "Mili"]
-RECHAZADO = ["ACEPTADO", "RECHAZADO", "REMUESTREO"]
+RECHAZADO = ["ACEPTADO", "RECHAZADO", "FUERA DE ESPECIFICACION", "REMUESTREO"]
 CORRIENTE = ["VEGETAL", "ANIMAL"]
 CAL_AG    = ["A", "B", "C", "C.2da", "D", "E", "G"]
 CAL_AFE   = ["S", "SG", "B", "C", "A"]
@@ -306,10 +306,13 @@ def _cierre(p, pf, tok, calidades, default_corriente=None):
         calidad = _s("Calidad final *", "calidad_final_lab", calidades, pf, p, tok, "cal")
         rechazado = _s("Rechazado/Aceptado *", "rechazado", RECHAZADO, pf, p, tok, "rech")
     with c2:
-        id_tanque_1 = _t("ID Tanque 1", "id_tanque_1", pf, p, tok, "t1")
-        id_tanque_2 = _t("ID Tanque 2", "id_tanque_2", pf, p, tok, "t2")
+        id_tanque_1 = _t("Tanque destino (automático/sugerido, editable)", "id_tanque_1", pf, p, tok, "t1")
+        id_tanque_2 = _t("Tanque alternativo", "id_tanque_2", pf, p, tok, "t2")
+        _mot_tq = _t("Motivo si cambiás el tanque sugerido (queda registrado)", "mot_tq", pf, p, tok, "mottq")
     conclusion = st.text_area("Conclusiones", value=(pf.get("conclusion") or "") if pf else "",
                               key=_k(p, tok, "conc"))
+    if _mot_tq:
+        conclusion = ((conclusion or "") + " | Cambio de tanque: " + _mot_tq).strip(" |")
     return dict(corriente=corriente, calidad_final_lab=calidad, rechazado=rechazado,
                 id_tanque_1=id_tanque_1, id_tanque_2=id_tanque_2, conclusion=conclusion)
 
@@ -520,21 +523,37 @@ def _form_GENERICO(pf, ctx, tok, get_conn, usuario):
     st.subheader(f"Edicion generica · {prod}")
     with st.form(_k(p, tok, "form")):
         cab = _cab(p, pf, tok)
-        c1, c2 = st.columns(2)
+        st.caption("Producto poco común: cargá todos los parámetros que tengas (los vacíos se ignoran).")
+        c1, c2, c3 = st.columns(3)
         with c1:
             prc_acidez = _n("Acidez (%)", "prc_acidez", pf, p, tok, "ac")
             prc_sedimentos = _n("Sedimentos (%)", "prc_sedimentos", pf, p, tok, "sed")
             prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
-        with c2:
             prc_producto = _n("Producto (%)", "prc_producto", pf, p, tok, "prod")
+            prc_emulsion = _n("Emulsion (%)", "prc_emulsion", pf, p, tok, "em")
+        with c2:
+            prc_hkf = _n("HKF (%)", "prc_hkf", pf, p, tok, "hkf")
+            prc_hexano = _n("Hexano impurezas (%)", "prc_hexano_impurezas", pf, p, tok, "hex")
+            prc_poli = _n("Poliglicerol (%)", "prc_poliglicerol", pf, p, tok, "poli")
+            prc_gli = _n("Glicerina (%)", "prc_glicerina", pf, p, tok, "gli")
             densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
+        with c3:
+            ga = _n("Goma Arriba (%)", "prc_goma_arriba", pf, p, tok, "ga")
+            gm = _n("Goma Medio (%)", "prc_goma_medio", pf, p, tok, "gm")
+            gb = _n("Goma Abajo (%)", "prc_goma_abajo", pf, p, tok, "gb")
+            ppm_azufre = _n("Azufre (ppm)", "ppm_azufre", pf, p, tok, "az")
+            ppm_fosforo = _n("Fosforo (ppm)", "ppm_fosforo", pf, p, tok, "fos")
+        temp = _t("Temp (Celsius)", "temp_celcius", pf, p, tok, "temp")
         producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
         cier = _cierre(p, pf, tok, CAL_GEN)
         enviar = st.form_submit_button("GUARDAR", use_container_width=True)
     if enviar:
         data = dict(tipo_formulario="GENERICO", producto_lab=producto_lab,
                     prc_acidez=prc_acidez, prc_sedimentos=prc_sedimentos, prc_agua=prc_agua,
-                    prc_producto=prc_producto, densidad__g_ml=densidad, **cab, **cier)
+                    prc_producto=prc_producto, prc_emulsion=prc_emulsion, prc_hkf=prc_hkf,
+                    prc_hexano_impurezas=prc_hexano, prc_poliglicerol=prc_poli, prc_glicerina=prc_gli,
+                    densidad__g_ml=densidad, prc_goma_arriba=ga, prc_goma_medio=gm, prc_goma_abajo=gb,
+                    ppm_azufre=ppm_azufre, ppm_fosforo=ppm_fosforo, temp_celcius=temp, **cab, **cier)
         if _persistir("GENERICO", data, ctx, get_conn, usuario):
             _reset(tok)
 
@@ -556,6 +575,22 @@ def _form_para_producto(producto_lab):
         return _form_BORRA
     if p in _FORMS:
         return _FORMS[p]
+    return _form_GENERICO
+
+
+def _form_para_base(base):
+    """Mapea un producto_base elegido al formulario de carga adecuado."""
+    b = (base or "").strip().upper()
+    if b.startswith("AG"):
+        return _form_AG
+    if b.startswith("ARE"):
+        return _form_ARE
+    if b.startswith("AFE"):
+        return _form_AFE
+    if "EFLUENTE" in b or "EFLIUENTE" in b:
+        return _form_EFLUENTE
+    if b in ("BORRA", "EMULSION"):
+        return _form_BORRA
     return _form_GENERICO
 
 
@@ -592,6 +627,29 @@ def proveedores(dias=180, get_conn=None):
         with conn.cursor() as cur:
             cur.execute(sql, (dias,))
             return [r[0] for r in cur.fetchall()]
+
+
+def ticket_produccion(ticket, get_conn=None):
+    """Si el ticket es de producción (ticket_producto_final tipo F8), devuelve datos de la reacción."""
+    if not ticket:
+        return None
+    sql = ("SELECT identificador_unidad, tipo_proceso, id_producto_buscado, calidad_buscada, "
+           "parametros_proceso->>'formula_nombre' AS formula, "
+           "(parametros_proceso->>'are_objetivo_kg') AS are_kg "
+           "FROM produccion.fact_batch_proceso "
+           "WHERE ticket_producto_final = %s AND COALESCE(anulado,false)=false "
+           "ORDER BY id_batch DESC LIMIT 1")
+    try:
+        with _conn_cm(get_conn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (str(ticket).strip(),))
+                r = cur.fetchone()
+        if not r:
+            return None
+        return {"identificador": r[0], "tipo_proceso": r[1], "id_producto": r[2],
+                "calidad": r[3], "formula": r[4], "are_kg": r[5]}
+    except Exception:
+        return None
 
 
 def tickets_porteria(producto_base=None, ticket=None, dias=30, limite=300, get_conn=None, cliente=None):
@@ -709,66 +767,72 @@ def render_laboratorio(get_conn=None, usr=None):
             form_fn(full, ctx, ss["lab_tok"], get_conn, usuario)
         return
 
-    # -------- NUEVA CARGA (vista unica, todos los productos) --------
-    st.markdown("**1) Proveedor y ticket de portería** (el ticket autollena patente/chasis/proveedor)")
+    # -------- NUEVA CARGA (ticket primero) --------
+    st.markdown("**1) Nº de ticket** — portería autollena patente/chasis/proveedor; producción (ej. F8) trae la reacción")
     try:
         _pbases = productos_base(get_conn=get_conn)
     except Exception as e:
         _pbases = []
         st.caption(f"(no pude leer productos base: {e})")
-    try:
-        _provs = proveedores(get_conn=get_conn)
-    except Exception:
-        _provs = []
-    cpp, cpd = st.columns([3, 1])
-    f_prov = cpp.selectbox("Proveedor (primer filtro)", ["(todos)"] + _provs, key="lab_prov")
-    f_dias = cpd.number_input("Días", 1, 365, 30, key="lab_pdias")
-    cpa, cpb = st.columns([2, 2])
-    f_base = cpa.multiselect("Producto base (opcional)", _pbases, key="lab_pb")
-    f_tk = cpb.text_input("Buscar Nº ticket", key="lab_ftk")
 
+    c_tk1, c_tk2 = st.columns([2, 3])
+    f_tk = c_tk1.text_input("Nº de ticket", key="lab_ftk",
+                            help="Portería (número) o producción (ej. F8).")
     tk_sel = None
-    try:
-        _ticks = tickets_porteria(f_base or None, f_tk or None, int(f_dias), get_conn=get_conn,
-                                  cliente=(None if f_prov == "(todos)" else f_prov))
-    except Exception as e:
-        _ticks = []
-        st.caption(f"(no pude leer tickets: {e})")
-    if _ticks:
-        _opt = {"— sin ticket —": None}
-        for _t in _ticks:
-            _opt[_lbl_tk(_t)] = _t
-        _elec = st.selectbox(f"Ticket ({len(_ticks)})", list(_opt.keys()), key="lab_tksel_box")
-        tk_sel = _opt[_elec]
+    prod_ctx = None
+    pf_new = {}
+    if f_tk.strip():
+        prod_ctx = ticket_produccion(f_tk.strip(), get_conn=get_conn)
+
+    if prod_ctx:
+        pf_new = {"ticket": f_tk.strip()}
+        _msg = (f"🏭 Ticket de PRODUCCIÓN {f_tk.strip()} · Reacción "
+                f"{prod_ctx.get('identificador') or '-'} · {prod_ctx.get('tipo_proceso') or '-'}")
+        if prod_ctx.get("formula"):
+            _msg += f" · Fórmula: {prod_ctx['formula']}"
+        if prod_ctx.get("are_kg"):
+            _msg += f" · ARE objetivo: {prod_ctx['are_kg']} kg"
+        st.success(_msg)
     else:
-        st.caption("Sin tickets para ese filtro (ampliá los días o el producto base).")
+        try:
+            _ticks = tickets_porteria(None, f_tk or None, 90, get_conn=get_conn)
+        except Exception as e:
+            _ticks = []
+            st.caption(f"(no pude leer tickets: {e})")
+        if _ticks:
+            _opt = {"— sin ticket —": None}
+            for _t in _ticks:
+                _opt[_lbl_tk(_t)] = _t
+            _elec = c_tk2.selectbox(f"Ticket de portería ({len(_ticks)})", list(_opt.keys()),
+                                    key="lab_tksel_box")
+            tk_sel = _opt[_elec]
+        else:
+            c_tk2.caption("Escribí el Nº. Si es de portería aparece para autollenar; si es F# es producción.")
+        if tk_sel:
+            pf_new = {"ticket": str(tk_sel["transaccion"]),
+                      "patente_chasis": tk_sel.get("patente_chasis"),
+                      "patente_acoplado": tk_sel.get("patente_acoplado")}
+            st.success(f"Ticket #{tk_sel['transaccion']} · {tk_sel.get('producto_base')} · "
+                       f"proveedor {tk_sel.get('cliente') or '-'} → patentes "
+                       f"{tk_sel.get('patente_chasis') or '-'}/{tk_sel.get('patente_acoplado') or '-'}")
     ss["lab_ticket_sel"] = tk_sel
 
-    # prefill desde el ticket
-    pf_new = {}
-    if tk_sel:
-        pf_new = {"ticket": str(tk_sel["transaccion"]),
-                  "patente_chasis": tk_sel.get("patente_chasis"),
-                  "patente_acoplado": tk_sel.get("patente_acoplado")}
-        st.success(f"Ticket #{tk_sel['transaccion']} · {tk_sel.get('producto_base')} · "
-                   f"proveedor {tk_sel.get('cliente') or '-'} → patentes "
-                   f"{tk_sel.get('patente_chasis') or '-'}/{tk_sel.get('patente_acoplado') or '-'}")
+    st.divider()
+    st.markdown("**2) Producto a evaluar**")
+    _all_bases = sorted({b for b in _pbases if b} | {"AG", "ARE", "AFE", "EFLUENTE", "BORRA", "SEBO", "GLICERINA"})
+    _all_bases = _all_bases + ["OTRO (genérico)"]
+    _sugbase = str((tk_sel or {}).get("producto_base") or "").upper()
+    _idx = _all_bases.index(_sugbase) if _sugbase in _all_bases else len(_all_bases) - 1
+    base_sel = st.selectbox("Producto base", _all_bases, index=_idx, key="lab_prod_nuevo",
+                            help="Todos los productos base. Si es uno raro elegí 'OTRO (genérico)' para cargar todos los parámetros.")
 
     st.divider()
-    st.markdown("**2) Producto a evaluar** (define los obligatorios)")
-    _ui_opts = ["AG", "ARE", "AFE", "EFLUENTE", "BORRA", "OTRO (genérico)"]
-    _sug = _SUG_BASE_LAB.get(str((tk_sel or {}).get("producto_base") or "").upper())
-    _idx = _ui_opts.index(_sug) if _sug in _ui_opts else 0
-    prod_sel = st.selectbox("Producto", _ui_opts, index=_idx, key="lab_prod_nuevo",
-                            help="Sugerido por el ticket; podés cambiarlo (un producto base "
-                                 "puede evaluarse como varios productos de lab).")
-    if _sug and prod_sel != _sug:
-        st.caption(f"💡 El ticket sugiere **{_sug}** por su producto base.")
-
-    st.divider()
-    _tk_id = str(tk_sel["transaccion"]) if tk_sel else "blank"
-    _form_tok = f"{ss['lab_tok']}_{_tk_id}_{prod_sel}"
-    _fn = _FORMS.get(prod_sel, _form_GENERICO)
+    _tk_id = (f_tk.strip() or (str(tk_sel["transaccion"]) if tk_sel else "blank"))
+    _form_tok = f"{ss['lab_tok']}_{_tk_id}_{base_sel}"
+    _fn = _form_para_base(base_sel)
+    if _fn is _form_GENERICO and base_sel != "OTRO (genérico)":
+        pf_new = dict(pf_new or {})
+        pf_new.setdefault("producto_lab", base_sel)
     _fn(pf_new or None, None, _form_tok, get_conn, usuario)
 
 

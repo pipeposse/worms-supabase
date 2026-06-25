@@ -1708,7 +1708,7 @@ if st.session_state.section != "CARGAS":
     if st.session_state.section == "LAB":
         # =================== LABORATORIO ===================
         st.title("🧪 Laboratorio")
-        _lab_view = st.radio("Vista", ["🔬 Producciones en marcha", "🚛 Entrada diaria", "🛢️ Parámetros por tanque", "📦 Asignación a tanque", "📊 Resultados", "➕ Carga / Edición"],
+        _lab_view = st.radio("Vista", ["➕ Carga / Edición", "🛢️ Parámetros por tanque", "🚛 Entrada diaria", "📦 Asignación a tanque", "📊 Resultados", "🔬 Producciones en marcha"],
                              horizontal=True, key="lab_view_sel", label_visibility="collapsed")
         if _lab_view.startswith("🔬"):
             import decantacion
