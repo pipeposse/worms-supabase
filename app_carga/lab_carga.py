@@ -85,7 +85,7 @@ def _conn_cm(get_conn):
 # ---------------------------------------------------------------------------
 # Catalogos (valores reales de produccion.procesos_lab)
 # ---------------------------------------------------------------------------
-EMPLEADOS = ["Richard", "Manuela", "Milagros", "Cielo", "Felipe"]
+EMPLEADOS = ["Cielo", "Manu", "Rich", "Mili"]
 RECHAZADO = ["ACEPTADO", "RECHAZADO", "REMUESTREO"]
 CORRIENTE = ["VEGETAL", "ANIMAL"]
 CAL_AG    = ["A", "B", "C", "C.2da", "D", "E", "G"]
@@ -287,7 +287,7 @@ def _cab(p, pf, tok):
             patente_chasis=_t("Patente Chasis", "patente_chasis", pf, p, tok, "pch"),
             patente_acoplado=_t("Patente Acoplado", "patente_acoplado", pf, p, tok, "pac"),
             num_cisterna=_t("Num. de Cisterna", "num_cisterna", pf, p, tok, "cist"),
-            empleado=_s("Responsable de carga", "empleado", EMPLEADOS, pf, p, tok, "emp"),
+            empleado=_s("Responsable de carga *", "empleado", EMPLEADOS, pf, p, tok, "emp"),
         )
     with c2:
         d.update(
@@ -320,6 +320,9 @@ def _cierre(p, pf, tok, calidades, default_corriente=None):
 def _persistir(tipo, data, ctx, get_conn, usuario):
     if not data.get("ticket") and tipo in ("AG", "ARE", "AFE"):
         st.error("Ticket is required")
+        return False
+    if not (data.get("empleado") or "").strip():
+        st.error("Elegí el responsable de carga (Cielo, Manu, Rich o Mili).")
         return False
     ok, errores = validar(tipo, data)
     if not ok:

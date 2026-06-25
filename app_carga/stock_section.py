@@ -62,7 +62,7 @@ def render(USR, cat):
             tq = cat("SELECT nombre AS \"Tanque\", codigo AS \"Código\", sector AS \"Sector\", "
                      "COALESCE(litros_actual,0) AS \"Stock (L)\", COALESCE(capacidad_litros,0) AS \"Capacidad (L)\", "
                      "GREATEST(COALESCE(capacidad_litros,0)-COALESCE(litros_actual,0),0) AS \"Disponible (L)\", "
-                     "COALESCE(nivel_pct_actual,0) AS \"Ocupación %\" "
+                     "COALESCE(nivel_pct_actual,0) AS \"Ocupación %%\" "
                      "FROM produccion.vw_tanque_panel WHERE activo AND producto_principal=%s "
                      "ORDER BY litros_actual DESC NULLS LAST", (_psel,))
             if tq is not None and not tq.empty:
