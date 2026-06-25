@@ -1111,7 +1111,7 @@ def _porteria_entrada_diaria(cat):
             # ---------------- REVISION HISTORICA ----------------
 
 
-def _lab_asignacion(cat):
+def _lab_asignacion(cat, conectar=None, USR=None):
     """Visualización en Laboratorio: ticket → tanque (Portería sugerido / Producción ejecutado) + capacidad antes/después."""
     import pandas as pd
     st.subheader("📦 Asignación a tanque de acopio")
@@ -1122,7 +1122,7 @@ def _lab_asignacion(cat):
         st.caption("Ingresos evaluados por laboratorio. El sistema **sugiere** el tanque de acopio por parámetros + capacidad; "
                    "se confirma y genera el movimiento al cargar el ingreso por la app. El 'después' es proyectado.")
         df = cat("SELECT fecha, ticket, producto, calidad, rechazado, cliente, kg_ticket, "
-                 "prc_acidez, prc_agua, prc_sedimentos, ppm_azufre, ppm_fosforo, "
+                 "prc_acidez, prc_agua, prc_sedimentos, ppm_azufre, ppm_fosforo, id_tanque_asignado, "
                  "tanque_asignado, kg_asignados, litros_asignados, capacidad_litros, "
                  "stock_antes_l, stock_despues_l, disponible_antes_l, disponible_despues_l, motivo "
                  "FROM produccion.v_lab_asignacion_porteria ORDER BY fecha DESC NULLS LAST LIMIT 500")
@@ -1155,6 +1155,20 @@ def _lab_asignacion(cat):
         "Disp. antes L": df["disponible_antes_l"], "Disp. después L": df["disponible_despues_l"],
         "Motivo": df["motivo"],
     })
+    _confdf = None
+    if _es_port:
+        try:
+            _confdf = cat("SELECT ticket, fue_al_sugerido, id_tanque_real, motivo_desvio, "
+                          "(SELECT nombre FROM produccion.dim_tanque dt WHERE dt.id_tanque=c.id_tanque_real) AS tanque_real "
+                          "FROM produccion.fact_asignacion_tanque_real c")
+        except Exception:
+            _confdf = None
+        if _confdf is not None and not _confdf.empty:
+            _m = _confdf.set_index(_confdf["ticket"].astype(str))
+            _tk = df["ticket"].astype(str)
+            cols["¿Fue?"] = _tk.map(lambda x: ("✅ Sí" if (x in _m.index and bool(_m.loc[x, "fue_al_sugerido"])) else ("❌ No" if x in _m.index else "—")))
+            cols["Tanque real"] = _tk.map(lambda x: (_m.loc[x, "tanque_real"] if x in _m.index else None))
+            cols["Motivo desvío"] = _tk.map(lambda x: (_m.loc[x, "motivo_desvio"] if x in _m.index else None))
     _show = pd.DataFrame(cols)
     _nf = st.column_config.NumberColumn(format="%.0f")
     st.dataframe(_show, hide_index=True, use_container_width=True,
@@ -1173,6 +1187,48 @@ def _lab_asignacion(cat):
         m4.metric("Ocupado después", f"{d:,.0f} L", help=f"{(d/cap*100 if cap else 0):.0f}% ocupación")
         st.progress(min(d/cap, 1.0) if cap else 0.0,
                     text=f"Disponible {'tras el ingreso' if _es_port else 'después'}: {float(r['disponible_despues_l'] or 0):,.0f} L de {cap:,.0f} L")
+
+    if _es_port and conectar is not None:
+        st.divider()
+        st.markdown("**✅ ¿Fue efectivamente a ese tanque?** Imputá el tanque real; si no fue el sugerido, justificá.")
+        _cf = df[df["tanque_asignado"].notna()].reset_index(drop=True)
+        if _cf.empty:
+            st.caption("No hay tickets con tanque sugerido para confirmar.")
+        else:
+            _o = (_cf["ticket"].astype(str) + " · " + _cf["producto"].fillna("") + " → " + _cf["tanque_asignado"]).tolist()
+            _sc = st.selectbox("Ticket a confirmar", _o, key="lab_asig_conf_sel")
+            _rr = _cf.iloc[_o.index(_sc)]
+            _tkc = str(_rr["ticket"])
+            _sug_id = int(_rr["id_tanque_asignado"]) if pd.notna(_rr.get("id_tanque_asignado")) else None
+            _fue = st.radio("¿Fue al tanque sugerido?", ["Sí", "No"], horizontal=True, key="lab_asig_fue")
+            _treal = _sug_id; _mot = None; _obs = ""
+            if _fue == "No":
+                _tanks = cat("SELECT id_tanque, nombre, codigo FROM produccion.dim_tanque WHERE COALESCE(activo,true) ORDER BY nombre")
+                _tmap = {f"{rr2['nombre']} ({rr2['codigo']})": int(rr2['id_tanque']) for _i, rr2 in _tanks.iterrows()} if _tanks is not None and not _tanks.empty else {}
+                _tsel = st.selectbox("Tanque real", list(_tmap.keys()), key="lab_asig_treal")
+                _treal = _tmap.get(_tsel)
+                _mot = st.selectbox("Motivo del desvío", ["DISPONIBILIDAD", "PARAMETROS", "MATERIA_PRIMA", "OTRO"], key="lab_asig_mot")
+                _obs = st.text_input("Observación", key="lab_asig_obs")
+            if st.button("💾 Guardar confirmación", type="primary", key="lab_asig_save"):
+                try:
+                    _uid = int((USR or {}).get("id_usuario") or 0)
+                    with conectar(_uid) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "INSERT INTO produccion.fact_asignacion_tanque_real "
+                                "(ticket,id_tanque_sugerido,fue_al_sugerido,id_tanque_real,motivo_desvio,observacion,usuario,actualizado_en) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s,now()) "
+                                "ON CONFLICT (ticket) DO UPDATE SET id_tanque_sugerido=EXCLUDED.id_tanque_sugerido, "
+                                "fue_al_sugerido=EXCLUDED.fue_al_sugerido, id_tanque_real=EXCLUDED.id_tanque_real, "
+                                "motivo_desvio=EXCLUDED.motivo_desvio, observacion=EXCLUDED.observacion, "
+                                "usuario=EXCLUDED.usuario, actualizado_en=now()",
+                                (_tkc, _sug_id, (_fue == "Sí"), _treal, _mot, (_obs or None),
+                                 str((USR or {}).get("nombre") or (USR or {}).get("id_usuario") or "")))
+                        audit.log("U", "fact_asignacion_tanque_real", 0, {"ticket": _tkc, "fue": _fue})
+                    st.success("Confirmación guardada.")
+                    cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
 
 
 def _form_param_tanque(cat, conectar, USR):
@@ -1718,7 +1774,7 @@ if st.session_state.section != "CARGAS":
         elif _lab_view.startswith("🚛"):
             _porteria_entrada_diaria(cat)
         elif _lab_view.startswith("📦"):
-            _lab_asignacion(cat)
+            _lab_asignacion(cat, conectar, USR)
         elif _lab_view.startswith("➕"):
             from lab_carga import render_laboratorio
             render_laboratorio(get_conn=_lab_conn, usr=USR)
