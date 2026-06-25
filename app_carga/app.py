@@ -939,35 +939,50 @@ def K(cod, default=None):
     r = constantes[constantes["codigo"]==cod]
     return float(r.iloc[0]["valor"]) if not r.empty else default
 def _lab_asignacion(cat):
-    """Visualización en Laboratorio: ticket → tanque asignado por el sistema + capacidad antes/después."""
+    """Visualización en Laboratorio: ticket → tanque (Portería sugerido / Producción ejecutado) + capacidad antes/después."""
     import pandas as pd
-    st.subheader("📦 Asignación automática a tanque de acopio")
-    st.caption("Lo evaluado por portería con su tanque final: el sistema lo elige por **parámetros aceptables** y **capacidad** "
-               "para los kg del ticket. Ves cómo queda el tanque antes y después del ingreso.")
-    df = cat("SELECT fecha, ticket, producto, calidad, cliente, kg_ticket, "
-             "prc_acidez, prc_agua, prc_sedimentos, ppm_azufre, ppm_fosforo, "
-             "tanque_asignado, tanque_codigo, kg_asignados, litros_asignados, capacidad_litros, "
-             "stock_antes_l, stock_despues_l, disponible_antes_l, disponible_despues_l, estado_mov, motivo "
-             "FROM produccion.v_lab_asignacion_tanque ORDER BY fecha DESC NULLS LAST LIMIT 300")
+    st.subheader("📦 Asignación a tanque de acopio")
+    _src = st.radio("Origen", ["🚛 Portería (ingresos evaluados)", "🏭 Producción (ARE final)"],
+                    horizontal=True, key="lab_asig_src", label_visibility="collapsed")
+    _es_port = _src.startswith("🚛")
+    if _es_port:
+        st.caption("Ingresos evaluados por laboratorio. El sistema **sugiere** el tanque de acopio por parámetros + capacidad; "
+                   "se confirma y genera el movimiento al cargar el ingreso por la app. El 'después' es proyectado.")
+        df = cat("SELECT fecha, ticket, producto, calidad, rechazado, cliente, kg_ticket, "
+                 "prc_acidez, prc_agua, prc_sedimentos, ppm_azufre, ppm_fosforo, "
+                 "tanque_asignado, kg_asignados, litros_asignados, capacidad_litros, "
+                 "stock_antes_l, stock_despues_l, disponible_antes_l, disponible_despues_l, motivo "
+                 "FROM produccion.v_lab_asignacion_porteria ORDER BY fecha DESC NULLS LAST LIMIT 500")
+    else:
+        st.caption("Producto final ARE: el tanque y el movimiento ya se definen en Planificación/Decantación (kg de producción).")
+        df = cat("SELECT fecha, ticket, producto, calidad, cliente, kg_ticket, "
+                 "prc_acidez, prc_agua, prc_sedimentos, ppm_azufre, ppm_fosforo, "
+                 "tanque_asignado, kg_asignados, litros_asignados, capacidad_litros, "
+                 "stock_antes_l, stock_despues_l, disponible_antes_l, disponible_despues_l, motivo "
+                 "FROM produccion.v_lab_asignacion_tanque ORDER BY fecha DESC NULLS LAST LIMIT 300")
     if df is None or df.empty:
-        st.info("Todavía no hay evaluaciones de tickets de portería con asignación.")
+        st.info("Sin registros para esta vista.")
         return
     c1, c2, c3 = st.columns(3)
     c1.metric("Evaluaciones", len(df))
-    c2.metric("Con tanque asignado", int(df["tanque_asignado"].notna().sum()))
+    c2.metric("Con tanque " + ("sugerido" if _es_port else "asignado"), int(df["tanque_asignado"].notna().sum()))
     c3.metric("Sin tanque (revisar)", int(df["tanque_asignado"].isna().sum()))
-    _show = pd.DataFrame({
+    cols = {
         "Fecha": pd.to_datetime(df["fecha"], errors="coerce").dt.strftime("%d/%m %H:%M"),
         "Ticket": df["ticket"], "Producto": df["producto"], "Calidad": df["calidad"],
+    }
+    if _es_port:
+        cols["Rechazado"] = df["rechazado"]
+    cols.update({
         "Cliente": df["cliente"], "Kg ticket": df["kg_ticket"],
         "Acidez %": df["prc_acidez"], "Agua %": df["prc_agua"], "Sedim %": df["prc_sedimentos"],
         "Azufre ppm": df["ppm_azufre"], "Fósforo ppm": df["ppm_fosforo"],
-        "Tanque asignado": df["tanque_asignado"].fillna("— sin tanque —"),
-        "Kg asign.": df["kg_asignados"], "Litros asign.": df["litros_asignados"],
-        "Cap. L": df["capacidad_litros"],
+        "Tanque": df["tanque_asignado"].fillna("— sin tanque —"),
+        "Kg asign.": df["kg_asignados"], "Litros asign.": df["litros_asignados"], "Cap. L": df["capacidad_litros"],
         "Disp. antes L": df["disponible_antes_l"], "Disp. después L": df["disponible_despues_l"],
         "Motivo": df["motivo"],
     })
+    _show = pd.DataFrame(cols)
     _nf = st.column_config.NumberColumn(format="%.0f")
     st.dataframe(_show, hide_index=True, use_container_width=True,
                  column_config={**{k: _nf for k in ["Kg ticket","Kg asign.","Litros asign.","Cap. L","Disp. antes L","Disp. después L"]},
@@ -975,17 +990,16 @@ def _lab_asignacion(cat):
     _conf = df[df["tanque_asignado"].notna()].reset_index(drop=True)
     if not _conf.empty:
         _opts = (_conf["ticket"].astype(str) + " · " + _conf["producto"].fillna("") + " → " + _conf["tanque_asignado"]).tolist()
-        _sel = st.selectbox("Ver capacidad del tanque (antes → después)", _opts, key="lab_asig_sel")
+        _sel = st.selectbox("Ver capacidad del tanque (antes → después)", _opts, key="lab_asig_sel2")
         r = _conf.iloc[_opts.index(_sel)]
-        cap = float(r["capacidad_litros"] or 0)
-        a = float(r["stock_antes_l"] or 0); d = float(r["stock_despues_l"] or 0)
+        cap = float(r["capacidad_litros"] or 0); a = float(r["stock_antes_l"] or 0); d = float(r["stock_despues_l"] or 0)
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Capacidad tanque", f"{cap:,.0f} L")
         m2.metric("Ocupado antes", f"{a:,.0f} L", help=f"{(a/cap*100 if cap else 0):.0f}% ocupación")
-        m3.metric("Entra (ticket)", f"+{float(r['litros_asignados'] or 0):,.0f} L", f"{float(r['kg_asignados'] or 0):,.0f} kg")
+        m3.metric(("Entraría" if _es_port else "Entra") + " (ticket)", f"+{float(r['litros_asignados'] or 0):,.0f} L", f"{float(r['kg_asignados'] or 0):,.0f} kg")
         m4.metric("Ocupado después", f"{d:,.0f} L", help=f"{(d/cap*100 if cap else 0):.0f}% ocupación")
         st.progress(min(d/cap, 1.0) if cap else 0.0,
-                    text=f"Disponible tras el ingreso: {float(r['disponible_despues_l'] or 0):,.0f} L de {cap:,.0f} L")
+                    text=f"Disponible {'tras el ingreso' if _es_port else 'después'}: {float(r['disponible_despues_l'] or 0):,.0f} L de {cap:,.0f} L")
 
 
 def _form_param_tanque(cat, conectar, USR):
