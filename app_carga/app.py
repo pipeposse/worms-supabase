@@ -938,6 +938,179 @@ def K(cod, default=None):
     """Lookup de constante química."""
     r = constantes[constantes["codigo"]==cod]
     return float(r.iloc[0]["valor"]) if not r.empty else default
+def _porteria_entrada_diaria(cat):
+                cD1, cD2 = st.columns([1,3])
+                dia_sel = cD1.date_input("Dia", value=date.today(), key="pd_dia")
+                cD2.caption("Camiones que entraron en el dia, ordenados por hora (lo mas reciente arriba). "
+                            "Toca 'Refrescar datos' en la barra lateral para ver llegadas nuevas.")
+                sqld = """
+                    SELECT id, transaccion, hora_e, patente_chasis, conductor,
+                           producto, producto_base, corriente,
+                           cliente, transporte, procedencia,
+                           peso_entrada, peso_salida,
+                           (peso_neto * -1) AS peso_neto, evaluado, lab_calidad,
+                           lab_prc_acidez, lab_prc_agua, lab_prc_producto,
+                           lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
+                           lab_color, lab_empleado, lab_rechazado, lab_fecha, lab_num_muestra,
+                           _synced_at
+                    FROM produccion.v_transacciones_limpias
+                    WHERE fecha_entrada = %s
+                    ORDER BY hora_e DESC NULLS LAST, transaccion DESC
+                """
+                try:
+                    df_d = cat(sqld, (dia_sel.isoformat(),))
+                except Exception as e:
+                    st.exception(e); df_d = pd.DataFrame()
+
+                kd1, kd2, kd3, kd4 = st.columns(4)
+                kd1.metric("Camiones hoy", len(df_d))
+                if not df_d.empty:
+                    kg_tot = pd.to_numeric(df_d["peso_neto"], errors="coerce").sum()
+                    kd2.metric("TN netas del día", f"{kg_tot/1000:,.2f}")
+                    df_d["_evbl"] = df_d.apply(
+                        lambda r: _es_evaluable(r["corriente"], r.get("producto_base")), axis=1)
+                    df_d["eval_estado"] = df_d.apply(
+                        lambda r: ("no corresponde" if not r["_evbl"] else r["evaluado"]), axis=1)
+                    df_evbl = df_d[df_d["_evbl"]]
+                    base_evbl = len(df_evbl)
+                    n_eval = int((df_evbl["eval_estado"]=="SI").sum())
+                    kd3.metric("Evaluados (evaluables)", f"{n_eval}/{base_evbl}")
+                    kd4.metric("% evaluado", f"{(n_eval/base_evbl*100):.0f}%" if base_evbl else "—")
+
+                    # Linea por hora (cantidad por franja horaria)
+                    st.markdown("**Llegadas por hora**")
+                    hr = df_d.copy()
+                    hr["hh"] = hr["hora_e"].astype(str).str.slice(0,2)
+                    by_hr = hr.groupby("hh").size().reset_index(name="camiones").sort_values("hh")
+                    st.bar_chart(by_hr, x="hh", y="camiones", use_container_width=True)
+
+                    # Tabla "permeable": cada camion con su estado evaluado
+                    st.markdown("**Detalle de llegadas**")
+                    df_show = df_d.copy()
+                    df_show["evaluado"] = df_show["eval_estado"].map({"SI":"✅ SI","NO":"⚠️ NO","no corresponde":"— no corresponde"}).fillna(df_show["eval_estado"])
+                    # Orden preestablecido: producto_base -> lab_calidad -> corriente juntas y al frente.
+                    _orden = ["transaccion","hora_e","producto_base","lab_calidad","corriente","evaluado",
+                              "peso_neto","peso_entrada","peso_salida","patente_chasis","conductor",
+                              "cliente","transporte","procedencia","lab_prc_acidez","lab_prc_agua",
+                              "lab_ppm_fosforo","lab_densidad"]
+                    _orden = [c for c in _orden if c in df_show.columns]
+                    _def = [c for c in ["transaccion","hora_e","producto_base","lab_calidad","corriente",
+                                        "evaluado","peso_neto","cliente"] if c in df_show.columns]
+                    _saved = get_pref("porteria_dia_cols", None)
+                    _default = [c for c in _saved if c in _orden] if _saved else _def
+                    _sel = st.multiselect("Columnas a mostrar (se reordenan automáticamente · se guardan por usuario)", _orden, default=_default, key="pd_cols")
+                    _cols = [c for c in _orden if c in _sel] or _orden
+                    if _cols != _saved:
+                        set_pref("porteria_dia_cols", _cols)
+                    st.dataframe(df_show[_cols], use_container_width=True, hide_index=True, height=460)
+                    st.caption("Clic en el encabezado de una columna para ordenar (▲/▼). Elegí o quitá columnas arriba.")
+                    st.download_button("⬇️ Descargar CSV del dia",
+                                       df_d.dropna(axis=1, how="all").to_csv(index=False).encode("utf-8"),
+                                       file_name=f"porteria_{dia_sel}.csv", mime="text/csv")
+
+                    # ----- Ver qué evaluó laboratorio, por ticket -----
+                    ev = df_d[df_d["evaluado"] == "SI"] if "evaluado" in df_d.columns else df_d.iloc[0:0]
+                    if not ev.empty:
+                        with st.expander("Ver evaluación de laboratorio por ticket", expanded=False):
+                            def _lv(x, dec=2):
+                                return f"{float(x):,.{dec}f}" if pd.notna(x) else "—"
+                            _tk = st.selectbox("Ticket evaluado", ev["transaccion"].tolist(),
+                                               format_func=lambda x: f"Ticket {int(x)}", key="pd_lab_tk")
+                            _r = ev[ev["transaccion"] == _tk].iloc[0]
+                            lc = st.columns(4)
+                            lc[0].metric("Calidad", _r.get("lab_calidad") or "—")
+                            lc[1].metric("Acidez %", _lv(_r.get("lab_prc_acidez")))
+                            lc[2].metric("Agua %", _lv(_r.get("lab_prc_agua")))
+                            lc[3].metric("Producto %", _lv(_r.get("lab_prc_producto")))
+                            lc2 = st.columns(4)
+                            lc2[0].metric("Azufre ppm", _lv(_r.get("lab_ppm_azufre")))
+                            lc2[1].metric("Fósforo ppm", _lv(_r.get("lab_ppm_fosforo")))
+                            lc2[2].metric("Densidad g/ml", _lv(_r.get("lab_densidad"), 3))
+                            lc2[3].metric("Rechazado", str(_r.get("lab_rechazado") or "—"))
+                            _pb = _r.get("producto_base") or "—"
+                            _col = _r.get("lab_color") or "—"
+                            _mu = _r.get("lab_num_muestra")
+                            _mu = int(_mu) if pd.notna(_mu) else "—"
+                            _emp = _r.get("lab_empleado") or "—"
+                            _flab = _r.get("lab_fecha") or "—"
+                            st.caption(f"Producto: {_pb} · Color: {_col} · Muestra #{_mu} · Analista: {_emp} · Fecha lab: {_flab}")
+
+                    # ----- Comprobante de pesaje (por id unico; transaccion puede repetirse) -----
+                    st.divider()
+                    st.markdown("**\U0001f9fe Comprobante de pesaje**")
+                    opts_cp = df_d.dropna(subset=["id"]).copy()
+                    if not opts_cp.empty:
+                        opts_cp["lbl"] = opts_cp.apply(
+                            lambda r: f"Ticket {int(r['transaccion'])} · {r['hora_e']} · {r['patente_chasis'] or ''} · {r['cliente'] or ''}", axis=1)
+                        lbl = st.selectbox("Ver comprobante", opts_cp["lbl"].tolist(), key="cp_tk")
+                        id_sel = int(opts_cp[opts_cp["lbl"]==lbl].iloc[0]["id"])
+                        rowc = cat("SELECT * FROM produccion.transacciones WHERE id=%s LIMIT 1", (id_sel,))
+                        if not rowc.empty:
+                            rr = rowc.iloc[0]
+                            def g(c):
+                                v = rr.get(c)
+                                return "" if (v is None or (isinstance(v,float) and pd.isna(v))) else str(v)
+                            def gnum(c):
+                                v = rr.get(c)
+                                if v is None or (isinstance(v,float) and pd.isna(v)): return ""
+                                try:
+                                    f = float(v)
+                                    return str(int(f)) if f == int(f) else f"{f:g}"
+                                except Exception:
+                                    return str(v)
+                            peso_e = gnum("pesoentr"); peso_s = gnum("pesosal"); peso_n = gnum("pesoneto")
+                            pendiente = str(rr.get("pendiente") or "").lower() == "si"
+                            comp_html = f"""
+    <div id="comprob" style="font-family:Arial,Helvetica,sans-serif;color:#000;background:#fff;padding:24px;max-width:760px;border:1px solid #ccc">
+      <div style="font-style:italic;font-weight:bold;font-size:18px;margin-bottom:20px">EMPRESA {g('empresa')}</div>
+      <div style="text-align:center;font-style:italic;font-weight:bold;font-size:16px;margin-bottom:18px">COMPROBANTE DE PESAJE</div>
+      <table style="font-size:13px;width:100%;border-collapse:collapse">
+        <tr>
+          <td style="padding:2px 8px"><b>Entrada:</b></td><td>{g('fecha_e')} {g('hora_e')}</td>
+          <td style="padding:2px 8px"><b>Operador:</b></td><td>{g('usuario')}</td>
+          <td style="padding:2px 8px"><b>TICKET NRO:</b></td><td style="font-size:16px"><b>{gnum('transaccion')}</b></td>
+        </tr>
+        <tr>
+          <td style="padding:2px 8px"><b>Salida:</b></td><td>{g('fecha_s')} {g('hora_s')}</td>
+          <td style="padding:2px 8px"><b>Balanza:</b></td><td>{g('vacio24')}</td>
+          <td></td><td></td>
+        </tr>
+        <tr><td style="padding:2px 8px"><b>Producto:</b></td><td><b>{g('producto')}</b></td>
+            <td style="padding:2px 8px"><b>Conductor:</b></td><td>{g('conductor')}</td><td></td><td></td></tr>
+        <tr><td style="padding:2px 8px"><b>Cliente:</b></td><td><b>{g('procedencia')}</b></td>
+            <td style="padding:2px 8px"><b>Documento:</b></td><td>{g('nrodoc')}</td><td></td><td></td></tr>
+        <tr><td style="padding:2px 8px"><b>Transporte:</b></td><td><b>{g('destino')}</b></td>
+            <td style="padding:2px 8px"><b>Patente Chasis:</b></td><td>{g('patcha')}</td><td></td><td></td></tr>
+        <tr><td style="padding:2px 8px"><b>Procedencia:</b></td><td><b>{g('chofer')}</b></td>
+            <td style="padding:2px 8px"><b>Patente Acoplado:</b></td><td>{g('patacopl')}</td><td></td><td></td></tr>
+      </table>
+      <table style="font-size:13px;width:100%;margin-top:14px;border-collapse:collapse">
+        <tr><td style="padding:2px 8px"><b>Tipo y Nro. de Comprobante:</b></td><td>{g('tipodoc')} {g('comprnum1')}</td></tr>
+        <tr><td style="padding:2px 8px"><b>Procedencia/Destino:</b></td><td>{g('procdest')}</td></tr>
+        <tr><td style="padding:2px 8px"><b>Contenedor N°:</b></td><td>{g('proc_contenedor')}</td></tr>
+        <tr><td style="padding:2px 8px"><b>Observaciones:</b></td><td>{g('observaciones')}</td></tr>
+      </table>
+      <table style="font-size:18px;width:100%;margin-top:18px;border-collapse:collapse">
+        <tr><td style="padding:4px 8px;text-align:right;width:60%"><b>PESO ENTRADA:</b></td><td><b>{peso_e}</b> Kg</td></tr>
+        <tr><td style="padding:4px 8px;text-align:right"><b>PESO SALIDA:</b></td><td><b>{peso_s or ('PENDIENTE' if pendiente else '')}</b> {'' if (not peso_s and pendiente) else 'Kg'}</td></tr>
+        <tr><td style="padding:4px 8px;text-align:right"><b>PESO NETO:</b></td><td><b>{peso_n or ('PENDIENTE' if pendiente else '')}</b> {'' if (not peso_n and pendiente) else 'Kg'}</td></tr>
+      </table>
+      {f'<div style="margin-top:10px;color:#b45309;font-size:13px"><b>⚠ Camion pendiente de salida</b> — peso de salida y neto se completan cuando se pesa al salir.</div>' if pendiente else ''}
+    </div>
+    """
+                            st.markdown(comp_html, unsafe_allow_html=True)
+                            st.download_button(
+                                "⬇️ Descargar comprobante (HTML para imprimir)",
+                                ("<html><head><meta charset='utf-8'><title>Comprobante "
+                                 + g('transaccion') + "</title></head><body>" + comp_html + "</body></html>").encode("utf-8"),
+                                file_name=f"comprobante_{g('transaccion')}_{id_sel}.html", mime="text/html", key="cp_dl")
+                            st.caption("Abrilo y usá Ctrl+P para imprimir o guardar como PDF.")
+                else:
+                    st.info("Todavia no entro ningun camion en la fecha elegida.")
+
+            # ---------------- REVISION HISTORICA ----------------
+
+
 def _lab_asignacion(cat):
     """Visualización en Laboratorio: ticket → tanque (Portería sugerido / Producción ejecutado) + capacidad antes/después."""
     import pandas as pd
@@ -1535,13 +1708,15 @@ if st.session_state.section != "CARGAS":
     if st.session_state.section == "LAB":
         # =================== LABORATORIO ===================
         st.title("🧪 Laboratorio")
-        _lab_view = st.radio("Vista", ["🔬 Producciones en marcha", "🛢️ Parámetros por tanque", "📦 Asignación a tanque", "📊 Resultados", "➕ Carga / Edición"],
+        _lab_view = st.radio("Vista", ["🔬 Producciones en marcha", "🚛 Entrada diaria", "🛢️ Parámetros por tanque", "📦 Asignación a tanque", "📊 Resultados", "➕ Carga / Edición"],
                              horizontal=True, key="lab_view_sel", label_visibility="collapsed")
         if _lab_view.startswith("🔬"):
             import decantacion
             decantacion.laboratorio(USR, cat, conectar)
         elif _lab_view.startswith("🛢️"):
             _form_param_tanque(cat, conectar, USR)
+        elif _lab_view.startswith("🚛"):
+            _porteria_entrada_diaria(cat)
         elif _lab_view.startswith("📦"):
             _lab_asignacion(cat)
         elif _lab_view.startswith("➕"):
@@ -1631,176 +1806,8 @@ if st.session_state.section != "CARGAS":
 
         # ---------------- ENTRADA DIARIA ----------------
         with sub_dia:
-            cD1, cD2 = st.columns([1,3])
-            dia_sel = cD1.date_input("Dia", value=date.today(), key="pd_dia")
-            cD2.caption("Camiones que entraron en el dia, ordenados por hora (lo mas reciente arriba). "
-                        "Toca 'Refrescar datos' en la barra lateral para ver llegadas nuevas.")
-            sqld = """
-                SELECT id, transaccion, hora_e, patente_chasis, conductor,
-                       producto, producto_base, corriente,
-                       cliente, transporte, procedencia,
-                       peso_entrada, peso_salida,
-                       (peso_neto * -1) AS peso_neto, evaluado, lab_calidad,
-                       lab_prc_acidez, lab_prc_agua, lab_prc_producto,
-                       lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
-                       lab_color, lab_empleado, lab_rechazado, lab_fecha, lab_num_muestra,
-                       _synced_at
-                FROM produccion.v_transacciones_limpias
-                WHERE fecha_entrada = %s
-                ORDER BY hora_e DESC NULLS LAST, transaccion DESC
-            """
-            try:
-                df_d = cat(sqld, (dia_sel.isoformat(),))
-            except Exception as e:
-                st.exception(e); df_d = pd.DataFrame()
+            _porteria_entrada_diaria(cat)
 
-            kd1, kd2, kd3, kd4 = st.columns(4)
-            kd1.metric("Camiones hoy", len(df_d))
-            if not df_d.empty:
-                kg_tot = pd.to_numeric(df_d["peso_neto"], errors="coerce").sum()
-                kd2.metric("TN netas del día", f"{kg_tot/1000:,.2f}")
-                df_d["_evbl"] = df_d.apply(
-                    lambda r: _es_evaluable(r["corriente"], r.get("producto_base")), axis=1)
-                df_d["eval_estado"] = df_d.apply(
-                    lambda r: ("no corresponde" if not r["_evbl"] else r["evaluado"]), axis=1)
-                df_evbl = df_d[df_d["_evbl"]]
-                base_evbl = len(df_evbl)
-                n_eval = int((df_evbl["eval_estado"]=="SI").sum())
-                kd3.metric("Evaluados (evaluables)", f"{n_eval}/{base_evbl}")
-                kd4.metric("% evaluado", f"{(n_eval/base_evbl*100):.0f}%" if base_evbl else "—")
-
-                # Linea por hora (cantidad por franja horaria)
-                st.markdown("**Llegadas por hora**")
-                hr = df_d.copy()
-                hr["hh"] = hr["hora_e"].astype(str).str.slice(0,2)
-                by_hr = hr.groupby("hh").size().reset_index(name="camiones").sort_values("hh")
-                st.bar_chart(by_hr, x="hh", y="camiones", use_container_width=True)
-
-                # Tabla "permeable": cada camion con su estado evaluado
-                st.markdown("**Detalle de llegadas**")
-                df_show = df_d.copy()
-                df_show["evaluado"] = df_show["eval_estado"].map({"SI":"✅ SI","NO":"⚠️ NO","no corresponde":"— no corresponde"}).fillna(df_show["eval_estado"])
-                # Orden preestablecido: producto_base -> lab_calidad -> corriente juntas y al frente.
-                _orden = ["transaccion","hora_e","producto_base","lab_calidad","corriente","evaluado",
-                          "peso_neto","peso_entrada","peso_salida","patente_chasis","conductor",
-                          "cliente","transporte","procedencia","lab_prc_acidez","lab_prc_agua",
-                          "lab_ppm_fosforo","lab_densidad"]
-                _orden = [c for c in _orden if c in df_show.columns]
-                _def = [c for c in ["transaccion","hora_e","producto_base","lab_calidad","corriente",
-                                    "evaluado","peso_neto","cliente"] if c in df_show.columns]
-                _saved = get_pref("porteria_dia_cols", None)
-                _default = [c for c in _saved if c in _orden] if _saved else _def
-                _sel = st.multiselect("Columnas a mostrar (se reordenan automáticamente · se guardan por usuario)", _orden, default=_default, key="pd_cols")
-                _cols = [c for c in _orden if c in _sel] or _orden
-                if _cols != _saved:
-                    set_pref("porteria_dia_cols", _cols)
-                st.dataframe(df_show[_cols], use_container_width=True, hide_index=True, height=460)
-                st.caption("Clic en el encabezado de una columna para ordenar (▲/▼). Elegí o quitá columnas arriba.")
-                st.download_button("⬇️ Descargar CSV del dia",
-                                   df_d.dropna(axis=1, how="all").to_csv(index=False).encode("utf-8"),
-                                   file_name=f"porteria_{dia_sel}.csv", mime="text/csv")
-
-                # ----- Ver qué evaluó laboratorio, por ticket -----
-                ev = df_d[df_d["evaluado"] == "SI"] if "evaluado" in df_d.columns else df_d.iloc[0:0]
-                if not ev.empty:
-                    with st.expander("Ver evaluación de laboratorio por ticket", expanded=False):
-                        def _lv(x, dec=2):
-                            return f"{float(x):,.{dec}f}" if pd.notna(x) else "—"
-                        _tk = st.selectbox("Ticket evaluado", ev["transaccion"].tolist(),
-                                           format_func=lambda x: f"Ticket {int(x)}", key="pd_lab_tk")
-                        _r = ev[ev["transaccion"] == _tk].iloc[0]
-                        lc = st.columns(4)
-                        lc[0].metric("Calidad", _r.get("lab_calidad") or "—")
-                        lc[1].metric("Acidez %", _lv(_r.get("lab_prc_acidez")))
-                        lc[2].metric("Agua %", _lv(_r.get("lab_prc_agua")))
-                        lc[3].metric("Producto %", _lv(_r.get("lab_prc_producto")))
-                        lc2 = st.columns(4)
-                        lc2[0].metric("Azufre ppm", _lv(_r.get("lab_ppm_azufre")))
-                        lc2[1].metric("Fósforo ppm", _lv(_r.get("lab_ppm_fosforo")))
-                        lc2[2].metric("Densidad g/ml", _lv(_r.get("lab_densidad"), 3))
-                        lc2[3].metric("Rechazado", str(_r.get("lab_rechazado") or "—"))
-                        _pb = _r.get("producto_base") or "—"
-                        _col = _r.get("lab_color") or "—"
-                        _mu = _r.get("lab_num_muestra")
-                        _mu = int(_mu) if pd.notna(_mu) else "—"
-                        _emp = _r.get("lab_empleado") or "—"
-                        _flab = _r.get("lab_fecha") or "—"
-                        st.caption(f"Producto: {_pb} · Color: {_col} · Muestra #{_mu} · Analista: {_emp} · Fecha lab: {_flab}")
-
-                # ----- Comprobante de pesaje (por id unico; transaccion puede repetirse) -----
-                st.divider()
-                st.markdown("**\U0001f9fe Comprobante de pesaje**")
-                opts_cp = df_d.dropna(subset=["id"]).copy()
-                if not opts_cp.empty:
-                    opts_cp["lbl"] = opts_cp.apply(
-                        lambda r: f"Ticket {int(r['transaccion'])} · {r['hora_e']} · {r['patente_chasis'] or ''} · {r['cliente'] or ''}", axis=1)
-                    lbl = st.selectbox("Ver comprobante", opts_cp["lbl"].tolist(), key="cp_tk")
-                    id_sel = int(opts_cp[opts_cp["lbl"]==lbl].iloc[0]["id"])
-                    rowc = cat("SELECT * FROM produccion.transacciones WHERE id=%s LIMIT 1", (id_sel,))
-                    if not rowc.empty:
-                        rr = rowc.iloc[0]
-                        def g(c):
-                            v = rr.get(c)
-                            return "" if (v is None or (isinstance(v,float) and pd.isna(v))) else str(v)
-                        def gnum(c):
-                            v = rr.get(c)
-                            if v is None or (isinstance(v,float) and pd.isna(v)): return ""
-                            try:
-                                f = float(v)
-                                return str(int(f)) if f == int(f) else f"{f:g}"
-                            except Exception:
-                                return str(v)
-                        peso_e = gnum("pesoentr"); peso_s = gnum("pesosal"); peso_n = gnum("pesoneto")
-                        pendiente = str(rr.get("pendiente") or "").lower() == "si"
-                        comp_html = f"""
-<div id="comprob" style="font-family:Arial,Helvetica,sans-serif;color:#000;background:#fff;padding:24px;max-width:760px;border:1px solid #ccc">
-  <div style="font-style:italic;font-weight:bold;font-size:18px;margin-bottom:20px">EMPRESA {g('empresa')}</div>
-  <div style="text-align:center;font-style:italic;font-weight:bold;font-size:16px;margin-bottom:18px">COMPROBANTE DE PESAJE</div>
-  <table style="font-size:13px;width:100%;border-collapse:collapse">
-    <tr>
-      <td style="padding:2px 8px"><b>Entrada:</b></td><td>{g('fecha_e')} {g('hora_e')}</td>
-      <td style="padding:2px 8px"><b>Operador:</b></td><td>{g('usuario')}</td>
-      <td style="padding:2px 8px"><b>TICKET NRO:</b></td><td style="font-size:16px"><b>{gnum('transaccion')}</b></td>
-    </tr>
-    <tr>
-      <td style="padding:2px 8px"><b>Salida:</b></td><td>{g('fecha_s')} {g('hora_s')}</td>
-      <td style="padding:2px 8px"><b>Balanza:</b></td><td>{g('vacio24')}</td>
-      <td></td><td></td>
-    </tr>
-    <tr><td style="padding:2px 8px"><b>Producto:</b></td><td><b>{g('producto')}</b></td>
-        <td style="padding:2px 8px"><b>Conductor:</b></td><td>{g('conductor')}</td><td></td><td></td></tr>
-    <tr><td style="padding:2px 8px"><b>Cliente:</b></td><td><b>{g('procedencia')}</b></td>
-        <td style="padding:2px 8px"><b>Documento:</b></td><td>{g('nrodoc')}</td><td></td><td></td></tr>
-    <tr><td style="padding:2px 8px"><b>Transporte:</b></td><td><b>{g('destino')}</b></td>
-        <td style="padding:2px 8px"><b>Patente Chasis:</b></td><td>{g('patcha')}</td><td></td><td></td></tr>
-    <tr><td style="padding:2px 8px"><b>Procedencia:</b></td><td><b>{g('chofer')}</b></td>
-        <td style="padding:2px 8px"><b>Patente Acoplado:</b></td><td>{g('patacopl')}</td><td></td><td></td></tr>
-  </table>
-  <table style="font-size:13px;width:100%;margin-top:14px;border-collapse:collapse">
-    <tr><td style="padding:2px 8px"><b>Tipo y Nro. de Comprobante:</b></td><td>{g('tipodoc')} {g('comprnum1')}</td></tr>
-    <tr><td style="padding:2px 8px"><b>Procedencia/Destino:</b></td><td>{g('procdest')}</td></tr>
-    <tr><td style="padding:2px 8px"><b>Contenedor N°:</b></td><td>{g('proc_contenedor')}</td></tr>
-    <tr><td style="padding:2px 8px"><b>Observaciones:</b></td><td>{g('observaciones')}</td></tr>
-  </table>
-  <table style="font-size:18px;width:100%;margin-top:18px;border-collapse:collapse">
-    <tr><td style="padding:4px 8px;text-align:right;width:60%"><b>PESO ENTRADA:</b></td><td><b>{peso_e}</b> Kg</td></tr>
-    <tr><td style="padding:4px 8px;text-align:right"><b>PESO SALIDA:</b></td><td><b>{peso_s or ('PENDIENTE' if pendiente else '')}</b> {'' if (not peso_s and pendiente) else 'Kg'}</td></tr>
-    <tr><td style="padding:4px 8px;text-align:right"><b>PESO NETO:</b></td><td><b>{peso_n or ('PENDIENTE' if pendiente else '')}</b> {'' if (not peso_n and pendiente) else 'Kg'}</td></tr>
-  </table>
-  {f'<div style="margin-top:10px;color:#b45309;font-size:13px"><b>⚠ Camion pendiente de salida</b> — peso de salida y neto se completan cuando se pesa al salir.</div>' if pendiente else ''}
-</div>
-"""
-                        st.markdown(comp_html, unsafe_allow_html=True)
-                        st.download_button(
-                            "⬇️ Descargar comprobante (HTML para imprimir)",
-                            ("<html><head><meta charset='utf-8'><title>Comprobante "
-                             + g('transaccion') + "</title></head><body>" + comp_html + "</body></html>").encode("utf-8"),
-                            file_name=f"comprobante_{g('transaccion')}_{id_sel}.html", mime="text/html", key="cp_dl")
-                        st.caption("Abrilo y usá Ctrl+P para imprimir o guardar como PDF.")
-            else:
-                st.info("Todavia no entro ningun camion en la fecha elegida.")
-
-        # ---------------- REVISION HISTORICA ----------------
         with sub_hist:
             with st.expander("Filtros", expanded=True):
                 c1, c2, c3 = st.columns(3)
