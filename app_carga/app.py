@@ -1174,6 +1174,21 @@ def _lab_asignacion(cat, conectar=None, USR=None):
     st.dataframe(_show, hide_index=True, use_container_width=True,
                  column_config={**{k: _nf for k in ["Kg ticket","Kg asign.","Litros asign.","Cap. L","Disp. antes L","Disp. después L"]},
                                 "Motivo": st.column_config.TextColumn("Motivo", width="large")})
+    if _es_port:
+        with st.expander("🧠 Aprendizaje de asignación (producto → tanque)", expanded=False):
+            st.caption("Score = aciertos − desvíos, aprendido de tus confirmaciones. Entre los tanques válidos "
+                       "(materia prima + parámetros + disponibilidad) la sugerencia prioriza el de mayor score.")
+            _pref = cat("SELECT p.codigo_producto AS \"Producto\", t.nombre AS \"Tanque\", "
+                        "pr.aciertos AS \"Aciertos\", pr.desvios AS \"Desvíos\", pr.score AS \"Score\", "
+                        "pr.ultimo_motivo AS \"Último motivo\" "
+                        "FROM produccion.dic_tanque_preferencia pr "
+                        "JOIN produccion.dim_producto p ON p.id_producto=pr.id_producto "
+                        "JOIN produccion.dim_tanque t ON t.id_tanque=pr.id_tanque "
+                        "ORDER BY p.codigo_producto, pr.score DESC")
+            if _pref is not None and not _pref.empty:
+                st.dataframe(_pref, hide_index=True, use_container_width=True)
+            else:
+                st.info("Todavía no hay aprendizaje. Confirmá tanques reales abajo (fue / no fue + motivo) y la sugerencia se va afinando.")
     _conf = df[df["tanque_asignado"].notna()].reset_index(drop=True)
     if not _conf.empty:
         _opts = (_conf["ticket"].astype(str) + " · " + _conf["producto"].fillna("") + " → " + _conf["tanque_asignado"]).tolist()

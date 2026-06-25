@@ -629,6 +629,37 @@ def proveedores(dias=180, get_conn=None):
             return [r[0] for r in cur.fetchall()]
 
 
+def sugerir_tanque(get_conn=None, producto_base=None, kg=None):
+    """Tanque tentativo: materia prima (producto/familia) + disponibilidad + score aprendido."""
+    if not producto_base:
+        return None
+    base = str(producto_base).strip().upper()
+    lts = (float(kg) / 0.91) if kg else 0.0
+    sql = ("WITH prod AS ("
+           "  SELECT id_producto FROM produccion.dim_producto "
+           "  WHERE upper(codigo_producto)=%s OR upper(codigo_producto) LIKE %s) "
+           "SELECT t.id_tanque, t.nombre, t.codigo, "
+           "  GREATEST(COALESCE(t.capacidad_litros,0)-COALESCE(s.litros_actual,0),0) AS disp "
+           "FROM produccion.dim_tanque t "
+           "JOIN prod p ON p.id_producto=t.id_producto_principal "
+           "LEFT JOIN produccion.vw_stock_tanque_actual s ON s.id_tanque=t.id_tanque "
+           "LEFT JOIN produccion.dic_tanque_preferencia pref ON pref.id_producto=t.id_producto_principal AND pref.id_tanque=t.id_tanque "
+           "WHERE COALESCE(t.activo,true) "
+           "  AND GREATEST(COALESCE(t.capacidad_litros,0)-COALESCE(s.litros_actual,0),0) >= COALESCE(%s,0) "
+           "ORDER BY COALESCE(pref.score,0) DESC, disp DESC LIMIT 1")
+    try:
+        with _conn_cm(get_conn) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(sql, (base, base + '-%%', lts))
+                r = cur.fetchone()
+        if not r:
+            return None
+        return {"id": int(r["id_tanque"]), "nombre": r["nombre"], "codigo": r["codigo"],
+                "disp": float(r["disp"] or 0)}
+    except Exception:
+        return None
+
+
 def ticket_produccion(ticket, get_conn=None):
     """Si el ticket es de producción (ticket_producto_final tipo F8), devuelve datos de la reacción."""
     if not ticket:
@@ -825,6 +856,15 @@ def render_laboratorio(get_conn=None, usr=None):
     _idx = _all_bases.index(_sugbase) if _sugbase in _all_bases else len(_all_bases) - 1
     base_sel = st.selectbox("Producto base", _all_bases, index=_idx, key="lab_prod_nuevo",
                             help="Todos los productos base. Si es uno raro elegí 'OTRO (genérico)' para cargar todos los parámetros.")
+
+    _base_sug = (str((tk_sel or {}).get("producto_base") or "").strip()
+                 or (base_sel if base_sel != "OTRO (genérico)" else ""))
+    _sugt = sugerir_tanque(get_conn, _base_sug) if _base_sug else None
+    if _sugt:
+        st.info(f"🛢️ Tanque tentativo sugerido (editable abajo): **{_sugt['nombre']} ({_sugt['codigo']})** · "
+                f"libre {_sugt['disp']:,.0f} L. Si lo cambiás, poné el motivo; queda registrado y entrena la sugerencia.")
+        pf_new = dict(pf_new or {})
+        pf_new.setdefault("id_tanque_1", f"{_sugt['id']} · {_sugt['nombre']}")
 
     st.divider()
     _tk_id = (f_tk.strip() or (str(tk_sel["transaccion"]) if tk_sel else "blank"))
