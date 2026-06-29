@@ -34,9 +34,9 @@ def render(USR, cat, conectar):
         st.error("No hay datos de cierres cargados.")
         return
 
-    t1, t2, t3, t4, t5, t6, t7 = st.tabs(
+    t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs(
         ["📊 Resumen P&L", "🧭 Dónde está el valor", "📈 Evolución / Q1·Q2",
-         "💱 Precios MP vs venta", "⚠️ Observaciones", "💡 Insights", "💵 Pesos constantes"])
+         "💱 Precios MP vs venta", "⚠️ Observaciones", "💡 Insights", "💵 Pesos constantes", "🛢️ Precios MP"])
 
     # ============ 1 · Resumen P&L ============
     with t1:
@@ -207,3 +207,35 @@ def render(USR, cat, conectar):
         st.info("**Sobre estacionalidad:** desestacionalizar formalmente (X-13 / STL) necesita 2–3 años de historia mensual. "
                 "Con 5 meses no es estadísticamente válido — queda preparado para cuando se acumulen más cierres. "
                 "El deflactado por IPC es, hoy, el ajuste correcto para comparar mes a mes.")
+
+    # ============ 8 · Precios de materia prima ============
+    with t8:
+        st.subheader("Precios de materia prima (serie mensual)")
+        st.caption("Precio de compra por producto. El precio de origen ya viene en **USD/TN** (negociado real); "
+                   "se muestran también ARS nominal, ARS en **pesos constantes** (deflactado por IPC) e **índice estacional** preliminar.")
+        mp = cat(f"SELECT to_char(mes,'YYYY-MM') mes, producto, precio_usd_tn, precio_ars_tn, precio_ars_real_tn, "
+                 f"cantidad_tn, indice_estacional, var_mom_usd_pct FROM {S}.v_precios_mp_estacional ORDER BY producto, mes")
+        if mp is None or mp.empty:
+            st.info("Sin precios de MP por tonelada cargados.")
+        else:
+            _prods = sorted(mp["producto"].dropna().unique().tolist())
+            _def = [p for p in _prods if p.strip().upper().startswith(("AFE", "AG", "ARE"))][:6]
+            _sel = st.multiselect("Productos", _prods, default=_def, key="mp_prod_sel")
+            _f = mp[mp["producto"].isin(_sel)] if _sel else mp
+            try:
+                _piv = _f.pivot_table(index="mes", columns="producto", values="precio_usd_tn", aggfunc="mean")
+                st.markdown("**Precio USD/TN**")
+                st.line_chart(_piv, use_container_width=True)
+            except Exception:
+                pass
+            st.dataframe(
+                _f.rename(columns={"mes": "Mes", "producto": "Producto", "precio_usd_tn": "USD/TN",
+                                   "precio_ars_tn": "ARS/TN nominal", "precio_ars_real_tn": "ARS/TN real",
+                                   "cantidad_tn": "TN compradas", "indice_estacional": "Indice estac.",
+                                   "var_mom_usd_pct": "Var MoM % (USD)"}),
+                hide_index=True, use_container_width=True,
+                column_config={c: st.column_config.NumberColumn(format="%.0f")
+                               for c in ["ARS/TN nominal", "ARS/TN real", "TN compradas"]})
+            st.info("**Lectura:** los precios de MP están **estables en USD** (ej. AFE-S ~945 USD/TN constante). "
+                    "Los saltos grandes en ARS son **monetarios** (inflación/devaluación), no estacionalidad real — "
+                    "el índice estacional (≈1,0) lo confirma. Con más años se podrá estimar un patrón estacional formal.")
