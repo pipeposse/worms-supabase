@@ -230,7 +230,7 @@ USR = st.session_state.user
 
 # ---- Permisos por usuario sobre las secciones de la página ----
 SECCIONES_APP = [
-    ("CARGAS", "🏭 Cargas"), ("INICIAR", "👷 Producción en planta"), ("VISTAS", "📊 Vistas de producción"),
+    ("INICIAR", "👷 Producción en planta"),
     ("LAB", "🧪 Laboratorio"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"),
     ("ESTADO", "📈 Estado de planta"),
     ("PLANIFICACION", "🗓️ Centro de Planificación"), ("CONDICIONALES", "🧮 Condicionales"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
@@ -239,7 +239,7 @@ SECCIONES_APP = [
 
 
 def _secciones_default(rol):
-    base = ["CARGAS", "INICIAR", "VISTAS", "LAB", "TANQUES", "STOCK", "ESTADO"]
+    base = ["INICIAR", "LAB", "TANQUES", "STOCK", "ESTADO"]
     if rol in ("SUPERVISOR", "ADMIN"):
         base += ["PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT", "CIERRES"]
     if rol == "ADMIN":
@@ -340,9 +340,7 @@ if st.session_state.section is None:
     st.markdown('<div class="section-title">Accesos</div>', unsafe_allow_html=True)
 
     tiles = [
-        ("🏭", "Cargas", "Carga de producción: armado, etapas, producto final y anulaciones.", "CARGAS", "land_cargas", True),
         ("👷", "Producción en planta", "Elegí una producción planificada por dirección y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
-        ("📊", "Vistas de producción", "Producción, consumos y tiempos por sector + informe mensual (kg/L/TN).", "VISTAS", "land_vistas", True),
         ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
         ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
         ("📦", "Stock", "Libro mayor de movimientos, stock estimado en tiempo real y conciliación. Todo descargable.", "STOCK", "land_stock", False),
