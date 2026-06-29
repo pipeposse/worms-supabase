@@ -1872,7 +1872,7 @@ if st.session_state.section != "CARGAS":
                 fmax = c2.date_input("Fecha hasta", value=date.today(), key="lab_fmax")
                 limit_lab = c3.number_input("Límite filas", 100, 100000, 5000, step=500, key="lab_lim")
                 try:
-                    prods_lab = cat("SELECT DISTINCT producto_lab FROM produccion.procesos_lab WHERE producto_lab IS NOT NULL ORDER BY 1")["producto_lab"].tolist()
+                    prods_lab = cat("SELECT DISTINCT produccion.fn_rotulo(producto_lab) AS producto_lab FROM produccion.procesos_lab WHERE producto_lab IS NOT NULL ORDER BY 1")["producto_lab"].tolist()
                 except Exception: prods_lab = []
                 try:
                     emps_lab = cat("SELECT DISTINCT empleado FROM produccion.procesos_lab WHERE empleado IS NOT NULL ORDER BY 1")["empleado"].tolist()
@@ -1886,7 +1886,7 @@ if st.session_state.section != "CARGAS":
             where = ["pl.fecha >= %s", "pl.fecha < %s"]
             params = [fmin.isoformat(), (fmax + _td(days=1)).isoformat()]
             if sel_prod:
-                where.append("pl.producto_lab = ANY(%s)"); params.append(sel_prod)
+                where.append("produccion.fn_rotulo(pl.producto_lab) = ANY(%s)"); params.append(sel_prod)
             if sel_emp:
                 where.append("pl.empleado = ANY(%s)"); params.append(sel_emp)
             # corriente derivada de producto_lab (vía porteria_limpieza), fallback a la propia
@@ -1899,7 +1899,7 @@ if st.session_state.section != "CARGAS":
                            MODE() WITHIN GROUP (ORDER BY corriente) AS corriente
                     FROM produccion.porteria_limpieza WHERE corriente IS NOT NULL GROUP BY 1
                 ) m ON m.base = CASE UPPER(TRIM(pl.producto_lab))
-                         WHEN 'EFLUENTE'           THEN 'EFLUENTES LIQUIDOS'
+                         WHEN 'EFLUENTE'           THEN 'DISPOSICION FINAL DE LIQUIDOS'
                          WHEN 'ACIDO SULFURICO'    THEN 'ACIDO_KG'
                          WHEN 'HIDROXIDO DE SODIO' THEN 'SODA_KG'
                          WHEN 'FONDO DE TK'        THEN 'FONDO_TK'
@@ -1912,6 +1912,11 @@ if st.session_state.section != "CARGAS":
                 df_l = cat(sql_lab, tuple(params))
             except Exception as e:
                 st.exception(e); df_l = pd.DataFrame()
+            if df_l is not None and not df_l.empty and "producto_lab" in df_l.columns:
+                df_l["producto_lab"] = df_l["producto_lab"].map(
+                    lambda v: "DISPOSICION FINAL DE LIQUIDOS"
+                    if isinstance(v, str) and (v.strip().upper() == "EFLUENTE" or ("EFLU" in v.upper() and "LIQU" in v.upper()))
+                    else v)
             # corriente final (derivada) + filtro por corriente evaluable
             if not df_l.empty and "corriente_eval" in df_l.columns:
                 df_l["corriente"] = df_l["corriente_eval"]
@@ -2107,7 +2112,7 @@ if st.session_state.section != "CARGAS":
                 st.info("Sin datos en el rango.")
 
 
-        # ---------------- EFLUENTES LIQUIDOS ----------------
+        # ---------------- DISPOSICION FINAL DE LIQUIDOS ----------------
         with sub_eflu:
             st.caption("Apertura por **producto base** (los evaluables con más movimiento): acumulados, "
                        "tendencia, comparación mensual y semanal. Efluentes líquidos es un producto más.")
@@ -2121,11 +2126,11 @@ if st.session_state.section != "CARGAS":
                 _pb_opts = _topb["producto_base"].tolist()
             except Exception:
                 _pb_opts = []
-            if "EFLUENTES LIQUIDOS" not in _pb_opts:
-                _pb_opts = ["EFLUENTES LIQUIDOS"] + _pb_opts
+            if "DISPOSICION FINAL DE LIQUIDOS" not in _pb_opts:
+                _pb_opts = ["DISPOSICION FINAL DE LIQUIDOS"] + _pb_opts
             cE0, cE1, cE2 = st.columns(3)
             pb_sel = cE0.selectbox("Producto base", _pb_opts,
-                                   index=_pb_opts.index("EFLUENTES LIQUIDOS"),
+                                   index=_pb_opts.index("DISPOSICION FINAL DE LIQUIDOS"),
                                    key="ef_pb",
                                    help="Productos base evaluables ordenados por kg movidos en los últimos 12 meses.")
             ef_desde = cE1.date_input("Desde", value=date(date.today().year,1,1), key="ef_desde")

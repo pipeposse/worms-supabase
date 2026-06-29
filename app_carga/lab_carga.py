@@ -481,7 +481,7 @@ def _form_AFE(pf, ctx, tok, get_conn, usuario):
 
 def _form_EFLUENTE(pf, ctx, tok, get_conn, usuario):
     p = "eflu"
-    st.subheader("EFLUENTES")
+    st.subheader("DISPOSICION FINAL DE LIQUIDOS")
     with st.form(_k(p, tok, "form")):
         cab = _cab(p, pf, tok)
         st.markdown("**Analisis**")
@@ -505,7 +505,7 @@ def _form_EFLUENTE(pf, ctx, tok, get_conn, usuario):
                                       key=_k(p, tok, "conc"))
         enviar = st.form_submit_button("GUARDAR", use_container_width=True)
     if enviar:
-        data = dict(tipo_formulario="EFLUENTE", producto_lab="EFLUENTE",
+        data = dict(tipo_formulario="EFLUENTE", producto_lab="DISPOSICION FINAL DE LIQUIDOS",
                     calidad_final_lab=calidad, rechazado=rechazado, conclusion=conclusion,
                     eflu_ph=eflu_ph, eflu_conductividad_ms=eflu_cond, eflu_prc_agua=eflu_agua,
                     eflu_prc_sedimentos=eflu_sed, eflu_prc_grasa=eflu_grasa,
@@ -609,7 +609,7 @@ def _form_para_base(base):
         return _form_ARE
     if b.startswith("AFE"):
         return _form_AFE
-    if "EFLUENTE" in b or "EFLIUENTE" in b:
+    if "EFLUENTE" in b or "EFLIUENTE" in b or "DISPOSICION FINAL DE LIQU" in b:
         return _form_EFLUENTE
     if b in ("BORRA", "EMULSION"):
         return _form_BORRA
@@ -622,7 +622,8 @@ def _form_para_base(base):
 # Sugerencia producto_base (porteria) -> producto_lab (editable; base->lab es N:N)
 _SUG_BASE_LAB = {
     "AG": "AG", "ARE": "ARE", "AFE": "AFE",
-    "EFLUENTES LIQUIDOS": "EFLUENTE", "EFLIUENTES LIQUIDOS": "EFLUENTE",
+    "DISPOSICION FINAL DE LIQUIDOS": "DISPOSICION FINAL DE LIQUIDOS",
+    "EFLUENTES LIQUIDOS": "DISPOSICION FINAL DE LIQUIDOS", "EFLIUENTES LIQUIDOS": "DISPOSICION FINAL DE LIQUIDOS",
     "EFLUENTES SOLIDOS": "EFLUENTE", "COMPOST": "EFLUENTE", "RESIDUOS": "EFLUENTE",
     "BORRA": "BORRA", "EMULSION": "BORRA",
 }
@@ -772,7 +773,7 @@ def render_laboratorio(get_conn=None, usr=None):
             c1, c2, c3 = st.columns([2, 2, 1])
             ticket = c1.text_input("Ticket contiene", key="lab_q_ticket")
             prod = c2.selectbox("Producto", ["(todos)"] + sorted(
-                set(list(_FORMS.keys()) + ["EFLUENTE", "BORRA", "SEBO", "GLICERINA"])),
+                set(list(_FORMS.keys()) + ["DISPOSICION FINAL DE LIQUIDOS", "BORRA", "SEBO", "GLICERINA"])),
                 key="lab_q_prod")
             buscar = c3.button("Buscar", use_container_width=True)
             if buscar:
@@ -872,7 +873,7 @@ def render_laboratorio(get_conn=None, usr=None):
 
     st.divider()
     st.markdown("**2) Producto a evaluar**")
-    _all_bases = sorted({b for b in _pbases if b} | {"AG", "ARE", "AFE", "EFLUENTE", "BORRA", "SEBO", "GLICERINA"})
+    _all_bases = sorted({b for b in _pbases if b} | {"AG", "ARE", "AFE", "DISPOSICION FINAL DE LIQUIDOS", "BORRA", "SEBO", "GLICERINA"})
     _all_bases = _all_bases + ["OTRO (genérico)"]
     _sugbase = str((tk_sel or {}).get("producto_base") or "").upper()
     _idx = _all_bases.index(_sugbase) if _sugbase in _all_bases else len(_all_bases) - 1
