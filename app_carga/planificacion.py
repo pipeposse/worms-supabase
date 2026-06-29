@@ -22,6 +22,17 @@ ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 DENS_INSUMO = {"FUEL_OIL": 0.95, "AGUA": 1.0, "soda_kg": 1.33, "acido_kg": 1.71,
                "GASOIL": 0.85, "ACIDO_CLORHIDRICO": 1.18}
 
+def _cond_val(cat, clave, default):
+    """Lee un valor de dic_condicion_produccion (Condicionales); fallback al default."""
+    try:
+        _d = cat("SELECT valor FROM produccion.dic_condicion_produccion WHERE clave=%s", (clave,))
+        if _d is not None and not _d.empty and pd.notna(_d.iloc[0]["valor"]):
+            return float(_d.iloc[0]["valor"])
+    except Exception:
+        pass
+    return default
+
+
 def _formulas_sector(cat, sector):
     """Fórmulas activas de dic_formula para un sector (REACTORES/BACHAS)."""
     return cat("SELECT * FROM produccion.dic_formula WHERE activo AND sector IN (%s, '*') "
@@ -731,7 +742,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _fresca_def = float((_are_fi.get("GLICERINA_FRESCA") or {}).get("cant") or 0)
         _recup_def = float((_are_fi.get("GLICERINA_RECUP") or {}).get("cant") or 0)
         _are_fp = _params_de(_are_fx) if _are_fx is not None else {}
-        _aporte = float(_are_fp.get("aporte_glicerina_pct") or 10.0)
+        _aporte = float(_are_fp.get("aporte_glicerina_pct") or _cond_val(cat, "ARE_APORTE_GLICERINA_PCT", 10.0))
         if _are_fx is not None:
             are_formula_id = int(_are_fx["id_formula"])
             are_formula_nombre = str(_are_fx["nombre"])

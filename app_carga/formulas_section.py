@@ -78,7 +78,12 @@ def render(USR, cat, conectar):
     procs = cat("SELECT codigo FROM produccion.dic_tipo_proceso WHERE activo ORDER BY codigo")["codigo"].tolist()
     uid = int(USR["id_usuario"])
 
-    t_list, t_edit, t_new = st.tabs(["📋 Todas las fórmulas", "✏️ Editar / default", "➕ Nueva fórmula"])
+    t_list, t_edit, t_new, t_cond = st.tabs(["📋 Todas las fórmulas", "✏️ Editar / default", "➕ Nueva fórmula", "🧮 Condicionales"])
+    with t_cond:
+        st.caption("**Todas las condiciones en un solo lugar.** Umbrales de producción (acidez, purga, % glicerina), "
+                   "objetivos por proceso y parámetros aceptables por tanque. Se editan acá y se aplican al instante.")
+        import condicionales as _cond
+        _cond.render_tabs(USR, cat, conectar)
 
     # ---------- listado ----------
     with t_list:
