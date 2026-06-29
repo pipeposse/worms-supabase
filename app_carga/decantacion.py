@@ -18,6 +18,17 @@ PURGA_CORTE = 2.0                  # glicerina <= 2% => purga OK
 SP_EXPORT = 200.0                  # azufre y fósforo < 200 => apto exportación
 
 
+def _purga_corte(cat):
+    """Umbral de purga (glicerina máx) leído de Condicionales; fallback al default."""
+    try:
+        _d = cat("SELECT valor FROM produccion.dic_condicion_produccion WHERE clave='ARE_PURGA_GLICERINA_MAX'")
+        if _d is not None and not _d.empty and pd.notna(_d.iloc[0]["valor"]):
+            return float(_d.iloc[0]["valor"])
+    except Exception:
+        pass
+    return PURGA_CORTE
+
+
 def _batches(cat):
     return cat(
         "SELECT b.id_batch, b.identificador_unidad AS ident, b.estado, b.etapa_actual, "
@@ -270,12 +281,13 @@ def produccion(USR, cat, conectar, id_batch=None):
 
     st.markdown("##### 🔬 Resultado de laboratorio (purga)")
     gp = b["purga_glicerina_pct"]
+    _corte = _purga_corte(cat)
     if pd.isna(gp) or gp is None:
         st.caption("Laboratorio todavía no cargó el % de glicerina del material purgado.")
     elif bool(b["purga_ok"]):
-        st.success(f"✅ Última purga **{float(gp):.1f}% (≤ {PURGA_CORTE:.0f}%)** → **purga OK**. Podés confirmar y enviar a destino.")
+        st.success(f"✅ Última purga **{float(gp):.1f}% (≤ {_corte:g}%)** → **purga OK**. Podés confirmar y enviar a destino.")
     else:
-        st.warning(f"🔴 Última purga **{float(gp):.1f}% (> {PURGA_CORTE:.0f}%)** → **seguí decantando**.")
+        st.warning(f"🔴 Última purga **{float(gp):.1f}% (> {_corte:g}%)** → **seguí decantando**.")
     _ph = cat("SELECT to_char(ts,'DD/MM HH24:MI') AS \"Hora\", glicerina_pct AS \"Glicerina %%\", "
               "CASE WHEN purga_ok THEN 'Purga OK ✅' ELSE 'Seguir' END AS \"Resultado\" "
               "FROM produccion.fact_decant_purga WHERE id_batch=%s ORDER BY ts DESC", (int(b["id_batch"]),))
@@ -358,8 +370,9 @@ def _set_flota(USR, cat, conectar, id_batch, flota):
 # ---------------------------------------------------------------- LABORATORIO
 def laboratorio(USR, cat, conectar):
     st.subheader("🔬 Evaluaciones de producciones en marcha (ARE en decantación)")
+    _corte = _purga_corte(cat)
     st.caption("Producciones que requieren evaluación de laboratorio. Cargá el **% de glicerina del material purgado** "
-               f"(corta en ≤ {PURGA_CORTE:.0f}%) y, para el producto final, azufre/fósforo (apto exportación si < {SP_EXPORT:.0f}).")
+               f"(corta en ≤ {_corte:g}%) y, para el producto final, azufre/fósforo (apto exportación si < {SP_EXPORT:.0f}).")
     b, df = _sel_batch(cat, "dec_lab_sel")
     if b is None:
         return
@@ -370,7 +383,7 @@ def laboratorio(USR, cat, conectar):
     gp = st.number_input("% glicerina del purgado", 0.0, 100.0, value=0.0, step=0.1, key="dec_lab_gli")
     _obsp = st.text_input("Observación (opcional)", key="dec_lab_purga_obs")
     if st.button("💾 Guardar % glicerina (purga)", type="primary", key="dec_lab_save_gli"):
-        ok = gp <= PURGA_CORTE
+        ok = gp <= _corte
         try:
             with conectar(uid) as (conn, audit):
                 with conn.cursor() as cur:
@@ -380,7 +393,7 @@ def laboratorio(USR, cat, conectar):
                                 "SET purga_glicerina_pct=%s, purga_ok=%s, purga_lab_ts=now() WHERE id_batch=%s",
                                 (float(gp), bool(ok), int(b["id_batch"])))
                 audit.log("I", "fact_decant_purga", int(b["id_batch"]), {"purga_pct": gp, "ok": ok})
-            st.success(f"Glicerina {gp:.1f}% → " + ("✅ purga OK (≤ 2%)" if ok else "🔴 seguir decantando (> 2%)"))
+            st.success(f"Glicerina {gp:.1f}% → " + (f"✅ purga OK (≤ {_corte:g}%)" if ok else f"🔴 seguir decantando (> {_corte:g}%)"))
             cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)

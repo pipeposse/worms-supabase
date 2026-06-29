@@ -87,6 +87,15 @@ def _conn_cm(get_conn):
 # ---------------------------------------------------------------------------
 EMPLEADOS = ["Cielo", "Manu", "Rich", "Mili"]
 RECHAZADO = ["ACEPTADO", "RECHAZADO", "FUERA DE ESPECIFICACION", "REMUESTREO"]
+
+# Rangos plausibles por parámetro (para frenar errores groseros: %/fracción, negativos)
+_RANGOS = {
+    "prc_acidez": (0, 100), "prc_agua": (0, 100), "prc_sedimentos": (0, 100),
+    "prc_producto": (0, 100), "prc_hkf": (0, 100), "prc_emulsion": (0, 100),
+    "prc_glicerina": (0, 100), "prc_poliglicerol": (0, 100),
+    "prc_goma_arriba": (0, 100), "prc_goma_medio": (0, 100), "prc_goma_abajo": (0, 100),
+    "ppm_azufre": (0, 100000), "ppm_fosforo": (0, 100000), "densidad__g_ml": (0.4, 1.7),
+}
 CORRIENTE = ["VEGETAL", "ANIMAL"]
 CAL_AG    = ["A", "B", "C", "C.2da", "D", "E", "G"]
 CAL_AFE   = ["S", "SG", "B", "C", "A"]
@@ -326,6 +335,19 @@ def _persistir(tipo, data, ctx, get_conn, usuario):
         return False
     if not (data.get("empleado") or "").strip():
         st.error("Elegí el responsable de carga (Cielo, Manu, Rich o Mili).")
+        return False
+    _fuera = []
+    for _c, (_lo, _hi) in _RANGOS.items():
+        _v = data.get(_c)
+        if _v not in (None, ""):
+            try:
+                _vf = float(_v)
+                if _vf < _lo or _vf > _hi:
+                    _fuera.append(f"{_c}={_vf:g} (esperado {_lo}–{_hi})")
+            except Exception:
+                pass
+    if _fuera:
+        st.error("Valores fuera de rango — revisá unidades (¿% vs fracción?): " + "; ".join(_fuera))
         return False
     ok, errores = validar(tipo, data)
     if not ok:

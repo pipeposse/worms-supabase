@@ -232,13 +232,14 @@ USR = st.session_state.user
 SECCIONES_APP = [
     ("CARGAS", "🏭 Cargas"), ("INICIAR", "👷 Producción en planta"), ("VISTAS", "📊 Vistas de producción"),
     ("LAB", "🧪 Laboratorio"), ("PORT", "🚛 Portería"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"),
+    ("ESTADO", "📈 Estado de planta"),
     ("PLANIFICACION", "🗓️ Centro de Planificación"), ("CONDICIONALES", "🧮 Condicionales"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
     ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
 ]
 
 
 def _secciones_default(rol):
-    base = ["CARGAS", "INICIAR", "VISTAS", "LAB", "PORT", "TANQUES", "STOCK"]
+    base = ["CARGAS", "INICIAR", "VISTAS", "LAB", "PORT", "TANQUES", "STOCK", "ESTADO"]
     if rol in ("SUPERVISOR", "ADMIN"):
         base += ["PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT"]
     if rol == "ADMIN":
@@ -346,6 +347,7 @@ if st.session_state.section is None:
         ("🚛", "Portería", "Pesajes de portería: filtros, peso por producto y descarga.", "PORT", "land_port", False),
         ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
         ("📦", "Stock", "Libro mayor de movimientos, stock estimado en tiempo real y conciliación. Todo descargable.", "STOCK", "land_stock", False),
+        ("📈", "Estado de planta", "Tablero de reacciones, bandeja de laboratorio, trazabilidad de lote, mermas y alertas.", "ESTADO", "land_estado", False),
     ]
     tiles.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
     tiles.append(("🧪", "Fórmulas", "Fórmulas con nombre por proceso/MP/producto: creá, editá y elegí la default que usa Planificación.", "FORMULAS", "land_formulas", False))
@@ -1116,6 +1118,69 @@ def _porteria_entrada_diaria(cat):
                     st.info("Todavia no entro ningun camion en la fecha elegida.")
 
             # ---------------- REVISION HISTORICA ----------------
+
+
+def _render_estado_planta(cat):
+    st.title("📈 Estado de planta")
+    t1, t2, t3, t4, t5 = st.tabs(["🏭 Tablero", "🧪 Bandeja lab", "🔗 Trazabilidad", "📉 Mermas", "🔔 Alertas"])
+    with t1:
+        st.caption("Cada reacción activa: en qué estado está y a quién está esperando.")
+        df = cat("SELECT identificador_unidad AS \"Reacción\", tipo_proceso AS \"Proceso\", estado AS \"Estado\", "
+                 "espera_a AS \"Espera a\", horas_activo AS \"Horas\", are_objetivo_kg AS \"ARE obj. kg\", "
+                 "tanque_destino AS \"Tanque destino\" FROM produccion.v_estado_planta ORDER BY horas_activo DESC NULLS LAST")
+        if df is None or df.empty:
+            st.info("No hay reacciones activas.")
+        else:
+            st.dataframe(df, hide_index=True, use_container_width=True,
+                         column_config={"Horas": st.column_config.NumberColumn(format="%.1f"),
+                                        "ARE obj. kg": st.column_config.NumberColumn(format="%.0f")})
+    with t2:
+        st.caption("Reacciones que esperan resultado del laboratorio. Cargalo en Laboratorio → Producciones en marcha.")
+        df = cat("SELECT identificador_unidad AS \"Reacción\", estado AS \"Estado\", "
+                 "ticket_validacion_lab AS \"Ticket validación\", ticket_producto_final AS \"Ticket final\", "
+                 "purga_glicerina_pct AS \"Purga %\", horas_esperando AS \"Horas esperando\" "
+                 "FROM produccion.v_bandeja_lab ORDER BY horas_esperando DESC NULLS LAST")
+        if df is None or df.empty:
+            st.success("✅ Nada pendiente de laboratorio.")
+        else:
+            st.dataframe(df, hide_index=True, use_container_width=True,
+                         column_config={"Horas esperando": st.column_config.NumberColumn(format="%.1f")})
+    with t3:
+        st.caption("La historia de un lote: qué entró, qué salió y a qué tanque.")
+        _lotes = cat("SELECT DISTINCT identificador_unidad FROM produccion.v_trazabilidad_lote WHERE identificador_unidad IS NOT NULL ORDER BY 1")
+        if _lotes is None or _lotes.empty:
+            st.info("Sin movimientos por lote todavía.")
+        else:
+            _l = st.selectbox("Lote", _lotes["identificador_unidad"].tolist(), key="traz_lote")
+            df = cat("SELECT to_char(momento,'DD/MM HH24:MI') AS \"Cuándo\", tipo_movimiento AS \"Mov\", rol AS \"Rol\", "
+                     "producto AS \"Producto\", tanque AS \"Tanque\", ticket_porteria AS \"Ticket\", kg AS \"Kg\", litros AS \"Litros\" "
+                     "FROM produccion.v_trazabilidad_lote WHERE identificador_unidad=%s ORDER BY momento", (_l,))
+            if df is not None and not df.empty:
+                st.dataframe(df, hide_index=True, use_container_width=True,
+                             column_config={"Kg": st.column_config.NumberColumn(format="%.0f"),
+                                            "Litros": st.column_config.NumberColumn(format="%.0f")})
+            else:
+                st.caption("Ese lote no tiene movimientos cargados.")
+    with t4:
+        st.caption("Planificado vs real por lote: rendimiento y mermas.")
+        df = cat("SELECT identificador_unidad AS \"Reacción\", kg_inicial AS \"MP kg\", are_objetivo_kg AS \"ARE obj.\", "
+                 "producido_kg AS \"ARE real\", rendimiento_vs_obj_pct AS \"% vs obj\", rendimiento_vs_mp_pct AS \"% vs MP\" "
+                 "FROM produccion.v_mermas_lote ORDER BY fecha DESC NULLS LAST")
+        if df is None or df.empty:
+            st.info("Sin datos de rendimiento.")
+        else:
+            st.dataframe(df, hide_index=True, use_container_width=True,
+                         column_config={k: st.column_config.NumberColumn(format="%.0f") for k in ["MP kg","ARE obj.","ARE real"]})
+    with t5:
+        st.caption("Cosas que requieren atención ahora.")
+        df = cat("SELECT severidad, tipo, mensaje FROM produccion.v_alertas_planta "
+                 "ORDER BY CASE severidad WHEN 'alta' THEN 0 WHEN 'media' THEN 1 ELSE 2 END")
+        if df is None or df.empty:
+            st.success("✅ Sin alertas.")
+        else:
+            for _, r in df.iterrows():
+                _ic = "🔴" if r["severidad"] == "alta" else "🟠"
+                st.warning(f"{_ic} **{r['tipo']}** — {r['mensaje']}")
 
 
 def _lab_asignacion(cat, conectar=None, USR=None):
@@ -3468,6 +3533,15 @@ if st.session_state.section != "CARGAS":
             st.error(f"No se pudo cargar Condicionales: {_e}")
             with st.expander("Detalle"):
                 st.code(_tbc.format_exc())
+
+    elif st.session_state.section == "ESTADO":
+        try:
+            _render_estado_planta(cat)
+        except Exception as _e:
+            import traceback as _tbe
+            st.error(f"No se pudo cargar Estado de planta: {_e}")
+            with st.expander("Detalle"):
+                st.code(_tbe.format_exc())
 
     elif st.session_state.section == "INICIAR":
         # =================== INICIAR PRODUCCIÓN (operario, por ID planificado) ===================
