@@ -3639,11 +3639,15 @@ if st.session_state.section != "CARGAS":
                           "pp.acidez_pct AS \"Acidez\", pp.agua_pct AS \"Agua\", pp.sedimentos_pct AS \"Sedim\", "
                           "pp.ppm_azufre AS \"Azufre ppm\", pp.ppm_fosforo AS \"Fosforo ppm\", "
                           "pp.ultima_evaluacion_ts AS \"Ult. lab\", "
-                          "to_char(s.ultima_medicion AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Medicion\" "
+                          "to_char(s.ultima_medicion AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Medicion\", "
+                          "med.fuente AS \"Fuente\" "
                           "FROM produccion.dim_tanque t "
                           "LEFT JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
                           "LEFT JOIN produccion.vw_stock_tanque_actual s ON s.id_tanque=t.id_tanque "
                           "LEFT JOIN produccion.fact_param_tanque pp ON pp.id_tanque=t.id_tanque AND pp.id_producto=t.id_producto_principal "
+                          "LEFT JOIN LATERAL (SELECT CASE WHEN fs.id_usuario IS NULL THEN 'WeDo' ELSE 'Manual' END AS fuente "
+                          "FROM produccion.fact_stock_tanque fs "
+                          "WHERE fs.id_tanque=t.id_tanque ORDER BY fs.medido_en DESC NULLS LAST LIMIT 1) med ON true "
                           "WHERE COALESCE(t.activo,true) ORDER BY t.sector, t.nombre")
                 if _tq is None or _tq.empty:
                     st.info("Sin tanques cargados.")
@@ -3696,7 +3700,7 @@ if st.session_state.section != "CARGAS":
                     st.markdown(_chips(_tv, "Sector", False), unsafe_allow_html=True)
 
                     if _vista.startswith("📋"):
-                        _cols = ["Codigo","Tanque","Sector","Producto","Stock L","Capacidad L","Disponible L","Ocupacion","Medicion","Ult. lab"]
+                        _cols = ["Codigo","Tanque","Sector","Producto","Stock L","Capacidad L","Disponible L","Ocupacion","Medicion","Fuente","Ult. lab"]
                         if _verp: _cols += ["Acidez","Agua","Sedim","Azufre ppm","Fosforo ppm"]
                         st.dataframe(_tv[_cols], hide_index=True, use_container_width=True, height=520,
                                      column_config={"Stock L": st.column_config.NumberColumn(format="%.0f"),
@@ -3746,7 +3750,8 @@ if st.session_state.section != "CARGAS":
                                     f'<div class="tkn">{_html.escape(str(r["Tanque"]))}</div>'
                                     f'<div class="tks"><span class="tkdot" style="background:{col}"></span>{_html.escape(str(prod))}</div>'
                                     f'<div class="tkv">{r["Stock L"]/1000:,.1f} / {r["Capacidad L"]/1000:,.0f} kL · libre {libre:.0f}%</div>'
-                                    f'<div class="tkv">🕒 {_html.escape(str(r["Medicion"])) if _pd.notna(r["Medicion"]) else "sin medición"}</div>'
+                                    f'<div class="tkv">🕒 {_html.escape(str(r["Medicion"])) if _pd.notna(r["Medicion"]) else "sin medición"}'
+                                    + (f' · <span style="color:#0891b2">🛰️ WeDo</span>' if str(r.get("Fuente"))=="WeDo" else (f' · <span style="color:#7c3aed">✋ Manual</span>' if str(r.get("Fuente"))=="Manual" else "")) + '</div>'
                                     f'{params}</div>')
                             html_out += '</div>'
                         st.markdown(html_out, unsafe_allow_html=True)
