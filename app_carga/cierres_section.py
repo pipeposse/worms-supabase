@@ -168,23 +168,91 @@ def render(USR, cat, conectar):
 
     # ============ 6 · Insights ============
     with t6:
-        st.subheader("Lectura ejecutiva")
-        st.markdown(
-            "#### 🟢 Fortalezas\n"
-            "- **Servicios ambientales de altísimo margen**: PILETAS (~87%) y DISP. FINAL LÍQUIDOS (~56%) generan ~1.900M de "
-            "contribución con poca inversión. Es el **núcleo de valor** y la ventaja defendible (licencias/infra ambiental).\n"
-            "- **Escala en exportación**: el volumen oleoquímico da masa crítica y flujo de caja, aunque a margen fino.\n"
-            "- **Resultado positivo todos los meses** (margen neto 6–11%), con caja sólida.\n\n"
-            "#### 🔴 Dónde se pierde / a mejorar\n"
-            "- **Exportación a 4% de margen**: 100% expuesta al **precio de la MP**. Una suba de MP del 4–5% borra la ganancia. "
-            "Hay que **cubrir/negociar MP**, mejorar rendimiento de reacción (menos merma) y priorizar productos de mayor spread.\n"
-            "- **Segmentos que destruyen valor**: NFU, BACHAS y DISP. FINAL SÓLIDOS. Decisión: **reprecificar, reducir costo o discontinuar**.\n"
-            "- **Overhead** (ADMIN, INTENDENCIA, TALLER, LAB ≈ 305M) sin asignar a segmentos: distorsiona el margen real de cada negocio.\n\n"
-            "#### 🎯 Dónde está el valor (conclusión)\n"
-            "El valor **no** está en el tamaño de la exportación sino en **escalar los servicios ambientales de alto margen** "
-            "y en **proteger el margen de exportación** frente al precio de la materia prima. "
-            "La palanca #1 de resultado es el **costo de MP** (cada punto de MP sobre 17.500M de compra anual ≈ 175M de resultado).")
-        st.caption("Análisis generado sobre los datos reales de los cierres ene–may 2026. Se actualiza al recargar tras nuevos cierres.")
+        st.subheader("🎯 Insights accionables")
+        st.caption("Calculado sobre los datos reales. Cada palanca muestra su **impacto en $** y la **acción** concreta. "
+                   "El simulador deja probar decisiones antes de tomarlas.")
+        _n = len(pl)
+        ing_tot = float(pl["ingresos"].sum()); mp_tot = float(pl["mp"].sum())
+        var_tot = float(pl["costo_variable"].sum()); fijo_tot = float(pl["costo_fijo"].sum())
+        res_tot = float(pl["resultado_neto"].sum())
+        otros_var = max(var_tot - mp_tot, 0.0)
+        base_op = ing_tot - var_tot - fijo_tot
+        _anu = 12.0 / max(_n, 1)
+        seg = cat(f"SELECT sector, sum(ingreso) ing, sum(costo_directo) costo, sum(contribucion) contrib, "
+                  f"round(sum(contribucion)/NULLIF(sum(ingreso),0)*100,0) pct FROM {S}.v_margen_segmento GROUP BY sector")
+        _over = {"ADMINISTRACION", "INTENDENCIA", "TALLER", "LABORATORIO"}
+        _transfer = {"REACTORES"}
+        sane = esc = pd.DataFrame()
+        if seg is not None and not seg.empty:
+            sane = seg[(seg["ing"] > 0) & (seg["contrib"] < 0) & (~seg["sector"].isin(_over | _transfer))].copy()
+            esc = seg[(seg["contrib"] > 0) & (seg["pct"] >= 40)].copy()
+        recup = float(-sane["contrib"].sum()) if not sane.empty else 0.0
+        contrib_alto = float(esc["contrib"].sum()) if not esc.empty else 0.0
+        _d = pl.copy()
+        _d["mp_pct"] = _d["mp"] / _d["ingresos"] * 100
+        worst = _d.loc[_d["margen_neto_pct"].astype(float).idxmin()]
+        target_mp = float(_d["mp_pct"].min())
+        gap_worst = (float(worst["mp_pct"]) - target_mp) / 100.0 * float(worst["ingresos"])
+
+        st.markdown("#### Las 3 palancas de mayor impacto")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            with st.container(border=True):
+                st.markdown("**1 · Costo de materia prima** 🥇")
+                st.metric("Impacto de bajar 1% la MP", f"+{mp_tot*0.01/1e6:,.0f} M", f"≈ {mp_tot*0.01/max(res_tot,1)*100:,.0f}% del resultado")
+                st.caption(f"La MP es {mp_tot/ing_tot*100:,.0f}% del ingreso. Negociar/cubrir compra y mejorar **rendimiento de transformación** "
+                           "(menos merma kg). Cada punto de MP mueve casi 1:1 el resultado.")
+        with c2:
+            with st.container(border=True):
+                st.markdown("**2 · Sanear segmentos negativos** 🔴")
+                st.metric("Valor que se está perdiendo", f"{recup/1e6:,.0f} M", f"en {len(sane)} segmentos · {recup*_anu/1e6:,.0f} M/año")
+                st.caption("Reprecificar, bajar costo o discontinuar: " + (", ".join(sane["sector"].tolist()) if not sane.empty else "—") + ".")
+        with c3:
+            with st.container(border=True):
+                st.markdown("**3 · Escalar servicios de alto margen** 🟢")
+                st.metric("Upside por +10% de volumen", f"+{contrib_alto*0.10/1e6:,.0f} M", f"base {contrib_alto/1e6:,.0f} M de contribución")
+                st.caption("Núcleo de valor (margen ≥40%): " + (", ".join(esc["sector"].tolist()) if not esc.empty else "—") + ". Poca inversión, alto retorno.")
+
+        st.divider()
+        st.markdown("#### 🧮 Simulador de sensibilidad")
+        st.caption("Proyección sobre el período cargado (manteniendo precios de venta). Probá una decisión y mirá el resultado.")
+        sc1, sc2 = st.columns(2)
+        dmp = sc1.slider("Variación del precio de compra de MP (%)", -10.0, 10.0, 0.0, 0.5, key="sim_mp")
+        dvol = sc2.slider("Variación de volumen de ventas (%)", -20.0, 20.0, 0.0, 1.0, key="sim_vol")
+        nuevo_ing = ing_tot * (1 + dvol/100)
+        nuevo_mp = mp_tot * (1 + dvol/100) * (1 + dmp/100)
+        nuevo_res = nuevo_ing - nuevo_mp - otros_var * (1 + dvol/100) - fijo_tot
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Resultado base (período)", f"{base_op/1e6:,.0f} M")
+        m2.metric("Resultado proyectado", f"{nuevo_res/1e6:,.0f} M", f"{(nuevo_res-base_op)/1e6:+,.0f} M")
+        m3.metric("Margen proyectado", f"{(nuevo_res/nuevo_ing*100 if nuevo_ing else 0):.1f}%",
+                  f"{(nuevo_res/nuevo_ing*100 - base_op/ing_tot*100):+.1f} pts")
+        if nuevo_res < 0:
+            st.error("⚠️ Con esos parámetros el período da **pérdida**. La empresa no resiste una suba grande de MP sin compensar con volumen o precio.")
+        elif dmp != 0 or dvol != 0:
+            st.success(f"Con MP {dmp:+.1f}% y volumen {dvol:+.1f}%, el resultado del período pasa a **{nuevo_res/1e6:,.0f} M**.")
+
+        st.divider()
+        st.markdown("#### 🔎 Diagnóstico del mes más flojo")
+        st.info(f"El peor mes fue **{worst['mes']}** (margen {float(worst['margen_neto_pct']):.1f}%): la MP se llevó "
+                f"**{float(worst['mp_pct']):.0f}%** del ingreso, contra **{target_mp:.0f}%** del mejor mes. "
+                f"Si ese mes hubiera comprado MP al mejor ratio, el resultado habría sido ~**+{gap_worst/1e6:,.0f} M** mejor. "
+                "**Acción:** disciplina de procurement y monitoreo del ratio MP/ingreso mensual (alerta si supera el target).")
+
+        st.markdown("#### 📋 Plan priorizado")
+        _plan = pd.DataFrame({
+            "Prioridad": ["P0", "P0", "P1", "P1", "P2"],
+            "Acción": [
+                "Bajar costo de MP (negociación + cobertura + rendimiento)",
+                "Sanear segmentos negativos (" + (", ".join(sane["sector"].tolist()) if not sane.empty else "—") + ")",
+                "Escalar PILETAS y disposición de líquidos (alto margen)",
+                "Asignar overhead a segmentos (margen fully-loaded real)",
+                "Reclasificar gastos sin tipo y prorratear capex"],
+            "Impacto estimado (M/año)": [
+                round(mp_tot*0.01*_anu/1e6), round(recup*_anu/1e6),
+                round(contrib_alto*0.10*_anu/1e6), 0, 0]})
+        st.dataframe(_plan, hide_index=True, use_container_width=True)
+        st.caption("Impactos anualizados a partir de los " + str(_n) + " meses cargados. Se recalcula al sumar nuevos cierres.")
 
     # ============ 7 · Pesos constantes (IPC) ============
     with t7:
