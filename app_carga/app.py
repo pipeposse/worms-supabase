@@ -3629,7 +3629,7 @@ if st.session_state.section != "CARGAS":
             st.markdown("#### 🚛 Ingresos de camiones (portería)")
             _porteria_entrada_diaria(cat)
         else:
-            st.markdown("#### 🛢️ Tanques · stock y parámetros (consulta)")
+            st.markdown("#### 🛢️ Tanques · vista de planta")
             try:
                 _tq = cat("SELECT t.codigo AS \"Codigo\", t.nombre AS \"Tanque\", t.sector AS \"Sector\", "
                           "p.codigo_producto AS \"Producto\", COALESCE(s.litros_actual,0) AS \"Stock L\", "
@@ -3647,38 +3647,109 @@ if st.session_state.section != "CARGAS":
                 if _tq is None or _tq.empty:
                     st.info("Sin tanques cargados.")
                 else:
-                    import pandas as _pd
-                    _stock_tn = _pd.to_numeric(_tq["Stock L"], errors="coerce").sum()/1000.0
-                    _cap_tn = _pd.to_numeric(_tq["Capacidad L"], errors="coerce").sum()/1000.0
-                    _km1, _km2, _km3, _km4 = st.columns(4)
-                    _km1.metric("Tanques", len(_tq))
-                    _km2.metric("Stock total", f"{_stock_tn:,.1f} TN")
-                    _km3.metric("Capacidad total", f"{_cap_tn:,.0f} TN")
-                    _km4.metric("Ocupación media", f"{(_stock_tn/_cap_tn*100 if _cap_tn else 0):.0f}%")
-                    fc1, fc2, fc3, fc4 = st.columns([1.3, 1.3, 1.6, 1])
+                    import pandas as _pd, html as _html
+                    _tq = _tq.copy()
+                    for _c in ["Stock L","Capacidad L","Disponible L","Ocupacion","Acidez","Agua","Sedim","Azufre ppm","Fosforo ppm"]:
+                        _tq[_c] = _pd.to_numeric(_tq[_c], errors="coerce")
+                    # paleta estable por producto
+                    _pal = ["#4f46e5","#0ea5e9","#16a34a","#f59e0b","#db2777","#7c3aed","#0891b2","#65a30d",
+                            "#dc2626","#ca8a04","#2563eb","#9333ea","#059669","#e11d48","#0d9488","#92400e"]
+                    _prod_all = sorted([x for x in _tq["Producto"].dropna().unique().tolist()])
+                    _color = {p: _pal[i % len(_pal)] for i, p in enumerate(_prod_all)}
+                    # filtros
+                    fc1, fc2, fc3 = st.columns([1.4, 2, 1.2])
                     _secs = ["(todos)"] + sorted([x for x in _tq["Sector"].dropna().unique().tolist()])
                     _ssel = fc1.selectbox("Sector", _secs, key="ip_tq_sec")
-                    _prods = ["(todos)"] + sorted([x for x in _tq["Producto"].dropna().unique().tolist()])
-                    _psel = fc2.selectbox("Producto", _prods, key="ip_tq_prod")
-                    _q = fc3.text_input("Buscar tanque / código", key="ip_tq_q")
-                    _verp = fc4.toggle("Ver parámetros", value=True, key="ip_tq_params")
+                    _psel = fc2.multiselect("Producto", _prod_all, default=[], key="ip_tq_prod",
+                                            help="Vacío = todos")
+                    _q = fc3.text_input("Buscar tanque", key="ip_tq_q")
+                    cc1, cc2 = st.columns([1, 1])
+                    _vista = cc1.radio("Vista", ["🎨 Gráfico", "📋 Tabla"], horizontal=True, key="ip_tq_vista", label_visibility="collapsed")
+                    _verp = cc2.toggle("Ver parámetros", value=True, key="ip_tq_params")
                     _tv = _tq.copy()
                     if _ssel != "(todos)": _tv = _tv[_tv["Sector"] == _ssel]
-                    if _psel != "(todos)": _tv = _tv[_tv["Producto"] == _psel]
+                    if _psel: _tv = _tv[_tv["Producto"].isin(_psel)]
                     if _q.strip():
                         _ql = _q.strip().lower()
                         _tv = _tv[_tv["Tanque"].astype(str).str.lower().str.contains(_ql) | _tv["Codigo"].astype(str).str.lower().str.contains(_ql)]
-                    _cols = ["Codigo","Tanque","Sector","Producto","Stock L","Capacidad L","Disponible L","Ocupacion","Ult. lab"]
-                    if _verp:
-                        _cols += ["Acidez","Agua","Sedim","Azufre ppm","Fosforo ppm"]
-                    st.dataframe(_tv[_cols], hide_index=True, use_container_width=True, height=520,
-                                 column_config={
-                                     "Stock L": st.column_config.NumberColumn(format="%.0f"),
-                                     "Capacidad L": st.column_config.NumberColumn(format="%.0f"),
-                                     "Disponible L": st.column_config.NumberColumn(format="%.0f"),
-                                     "Ocupacion": st.column_config.ProgressColumn("Ocupación", format="%.0f%%", min_value=0, max_value=100)})
-                    st.download_button("⬇️ CSV", _tv.to_csv(index=False).encode("utf-8"),
-                                       file_name="tanques_stock.csv", mime="text/csv", key="ip_tq_dl")
+                    # resumen que se actualiza por filtro
+                    _sk = _tv["Stock L"].sum()/1000.0; _ck = _tv["Capacidad L"].sum()/1000.0
+                    k1,k2,k3,k4 = st.columns(4)
+                    k1.metric("Tanques", len(_tv))
+                    k2.metric("Stock", f"{_sk:,.1f} kL")
+                    k3.metric("Capacidad", f"{_ck:,.0f} kL")
+                    k4.metric("Ocupación media", f"{(_sk/_ck*100 if _ck else 0):.0f}%")
+                    def _chips(series_df, by, color_by_prod):
+                        g = series_df.groupby(by)["Stock L"].sum().sort_values(ascending=False)
+                        out = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 8px">'
+                        for name, val in g.items():
+                            col = _color.get(name, "#64748b") if color_by_prod else "#334155"
+                            out += (f'<span style="display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #e2e8f0;'
+                                    f'border-radius:999px;padding:3px 10px;font-size:.82rem">'
+                                    f'<span style="width:10px;height:10px;border-radius:50%;background:{col}"></span>'
+                                    f'<b>{_html.escape(str(name))}</b> {val/1000:,.1f} kL</span>')
+                        return out + '</div>'
+                    st.markdown("**Stock por producto** (según filtro)")
+                    st.markdown(_chips(_tv, "Producto", True), unsafe_allow_html=True)
+                    st.markdown("**Stock por sector** (según filtro)")
+                    st.markdown(_chips(_tv, "Sector", False), unsafe_allow_html=True)
+
+                    if _vista.startswith("📋"):
+                        _cols = ["Codigo","Tanque","Sector","Producto","Stock L","Capacidad L","Disponible L","Ocupacion","Ult. lab"]
+                        if _verp: _cols += ["Acidez","Agua","Sedim","Azufre ppm","Fosforo ppm"]
+                        st.dataframe(_tv[_cols], hide_index=True, use_container_width=True, height=520,
+                                     column_config={"Stock L": st.column_config.NumberColumn(format="%.0f"),
+                                                    "Capacidad L": st.column_config.NumberColumn(format="%.0f"),
+                                                    "Disponible L": st.column_config.NumberColumn(format="%.0f"),
+                                                    "Ocupacion": st.column_config.ProgressColumn("Ocupación", format="%.0f%%", min_value=0, max_value=100)})
+                        st.download_button("⬇️ CSV", _tv.to_csv(index=False).encode("utf-8"), file_name="tanques_stock.csv", mime="text/csv", key="ip_tq_dl")
+                    else:
+                        _css = """<style>
+                        .tkwrap{display:flex;flex-wrap:wrap;gap:14px;margin:6px 0 18px}
+                        .tkc{width:128px}
+                        .tkbody{position:relative;height:118px;border:2px solid #cbd5e1;border-radius:9px 9px 16px 16px;
+                          overflow:hidden;background:repeating-linear-gradient(0deg,#f8fafc,#f8fafc 9px,#eef2f7 9px,#eef2f7 18px)}
+                        .tkfill{position:absolute;left:0;right:0;bottom:0;transition:height .3s;
+                          box-shadow:inset 0 3px 6px rgba(255,255,255,.4)}
+                        .tkpct{position:absolute;top:5px;left:0;right:0;text-align:center;font-size:.82rem;font-weight:800;
+                          color:#0f172a;text-shadow:0 1px 2px #fff}
+                        .tkn{font-weight:700;font-size:.84rem;margin-top:5px;line-height:1.1}
+                        .tks{font-size:.72rem;color:#475569;display:flex;align-items:center;gap:5px}
+                        .tkdot{width:9px;height:9px;border-radius:50%;display:inline-block;flex:none}
+                        .tkv{font-size:.7rem;color:#64748b;margin-top:1px}
+                        .tkp{font-size:.66rem;color:#334155;margin-top:3px;background:#f1f5f9;border-radius:6px;padding:2px 5px}
+                        .sech{font-weight:800;font-size:1rem;margin:14px 0 2px;padding:4px 10px;border-left:5px solid #4f46e5;background:#eef1fe;border-radius:0 8px 8px 0}
+                        </style>"""
+                        def _fnum(v, suf="", dec=1):
+                            return "—" if _pd.isna(v) else (f"{v:,.{dec}f}{suf}")
+                        html_out = _css
+                        _secs_list = [x for x in _tv["Sector"].fillna("(sin sector)").unique().tolist()]
+                        for sec in sorted(_secs_list):
+                            _sub = _tv[_tv["Sector"].fillna("(sin sector)") == sec]
+                            html_out += f'<div class="sech">{_html.escape(str(sec))} · {len(_sub)} tanques · {_sub["Stock L"].sum()/1000:,.1f} kL</div>'
+                            html_out += '<div class="tkwrap">'
+                            for _, r in _sub.iterrows():
+                                prod = r["Producto"] if _pd.notna(r["Producto"]) else "—"
+                                col = _color.get(prod, "#94a3b8")
+                                oc = 0 if _pd.isna(r["Ocupacion"]) else float(r["Ocupacion"])
+                                libre = max(0, 100 - oc)
+                                grad = f"linear-gradient(180deg,{col}cc,{col})"
+                                params = ""
+                                if _verp:
+                                    params = (f'<div class="tkp">Ac {_fnum(r["Acidez"],"%")} · Ag {_fnum(r["Agua"],"%")} · '
+                                              f'Az {_fnum(r["Azufre ppm"],"",0)} · P {_fnum(r["Fosforo ppm"],"",0)}</div>')
+                                html_out += (
+                                    f'<div class="tkc">'
+                                    f'<div class="tkbody"><div class="tkfill" style="height:{oc:.0f}%;background:{grad}"></div>'
+                                    f'<div class="tkpct">{oc:.0f}%</div></div>'
+                                    f'<div class="tkn">{_html.escape(str(r["Tanque"]))}</div>'
+                                    f'<div class="tks"><span class="tkdot" style="background:{col}"></span>{_html.escape(str(prod))}</div>'
+                                    f'<div class="tkv">{r["Stock L"]/1000:,.1f} / {r["Capacidad L"]/1000:,.0f} kL · libre {libre:.0f}%</div>'
+                                    f'{params}</div>')
+                            html_out += '</div>'
+                        st.markdown(html_out, unsafe_allow_html=True)
+                        st.caption("Cada tanque muestra su **nivel de llenado** (color por producto), ocupación %, stock/capacidad y % libre. "
+                                   "Filtrá por sector o producto y el resumen de arriba se actualiza.")
             except Exception as _e:
                 st.exception(_e)
 
