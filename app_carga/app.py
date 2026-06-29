@@ -234,14 +234,14 @@ SECCIONES_APP = [
     ("LAB", "🧪 Laboratorio"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"),
     ("ESTADO", "📈 Estado de planta"),
     ("PLANIFICACION", "🗓️ Centro de Planificación"), ("CONDICIONALES", "🧮 Condicionales"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
-    ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
+    ("CIERRES", "💰 Cierres mensuales"), ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
 ]
 
 
 def _secciones_default(rol):
     base = ["CARGAS", "INICIAR", "VISTAS", "LAB", "TANQUES", "STOCK", "ESTADO"]
     if rol in ("SUPERVISOR", "ADMIN"):
-        base += ["PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT"]
+        base += ["PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT", "CIERRES"]
     if rol == "ADMIN":
         base += ["DIRECCION", "ADMIN"]
     return base
@@ -351,6 +351,7 @@ if st.session_state.section is None:
     tiles.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
     tiles.append(("🧪", "Fórmulas", "Fórmulas con nombre por proceso/MP/producto: creá, editá y elegí la default que usa Planificación.", "FORMULAS", "land_formulas", False))
     tiles.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
+    tiles.append(("💰", "Cierres mensuales", "Rentabilidad: P&L mensual, dónde está el valor, márgenes por segmento, Q1 vs Q2, outliers e insights.", "CIERRES", "land_cierres", False))
     tiles.append(("🛂", "Dirección", "Aprobación de planificaciones fuera de norma (carga menor al 80% del equipo).", "DIRECCION", "land_direccion", False))
     tiles.append(("⚙️", "Admin", "Gestión de usuarios: alta, roles, sectores, reset PIN y accesos a la página.", "ADMIN", "land_admin", False))
     tiles = [t for t in tiles if puede_seccion(t[3])]
@@ -3558,6 +3559,16 @@ if st.session_state.section != "CARGAS":
             st.error(f"No se pudo cargar Estado de planta: {_e}")
             with st.expander("Detalle"):
                 st.code(_tbe.format_exc())
+
+    elif st.session_state.section == "CIERRES":
+        try:
+            from cierres_section import render as _render_cierres
+            _render_cierres(USR, cat, conectar)
+        except Exception as _e:
+            import traceback as _tbc2
+            st.error(f"No se pudo cargar Cierres mensuales: {_e}")
+            with st.expander("Detalle"):
+                st.code(_tbc2.format_exc())
 
     elif st.session_state.section == "INICIAR":
         # =================== INICIAR PRODUCCIÓN (operario, por ID planificado) ===================
