@@ -3571,12 +3571,66 @@ if st.session_state.section != "CARGAS":
                 st.code(_tbc2.format_exc())
 
     elif st.session_state.section == "INICIAR":
-        # =================== INICIAR PRODUCCIÓN (operario, por ID planificado) ===================
-        try:
-            from carga_por_id import render as _render_iniciar
-            _render_iniciar(USR, cat, conectar, etapas_de_proceso, params_proceso)
-        except Exception as _e:
-            st.error(f"No se pudo cargar Producción en planta: {_e}")
+        # =================== PRODUCCIÓN EN PLANTA ===================
+        _ip_view = st.radio("Vista", ["👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🛢️ Tanques"],
+                            horizontal=True, key="iniciar_view", label_visibility="collapsed")
+        if _ip_view.startswith("👷"):
+            try:
+                from carga_por_id import render as _render_iniciar
+                _render_iniciar(USR, cat, conectar, etapas_de_proceso, params_proceso)
+            except Exception as _e:
+                st.error(f"No se pudo cargar Producción en planta: {_e}")
+        elif _ip_view.startswith("🧪"):
+            st.markdown("#### 🧪 Evaluaciones de laboratorio (consulta)")
+            _lc1, _lc2 = st.columns([2, 1])
+            _lprod = _lc1.text_input("Filtrar producto / ticket contiene", key="ip_lab_q")
+            _llim = _lc2.number_input("Límite filas", 50, 5000, 300, step=50, key="ip_lab_lim")
+            _w = ""
+            _p = []
+            if _lprod.strip():
+                _w = "WHERE (producto_lab ILIKE %s OR ticket ILIKE %s OR calidad_final_lab ILIKE %s)"
+                _p = [f"%{_lprod.strip()}%"] * 3
+            try:
+                _ld = cat("SELECT fecha AS \"Fecha\", ticket AS \"Ticket\", producto_lab AS \"Producto\", "
+                          "calidad_final_lab AS \"Calidad\", rechazado AS \"Estado\", prc_acidez AS \"Acidez\", "
+                          "prc_agua AS \"Agua\", ppm_azufre AS \"Azufre ppm\", ppm_fosforo AS \"Fosforo ppm\", "
+                          "empleado AS \"Analista\" FROM produccion.v_procesos_lab_efectivo "
+                          + _w + " ORDER BY fecha DESC NULLS LAST LIMIT " + str(int(_llim)), tuple(_p) if _p else None)
+                if _ld is not None and not _ld.empty:
+                    st.dataframe(_ld, hide_index=True, use_container_width=True, height=520)
+                else:
+                    st.info("Sin evaluaciones para ese filtro.")
+            except Exception as _e:
+                st.exception(_e)
+        elif _ip_view.startswith("🚛"):
+            st.markdown("#### 🚛 Ingresos de camiones (portería)")
+            _porteria_entrada_diaria(cat)
+        else:
+            st.markdown("#### 🛢️ Tanques · stock y parámetros (consulta)")
+            try:
+                _tq = cat("SELECT t.codigo AS \"Codigo\", t.nombre AS \"Tanque\", t.sector AS \"Sector\", "
+                          "p.codigo_producto AS \"Producto\", COALESCE(s.litros_actual,0) AS \"Stock L\", "
+                          "t.capacidad_litros AS \"Capacidad L\", "
+                          "GREATEST(COALESCE(t.capacidad_litros,0)-COALESCE(s.litros_actual,0),0) AS \"Disponible L\", "
+                          "pp.acidez_pct AS \"Acidez\", pp.agua_pct AS \"Agua\", pp.sedimentos_pct AS \"Sedim\", "
+                          "pp.ppm_azufre AS \"Azufre ppm\", pp.ppm_fosforo AS \"Fosforo ppm\", "
+                          "pp.ultima_evaluacion_ts AS \"Ult. lab\" "
+                          "FROM produccion.dim_tanque t "
+                          "LEFT JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
+                          "LEFT JOIN produccion.vw_stock_tanque_actual s ON s.id_tanque=t.id_tanque "
+                          "LEFT JOIN produccion.fact_param_tanque pp ON pp.id_tanque=t.id_tanque AND pp.id_producto=t.id_producto_principal "
+                          "WHERE COALESCE(t.activo,true) ORDER BY t.sector, t.nombre")
+                if _tq is not None and not _tq.empty:
+                    _secs = ["(todos)"] + sorted([x for x in _tq["Sector"].dropna().unique().tolist()])
+                    _ssel = st.selectbox("Sector", _secs, key="ip_tq_sec")
+                    _tv = _tq if _ssel == "(todos)" else _tq[_tq["Sector"] == _ssel]
+                    st.dataframe(_tv, hide_index=True, use_container_width=True, height=520,
+                                 column_config={c: st.column_config.NumberColumn(format="%.0f")
+                                                for c in ["Stock L", "Capacidad L", "Disponible L"]})
+                else:
+                    st.info("Sin tanques cargados.")
+            except Exception as _e:
+                st.exception(_e)
 
     elif st.session_state.section == "PLANIFICACION":
         # =================== CENTRO DE PLANIFICACIÓN (dirección) ===================
