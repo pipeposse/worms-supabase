@@ -3583,21 +3583,44 @@ if st.session_state.section != "CARGAS":
         elif _ip_view.startswith("🧪"):
             st.markdown("#### 🧪 Evaluaciones de laboratorio (consulta)")
             _lc1, _lc2 = st.columns([2, 1])
-            _lprod = _lc1.text_input("Filtrar producto / ticket contiene", key="ip_lab_q")
+            _lprod = _lc1.text_input("Filtrar producto / ticket / calidad contiene", key="ip_lab_q")
             _llim = _lc2.number_input("Límite filas", 50, 5000, 300, step=50, key="ip_lab_lim")
             _w = ""
             _p = []
             if _lprod.strip():
                 _w = "WHERE (producto_lab ILIKE %s OR ticket ILIKE %s OR calidad_final_lab ILIKE %s)"
                 _p = [f"%{_lprod.strip()}%"] * 3
+            _base = "SELECT * FROM produccion.v_procesos_lab_efectivo " + _w + " ORDER BY fecha DESC NULLS LAST LIMIT " + str(int(_llim))
+            _sql = ("SELECT pl.fecha AS \"Fecha\", pl.ticket AS \"Ticket\", "
+                    "CASE WHEN tx.transaccion IS NOT NULL THEN '🚛 Portería' "
+                    "WHEN bp.id_batch IS NOT NULL THEN '🏭 Producción' ELSE '— otro' END AS \"Origen\", "
+                    "COALESCE(bp.identificador_unidad,'') AS \"Reacción\", "
+                    "pl.producto_lab AS \"Producto\", pl.calidad_final_lab AS \"Calidad\", pl.rechazado AS \"Estado\", "
+                    "tx.cliente AS \"Proveedor\", tx.procedencia AS \"Procedencia\", "
+                    "COALESCE(NULLIF(pl.patente_chasis,''), tx.patente_chasis) AS \"Patente\", "
+                    "pl.num_cisterna AS \"Cisterna\", "
+                    "pl.prc_acidez AS \"Acidez\", pl.prc_agua AS \"Agua\", pl.prc_sedimentos AS \"Sedim\", "
+                    "pl.ppm_azufre AS \"Azufre ppm\", pl.ppm_fosforo AS \"Fosforo ppm\", pl.empleado AS \"Analista\" "
+                    "FROM (" + _base + ") pl "
+                    "LEFT JOIN LATERAL (SELECT cliente, procedencia, patente_chasis, transaccion "
+                    "FROM produccion.v_transacciones_limpias WHERE CAST(transaccion AS text)=regexp_replace(pl.ticket,'\\.0+$','') "
+                    "ORDER BY fecha_entrada DESC NULLS LAST LIMIT 1) tx ON true "
+                    "LEFT JOIN LATERAL (SELECT id_batch, identificador_unidad FROM produccion.fact_batch_proceso "
+                    "WHERE ticket_producto_final=pl.ticket OR ticket_validacion_lab=pl.ticket LIMIT 1) bp ON true "
+                    "ORDER BY pl.fecha DESC NULLS LAST")
             try:
-                _ld = cat("SELECT fecha AS \"Fecha\", ticket AS \"Ticket\", producto_lab AS \"Producto\", "
-                          "calidad_final_lab AS \"Calidad\", rechazado AS \"Estado\", prc_acidez AS \"Acidez\", "
-                          "prc_agua AS \"Agua\", ppm_azufre AS \"Azufre ppm\", ppm_fosforo AS \"Fosforo ppm\", "
-                          "empleado AS \"Analista\" FROM produccion.v_procesos_lab_efectivo "
-                          + _w + " ORDER BY fecha DESC NULLS LAST LIMIT " + str(int(_llim)), tuple(_p) if _p else None)
+                _ld = cat(_sql, tuple(_p) if _p else None)
                 if _ld is not None and not _ld.empty:
-                    st.dataframe(_ld, hide_index=True, use_container_width=True, height=520)
+                    _oc1, _oc2, _oc3 = st.columns(3)
+                    _oc1.metric("Evaluaciones", len(_ld))
+                    _oc2.metric("De portería", int((_ld["Origen"].astype(str).str.contains("Portería")).sum()))
+                    _oc3.metric("De producción", int((_ld["Origen"].astype(str).str.contains("Producción")).sum()))
+                    _orig = st.multiselect("Origen", sorted(_ld["Origen"].dropna().unique().tolist()),
+                                           default=sorted(_ld["Origen"].dropna().unique().tolist()), key="ip_lab_orig")
+                    _lv = _ld[_ld["Origen"].isin(_orig)] if _orig else _ld
+                    st.dataframe(_lv, hide_index=True, use_container_width=True, height=520)
+                    st.download_button("⬇️ CSV", _lv.to_csv(index=False).encode("utf-8"),
+                                       file_name="evaluaciones_lab.csv", mime="text/csv", key="ip_lab_dl")
                 else:
                     st.info("Sin evaluaciones para ese filtro.")
             except Exception as _e:
@@ -3612,6 +3635,7 @@ if st.session_state.section != "CARGAS":
                           "p.codigo_producto AS \"Producto\", COALESCE(s.litros_actual,0) AS \"Stock L\", "
                           "t.capacidad_litros AS \"Capacidad L\", "
                           "GREATEST(COALESCE(t.capacidad_litros,0)-COALESCE(s.litros_actual,0),0) AS \"Disponible L\", "
+                          "LEAST(round((COALESCE(s.litros_actual,0)/NULLIF(t.capacidad_litros,0)*100)::numeric,0),100) AS \"Ocupacion\", "
                           "pp.acidez_pct AS \"Acidez\", pp.agua_pct AS \"Agua\", pp.sedimentos_pct AS \"Sedim\", "
                           "pp.ppm_azufre AS \"Azufre ppm\", pp.ppm_fosforo AS \"Fosforo ppm\", "
                           "pp.ultima_evaluacion_ts AS \"Ult. lab\" "
@@ -3620,15 +3644,41 @@ if st.session_state.section != "CARGAS":
                           "LEFT JOIN produccion.vw_stock_tanque_actual s ON s.id_tanque=t.id_tanque "
                           "LEFT JOIN produccion.fact_param_tanque pp ON pp.id_tanque=t.id_tanque AND pp.id_producto=t.id_producto_principal "
                           "WHERE COALESCE(t.activo,true) ORDER BY t.sector, t.nombre")
-                if _tq is not None and not _tq.empty:
-                    _secs = ["(todos)"] + sorted([x for x in _tq["Sector"].dropna().unique().tolist()])
-                    _ssel = st.selectbox("Sector", _secs, key="ip_tq_sec")
-                    _tv = _tq if _ssel == "(todos)" else _tq[_tq["Sector"] == _ssel]
-                    st.dataframe(_tv, hide_index=True, use_container_width=True, height=520,
-                                 column_config={c: st.column_config.NumberColumn(format="%.0f")
-                                                for c in ["Stock L", "Capacidad L", "Disponible L"]})
-                else:
+                if _tq is None or _tq.empty:
                     st.info("Sin tanques cargados.")
+                else:
+                    import pandas as _pd
+                    _stock_tn = _pd.to_numeric(_tq["Stock L"], errors="coerce").sum()/1000.0
+                    _cap_tn = _pd.to_numeric(_tq["Capacidad L"], errors="coerce").sum()/1000.0
+                    _km1, _km2, _km3, _km4 = st.columns(4)
+                    _km1.metric("Tanques", len(_tq))
+                    _km2.metric("Stock total", f"{_stock_tn:,.1f} TN")
+                    _km3.metric("Capacidad total", f"{_cap_tn:,.0f} TN")
+                    _km4.metric("Ocupación media", f"{(_stock_tn/_cap_tn*100 if _cap_tn else 0):.0f}%")
+                    fc1, fc2, fc3, fc4 = st.columns([1.3, 1.3, 1.6, 1])
+                    _secs = ["(todos)"] + sorted([x for x in _tq["Sector"].dropna().unique().tolist()])
+                    _ssel = fc1.selectbox("Sector", _secs, key="ip_tq_sec")
+                    _prods = ["(todos)"] + sorted([x for x in _tq["Producto"].dropna().unique().tolist()])
+                    _psel = fc2.selectbox("Producto", _prods, key="ip_tq_prod")
+                    _q = fc3.text_input("Buscar tanque / código", key="ip_tq_q")
+                    _verp = fc4.toggle("Ver parámetros", value=True, key="ip_tq_params")
+                    _tv = _tq.copy()
+                    if _ssel != "(todos)": _tv = _tv[_tv["Sector"] == _ssel]
+                    if _psel != "(todos)": _tv = _tv[_tv["Producto"] == _psel]
+                    if _q.strip():
+                        _ql = _q.strip().lower()
+                        _tv = _tv[_tv["Tanque"].astype(str).str.lower().str.contains(_ql) | _tv["Codigo"].astype(str).str.lower().str.contains(_ql)]
+                    _cols = ["Codigo","Tanque","Sector","Producto","Stock L","Capacidad L","Disponible L","Ocupacion","Ult. lab"]
+                    if _verp:
+                        _cols += ["Acidez","Agua","Sedim","Azufre ppm","Fosforo ppm"]
+                    st.dataframe(_tv[_cols], hide_index=True, use_container_width=True, height=520,
+                                 column_config={
+                                     "Stock L": st.column_config.NumberColumn(format="%.0f"),
+                                     "Capacidad L": st.column_config.NumberColumn(format="%.0f"),
+                                     "Disponible L": st.column_config.NumberColumn(format="%.0f"),
+                                     "Ocupacion": st.column_config.ProgressColumn("Ocupación", format="%.0f%%", min_value=0, max_value=100)})
+                    st.download_button("⬇️ CSV", _tv.to_csv(index=False).encode("utf-8"),
+                                       file_name="tanques_stock.csv", mime="text/csv", key="ip_tq_dl")
             except Exception as _e:
                 st.exception(_e)
 
