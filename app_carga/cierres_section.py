@@ -112,22 +112,39 @@ def render(USR, cat, conectar):
                          hide_index=True, use_container_width=True)
             st.caption("⚠️ Q2 está **incompleto** (faltan datos de junio). La comparación se completa al cerrar el mes.")
 
-    # ============ 4 · Precios MP vs venta ============
+    # ============ 4 · Rentabilidad venta vs compra de MP (mensual, USD) ============
     with t4:
-        st.subheader("Spread: precio de venta vs costo de materia prima (por producto)")
-        st.caption("Donde el precio de venta del producto supera el costo de la MP comprada, hay margen. "
-                   "Promedio del período (ARS por unidad).")
-        sp = cat(f"SELECT producto_lbl AS producto, round(avg(precio_venta),0) venta, round(avg(precio_compra),0) compra, "
-                 f"round(avg(spread_unit),0) spread, round(avg(spread_pct),0) spread_pct "
-                 f"FROM {S}.v_precio_spread WHERE precio_venta IS NOT NULL AND precio_compra IS NOT NULL "
-                 f"GROUP BY producto_lbl ORDER BY spread_pct DESC NULLS LAST")
-        if sp is not None and not sp.empty:
-            st.dataframe(sp.rename(columns={"producto":"Producto","venta":"Venta ARS/u","compra":"Compra MP ARS/u",
-                                            "spread":"Spread ARS/u","spread_pct":"Spread %"}),
-                         hide_index=True, use_container_width=True)
+        st.subheader("Rentabilidad: precio de venta vs precio de compra de MP")
+        st.caption("Por producto, en **USD/TN** (lo comparable), con **evaluación mensual**. "
+                   "⚠️ Para productos que se **transforman** (AG/AFE → ARE), la venta de acá es **transferencia interna**, "
+                   "no la exportación final: el margen real del transformado se realiza al exportar el ARE.")
+        rv = cat(f"SELECT to_char(mes,'YYYY-MM') mes, producto, venta_usd, compra_usd, spread_usd, spread_pct, q_vend, q_comp "
+                 f"FROM {S}.v_rentabilidad_venta_compra ORDER BY mes, producto")
+        if rv is None or rv.empty:
+            st.info("Sin productos emparejables entre venta y compra.")
         else:
-            st.info("No hay productos con precio de venta y de compra emparejables por nombre (los rótulos difieren entre gastos e ingresos). "
-                    "Se puede mejorar normalizando el catálogo de productos.")
+            res = cat(f"SELECT producto, venta_usd_prom, compra_usd_prom, spread_usd_prom, spread_pct_prom, meses "
+                      f"FROM {S}.v_rentabilidad_venta_compra_resumen ORDER BY spread_usd_prom DESC NULLS LAST")
+            st.markdown("**Resumen del período (USD/TN, promedio)**")
+            st.dataframe(res.rename(columns={"producto":"Producto","venta_usd_prom":"Venta USD/TN","compra_usd_prom":"Compra USD/TN",
+                                             "spread_usd_prom":"Spread USD/TN","spread_pct_prom":"Spread %","meses":"Meses"}),
+                         hide_index=True, use_container_width=True)
+            _prods = sorted(rv["producto"].dropna().unique().tolist())
+            _sel = st.multiselect("Productos (evolución mensual del spread)", _prods, default=_prods[:6], key="rv_sel")
+            _f = rv[rv["producto"].isin(_sel)] if _sel else rv
+            try:
+                _piv = _f.pivot_table(index="mes", columns="producto", values="spread_usd", aggfunc="mean")
+                st.markdown("**Spread mensual (USD/TN) = venta − compra**")
+                st.line_chart(_piv, use_container_width=True)
+            except Exception:
+                pass
+            st.dataframe(_f.rename(columns={"mes":"Mes","producto":"Producto","venta_usd":"Venta USD/TN","compra_usd":"Compra USD/TN",
+                                            "spread_usd":"Spread USD/TN","spread_pct":"Spread %","q_vend":"TN vend.","q_comp":"TN comp."}),
+                         hide_index=True, use_container_width=True)
+            st.info("**Lectura:** AG‑E deja **+11%** (compra 909 / vende 1.008). AG‑C / AG‑D / AG‑B dan negativo porque son "
+                    "**insumos intermedios** que se transfieren internamente por debajo de su costo y luego se transforman en ARE para exportar "
+                    "(ahí se realiza el margen). El resultado del negocio oleoquímico depende del **rendimiento de transformación** y del **tipo de cambio**, "
+                    "no de un arbitraje directo compra-venta del mismo producto.")
 
     # ============ 5 · Observaciones / outliers ============
     with t5:
