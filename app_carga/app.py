@@ -3485,17 +3485,19 @@ if st.session_state.section != "CARGAS":
             with st.form(f"form_secc_{u_id}"):
                 _df_sa = cat("SELECT secciones_app FROM produccion.dim_usuario WHERE id_usuario=%s", (u_id,))
                 _sa_act = list(_df_sa.iloc[0]["secciones_app"]) if (not _df_sa.empty and _df_sa.iloc[0]["secciones_app"]) else None
-                _usa_def = st.checkbox(
-                    "Usar el default del rol", value=(_sa_act is None), key=f"sadef_{u_id}",
-                    help=f"Default {u_row['rol']}: " + ", ".join(_secciones_default(u_row["rol"])))
+                st.caption("**Vacío = usa el default del rol** (" + ", ".join(_secciones_default(u_row["rol"])) + "). "
+                           "Elegí una o más secciones para **restringir** exactamente a esas. "
+                           "Si dejás **una sola**, el usuario entra directo a esa sección y no puede salir.")
                 _sa_sel = st.multiselect(
-                    "Secciones permitidas (si NO usás el default)",
+                    "Secciones permitidas",
                     [sc for sc, _ in SECCIONES_APP],
-                    default=(_sa_act or _secciones_default(u_row["rol"])),
+                    default=(_sa_act or []),
                     format_func=lambda sc: dict(SECCIONES_APP)[sc], key=f"sasel_{u_id}")
+                _estado_sa = ("✅ Restringido a: " + ", ".join(dict(SECCIONES_APP)[x] for x in _sa_sel)) if _sa_sel else "↩️ Usará el default del rol"
+                st.caption(_estado_sa)
                 if st.form_submit_button("💾 Guardar accesos", use_container_width=True):
                     try:
-                        cambiar_secciones_app(USR["id_usuario"], u_id, (None if _usa_def else _sa_sel))
+                        cambiar_secciones_app(USR["id_usuario"], u_id, (_sa_sel or None))
                         st.success("Accesos actualizados. Aplican en el próximo ingreso del usuario.")
                         cat.clear(); st.rerun()
                     except Exception as e:
