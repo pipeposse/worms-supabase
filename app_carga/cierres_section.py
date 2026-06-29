@@ -34,9 +34,10 @@ def render(USR, cat, conectar):
         st.error("No hay datos de cierres cargados.")
         return
 
-    t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs(
-        ["📊 Resumen P&L", "🧭 Dónde está el valor", "📈 Evolución / Q1·Q2",
-         "💱 Precios MP vs venta", "⚠️ Observaciones", "💡 Insights", "💵 Pesos constantes", "🛢️ Precios MP"])
+    t1, t9, t10, t2, t3, t4, t5, t6, t7, t8 = st.tabs(
+        ["📊 Resumen P&L", "🔑 Claves de rentabilidad", "🥧 Composición", "🧭 Dónde está el valor",
+         "📈 Evolución / Q1·Q2", "💱 Precios MP vs venta", "⚠️ Observaciones", "💡 Insights",
+         "💵 Pesos constantes", "🛢️ Precios MP"])
 
     # ============ 1 · Resumen P&L ============
     with t1:
@@ -256,3 +257,64 @@ def render(USR, cat, conectar):
             st.info("**Lectura:** los precios de MP están **estables en USD** (ej. AFE-S ~945 USD/TN constante). "
                     "Los saltos grandes en ARS son **monetarios** (inflación/devaluación), no estacionalidad real — "
                     "el índice estacional (≈1,0) lo confirma. Con más años se podrá estimar un patrón estacional formal.")
+
+    # ============ 9 · Claves de rentabilidad (bridge) ============
+    with t9:
+        st.subheader("¿Qué hace que un mes rinda más que otro?")
+        st.caption("El resultado operativo se descompone en tres palancas: **volumen** (cuánto se factura), "
+                   "**margen de contribución** (cuánto del ingreso queda tras la MP y los costos variables) y **costos fijos**.")
+        drv = cat(f"SELECT to_char(mes,'YYYY-MM') mes, mp_pct, var_pct, fijo_pct, mc_pct FROM {S}.v_pl_drivers ORDER BY mes")
+        if drv is not None and not drv.empty:
+            st.markdown("**Palancas por mes (% del ingreso)**")
+            st.dataframe(drv.rename(columns={"mes":"Mes","mp_pct":"MP % ing.","var_pct":"Costo var. % ing.",
+                                             "fijo_pct":"Costo fijo % ing.","mc_pct":"Margen contrib. %"}),
+                         hide_index=True, use_container_width=True)
+            st.line_chart(pd.DataFrame({"Mes":drv["mes"], "MP % del ingreso":drv["mp_pct"],
+                                        "Margen contrib. %":drv["mc_pct"]}).set_index("Mes"), use_container_width=True)
+        br = cat(f"SELECT to_char(mes,'YYYY-MM') mes, round(efecto_volumen/1e6,0) vol, round(efecto_margen/1e6,0) margen, "
+                 f"round(efecto_fijos/1e6,0) fijos, round(delta_resultado/1e6,0) total FROM {S}.v_pl_bridge ORDER BY mes")
+        if br is not None and not br.empty:
+            st.markdown("**Puente mes contra mes (M ARS): qué explicó el cambio de resultado**")
+            st.dataframe(br.rename(columns={"mes":"Mes (vs anterior)","vol":"Efecto volumen","margen":"Efecto margen",
+                                            "fijos":"Efecto costos fijos","total":"Δ Resultado"}),
+                         hide_index=True, use_container_width=True)
+            st.bar_chart(br.set_index("mes")[["vol","margen","fijos"]], use_container_width=True)
+        st.info("**La clave:** un mes rinde más cuando sube el **volumen** y/o baja el **% que se lleva la MP** (mejor margen de contribución). "
+                "El costo fijo pesa poco (3–7%). En estos datos **marzo** fue el peor: la MP trepó al **90,3% del ingreso** (margen de contribución 9,7%). "
+                "Palancas de mejora: **más volumen rentable** + **bajar MP/ingreso** (rendimiento de transformación, mix y precio de compra).")
+
+    # ============ 10 · Composicion ingreso/gasto ============
+    with t10:
+        import altair as alt
+        st.subheader("Composición de ingreso y gasto")
+        _mlist = cat(f"SELECT DISTINCT to_char(mes,'YYYY-MM') m FROM {S}.ingresos ORDER BY 1")
+        meses_op = _mlist["m"].tolist() if _mlist is not None else []
+        msel = st.selectbox("Mes", ["(todo el período)"] + meses_op, key="comp_mes")
+        _wmes = "" if msel == "(todo el período)" else f" AND to_char(mes,'YYYY-MM')='{msel}'"
+        _secs_df = cat(f"SELECT DISTINCT {S}.nseg(sector) s FROM {S}.ingresos WHERE sector IS NOT NULL ORDER BY 1")
+        secs = _secs_df["s"].tolist() if _secs_df is not None else []
+        ssel = st.multiselect("Sectores", secs, default=secs, key="comp_sec")
+        def _inlist(vals):
+            return ",".join("'" + str(x).replace("'", "''") + "'" for x in vals)
+        _wsec_i = "" if (not ssel or len(ssel) == len(secs)) else f" AND {S}.nseg(sector) IN ({_inlist(ssel)})"
+        _wsec_g = "" if (not ssel or len(ssel) == len(secs)) else f" AND {S}.nseg(sector_directo) IN ({_inlist(ssel)})"
+        c1, c2 = st.columns(2)
+        ing = cat(f"SELECT {S}.nseg(sector) sector, round(sum(total)/1e6,1) m FROM {S}.ingresos "
+                  f"WHERE sector IS NOT NULL{_wmes}{_wsec_i} GROUP BY 1 ORDER BY m DESC")
+        gas = cat(f"SELECT upper(btrim(rubro)) rubro, round(sum(monto)/1e6,1) m FROM {S}.gastos "
+                  f"WHERE rubro IS NOT NULL{_wmes}{_wsec_g} GROUP BY 1 ORDER BY m DESC")
+        with c1:
+            st.markdown("**Ingreso por sector**")
+            if ing is not None and not ing.empty:
+                st.altair_chart(alt.Chart(ing).mark_arc(innerRadius=55).encode(
+                    theta="m:Q", color=alt.Color("sector:N", title="Sector"), tooltip=["sector", "m"]),
+                    use_container_width=True)
+                st.dataframe(ing.rename(columns={"sector":"Sector","m":"M ARS"}), hide_index=True, use_container_width=True)
+        with c2:
+            st.markdown("**Gasto por rubro**")
+            if gas is not None and not gas.empty:
+                st.altair_chart(alt.Chart(gas).mark_arc(innerRadius=55).encode(
+                    theta="m:Q", color=alt.Color("rubro:N", title="Rubro"), tooltip=["rubro", "m"]),
+                    use_container_width=True)
+                st.dataframe(gas.rename(columns={"rubro":"Rubro","m":"M ARS"}), hide_index=True, use_container_width=True)
+        st.caption("Filtrá por **mes** y por **sector**. En el gasto, la **materia prima** domina la torta. Valores en millones de ARS.")
