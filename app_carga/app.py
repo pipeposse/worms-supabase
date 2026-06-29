@@ -231,7 +231,7 @@ USR = st.session_state.user
 # ---- Permisos por usuario sobre las secciones de la página ----
 SECCIONES_APP = [
     ("CARGAS", "🏭 Cargas"), ("INICIAR", "👷 Producción en planta"), ("VISTAS", "📊 Vistas de producción"),
-    ("LAB", "🧪 Laboratorio"), ("PORT", "🚛 Portería"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"),
+    ("LAB", "🧪 Laboratorio"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"),
     ("ESTADO", "📈 Estado de planta"),
     ("PLANIFICACION", "🗓️ Centro de Planificación"), ("CONDICIONALES", "🧮 Condicionales"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
     ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
@@ -239,7 +239,7 @@ SECCIONES_APP = [
 
 
 def _secciones_default(rol):
-    base = ["CARGAS", "INICIAR", "VISTAS", "LAB", "PORT", "TANQUES", "STOCK", "ESTADO"]
+    base = ["CARGAS", "INICIAR", "VISTAS", "LAB", "TANQUES", "STOCK", "ESTADO"]
     if rol in ("SUPERVISOR", "ADMIN"):
         base += ["PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT"]
     if rol == "ADMIN":
@@ -344,7 +344,6 @@ if st.session_state.section is None:
         ("👷", "Producción en planta", "Elegí una producción planificada por dirección y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
         ("📊", "Vistas de producción", "Producción, consumos y tiempos por sector + informe mensual (kg/L/TN).", "VISTAS", "land_vistas", True),
         ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
-        ("🚛", "Portería", "Pesajes de portería: filtros, peso por producto y descarga.", "PORT", "land_port", False),
         ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
         ("📦", "Stock", "Libro mayor de movimientos, stock estimado en tiempo real y conciliación. Todo descargable.", "STOCK", "land_stock", False),
         ("📈", "Estado de planta", "Tablero de reacciones, bandeja de laboratorio, trazabilidad de lote, mermas y alertas.", "ESTADO", "land_estado", False),
@@ -947,6 +946,433 @@ def K(cod, default=None):
     """Lookup de constante química."""
     r = constantes[constantes["codigo"]==cod]
     return float(r.iloc[0]["valor"]) if not r.empty else default
+def _render_porteria(USR, cat, conectar):
+        # =================== PORTERIA ===================
+        st.subheader("\U0001f69b Ingresos de camiones")
+        sub_dia, sub_hist, sub_eflu, sub_labcmp = st.tabs([
+            "\U0001f4c5 Entrada diaria", "\U0001f4ca Revision historica",
+            "\U0001f4c8 Por producto", "\U0001f9ea Lab por cliente"])
+
+        # ---------------- ENTRADA DIARIA ----------------
+        with sub_dia:
+            _porteria_entrada_diaria(cat)
+
+        with sub_hist:
+            with st.expander("Filtros", expanded=True):
+                c1, c2, c3 = st.columns(3)
+                fmin = c1.date_input("Desde", value=(date.today()-_td(days=30)), key="ph_fmin")
+                fmax = c2.date_input("Hasta", value=date.today(), key="ph_fmax")
+                limit_p = c3.number_input("Limite filas", 100, 200000, 20000, step=1000, key="ph_lim")
+                try:
+                    prods_base = cat("SELECT DISTINCT producto_base FROM produccion.v_transacciones_limpias WHERE producto_base IS NOT NULL ORDER BY 1 LIMIT 500")["producto_base"].tolist()
+                except Exception: prods_base = []
+                try:
+                    corrientes_p = cat("SELECT DISTINCT corriente FROM produccion.v_transacciones_limpias WHERE corriente IS NOT NULL ORDER BY 1")["corriente"].tolist()
+                except Exception: corrientes_p = []
+                try:
+                    cli_p = cat("SELECT DISTINCT cliente FROM produccion.v_transacciones_limpias WHERE cliente IS NOT NULL ORDER BY 1 LIMIT 500")["cliente"].tolist()
+                except Exception: proc_p = []
+                c4, c5, c6 = st.columns(3)
+                sel_pb = c4.multiselect("Producto base", prods_base, key="ph_pb")
+                sel_co = c5.multiselect("Corriente", corrientes_p, key="ph_co")
+                sel_pr = c6.multiselect("Cliente", cli_p, key="ph_pr")
+                c7, c8 = st.columns(2)
+                eval_filt = c7.radio("Evaluado", ["Todos","SI","NO"], horizontal=True, key="ph_eval")
+                pat = c8.text_input("Patente chasis contiene", key="ph_pat")
+                tx_raw = st.text_area(
+                    "Buscar N° de transacción (uno por línea o separados por coma/espacio) — ignora el rango de fechas",
+                    key="ph_tx", height=80, placeholder="69596\\n69597\\n4676 ...")
+
+            # parsear lista de transacciones
+            import re as _re
+            tx_list = [int(x) for x in _re.findall(r"\\d+", tx_raw or "")]
+
+            params = []
+            if tx_list:
+                # busca SOLO esas transacciones, sin filtro de fecha
+                where = ["transaccion = ANY(%s)"]
+                params.append(tx_list)
+            else:
+                where = ["fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
+                params = [fmin.isoformat(), fmax.isoformat()]
+            if sel_pb: where.append("producto_base = ANY(%s)"); params.append(sel_pb)
+            if sel_co: where.append("corriente = ANY(%s)"); params.append(sel_co)
+            if sel_pr: where.append("cliente = ANY(%s)"); params.append(sel_pr)
+            if eval_filt != "Todos": where.append("evaluado = %s"); params.append(eval_filt)
+            if pat.strip(): where.append("patente_chasis ILIKE %s"); params.append(f"%{pat.strip()}%")
+            wsql = " AND ".join(where)
+
+            sql_p = f"""
+                SELECT id, transaccion, fecha_entrada, hora_e,
+                       operador, conductor, patente_chasis,
+                       producto, producto_base, corriente, evaluado,
+                       cliente, transporte, procedencia,
+                       peso_entrada, peso_salida,
+                       (peso_neto * -1) AS peso_neto,
+                       lab_calidad, lab_color, lab_prc_acidez, lab_prc_agua,
+                       lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
+                       lab_empleado, lab_rechazado, lab_num_muestra, lab_fecha,
+                       observaciones, _synced_at
+                FROM produccion.v_transacciones_limpias
+                WHERE {wsql}
+                ORDER BY fecha_entrada DESC NULLS LAST, id DESC
+                LIMIT {int(limit_p)}
+            """
+            try:
+                df_p = cat(sql_p, tuple(params))
+            except Exception as e:
+                st.exception(e); df_p = pd.DataFrame()
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Transacciones", len(df_p))
+            k2.metric("Patentes distintas", df_p["patente_chasis"].nunique() if not df_p.empty else 0)
+            if not df_p.empty:
+                tot = pd.to_numeric(df_p["peso_neto"], errors="coerce").sum()
+                n_ev = int((df_p["evaluado"]=="SI").sum())
+                k3.metric("TN netas total", f"{tot/1000:,.2f}")
+                k4.metric("% evaluado", f"{(n_ev/len(df_p)*100):.0f}%")
+
+                st.markdown("**Transacciones por dia**")
+                by_day = df_p.dropna(subset=["fecha_entrada"]).groupby("fecha_entrada").size().reset_index(name="cantidad")
+                st.line_chart(by_day, x="fecha_entrada", y="cantidad", use_container_width=True)
+
+                st.markdown("**TN netas por corriente**")
+                corr_sum = (df_p.dropna(subset=["corriente"])
+                                .assign(peso=pd.to_numeric(df_p["peso_neto"], errors="coerce"))
+                                .groupby("corriente")["peso"].sum()
+                                .sort_values(ascending=False).reset_index())
+                corr_sum["TN"] = (corr_sum["peso"] / 1000).round(2)
+                st.bar_chart(corr_sum, x="corriente", y="TN", use_container_width=True)
+
+                # ----- Evaluado vs no evaluado -----
+                st.markdown("### Cobertura de evaluacion (lab)")
+                st.caption("Cuanto de lo EVALUABLE esta pasando por laboratorio. "
+                           "Solo corrientes vegetal / animal / efluente_liquido / insumo "
+                           "(el resto -solido, sin_declarar- no se evalua).")
+
+                df_eval = df_p[df_p.apply(
+                    lambda r: _es_evaluable(r["corriente"], r.get("producto_base")), axis=1)].copy()
+                if df_eval.empty:
+                    st.info("No hay llegadas de corrientes evaluables en el rango.")
+                else:
+                    n_ev2 = int((df_eval["evaluado"]=="SI").sum())
+                    st.metric("% evaluado (solo corrientes evaluables)",
+                              f"{(n_ev2/len(df_eval)*100):.0f}%",
+                              help=f"{n_ev2} de {len(df_eval)} llegadas evaluables")
+
+                    ev_corr = (df_eval.groupby(["corriente","evaluado"]).size()
+                                   .reset_index(name="cant")
+                                   .pivot(index="corriente", columns="evaluado", values="cant")
+                                   .fillna(0))
+                    for col in ("SI","NO"):
+                        if col not in ev_corr.columns: ev_corr[col] = 0
+                    ev_corr["total"] = ev_corr["SI"] + ev_corr["NO"]
+                    ev_corr["% evaluado"] = (ev_corr["SI"]/ev_corr["total"]*100).round(1)
+                    st.markdown("**Por corriente (vegetal / animal / efluente_liquido / insumo)**")
+                    st.bar_chart(ev_corr[["SI","NO"]], use_container_width=True)
+                    st.dataframe(ev_corr.reset_index()[["corriente","SI","NO","total","% evaluado"]],
+                                 use_container_width=True, hide_index=True)
+
+                    ev_prod = (df_eval.groupby(["producto_base","evaluado"]).size()
+                                   .reset_index(name="cant")
+                                   .pivot(index="producto_base", columns="evaluado", values="cant")
+                                   .fillna(0))
+                    for col in ("SI","NO"):
+                        if col not in ev_prod.columns: ev_prod[col] = 0
+                    ev_prod["total"] = ev_prod["SI"] + ev_prod["NO"]
+                    ev_prod["% evaluado"] = (ev_prod["SI"]/ev_prod["total"]*100).round(1)
+                    ev_prod = ev_prod.sort_values("total", ascending=False).head(20)
+                    st.markdown("**Por producto base (top 20 por volumen de llegadas evaluables)**")
+                    st.bar_chart(ev_prod[["SI","NO"]], use_container_width=True)
+                    st.dataframe(ev_prod.reset_index()[["producto_base","SI","NO","total","% evaluado"]],
+                                 use_container_width=True, hide_index=True)
+
+                st.markdown("### Detalle")
+                df_pd = df_p.copy()
+                df_pd["eval_estado"] = df_pd.apply(
+                    lambda r: ("no corresponde" if not _es_evaluable(r["corriente"], r.get("producto_base")) else r["evaluado"]), axis=1)
+                # ocultar columnas 100% vacías
+                df_pd = df_pd.dropna(axis=1, how="all")
+                _front = [c for c in ["transaccion","fecha_entrada","producto_base","lab_calidad","corriente",
+                                      "eval_estado","peso_neto","cliente"] if c in df_pd.columns]
+                _rest = [c for c in df_pd.columns if c not in _front]
+                _orden_h = _front + _rest
+                df_pd = df_pd[_orden_h]
+                _saved_h = get_pref("porteria_hist_cols", None)
+                _default_h = [c for c in _saved_h if c in _orden_h] if _saved_h else _front
+                _sel_h = st.multiselect("Columnas a mostrar (se reordenan automáticamente · se guardan por usuario)", _orden_h,
+                                        default=_default_h, key="ph_cols")
+                _cols_h = [c for c in _orden_h if c in _sel_h] or _orden_h
+                if _cols_h != _saved_h:
+                    set_pref("porteria_hist_cols", _cols_h)
+                st.caption(f"{len(df_pd)} filas · {len(_cols_h)} columnas. Clic en el encabezado para ordenar (▲/▼); elegí/quitá columnas arriba.")
+                st.dataframe(df_pd[_cols_h], use_container_width=True, hide_index=True, height=420)
+                st.download_button("⬇️ Descargar CSV", df_pd.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"porteria_hist_{fmin}_{fmax}.csv", mime="text/csv")
+            else:
+                st.info("Sin datos en el rango.")
+
+
+        # ---------------- DISPOSICION FINAL DE LIQUIDOS ----------------
+        with sub_eflu:
+            st.caption("Apertura por **producto base** (los evaluables con más movimiento): acumulados, "
+                       "tendencia, comparación mensual y semanal. Efluentes líquidos es un producto más.")
+            try:
+                _topb = cat(
+                    "SELECT producto_base, SUM(ABS(peso_neto)) kg FROM produccion.v_transacciones_limpias "
+                    "WHERE fecha_entrada >= current_date - 365 AND peso_neto IS NOT NULL AND producto_base IS NOT NULL "
+                    "  AND corriente IN (SELECT corriente FROM produccion.dic_corriente_config WHERE evaluable) "
+                    "  AND upper(producto_base) NOT IN (SELECT upper(producto_base) FROM produccion.dic_producto_base_config WHERE NOT evaluable) "
+                    "GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 20")
+                _pb_opts = _topb["producto_base"].tolist()
+            except Exception:
+                _pb_opts = []
+            if "DISPOSICION FINAL DE LIQUIDOS" not in _pb_opts:
+                _pb_opts = ["DISPOSICION FINAL DE LIQUIDOS"] + _pb_opts
+            cE0, cE1, cE2 = st.columns(3)
+            pb_sel = cE0.selectbox("Producto base", _pb_opts,
+                                   index=_pb_opts.index("DISPOSICION FINAL DE LIQUIDOS"),
+                                   key="ef_pb",
+                                   help="Productos base evaluables ordenados por kg movidos en los últimos 12 meses.")
+            ef_desde = cE1.date_input("Desde", value=date(date.today().year,1,1), key="ef_desde")
+            ef_hasta = cE2.date_input("Hasta", value=date.today(), key="ef_hasta")
+            sql_ef = """
+                SELECT fecha_entrada, hora_e, patente_chasis, cliente, transporte, procedencia,
+                       (peso_neto * -1) AS peso_neto, evaluado
+                FROM produccion.v_transacciones_limpias
+                WHERE producto_base = %s
+                  AND fecha_entrada IS NOT NULL
+                  AND fecha_entrada >= %s AND fecha_entrada <= %s
+                ORDER BY fecha_entrada
+            """
+            try:
+                df_ef = cat(sql_ef, (pb_sel, ef_desde.isoformat(), ef_hasta.isoformat()))
+            except Exception as e:
+                st.exception(e); df_ef = pd.DataFrame()
+
+            if not df_ef.empty:
+                _clis = sorted(df_ef["cliente"].dropna().astype(str).str.strip().unique().tolist())
+                cli_sel = st.multiselect("Cliente (vacío = todos)", _clis, key="ef_cli",
+                                         help="Filtra todo el análisis (acumulados, comparaciones y CSV) a los clientes elegidos.")
+                if cli_sel:
+                    df_ef = df_ef[df_ef["cliente"].astype(str).str.strip().isin(cli_sel)]
+
+            if df_ef.empty:
+                st.info(f"No hay registros de {pb_sel} en el rango (revisá el filtro de cliente).")
+            else:
+                df_ef["peso_neto"] = pd.to_numeric(df_ef["peso_neto"], errors="coerce")
+                df_ef["fecha_entrada"] = pd.to_datetime(df_ef["fecha_entrada"])
+                total_kg = df_ef["peso_neto"].sum()
+                n_via = len(df_ef)
+                prom = df_ef["peso_neto"].mean()
+                ke1, ke2, ke3 = st.columns(3)
+                ke1.metric("TN netas acumuladas", f"{total_kg/1000:,.2f}")
+                ke2.metric("Viajes", n_via)
+                ke3.metric("TN promedio por viaje", f"{(prom or 0)/1000:,.2f}")
+
+                # Total por mes (barras)
+                dm = df_ef.copy()
+                dm["mes"] = dm["fecha_entrada"].dt.to_period("M").astype(str)
+                tot_mes = dm.groupby("mes")["peso_neto"].sum().reset_index()
+                tot_mes.columns = ["mes", "kg_netos"]
+                tot_mes["TN"] = (tot_mes["kg_netos"] / 1000).round(2)
+                st.markdown("**Total de TN netas por mes**")
+                st.bar_chart(tot_mes, x="mes", y="TN", use_container_width=True)
+
+                # Comparacion mensual: acumulado por dia-del-mes, una linea por mes
+                st.markdown("**Comparacion entre meses (acumulado dia 1 -> fin de mes)**")
+                import calendar as _cal
+                import altair as alt
+                d = df_ef.copy()
+                d["mes"] = d["fecha_entrada"].dt.to_period("M").astype(str)
+                d["dia"] = d["fecha_entrada"].dt.day
+                meses_disp = sorted(d["mes"].unique())
+                hoy = date.today()
+                mes_actual = pd.Period(hoy, freq="M").strftime("%Y-%m")
+                default_meses = meses_disp[-4:] if len(meses_disp) > 4 else meses_disp
+                meses_sel = st.multiselect("Meses a comparar (año-mes)", meses_disp,
+                                           default=default_meses, key="ef_meses")
+                if not meses_sel:
+                    st.info("Elegí al menos un mes.")
+                else:
+                    d2 = d[d["mes"].isin(meses_sel)]
+                    diario = d2.groupby(["mes","dia"])["peso_neto"].sum().reset_index()
+                    diario["acum"] = diario.groupby("mes")["peso_neto"].cumsum()
+                    diario["tipo"] = "real"
+
+                    # Proyeccion del mes actual (si está seleccionado): linea punteada
+                    proy_rows = []
+                    if mes_actual in meses_sel:
+                        dm = diario[diario["mes"]==mes_actual].sort_values("dia")
+                        if not dm.empty:
+                            acum_hoy = float(dm["acum"].iloc[-1])
+                            dia_hoy  = int(dm["dia"].iloc[-1])
+                            dias_mes = _cal.monthrange(hoy.year, hoy.month)[1]
+                            ritmo = acum_hoy / dia_hoy if dia_hoy else 0
+                            # punto de arranque de la proyeccion = ultimo real
+                            proy_rows.append({"mes": f"{mes_actual} (proy)", "dia": dia_hoy, "acum": acum_hoy, "tipo": "proyeccion"})
+                            for dd in range(dia_hoy+1, dias_mes+1):
+                                proy_rows.append({"mes": f"{mes_actual} (proy)", "dia": dd,
+                                                  "acum": ritmo*dd, "tipo": "proyeccion"})
+
+                    plot_df = pd.concat([diario, pd.DataFrame(proy_rows)], ignore_index=True) if proy_rows else diario
+                    plot_df = plot_df.copy()
+                    plot_df["acum_tn"] = plot_df["acum"] / 1000.0
+
+                    chart = alt.Chart(plot_df).mark_line(point=False).encode(
+                        x=alt.X("dia:Q", title="día del mes"),
+                        y=alt.Y("acum_tn:Q", title="TN netas acumuladas"),
+                        color=alt.Color("mes:N", title="mes"),
+                        strokeDash=alt.StrokeDash("tipo:N", title="",
+                                   scale=alt.Scale(domain=["real","proyeccion"], range=[[1,0],[6,4]])),
+                    ).properties(height=380)
+                    st.altair_chart(chart, use_container_width=True)
+                    st.caption("Línea sólida = real. Línea punteada = proyección del mes corriente según el ritmo diario actual.")
+
+                    if mes_actual in meses_sel and proy_rows:
+                        proy_total = proy_rows[-1]["acum"]
+                        cp1, cp2 = st.columns(2)
+                        cp1.metric(f"Acumulado {mes_actual} a hoy (TN)", f"{acum_hoy/1000:,.2f}")
+                        cp2.metric("Proyección fin de mes (TN)", f"{proy_total/1000:,.2f}",
+                                   help="Ritmo diario actual × días del mes")
+
+                # Comparación semanal: misma semana del mes, entre meses (barras)
+                st.markdown("**Comparación semanal — misma semana del mes, entre meses**")
+                dsem = df_ef.copy()
+                dsem["mes"] = dsem["fecha_entrada"].dt.to_period("M").astype(str)
+                dsem["sem_mes"] = ((dsem["fecha_entrada"].dt.day - 1) // 7 + 1).clip(upper=5)
+                _sem_hoy = min(5, (date.today().day - 1) // 7 + 1)
+                cs1, cs2 = st.columns(2)
+                sem_sel = cs1.selectbox("Semana del mes", [1, 2, 3, 4, 5], index=_sem_hoy - 1, key="ef_sem",
+                                        help="Semana 1 = días 1-7 · semana 2 = 8-14 · semana 3 = 15-21 · semana 4 = 22-28 · semana 5 = 29-31.")
+                meses_sem = cs2.multiselect("Meses a comparar", meses_disp, default=default_meses, key="ef_sem_meses")
+                dsem = dsem[(dsem["sem_mes"] == sem_sel) & (dsem["mes"].isin(meses_sem))]
+                if dsem.empty:
+                    st.info("Sin datos para esa semana en los meses elegidos.")
+                else:
+                    tot_sem = (dsem.groupby("mes")
+                               .agg(kg=("peso_neto", "sum"), viajes=("peso_neto", "size"))
+                               .reindex(sorted(meses_sem)).fillna(0).reset_index())
+                    tot_sem["TN"] = (tot_sem["kg"] / 1000).round(2)
+                    _bar_sem = alt.Chart(tot_sem).mark_bar().encode(
+                        x=alt.X("mes:N", title="mes", sort=sorted(meses_sem)),
+                        y=alt.Y("TN:Q", title=f"TN netas · semana {sem_sel} del mes"),
+                        tooltip=[alt.Tooltip("mes:N"), alt.Tooltip("TN:Q"), alt.Tooltip("viajes:Q")],
+                    ).properties(height=300)
+                    st.altair_chart(_bar_sem, use_container_width=True)
+                    _d1, _d2 = (sem_sel - 1) * 7 + 1, min(sem_sel * 7, 31) if sem_sel < 5 else 31
+                    st.caption(f"Compara los días {_d1}–{_d2} de cada mes ({pb_sel}). "
+                               "Ojo con el mes en curso si la semana todavía no terminó.")
+
+                # Estadisticas por procedencia
+                st.markdown("**Por cliente**")
+                by_proc = (df_ef.dropna(subset=["cliente"])
+                                .groupby("cliente")
+                                .agg(viajes=("peso_neto","size"),
+                                     kg_total=("peso_neto","sum"),
+                                     kg_promedio=("peso_neto","mean"))
+                                .sort_values("kg_total", ascending=False).reset_index())
+                by_proc["TN_total"] = (by_proc["kg_total"] / 1000).round(2)
+                by_proc["TN_promedio"] = (by_proc["kg_promedio"] / 1000).round(2)
+                by_proc = by_proc.drop(columns=["kg_total", "kg_promedio"])
+                st.bar_chart(by_proc.head(15), x="cliente", y="TN_total", use_container_width=True)
+                st.dataframe(by_proc, use_container_width=True, hide_index=True)
+
+                st.download_button(f"⬇️ Descargar CSV {pb_sel}",
+                                   df_ef.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"{pb_sel.lower().replace(' ', '_')}_{ef_desde}_{ef_hasta}.csv", mime="text/csv")
+
+        # ---------------- LAB POR CLIENTE (procedencia) ----------------
+        with sub_labcmp:
+            st.caption("Compara parametros de laboratorio entre clientes (procedencia), "
+                       "**dentro de cada producto_base** (comparar acidez de AFE-S vs ARE no tiene sentido). Ignora nulos.")
+            PARAMS = {
+                "lab_prc_acidez":  "% Acidez",
+                "lab_prc_agua":    "% Agua",
+                "lab_ppm_azufre":  "ppm Azufre",
+                "lab_ppm_fosforo": "ppm Fosforo",
+                "lab_densidad":    "Densidad",
+            }
+            cL1, cL2, cL3 = st.columns(3)
+            lab_desde = cL1.date_input("Desde", value=(date.today()-_td(days=90)), key="lc_desde")
+            lab_hasta = cL2.date_input("Hasta", value=date.today(), key="lc_hasta")
+            param_sel = cL3.selectbox("Parametro", list(PARAMS.keys()),
+                                      format_func=lambda c: PARAMS[c], key="lc_param")
+            # productos disponibles para ese parametro
+            try:
+                pbs = cat(f"""
+                    SELECT DISTINCT producto_base FROM produccion.v_transacciones_limpias
+                    WHERE evaluado='SI' AND {param_sel} IS NOT NULL AND producto_base IS NOT NULL
+                      AND corriente IN {CORR_EVAL_SQL}{PROD_BASE_NO_EVAL_SQL}
+                    ORDER BY 1
+                """)["producto_base"].tolist()
+            except Exception: pbs = []
+            try:
+                cals = cat("""
+                    SELECT DISTINCT lab_calidad FROM produccion.v_transacciones_limpias
+                    WHERE lab_calidad IS NOT NULL ORDER BY 1
+                """)["lab_calidad"].tolist()
+            except Exception: cals = []
+            cF1, cF2, cF3 = st.columns(3)
+            sel_pbs = cF1.multiselect("Producto base (vacio = todos)", pbs, key="lc_pbs")
+            sel_cal = cF2.multiselect("Calidad final (vacio = todas)", cals, key="lc_cal")
+            min_n = cF3.number_input("Minimo de mediciones por grupo", 1, 100, 1, key="lc_minn")
+
+            where = ["evaluado = 'SI'", f"{param_sel} IS NOT NULL", "procedencia IS NOT NULL",
+                     "producto_base IS NOT NULL",
+                     f"corriente IN {CORR_EVAL_SQL}" + PROD_BASE_NO_EVAL_SQL,
+                     "fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
+            params = [lab_desde.isoformat(), lab_hasta.isoformat()]
+            if sel_pbs:
+                where.append("producto_base = ANY(%s)"); params.append(sel_pbs)
+            if sel_cal:
+                where.append("lab_calidad = ANY(%s)"); params.append(sel_cal)
+            sql_lc = f"""
+                SELECT producto_base, cliente, corriente, lab_calidad, {param_sel} AS valor
+                FROM produccion.v_transacciones_limpias
+                WHERE {' AND '.join(where)}
+            """
+            try:
+                df_lc = cat(sql_lc, tuple(params))
+            except Exception as e:
+                st.exception(e); df_lc = pd.DataFrame()
+
+            if df_lc.empty:
+                st.info("Sin mediciones no-nulas de ese parametro en el rango.")
+            else:
+                df_lc["valor"] = pd.to_numeric(df_lc["valor"], errors="coerce")
+                df_lc = df_lc.dropna(subset=["valor"])
+                # Agrupado por producto_base + procedencia
+                resumen = (df_lc.groupby(["producto_base","cliente"])["valor"]
+                               .agg(n="size", promedio="mean", minimo="min", maximo="max", desvio="std")
+                               .reset_index())
+                resumen = resumen[resumen["n"] >= int(min_n)]
+                for c in ("promedio","minimo","maximo","desvio"):
+                    resumen[c] = resumen[c].round(2)
+                resumen = resumen.sort_values(["producto_base","promedio"], ascending=[True, False])
+
+                st.markdown(f"### {PARAMS[param_sel]} por producto base y cliente")
+
+                # Si eligio 1 solo producto: chart limpio por procedencia
+                if len(sel_pbs) == 1:
+                    sub = resumen[resumen["producto_base"]==sel_pbs[0]]
+                    st.markdown(f"**{sel_pbs[0]} — promedio por cliente**")
+                    st.bar_chart(sub, x="procedencia", y="promedio", use_container_width=True)
+                else:
+                    # vista por producto: tabla pivote (filas producto_base, columnas procedencia)
+                    piv = resumen.pivot_table(index="producto_base", columns="cliente",
+                                              values="promedio", aggfunc="mean")
+                    st.markdown("**Promedio por producto_base (filas) x cliente (columnas)**")
+                    st.dataframe(piv, use_container_width=True)
+
+                st.markdown("**Detalle (producto_base + cliente)**")
+                st.dataframe(resumen, use_container_width=True, hide_index=True, height=420)
+                st.caption("n = mediciones validas · desvio = desviacion estandar (consistencia del cliente).")
+                st.download_button("⬇️ Descargar CSV",
+                                   resumen.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"lab_por_cliente_{param_sel}.csv", mime="text/csv")
+
+
 def _porteria_entrada_diaria(cat):
                 cD1, cD2 = st.columns([1,3])
                 dia_sel = cD1.date_input("Dia", value=date.today(), key="pd_dia")
@@ -1945,432 +2371,6 @@ if st.session_state.section != "CARGAS":
                                    file_name=f"procesos_lab_{fmin}_{fmax}.csv", mime="text/csv")
             else:
                 st.info("Sin datos en el rango.")
-    elif st.session_state.section == "PORT":
-        # =================== PORTERIA ===================
-        st.title("\U0001f69b Porteria")
-        sub_dia, sub_hist, sub_eflu, sub_labcmp = st.tabs([
-            "\U0001f4c5 Entrada diaria", "\U0001f4ca Revision historica",
-            "\U0001f4c8 Por producto", "\U0001f9ea Lab por cliente"])
-
-        # ---------------- ENTRADA DIARIA ----------------
-        with sub_dia:
-            _porteria_entrada_diaria(cat)
-
-        with sub_hist:
-            with st.expander("Filtros", expanded=True):
-                c1, c2, c3 = st.columns(3)
-                fmin = c1.date_input("Desde", value=(date.today()-_td(days=30)), key="ph_fmin")
-                fmax = c2.date_input("Hasta", value=date.today(), key="ph_fmax")
-                limit_p = c3.number_input("Limite filas", 100, 200000, 20000, step=1000, key="ph_lim")
-                try:
-                    prods_base = cat("SELECT DISTINCT producto_base FROM produccion.v_transacciones_limpias WHERE producto_base IS NOT NULL ORDER BY 1 LIMIT 500")["producto_base"].tolist()
-                except Exception: prods_base = []
-                try:
-                    corrientes_p = cat("SELECT DISTINCT corriente FROM produccion.v_transacciones_limpias WHERE corriente IS NOT NULL ORDER BY 1")["corriente"].tolist()
-                except Exception: corrientes_p = []
-                try:
-                    cli_p = cat("SELECT DISTINCT cliente FROM produccion.v_transacciones_limpias WHERE cliente IS NOT NULL ORDER BY 1 LIMIT 500")["cliente"].tolist()
-                except Exception: proc_p = []
-                c4, c5, c6 = st.columns(3)
-                sel_pb = c4.multiselect("Producto base", prods_base, key="ph_pb")
-                sel_co = c5.multiselect("Corriente", corrientes_p, key="ph_co")
-                sel_pr = c6.multiselect("Cliente", cli_p, key="ph_pr")
-                c7, c8 = st.columns(2)
-                eval_filt = c7.radio("Evaluado", ["Todos","SI","NO"], horizontal=True, key="ph_eval")
-                pat = c8.text_input("Patente chasis contiene", key="ph_pat")
-                tx_raw = st.text_area(
-                    "Buscar N° de transacción (uno por línea o separados por coma/espacio) — ignora el rango de fechas",
-                    key="ph_tx", height=80, placeholder="69596\\n69597\\n4676 ...")
-
-            # parsear lista de transacciones
-            import re as _re
-            tx_list = [int(x) for x in _re.findall(r"\\d+", tx_raw or "")]
-
-            params = []
-            if tx_list:
-                # busca SOLO esas transacciones, sin filtro de fecha
-                where = ["transaccion = ANY(%s)"]
-                params.append(tx_list)
-            else:
-                where = ["fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
-                params = [fmin.isoformat(), fmax.isoformat()]
-            if sel_pb: where.append("producto_base = ANY(%s)"); params.append(sel_pb)
-            if sel_co: where.append("corriente = ANY(%s)"); params.append(sel_co)
-            if sel_pr: where.append("cliente = ANY(%s)"); params.append(sel_pr)
-            if eval_filt != "Todos": where.append("evaluado = %s"); params.append(eval_filt)
-            if pat.strip(): where.append("patente_chasis ILIKE %s"); params.append(f"%{pat.strip()}%")
-            wsql = " AND ".join(where)
-
-            sql_p = f"""
-                SELECT id, transaccion, fecha_entrada, hora_e,
-                       operador, conductor, patente_chasis,
-                       producto, producto_base, corriente, evaluado,
-                       cliente, transporte, procedencia,
-                       peso_entrada, peso_salida,
-                       (peso_neto * -1) AS peso_neto,
-                       lab_calidad, lab_color, lab_prc_acidez, lab_prc_agua,
-                       lab_ppm_azufre, lab_ppm_fosforo, lab_densidad,
-                       lab_empleado, lab_rechazado, lab_num_muestra, lab_fecha,
-                       observaciones, _synced_at
-                FROM produccion.v_transacciones_limpias
-                WHERE {wsql}
-                ORDER BY fecha_entrada DESC NULLS LAST, id DESC
-                LIMIT {int(limit_p)}
-            """
-            try:
-                df_p = cat(sql_p, tuple(params))
-            except Exception as e:
-                st.exception(e); df_p = pd.DataFrame()
-
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Transacciones", len(df_p))
-            k2.metric("Patentes distintas", df_p["patente_chasis"].nunique() if not df_p.empty else 0)
-            if not df_p.empty:
-                tot = pd.to_numeric(df_p["peso_neto"], errors="coerce").sum()
-                n_ev = int((df_p["evaluado"]=="SI").sum())
-                k3.metric("TN netas total", f"{tot/1000:,.2f}")
-                k4.metric("% evaluado", f"{(n_ev/len(df_p)*100):.0f}%")
-
-                st.markdown("**Transacciones por dia**")
-                by_day = df_p.dropna(subset=["fecha_entrada"]).groupby("fecha_entrada").size().reset_index(name="cantidad")
-                st.line_chart(by_day, x="fecha_entrada", y="cantidad", use_container_width=True)
-
-                st.markdown("**TN netas por corriente**")
-                corr_sum = (df_p.dropna(subset=["corriente"])
-                                .assign(peso=pd.to_numeric(df_p["peso_neto"], errors="coerce"))
-                                .groupby("corriente")["peso"].sum()
-                                .sort_values(ascending=False).reset_index())
-                corr_sum["TN"] = (corr_sum["peso"] / 1000).round(2)
-                st.bar_chart(corr_sum, x="corriente", y="TN", use_container_width=True)
-
-                # ----- Evaluado vs no evaluado -----
-                st.markdown("### Cobertura de evaluacion (lab)")
-                st.caption("Cuanto de lo EVALUABLE esta pasando por laboratorio. "
-                           "Solo corrientes vegetal / animal / efluente_liquido / insumo "
-                           "(el resto -solido, sin_declarar- no se evalua).")
-
-                df_eval = df_p[df_p.apply(
-                    lambda r: _es_evaluable(r["corriente"], r.get("producto_base")), axis=1)].copy()
-                if df_eval.empty:
-                    st.info("No hay llegadas de corrientes evaluables en el rango.")
-                else:
-                    n_ev2 = int((df_eval["evaluado"]=="SI").sum())
-                    st.metric("% evaluado (solo corrientes evaluables)",
-                              f"{(n_ev2/len(df_eval)*100):.0f}%",
-                              help=f"{n_ev2} de {len(df_eval)} llegadas evaluables")
-
-                    ev_corr = (df_eval.groupby(["corriente","evaluado"]).size()
-                                   .reset_index(name="cant")
-                                   .pivot(index="corriente", columns="evaluado", values="cant")
-                                   .fillna(0))
-                    for col in ("SI","NO"):
-                        if col not in ev_corr.columns: ev_corr[col] = 0
-                    ev_corr["total"] = ev_corr["SI"] + ev_corr["NO"]
-                    ev_corr["% evaluado"] = (ev_corr["SI"]/ev_corr["total"]*100).round(1)
-                    st.markdown("**Por corriente (vegetal / animal / efluente_liquido / insumo)**")
-                    st.bar_chart(ev_corr[["SI","NO"]], use_container_width=True)
-                    st.dataframe(ev_corr.reset_index()[["corriente","SI","NO","total","% evaluado"]],
-                                 use_container_width=True, hide_index=True)
-
-                    ev_prod = (df_eval.groupby(["producto_base","evaluado"]).size()
-                                   .reset_index(name="cant")
-                                   .pivot(index="producto_base", columns="evaluado", values="cant")
-                                   .fillna(0))
-                    for col in ("SI","NO"):
-                        if col not in ev_prod.columns: ev_prod[col] = 0
-                    ev_prod["total"] = ev_prod["SI"] + ev_prod["NO"]
-                    ev_prod["% evaluado"] = (ev_prod["SI"]/ev_prod["total"]*100).round(1)
-                    ev_prod = ev_prod.sort_values("total", ascending=False).head(20)
-                    st.markdown("**Por producto base (top 20 por volumen de llegadas evaluables)**")
-                    st.bar_chart(ev_prod[["SI","NO"]], use_container_width=True)
-                    st.dataframe(ev_prod.reset_index()[["producto_base","SI","NO","total","% evaluado"]],
-                                 use_container_width=True, hide_index=True)
-
-                st.markdown("### Detalle")
-                df_pd = df_p.copy()
-                df_pd["eval_estado"] = df_pd.apply(
-                    lambda r: ("no corresponde" if not _es_evaluable(r["corriente"], r.get("producto_base")) else r["evaluado"]), axis=1)
-                # ocultar columnas 100% vacías
-                df_pd = df_pd.dropna(axis=1, how="all")
-                _front = [c for c in ["transaccion","fecha_entrada","producto_base","lab_calidad","corriente",
-                                      "eval_estado","peso_neto","cliente"] if c in df_pd.columns]
-                _rest = [c for c in df_pd.columns if c not in _front]
-                _orden_h = _front + _rest
-                df_pd = df_pd[_orden_h]
-                _saved_h = get_pref("porteria_hist_cols", None)
-                _default_h = [c for c in _saved_h if c in _orden_h] if _saved_h else _front
-                _sel_h = st.multiselect("Columnas a mostrar (se reordenan automáticamente · se guardan por usuario)", _orden_h,
-                                        default=_default_h, key="ph_cols")
-                _cols_h = [c for c in _orden_h if c in _sel_h] or _orden_h
-                if _cols_h != _saved_h:
-                    set_pref("porteria_hist_cols", _cols_h)
-                st.caption(f"{len(df_pd)} filas · {len(_cols_h)} columnas. Clic en el encabezado para ordenar (▲/▼); elegí/quitá columnas arriba.")
-                st.dataframe(df_pd[_cols_h], use_container_width=True, hide_index=True, height=420)
-                st.download_button("⬇️ Descargar CSV", df_pd.to_csv(index=False).encode("utf-8"),
-                                   file_name=f"porteria_hist_{fmin}_{fmax}.csv", mime="text/csv")
-            else:
-                st.info("Sin datos en el rango.")
-
-
-        # ---------------- DISPOSICION FINAL DE LIQUIDOS ----------------
-        with sub_eflu:
-            st.caption("Apertura por **producto base** (los evaluables con más movimiento): acumulados, "
-                       "tendencia, comparación mensual y semanal. Efluentes líquidos es un producto más.")
-            try:
-                _topb = cat(
-                    "SELECT producto_base, SUM(ABS(peso_neto)) kg FROM produccion.v_transacciones_limpias "
-                    "WHERE fecha_entrada >= current_date - 365 AND peso_neto IS NOT NULL AND producto_base IS NOT NULL "
-                    "  AND corriente IN (SELECT corriente FROM produccion.dic_corriente_config WHERE evaluable) "
-                    "  AND upper(producto_base) NOT IN (SELECT upper(producto_base) FROM produccion.dic_producto_base_config WHERE NOT evaluable) "
-                    "GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 20")
-                _pb_opts = _topb["producto_base"].tolist()
-            except Exception:
-                _pb_opts = []
-            if "DISPOSICION FINAL DE LIQUIDOS" not in _pb_opts:
-                _pb_opts = ["DISPOSICION FINAL DE LIQUIDOS"] + _pb_opts
-            cE0, cE1, cE2 = st.columns(3)
-            pb_sel = cE0.selectbox("Producto base", _pb_opts,
-                                   index=_pb_opts.index("DISPOSICION FINAL DE LIQUIDOS"),
-                                   key="ef_pb",
-                                   help="Productos base evaluables ordenados por kg movidos en los últimos 12 meses.")
-            ef_desde = cE1.date_input("Desde", value=date(date.today().year,1,1), key="ef_desde")
-            ef_hasta = cE2.date_input("Hasta", value=date.today(), key="ef_hasta")
-            sql_ef = """
-                SELECT fecha_entrada, hora_e, patente_chasis, cliente, transporte, procedencia,
-                       (peso_neto * -1) AS peso_neto, evaluado
-                FROM produccion.v_transacciones_limpias
-                WHERE producto_base = %s
-                  AND fecha_entrada IS NOT NULL
-                  AND fecha_entrada >= %s AND fecha_entrada <= %s
-                ORDER BY fecha_entrada
-            """
-            try:
-                df_ef = cat(sql_ef, (pb_sel, ef_desde.isoformat(), ef_hasta.isoformat()))
-            except Exception as e:
-                st.exception(e); df_ef = pd.DataFrame()
-
-            if not df_ef.empty:
-                _clis = sorted(df_ef["cliente"].dropna().astype(str).str.strip().unique().tolist())
-                cli_sel = st.multiselect("Cliente (vacío = todos)", _clis, key="ef_cli",
-                                         help="Filtra todo el análisis (acumulados, comparaciones y CSV) a los clientes elegidos.")
-                if cli_sel:
-                    df_ef = df_ef[df_ef["cliente"].astype(str).str.strip().isin(cli_sel)]
-
-            if df_ef.empty:
-                st.info(f"No hay registros de {pb_sel} en el rango (revisá el filtro de cliente).")
-            else:
-                df_ef["peso_neto"] = pd.to_numeric(df_ef["peso_neto"], errors="coerce")
-                df_ef["fecha_entrada"] = pd.to_datetime(df_ef["fecha_entrada"])
-                total_kg = df_ef["peso_neto"].sum()
-                n_via = len(df_ef)
-                prom = df_ef["peso_neto"].mean()
-                ke1, ke2, ke3 = st.columns(3)
-                ke1.metric("TN netas acumuladas", f"{total_kg/1000:,.2f}")
-                ke2.metric("Viajes", n_via)
-                ke3.metric("TN promedio por viaje", f"{(prom or 0)/1000:,.2f}")
-
-                # Total por mes (barras)
-                dm = df_ef.copy()
-                dm["mes"] = dm["fecha_entrada"].dt.to_period("M").astype(str)
-                tot_mes = dm.groupby("mes")["peso_neto"].sum().reset_index()
-                tot_mes.columns = ["mes", "kg_netos"]
-                tot_mes["TN"] = (tot_mes["kg_netos"] / 1000).round(2)
-                st.markdown("**Total de TN netas por mes**")
-                st.bar_chart(tot_mes, x="mes", y="TN", use_container_width=True)
-
-                # Comparacion mensual: acumulado por dia-del-mes, una linea por mes
-                st.markdown("**Comparacion entre meses (acumulado dia 1 -> fin de mes)**")
-                import calendar as _cal
-                import altair as alt
-                d = df_ef.copy()
-                d["mes"] = d["fecha_entrada"].dt.to_period("M").astype(str)
-                d["dia"] = d["fecha_entrada"].dt.day
-                meses_disp = sorted(d["mes"].unique())
-                hoy = date.today()
-                mes_actual = pd.Period(hoy, freq="M").strftime("%Y-%m")
-                default_meses = meses_disp[-4:] if len(meses_disp) > 4 else meses_disp
-                meses_sel = st.multiselect("Meses a comparar (año-mes)", meses_disp,
-                                           default=default_meses, key="ef_meses")
-                if not meses_sel:
-                    st.info("Elegí al menos un mes.")
-                else:
-                    d2 = d[d["mes"].isin(meses_sel)]
-                    diario = d2.groupby(["mes","dia"])["peso_neto"].sum().reset_index()
-                    diario["acum"] = diario.groupby("mes")["peso_neto"].cumsum()
-                    diario["tipo"] = "real"
-
-                    # Proyeccion del mes actual (si está seleccionado): linea punteada
-                    proy_rows = []
-                    if mes_actual in meses_sel:
-                        dm = diario[diario["mes"]==mes_actual].sort_values("dia")
-                        if not dm.empty:
-                            acum_hoy = float(dm["acum"].iloc[-1])
-                            dia_hoy  = int(dm["dia"].iloc[-1])
-                            dias_mes = _cal.monthrange(hoy.year, hoy.month)[1]
-                            ritmo = acum_hoy / dia_hoy if dia_hoy else 0
-                            # punto de arranque de la proyeccion = ultimo real
-                            proy_rows.append({"mes": f"{mes_actual} (proy)", "dia": dia_hoy, "acum": acum_hoy, "tipo": "proyeccion"})
-                            for dd in range(dia_hoy+1, dias_mes+1):
-                                proy_rows.append({"mes": f"{mes_actual} (proy)", "dia": dd,
-                                                  "acum": ritmo*dd, "tipo": "proyeccion"})
-
-                    plot_df = pd.concat([diario, pd.DataFrame(proy_rows)], ignore_index=True) if proy_rows else diario
-                    plot_df = plot_df.copy()
-                    plot_df["acum_tn"] = plot_df["acum"] / 1000.0
-
-                    chart = alt.Chart(plot_df).mark_line(point=False).encode(
-                        x=alt.X("dia:Q", title="día del mes"),
-                        y=alt.Y("acum_tn:Q", title="TN netas acumuladas"),
-                        color=alt.Color("mes:N", title="mes"),
-                        strokeDash=alt.StrokeDash("tipo:N", title="",
-                                   scale=alt.Scale(domain=["real","proyeccion"], range=[[1,0],[6,4]])),
-                    ).properties(height=380)
-                    st.altair_chart(chart, use_container_width=True)
-                    st.caption("Línea sólida = real. Línea punteada = proyección del mes corriente según el ritmo diario actual.")
-
-                    if mes_actual in meses_sel and proy_rows:
-                        proy_total = proy_rows[-1]["acum"]
-                        cp1, cp2 = st.columns(2)
-                        cp1.metric(f"Acumulado {mes_actual} a hoy (TN)", f"{acum_hoy/1000:,.2f}")
-                        cp2.metric("Proyección fin de mes (TN)", f"{proy_total/1000:,.2f}",
-                                   help="Ritmo diario actual × días del mes")
-
-                # Comparación semanal: misma semana del mes, entre meses (barras)
-                st.markdown("**Comparación semanal — misma semana del mes, entre meses**")
-                dsem = df_ef.copy()
-                dsem["mes"] = dsem["fecha_entrada"].dt.to_period("M").astype(str)
-                dsem["sem_mes"] = ((dsem["fecha_entrada"].dt.day - 1) // 7 + 1).clip(upper=5)
-                _sem_hoy = min(5, (date.today().day - 1) // 7 + 1)
-                cs1, cs2 = st.columns(2)
-                sem_sel = cs1.selectbox("Semana del mes", [1, 2, 3, 4, 5], index=_sem_hoy - 1, key="ef_sem",
-                                        help="Semana 1 = días 1-7 · semana 2 = 8-14 · semana 3 = 15-21 · semana 4 = 22-28 · semana 5 = 29-31.")
-                meses_sem = cs2.multiselect("Meses a comparar", meses_disp, default=default_meses, key="ef_sem_meses")
-                dsem = dsem[(dsem["sem_mes"] == sem_sel) & (dsem["mes"].isin(meses_sem))]
-                if dsem.empty:
-                    st.info("Sin datos para esa semana en los meses elegidos.")
-                else:
-                    tot_sem = (dsem.groupby("mes")
-                               .agg(kg=("peso_neto", "sum"), viajes=("peso_neto", "size"))
-                               .reindex(sorted(meses_sem)).fillna(0).reset_index())
-                    tot_sem["TN"] = (tot_sem["kg"] / 1000).round(2)
-                    _bar_sem = alt.Chart(tot_sem).mark_bar().encode(
-                        x=alt.X("mes:N", title="mes", sort=sorted(meses_sem)),
-                        y=alt.Y("TN:Q", title=f"TN netas · semana {sem_sel} del mes"),
-                        tooltip=[alt.Tooltip("mes:N"), alt.Tooltip("TN:Q"), alt.Tooltip("viajes:Q")],
-                    ).properties(height=300)
-                    st.altair_chart(_bar_sem, use_container_width=True)
-                    _d1, _d2 = (sem_sel - 1) * 7 + 1, min(sem_sel * 7, 31) if sem_sel < 5 else 31
-                    st.caption(f"Compara los días {_d1}–{_d2} de cada mes ({pb_sel}). "
-                               "Ojo con el mes en curso si la semana todavía no terminó.")
-
-                # Estadisticas por procedencia
-                st.markdown("**Por cliente**")
-                by_proc = (df_ef.dropna(subset=["cliente"])
-                                .groupby("cliente")
-                                .agg(viajes=("peso_neto","size"),
-                                     kg_total=("peso_neto","sum"),
-                                     kg_promedio=("peso_neto","mean"))
-                                .sort_values("kg_total", ascending=False).reset_index())
-                by_proc["TN_total"] = (by_proc["kg_total"] / 1000).round(2)
-                by_proc["TN_promedio"] = (by_proc["kg_promedio"] / 1000).round(2)
-                by_proc = by_proc.drop(columns=["kg_total", "kg_promedio"])
-                st.bar_chart(by_proc.head(15), x="cliente", y="TN_total", use_container_width=True)
-                st.dataframe(by_proc, use_container_width=True, hide_index=True)
-
-                st.download_button(f"⬇️ Descargar CSV {pb_sel}",
-                                   df_ef.to_csv(index=False).encode("utf-8"),
-                                   file_name=f"{pb_sel.lower().replace(' ', '_')}_{ef_desde}_{ef_hasta}.csv", mime="text/csv")
-
-        # ---------------- LAB POR CLIENTE (procedencia) ----------------
-        with sub_labcmp:
-            st.caption("Compara parametros de laboratorio entre clientes (procedencia), "
-                       "**dentro de cada producto_base** (comparar acidez de AFE-S vs ARE no tiene sentido). Ignora nulos.")
-            PARAMS = {
-                "lab_prc_acidez":  "% Acidez",
-                "lab_prc_agua":    "% Agua",
-                "lab_ppm_azufre":  "ppm Azufre",
-                "lab_ppm_fosforo": "ppm Fosforo",
-                "lab_densidad":    "Densidad",
-            }
-            cL1, cL2, cL3 = st.columns(3)
-            lab_desde = cL1.date_input("Desde", value=(date.today()-_td(days=90)), key="lc_desde")
-            lab_hasta = cL2.date_input("Hasta", value=date.today(), key="lc_hasta")
-            param_sel = cL3.selectbox("Parametro", list(PARAMS.keys()),
-                                      format_func=lambda c: PARAMS[c], key="lc_param")
-            # productos disponibles para ese parametro
-            try:
-                pbs = cat(f"""
-                    SELECT DISTINCT producto_base FROM produccion.v_transacciones_limpias
-                    WHERE evaluado='SI' AND {param_sel} IS NOT NULL AND producto_base IS NOT NULL
-                      AND corriente IN {CORR_EVAL_SQL}{PROD_BASE_NO_EVAL_SQL}
-                    ORDER BY 1
-                """)["producto_base"].tolist()
-            except Exception: pbs = []
-            try:
-                cals = cat("""
-                    SELECT DISTINCT lab_calidad FROM produccion.v_transacciones_limpias
-                    WHERE lab_calidad IS NOT NULL ORDER BY 1
-                """)["lab_calidad"].tolist()
-            except Exception: cals = []
-            cF1, cF2, cF3 = st.columns(3)
-            sel_pbs = cF1.multiselect("Producto base (vacio = todos)", pbs, key="lc_pbs")
-            sel_cal = cF2.multiselect("Calidad final (vacio = todas)", cals, key="lc_cal")
-            min_n = cF3.number_input("Minimo de mediciones por grupo", 1, 100, 1, key="lc_minn")
-
-            where = ["evaluado = 'SI'", f"{param_sel} IS NOT NULL", "procedencia IS NOT NULL",
-                     "producto_base IS NOT NULL",
-                     f"corriente IN {CORR_EVAL_SQL}" + PROD_BASE_NO_EVAL_SQL,
-                     "fecha_entrada IS NOT NULL", "fecha_entrada >= %s", "fecha_entrada <= %s"]
-            params = [lab_desde.isoformat(), lab_hasta.isoformat()]
-            if sel_pbs:
-                where.append("producto_base = ANY(%s)"); params.append(sel_pbs)
-            if sel_cal:
-                where.append("lab_calidad = ANY(%s)"); params.append(sel_cal)
-            sql_lc = f"""
-                SELECT producto_base, cliente, corriente, lab_calidad, {param_sel} AS valor
-                FROM produccion.v_transacciones_limpias
-                WHERE {' AND '.join(where)}
-            """
-            try:
-                df_lc = cat(sql_lc, tuple(params))
-            except Exception as e:
-                st.exception(e); df_lc = pd.DataFrame()
-
-            if df_lc.empty:
-                st.info("Sin mediciones no-nulas de ese parametro en el rango.")
-            else:
-                df_lc["valor"] = pd.to_numeric(df_lc["valor"], errors="coerce")
-                df_lc = df_lc.dropna(subset=["valor"])
-                # Agrupado por producto_base + procedencia
-                resumen = (df_lc.groupby(["producto_base","cliente"])["valor"]
-                               .agg(n="size", promedio="mean", minimo="min", maximo="max", desvio="std")
-                               .reset_index())
-                resumen = resumen[resumen["n"] >= int(min_n)]
-                for c in ("promedio","minimo","maximo","desvio"):
-                    resumen[c] = resumen[c].round(2)
-                resumen = resumen.sort_values(["producto_base","promedio"], ascending=[True, False])
-
-                st.markdown(f"### {PARAMS[param_sel]} por producto base y cliente")
-
-                # Si eligio 1 solo producto: chart limpio por procedencia
-                if len(sel_pbs) == 1:
-                    sub = resumen[resumen["producto_base"]==sel_pbs[0]]
-                    st.markdown(f"**{sel_pbs[0]} — promedio por cliente**")
-                    st.bar_chart(sub, x="procedencia", y="promedio", use_container_width=True)
-                else:
-                    # vista por producto: tabla pivote (filas producto_base, columnas procedencia)
-                    piv = resumen.pivot_table(index="producto_base", columns="cliente",
-                                              values="promedio", aggfunc="mean")
-                    st.markdown("**Promedio por producto_base (filas) x cliente (columnas)**")
-                    st.dataframe(piv, use_container_width=True)
-
-                st.markdown("**Detalle (producto_base + cliente)**")
-                st.dataframe(resumen, use_container_width=True, hide_index=True, height=420)
-                st.caption("n = mediciones validas · desvio = desviacion estandar (consistencia del cliente).")
-                st.download_button("⬇️ Descargar CSV",
-                                   resumen.to_csv(index=False).encode("utf-8"),
-                                   file_name=f"lab_por_cliente_{param_sel}.csv", mime="text/csv")
-
     elif st.session_state.section == "VISTAS":
         # =================== VISTAS DE PRODUCCIÓN ===================
         st.title("\U0001F4CA Vistas de producción")
@@ -3522,12 +3522,23 @@ if st.session_state.section != "CARGAS":
                     st.error(f"No se pudo sincronizar: {_e}")
 
     elif st.session_state.section == "STOCK":
-        # =================== STOCK Y MOVIMIENTOS ===================
-        try:
-            from stock_section import render as _render_stock
-            _render_stock(USR, cat)
-        except Exception as _e:
-            st.error(f"No se pudo cargar Stock: {_e}")
+        # =================== STOCK (incluye ingresos de camiones) ===================
+        _stk_top = st.radio("Vista", ["📦 Stock y movimientos", "🚛 Ingresos diarios"],
+                            horizontal=True, key="stk_top_view", label_visibility="collapsed")
+        if _stk_top.startswith("📦"):
+            try:
+                from stock_section import render as _render_stock
+                _render_stock(USR, cat)
+            except Exception as _e:
+                st.error(f"No se pudo cargar Stock: {_e}")
+        else:
+            try:
+                _render_porteria(USR, cat, conectar)
+            except Exception as _e:
+                import traceback as _tbp
+                st.error(f"No se pudo cargar Ingresos: {_e}")
+                with st.expander("Detalle"):
+                    st.code(_tbp.format_exc())
 
     elif st.session_state.section == "CONDICIONALES":
         try:
