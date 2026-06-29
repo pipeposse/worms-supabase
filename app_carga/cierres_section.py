@@ -34,9 +34,9 @@ def render(USR, cat, conectar):
         st.error("No hay datos de cierres cargados.")
         return
 
-    t1, t2, t3, t4, t5, t6 = st.tabs(
+    t1, t2, t3, t4, t5, t6, t7 = st.tabs(
         ["📊 Resumen P&L", "🧭 Dónde está el valor", "📈 Evolución / Q1·Q2",
-         "💱 Precios MP vs venta", "⚠️ Observaciones", "💡 Insights"])
+         "💱 Precios MP vs venta", "⚠️ Observaciones", "💡 Insights", "💵 Pesos constantes"])
 
     # ============ 1 · Resumen P&L ============
     with t1:
@@ -165,3 +165,45 @@ def render(USR, cat, conectar):
             "y en **proteger el margen de exportación** frente al precio de la materia prima. "
             "La palanca #1 de resultado es el **costo de MP** (cada punto de MP sobre 17.500M de compra anual ≈ 175M de resultado).")
         st.caption("Análisis generado sobre los datos reales de los cierres ene–may 2026. Se actualiza al recargar tras nuevos cierres.")
+
+    # ============ 7 · Pesos constantes (IPC) ============
+    with t7:
+        st.subheader("Resultados en pesos constantes (deflactado por IPC) y en USD")
+        st.caption("En Argentina el salto nominal está dominado por la **inflación**, no por estacionalidad real. "
+                   "Acá los valores se llevan a **pesos constantes del último mes** y a **USD** para comparar volumen y margen reales. "
+                   "Editá la serie de IPC y tipo de cambio con los datos oficiales de **INDEC**.")
+        ipc = cat(f"SELECT to_char(mes,'YYYY-MM') AS mes, ipc_var_pct, ipc_indice, tc_usd, fuente FROM {S}.dim_ipc ORDER BY mes")
+        if ipc is not None and not ipc.empty:
+            _e = st.data_editor(
+                ipc.rename(columns={"mes":"Mes","ipc_var_pct":"IPC var %","ipc_indice":"IPC indice","tc_usd":"TC USD","fuente":"Fuente"}),
+                hide_index=True, use_container_width=True, key="ipc_ed", disabled=["Mes"])
+            if st.button("💾 Guardar serie IPC / TC", type="primary", key="ipc_save"):
+                try:
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            for _, r in _e.iterrows():
+                                cur.execute(
+                                    'UPDATE "cierres_worms".dim_ipc SET ipc_var_pct=%s, ipc_indice=%s, tc_usd=%s, fuente=%s '
+                                    "WHERE to_char(mes,'YYYY-MM')=%s",
+                                    (r["IPC var %"], r["IPC indice"], r["TC USD"], r["Fuente"], r["Mes"]))
+                        audit.log("U", "dim_ipc", 0, {"n": len(_e)})
+                    st.success("Serie IPC / TC guardada."); cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
+        real = cat(f"SELECT to_char(mes,'YYYY-MM') AS mes, ing_nominal, ing_real, resultado_real, ing_usd, resultado_usd "
+                   f"FROM {S}.v_pl_mensual_real ORDER BY mes")
+        if real is not None and not real.empty:
+            _t = pd.DataFrame({
+                "Mes": real["mes"],
+                "Ingreso nominal M": (real["ing_nominal"]/1e6).round(0),
+                "Ingreso real M": (real["ing_real"]/1e6).round(0),
+                "Resultado real M": (real["resultado_real"]/1e6).round(0),
+                "Ingreso USD (miles)": (real["ing_usd"]/1e3).round(0),
+                "Resultado USD (miles)": (real["resultado_usd"]/1e3).round(0)})
+            st.dataframe(_t, hide_index=True, use_container_width=True,
+                         column_config={c: st.column_config.NumberColumn(format="%.0f") for c in _t.columns if c != "Mes"})
+            _c = pd.DataFrame({"Mes": real["mes"], "Nominal": real["ing_nominal"]/1e6, "Real (constante)": real["ing_real"]/1e6})
+            st.line_chart(_c.set_index("Mes"), use_container_width=True)
+        st.info("**Sobre estacionalidad:** desestacionalizar formalmente (X-13 / STL) necesita 2–3 años de historia mensual. "
+                "Con 5 meses no es estadísticamente válido — queda preparado para cuando se acumulen más cierres. "
+                "El deflactado por IPC es, hoy, el ajuste correcto para comparar mes a mes.")
