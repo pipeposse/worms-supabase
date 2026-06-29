@@ -34,10 +34,10 @@ def render(USR, cat, conectar):
         st.error("No hay datos de cierres cargados.")
         return
 
-    t1, t9, t10, t2, t3, t4, t5, t6, t7, t8 = st.tabs(
+    t1, t9, t10, t2, t3, t4, t5, t6, t7, t8, t11 = st.tabs(
         ["📊 Resumen P&L", "🔑 Claves de rentabilidad", "🥧 Composición", "🧭 Dónde está el valor",
          "📈 Evolución / Q1·Q2", "💱 Precios MP vs venta", "⚠️ Observaciones", "💡 Insights",
-         "💵 Pesos constantes", "🛢️ Precios MP"])
+         "💵 Pesos constantes", "🛢️ Precios MP", "📂 Datos originales"])
 
     # ============ 1 · Resumen P&L ============
     with t1:
@@ -116,9 +116,11 @@ def render(USR, cat, conectar):
     # ============ 4 · Rentabilidad venta vs compra de MP (mensual, USD) ============
     with t4:
         st.subheader("Rentabilidad: precio de venta vs precio de compra de MP")
-        st.caption("Por producto, en **USD/TN** (lo comparable), con **evaluación mensual**. "
+        st.caption("**De dónde sale:** *Venta USD/TN* = promedio del **PRECIO** (filas en USD) de la hoja **BBDD_INGRESOS_FINAL**; "
+                   "*Compra USD/TN* = promedio del **PRECIO** de **BBDD_GASTOS** (rubro M.PRIMAS, por tonelada); *Spread* = venta − compra. "
+                   "Mirá los registros crudos en la pestaña **📂 Datos originales**. "
                    "⚠️ Para productos que se **transforman** (AG/AFE → ARE), la venta de acá es **transferencia interna**, "
-                   "no la exportación final: el margen real del transformado se realiza al exportar el ARE.")
+                   "no la exportación final: el margen real se realiza al exportar el ARE.")
         rv = cat(f"SELECT to_char(mes,'YYYY-MM') mes, producto, venta_usd, compra_usd, spread_usd, spread_pct, q_vend, q_comp "
                  f"FROM {S}.v_rentabilidad_venta_compra ORDER BY mes, producto")
         if rv is None or rv.empty:
@@ -318,3 +320,39 @@ def render(USR, cat, conectar):
                     use_container_width=True)
                 st.dataframe(gas.rename(columns={"rubro":"Rubro","m":"M ARS"}), hide_index=True, use_container_width=True)
         st.caption("Filtrá por **mes** y por **sector**. En el gasto, la **materia prima** domina la torta. Valores en millones de ARS.")
+
+    # ============ 11 · Datos originales ============
+    with t11:
+        st.subheader("Datos originales (trazabilidad)")
+        st.caption("Los **registros tal cual** salen de los cierres mensuales: hoja **BBDD_INGRESOS_FINAL** (ingresos) y "
+                   "**BBDD_GASTOS** (gastos). Todo el análisis de las otras pestañas se calcula a partir de estas filas.")
+        _tbl = st.radio("Tabla", ["Ingresos (BBDD_INGRESOS_FINAL)", "Gastos (BBDD_GASTOS)"], horizontal=True, key="orig_tbl")
+        _mses = cat(f"SELECT DISTINCT to_char(mes,'YYYY-MM') m FROM {S}.gastos ORDER BY 1")
+        _meses = _mses["m"].tolist() if _mses is not None else []
+        cmes, cq = st.columns([1, 2])
+        _msel = cmes.selectbox("Mes", ["(todos)"] + _meses, key="orig_mes")
+        _q = cq.text_input("Buscar (producto / descripción / cliente / rubro…)", key="orig_q")
+        _wm = "" if _msel == "(todos)" else f" WHERE to_char(mes,'YYYY-MM')='{_msel}'"
+        if _tbl.startswith("Ingresos"):
+            df = cat(f"SELECT to_char(mes,'YYYY-MM') AS mes, fecha, canal, area, sector, producto, cliente, descripcion, "
+                     f"um, cantidad, precio, moneda, subtotal, tc, iva, total, fuente, origen FROM {S}.ingresos{_wm} "
+                     f"ORDER BY mes, total DESC NULLS LAST")
+        else:
+            df = cat(f"SELECT to_char(mes,'YYYY-MM') AS mes, fecha, empresa, num, descripcion, precio, cantidad, um, monto, "
+                     f"concepto, tipo_gasto_i, tipo_gasto_ii, rubro, sector_cco, centro_costos, subrubro, sector_directo "
+                     f"FROM {S}.gastos{_wm} ORDER BY mes, monto DESC NULLS LAST")
+        if df is not None and not df.empty:
+            if _q.strip():
+                _ql = _q.strip().lower()
+                df = df[df.astype(str).apply(lambda r: _ql in " ".join(r.values).lower(), axis=1)]
+            _tot_col = "total" if _tbl.startswith("Ingresos") else "monto"
+            try:
+                _suma = pd.to_numeric(df[_tot_col], errors="coerce").sum()
+            except Exception:
+                _suma = 0
+            st.caption(f"**{len(df)} filas** · suma {('TOTAL' if _tbl.startswith('Ingresos') else 'MONTO_FINAL')}: {_suma/1e6:,.1f} M ARS")
+            st.dataframe(df, hide_index=True, use_container_width=True, height=560)
+            st.download_button("⬇️ CSV", df.to_csv(index=False).encode("utf-8"),
+                               file_name="cierres_datos_originales.csv", mime="text/csv", key="orig_dl")
+        else:
+            st.info("Sin registros para ese filtro.")
