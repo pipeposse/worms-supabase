@@ -1010,15 +1010,17 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                  if p.get("fuente") == "TANQUE" and p.get("id_tanque")]
     if proc == "PRODUCCION_ARE":
         for _s in (gli_fresca, gli_recup):
-            if _s.get("idt"):
-                _lab_tids.append(int(_s["idt"]))
+            _picks = _s.get("tanques") or ([{"idt": _s.get("idt")}] if _s.get("idt") else [])
+            for _p in _picks:
+                if _p.get("idt"):
+                    _lab_tids.append(int(_p["idt"]))
     if _lab_tids:
         try:
             _pl = cat(
                 "SELECT t.nombre AS \"Tanque\", p.codigo_producto AS \"Producto\", "
                 "       f.acidez_pct AS \"Acidez %%\", f.agua_pct AS \"Agua %%\", f.sedimentos_pct AS \"Sedim. %%\", "
                 "       f.densidad_g_ml AS \"Densidad\", "
-                "       (f.parametros_extra->>'glicerina_pct')::numeric AS \"Glicerina %%\", "
+                "       COALESCE(f.glicerina_pct, (f.parametros_extra->>'glicerina_pct')::numeric) AS \"Glicerina %%\", "
                 "       (f.parametros_extra->>'glicerol_pct')::numeric AS \"Glicerol %%\" "
                 "FROM produccion.fact_param_tanque f "
                 "JOIN produccion.dim_tanque t ON t.id_tanque=f.id_tanque "
