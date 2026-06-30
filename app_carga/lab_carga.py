@@ -765,6 +765,7 @@ def _reset(tok):
     st.session_state["lab_tok"] = uuid.uuid4().hex[:8]
     st.session_state["lab_edit_ctx"] = None
     st.session_state.pop("lab_ticket_sel", None)
+    st.session_state["lab_celebrar"] = True
     st.rerun()
 
 
@@ -796,6 +797,9 @@ def render_laboratorio(get_conn=None, usr=None):
     ss = st.session_state
     ss.setdefault("lab_tok", uuid.uuid4().hex[:8])
     ss.setdefault("lab_edit_ctx", None)
+    if ss.pop("lab_celebrar", False):
+        st.balloons()
+        st.toast("Evaluación cargada ✅")
 
     _uname = ""
     if usr:
