@@ -660,12 +660,13 @@ def ticket_produccion(ticket, get_conn=None):
     """Si el ticket es de producción (ticket_producto_final tipo F8), devuelve datos de la reacción."""
     if not ticket:
         return None
-    sql = ("SELECT identificador_unidad, tipo_proceso, id_producto_buscado, calidad_buscada, "
-           "parametros_proceso->>'formula_nombre' AS formula, "
-           "(parametros_proceso->>'are_objetivo_kg') AS are_kg "
-           "FROM produccion.fact_batch_proceso "
-           "WHERE ticket_producto_final = %s AND COALESCE(anulado,false)=false "
-           "ORDER BY id_batch DESC LIMIT 1")
+    sql = ("SELECT b.identificador_unidad, b.tipo_proceso, b.id_producto_buscado, b.calidad_buscada, "
+           "b.parametros_proceso->>'formula_nombre' AS formula, "
+           "(b.parametros_proceso->>'are_objetivo_kg') AS are_kg, dp.codigo_producto "
+           "FROM produccion.fact_batch_proceso b "
+           "LEFT JOIN produccion.dim_producto dp ON dp.id_producto = b.id_producto_buscado "
+           "WHERE b.ticket_producto_final = %s AND COALESCE(b.anulado,false)=false "
+           "ORDER BY b.id_batch DESC LIMIT 1")
     try:
         with _conn_cm(get_conn) as conn:
             with conn.cursor() as cur:
@@ -674,7 +675,7 @@ def ticket_produccion(ticket, get_conn=None):
         if not r:
             return None
         return {"identificador": r[0], "tipo_proceso": r[1], "id_producto": r[2],
-                "calidad": r[3], "formula": r[4], "are_kg": r[5]}
+                "calidad": r[3], "formula": r[4], "are_kg": r[5], "codigo": r[6]}
     except Exception:
         return None
 
@@ -767,6 +768,20 @@ def _reset(tok):
     st.session_state.pop("lab_ticket_sel", None)
     st.session_state["lab_celebrar"] = True
     st.rerun()
+
+
+def cargas_del_dia(get_conn=None, dia=None):
+    """Evaluaciones de laboratorio cargadas en un día (default hoy), para la tabla resumen."""
+    sql = ("select to_char(fecha,'HH24:MI') AS \"Hora\", ticket AS \"Ticket\", "
+           "producto_lab AS \"Producto\", calidad_final_lab AS \"Calidad\", "
+           "rechazado AS \"Estado\", id_tanque_1 AS \"Tanque\", empleado AS \"Empleado\" "
+           "from produccion.v_procesos_lab_efectivo "
+           "where fecha::date = COALESCE(%s, (now() at time zone 'America/Argentina/Buenos_Aires')::date) "
+           "order by fecha desc nulls last limit 300")
+    with _conn_cm(get_conn) as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (dia,))
+            return [dict(r) for r in cur.fetchall()]
 
 
 def render_laboratorio(get_conn=None, usr=None):
@@ -949,8 +964,16 @@ def render_laboratorio(get_conn=None, usr=None):
             _opt = {"— sin ticket —": None}
             for _t in _ticks:
                 _opt[_lbl_tk(_t)] = _t
-            _elec = c_tk2.selectbox(f"Ticket de portería ({len(_ticks)})", list(_opt.keys()),
-                                    key="lab_tksel_box")
+            _keys = list(_opt.keys())
+            _ft = f_tk.strip()
+            _auto = 0
+            if _ft:
+                for _i, (_lab, _tv) in enumerate(_opt.items()):
+                    if _tv and str(_tv["transaccion"]) == _ft:
+                        _auto = _i
+                        break
+            _elec = c_tk2.selectbox(f"Ticket de portería ({len(_ticks)})", _keys, index=_auto,
+                                    key=f"lab_tksel_box_{_ft}")
             tk_sel = _opt[_elec]
         else:
             c_tk2.caption("Escribí el Nº. Si es de portería aparece para autollenar; si es F# es producción.")
@@ -967,10 +990,16 @@ def render_laboratorio(get_conn=None, usr=None):
     st.markdown("**2) Producto a evaluar**")
     _all_bases = sorted({b for b in _pbases if b} | {"AG", "ARE", "AFE", "DISPOSICION FINAL DE LIQUIDOS", "BORRA", "SEBO", "GLICERINA"})
     _all_bases = _all_bases + ["OTRO (genérico)"]
-    _sugbase = str((tk_sel or {}).get("producto_base") or "").upper()
+    _raw_base = ((tk_sel or {}).get("producto_base") or (prod_ctx.get("codigo") if prod_ctx else "") or "")
+    _sugbase = str(_raw_base).upper()
+    if _sugbase and _sugbase not in _all_bases:
+        _fam = _sugbase.split("-")[0]
+        if _fam in _all_bases:
+            _sugbase = _fam
     _idx = _all_bases.index(_sugbase) if _sugbase in _all_bases else len(_all_bases) - 1
-    base_sel = st.selectbox("Producto base", _all_bases, index=_idx, key="lab_prod_nuevo",
-                            help="Todos los productos base. Si es uno raro elegí 'OTRO (genérico)' para cargar todos los parámetros.")
+    _tkkey = (f_tk.strip() or (str(tk_sel["transaccion"]) if tk_sel else "blank"))
+    base_sel = st.selectbox("Producto base", _all_bases, index=_idx, key=f"lab_prod_nuevo_{_tkkey}",
+                            help="Se autocompleta desde el ticket. Si es uno raro elegí 'OTRO (genérico)'.")
 
     _base_sug = (str((tk_sel or {}).get("producto_base") or "").strip()
                  or (base_sel if base_sel != "OTRO (genérico)" else ""))
@@ -989,6 +1018,20 @@ def render_laboratorio(get_conn=None, usr=None):
         pf_new = dict(pf_new or {})
         pf_new.setdefault("producto_lab", base_sel)
     _fn(pf_new or None, None, _form_tok, get_conn, usuario)
+
+    # -------- Tabla: todo lo cargado hoy --------
+    st.divider()
+    st.markdown("#### 📋 Cargado hoy")
+    try:
+        _hoy = cargas_del_dia(get_conn=get_conn)
+    except Exception as e:
+        _hoy = []
+        st.caption(f"(no pude leer lo cargado hoy: {e})")
+    if not _hoy:
+        st.caption("Todavía no se cargó ninguna evaluación hoy.")
+    else:
+        st.caption(f"{len(_hoy)} evaluación(es) cargada(s) hoy")
+        st.dataframe(_hoy, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
