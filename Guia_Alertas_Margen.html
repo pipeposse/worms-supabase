@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alertas de margen y rendimiento</title>
+<style>
+  :root{--ink:#13182a;--muted:#5b6172;--line:#e4e7f0;--bg:#f6f7fb;--card:#fff;
+    --green:#15803d;--red:#dc2626;--amber:#b45309;--indigo:#4338ca;--violet:#7c3aed}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);line-height:1.6;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Arial,sans-serif;padding-bottom:60px}
+  .wrap{max-width:860px;margin:0 auto;padding:0 18px}
+  header{background:linear-gradient(120deg,var(--red),var(--amber));color:#fff;padding:32px 18px 38px}
+  header h1{margin:6px 0 4px;font-size:1.7rem}header p{margin:0;color:#fff;opacity:.92}
+  h2{font-size:1.25rem;margin:30px 0 6px;border-bottom:2px solid var(--line);padding-bottom:6px}
+  h3{font-size:1.05rem;margin:16px 0 4px}
+  .muted{color:var(--muted)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:12px 0;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+  .big{font-size:1.1rem}
+  .alert{border-radius:12px;padding:12px 16px;margin:10px 0;border:1px solid;display:flex;gap:12px;align-items:flex-start}
+  .alert .ic{font-size:1.4rem;flex:none}
+  .a-red{background:#fef2f3;border-color:#fecaca}
+  .a-amber{background:#fffbeb;border-color:#fde68a}
+  .a-red b{color:var(--red)}.a-amber b{color:var(--amber)}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;background:#11162a;color:#e8ecff;padding:1px 6px;border-radius:5px;font-size:.86em}
+  table{width:100%;border-collapse:collapse;margin:6px 0;font-size:.94rem}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:#eef0f7;font-size:.82rem;text-transform:uppercase;letter-spacing:.03em;color:#414b6b}
+  .note{border-left:4px solid var(--indigo);background:#eef0ff;border-radius:8px;padding:12px 14px;margin:12px 0}
+  .step{display:flex;gap:12px;align-items:flex-start;margin:8px 0}
+  .num{flex:none;width:28px;height:28px;border-radius:50%;background:var(--indigo);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800}
+  .pill{display:inline-block;border-radius:7px;padding:1px 9px;font-weight:700;font-size:.8rem}
+  .pr{background:#fee2e2;color:var(--red)}.pa{background:#fef3c7;color:var(--amber)}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1>🔔 Alertas de margen y rendimiento</h1>
+  <p>El sistema te avisa cuando una reacción pierde plata o rinde por debajo de lo esperado.</p>
+</div></header>
+<div class="wrap">
+
+  <h2>1 · Qué hace esta mejora</h2>
+  <div class="card big">
+    Antes, para saber si una reacción ganó o perdió plata había que <b>abrir la tabla</b> de Margen por reacción y mirar.
+    Ahora el sistema lo <b>detecta solo</b> y lo pone como <b>alerta</b>, sin que nadie tenga que ir a buscarlo.
+  </div>
+  <div class="note">Es la capa de aviso sobre el <b>margen de transformación</b> (lo que deja cada reacción = valor del ARE − costo de MP − insumos).
+  Si no leíste esa parte, mirá primero la guía <i>Margen de transformación</i>.</div>
+
+  <h2>2 · Las dos alertas nuevas</h2>
+
+  <div class="alert a-red">
+    <div class="ic">🔴</div>
+    <div><b>MARGEN NEGATIVO</b> <span class="pill pr">alta</span><br>
+    <i>"Reacción RX‑2026‑00NN con MARGEN NEGATIVO (−Y USD, −Z%) — revisar precio MP y rendimiento"</i><br>
+    <span class="muted">Salta cuando una reacción <b>pierde plata</b>: lo que valió el ARE producido fue menor que lo que costó la materia prima + insumos.</span></div>
+  </div>
+
+  <div class="alert a-amber">
+    <div class="ic">🟠</div>
+    <div><b>RENDIMIENTO BAJO</b> <span class="pill pa">media</span><br>
+    <i>"Reacción RX‑2026‑00NN rindió 92% vs objetivo 97% → −104 USD de margen"</i><br>
+    <span class="muted">Salta cuando el <b>rendimiento real</b> (kg de ARE por kg de MP) quedó <b>por debajo del objetivo</b> de la fórmula más de lo permitido.
+    Te dice además cuántos USD de margen costó ese desvío.</span></div>
+  </div>
+
+  <h2>3 · Cuándo se disparan (el umbral)</h2>
+  <div class="card">
+    <table>
+      <tr><th>Alerta</th><th>Se dispara si…</th><th>Configurable</th></tr>
+      <tr><td>🔴 Margen negativo</td><td>el margen de la reacción es menor a 0 USD</td><td>—</td></tr>
+      <tr><td>🟠 Rendimiento bajo</td><td>(rendimiento objetivo − rendimiento real) supera el umbral</td>
+          <td><code>ARE_DESVIO_RENDIM_MAX_PP</code> = <b>3 puntos</b></td></tr>
+    </table>
+    <p class="muted">El umbral de rendimiento se edita en <b>Fórmulas → Condicionales → Condiciones de producción</b> (clave
+    <code>ARE_DESVIO_RENDIM_MAX_PP</code>). Si lo subís a 5, solo avisa cuando el rendimiento cae más de 5 puntos.
+    Las alertas solo miran reacciones de los <b>últimos 20 días</b>, para que sean del momento.</p>
+  </div>
+
+  <h2>4 · Dónde las ves</h2>
+  <div class="card">
+    <div class="step"><div class="num">1</div><div>Entrá a <b>📈 Estado de planta → 🔔 Alertas</b>.</div></div>
+    <div class="step"><div class="num">2</div><div>Ahí conviven con las otras alertas (reacción esperando lab, purga sin OK, tanque casi lleno).
+      Las de margen aparecen en <b>rojo</b> (alta) y las de rendimiento en <b>naranja</b> (media).</div></div>
+    <div class="step"><div class="num">3</div><div>Para el detalle (cuánto y por qué), abrí la pestaña <b>💵 Margen por reacción</b> y mirá la fila de esa reacción.</div></div>
+  </div>
+
+  <h2>5 · Qué hacer cuando salta</h2>
+  <div class="card">
+    <h3>🔴 Margen negativo</h3>
+    <ul>
+      <li>¿El <b>precio de la MP</b> está bien cargado? (a veces subió y no se actualizó). Revisar en <b>Precios de referencia</b>.</li>
+      <li>¿La reacción <b>rindió mal</b>? (poca ARE por mucha MP). Ver la alerta de rendimiento.</li>
+      <li>¿El <b>precio de venta</b> del ARE/AG‑E bajó? Si el mercado cambió, actualizar el precio de referencia.</li>
+    </ul>
+    <h3>🟠 Rendimiento bajo</h3>
+    <ul>
+      <li>Causa típica: <b>materia prima con más agua</b> de lo previsto → sale menos ARE. Revisar el lab de esa MP.</li>
+      <li>Proceso: ¿faltó reacción, temperatura o glicerina? Revisar la evaluación interna de la reacción.</li>
+      <li>Es un <b>aviso de plata</b>: cada punto de rendimiento perdido son kg de ARE que no se vendieron.</li>
+    </ul>
+  </div>
+
+  <div class="note"><b>En una frase:</b> el sistema ahora te <b>persigue</b> los problemas de plata en producción en lugar de esperar que los busques.
+  Una reacción que pierde o rinde flojo aparece sola en Alertas, con el número en USD, el mismo día.</div>
+
+  <p class="muted" style="text-align:center;margin-top:28px">WORMS · Alertas de margen y rendimiento · documento explicativo</p>
+</div>
+</body>
+</html>

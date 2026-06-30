@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Guía del sistema · Operario</title>
+<style>
+  :root{--indigo:#4f46e5;--violet:#7c3aed;--ink:#1c2030;--muted:#5b6172;--line:#e6e8f0;
+    --bg:#f5f6fb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;--card:#fff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);line-height:1.6;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;padding-bottom:60px}
+  .wrap{max-width:900px;margin:0 auto;padding:0 16px}
+  header{background:linear-gradient(120deg,var(--indigo),var(--violet));color:#fff;padding:34px 16px 42px;text-align:center}
+  header h1{margin:0 0 6px;font-size:1.85rem}
+  header p{margin:0;opacity:.93}
+  .chip{display:inline-block;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);
+    border-radius:999px;padding:4px 14px;margin-top:12px;font-weight:600;font-size:.9rem}
+  h2{font-size:1.3rem;margin:34px 0 6px;display:flex;align-items:center;gap:10px}
+  h2 .num{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;
+    background:var(--indigo);color:#fff;border-radius:50%;font-size:.95rem;flex:none}
+  h3{font-size:1.05rem;margin:18px 0 4px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin:14px 0;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+  .muted{color:var(--muted)}
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;justify-content:center;margin:8px 0}
+  .box{flex:1;min-width:210px;border:2px solid var(--indigo);border-radius:12px;padding:12px 14px;background:#eef1fe}
+  .box h4{margin:0 0 4px;color:var(--indigo);font-size:1rem}
+  .box p{margin:0;font-size:.88rem;color:var(--muted)}
+  .arrow{align-self:center;font-size:1.5rem;color:var(--violet);font-weight:800}
+  ol.steps{counter-reset:s;list-style:none;padding:0;margin:8px 0}
+  ol.steps li{position:relative;padding:10px 0 10px 44px;border-bottom:1px dashed var(--line)}
+  ol.steps li:last-child{border-bottom:0}
+  ol.steps li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:9px;width:30px;height:30px;
+    background:#eef0fd;color:var(--indigo);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800}
+  .new{border-left:4px solid var(--ok);background:#f0fdf4;border-radius:8px;padding:10px 14px;margin:10px 0}
+  .new b{color:#166534}
+  .note{border-left:4px solid var(--indigo);background:#eef1fe;border-radius:8px;padding:10px 14px;margin:10px 0}
+  .pill{display:inline-block;border-radius:8px;padding:2px 9px;font-weight:700;font-size:.84rem;border:1px solid}
+  .ok{color:var(--ok);border-color:#bbf7d0;background:#f0fdf4}
+  .warn{color:var(--warn);border-color:#fde68a;background:#fffbeb}
+  .bad{color:var(--bad);border-color:#fecaca;background:#fef2f2}
+  .blue{color:var(--indigo);border-color:#c7d2fe;background:#eef2ff}
+  table{width:100%;border-collapse:collapse;margin:8px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);font-size:.93rem;vertical-align:top}
+  th{background:#f3f4fb}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:620px){.grid{grid-template-columns:1fr}.flow .arrow{transform:rotate(90deg)}}
+  .mini{background:#fafbff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .mini h4{margin:0 0 4px;font-size:1rem}.mini p{margin:0;color:var(--muted);font-size:.92rem}
+  .tag{font-family:ui-monospace,Menlo,Consolas,monospace;background:#11162a;color:#e8ecff;padding:1px 7px;border-radius:6px;font-size:.88rem}
+  .toc{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+  .toc a{text-decoration:none;color:var(--indigo);background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:.9rem;font-weight:600}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏭 Cómo funciona el sistema</h1>
+  <p>Guía para el operario — y qué cambió con las últimas mejoras</p>
+  <span class="chip">WORMS · Panel de producción</span>
+</header>
+
+<div class="wrap">
+  <div class="toc">
+    <a href="#idea">La idea</a>
+    <a href="#flujo">El circuito</a>
+    <a href="#dia">Tu día</a>
+    <a href="#estado">Estado de planta</a>
+    <a href="#cambia">Qué cambió</a>
+    <a href="#reglas">Reglas de oro</a>
+  </div>
+
+  <!-- IDEA -->
+  <h2 id="idea"><span class="num">1</span> La idea en una frase</h2>
+  <div class="card">
+    <p style="font-size:1.08rem">El sistema sigue <b>cada reacción</b> desde que dirección la planifica hasta que el producto queda en el tanque. Tres equipos trabajan sobre la <b>misma reacción</b>, cada uno en su momento. Vos, el operario, sos el que la <b>ejecuta en planta</b>.</p>
+  </div>
+
+  <!-- FLUJO -->
+  <h2 id="flujo"><span class="num">2</span> El circuito: quién hace qué</h2>
+  <div class="card">
+    <div class="flow">
+      <div class="box"><h4>🗓️ Planificación</h4><p><b>Dirección.</b> Arma la reacción: qué reactor, qué materia prima, la fórmula y los tanques destino. Genera un <b>ID</b> <span class="tag">RX-2026-0014</span>.</p></div>
+      <div class="arrow">→</div>
+      <div class="box"><h4>👷 Producción en planta</h4><p><b>Vos.</b> Tomás ese ID, hacés el checklist + caldera y vas avanzando la reacción. Pedís al lab cuando hace falta.</p></div>
+      <div class="arrow">→</div>
+      <div class="box"><h4>🧪 Laboratorio</h4><p>Mide acidez, purga, azufre. Su resultado <b>destraba</b> el siguiente paso y decide a qué tanque va.</p></div>
+    </div>
+    <div class="note">Es un <b>circuito</b>, no una línea: el laboratorio te devuelve el OK para que avances, y dirección ve todo el tiempo cómo va. Por eso es tan importante cargar las cosas <b>en el momento</b>.</div>
+  </div>
+
+  <!-- ESTADOS -->
+  <h2 id="dia"><span class="num">3</span> Tu día: los estados de una reacción</h2>
+  <p class="muted">Una reacción pasa por estos pasos. El sistema te muestra en cuál está y qué tenés que hacer.</p>
+  <div class="card">
+    <ol class="steps">
+      <li><b>PLANIFICADO</b> — Dirección la dejó lista. En <b>👷 Producción en planta</b> la elegís por su ID y arrancás.</li>
+      <li><b>REACCIÓN</b> — Hacés el <b>checklist</b>, prendés la <b>caldera</b> y empieza. Vas cargando las evaluaciones internas (acidez, temperatura).</li>
+      <li><b>REPOSO</b> — Cuando la acidez baja a lo pedido, pasa sola a reposo. Esperás.</li>
+      <li><b>DECANTACIÓN</b> — Sacás la purga y se la mandás al laboratorio. El lab carga el <b>% de glicerina</b>.
+        <div style="margin-top:8px">
+          <span class="pill ok">Purga ≤ corte → OK, podés enviar a destino</span>
+          <span class="pill bad">Purga &gt; corte → seguí decantando</span>
+        </div>
+      </li>
+      <li><b>FINALIZADO</b> — El producto va al tanque de destino. La reacción quedó cerrada y el stock se actualiza solo.</li>
+    </ol>
+    <div class="note">Vos <b>no</b> definís el tanque final ni la fórmula: eso ya viene de Planificación. Tu trabajo es <b>ejecutar y cargar lo que pasa</b>.</div>
+  </div>
+
+  <!-- ESTADO DE PLANTA -->
+  <h2 id="estado"><span class="num">4</span> La pantalla nueva: 📈 Estado de planta</h2>
+  <p class="muted">Es el lugar para mirar de un vistazo cómo viene todo. Tiene 5 solapas:</p>
+  <div class="card">
+    <div class="grid">
+      <div class="mini"><h4>🏭 Tablero</h4><p>Cada reacción, su estado y <b>a quién está esperando</b> (laboratorio o vos) y hace cuántas horas.</p></div>
+      <div class="mini"><h4>🧪 Bandeja lab</h4><p>Las reacciones que esperan un resultado del laboratorio. Si tu reacción está acá, está <b>trabada</b> hasta que el lab cargue.</p></div>
+      <div class="mini"><h4>🔗 Trazabilidad</h4><p>La historia de un lote: qué materia prima entró, de qué tanque/ticket, y a dónde salió el producto.</p></div>
+      <div class="mini"><h4>📉 Mermas</h4><p>Lo planificado contra lo real: cuántos kg de ARE se esperaban y cuántos salieron.</p></div>
+      <div class="mini"><h4>🔔 Alertas</h4><p>Lo que necesita atención ahora: reacción esperando lab, purga sin OK, o un tanque casi lleno.</p></div>
+    </div>
+    <div class="note">Si una reacción tuya “no avanza”, mirá el <b>Tablero</b>: te dice si está esperando al laboratorio. Y en <b>Alertas</b> ves lo urgente.</div>
+  </div>
+
+  <!-- QUE CAMBIA -->
+  <h2 id="cambia"><span class="num">5</span> Qué cambió con las mejoras</h2>
+  <div class="card">
+    <div class="new"><b>Ahora ves a quién espera cada reacción.</b> Antes no era claro si una reacción estaba trabada por el laboratorio. Ahora el <b>Tablero</b> y la <b>Bandeja de lab</b> lo muestran.</div>
+    <div class="new"><b>El corte de purga lo manda dirección.</b> El “≤ 2%” ya no está fijo en el código: se configura en <b>Condicionales</b> y el sistema lo respeta de verdad. Si cambia el número, cambia el corte.</div>
+    <div class="new"><b>El sistema te sugiere el tanque.</b> Al cargar en el laboratorio aparece un <b>tanque tentativo</b> (por producto, lugar y parámetros). Si va a otro, lo cambiás y ponés el motivo: el sistema <b>aprende</b> para la próxima.</div>
+    <div class="new"><b>Te avisa si un dato está mal.</b> Si cargás un valor imposible (por ejemplo un % mayor a 100 o negativo) no te deja guardar, así no se ensucia el stock ni las sugerencias.</div>
+    <div class="new"><b>Trazabilidad y mermas.</b> Se puede seguir un lote de punta a punta y comparar lo planificado con lo real. Sirve para mejorar las fórmulas y responder a clientes.</div>
+  </div>
+
+  <h3>Lo que NO cambió para vos</h3>
+  <div class="card">
+    <p>Tu forma de trabajar es la misma: tomás el ID de producción, hacés checklist + caldera, cargás las evaluaciones internas y la purga. Lo nuevo es <b>más visibilidad</b> (Estado de planta) y <b>menos errores</b> (validaciones y umbrales bien puestos).</p>
+  </div>
+
+  <!-- REGLAS -->
+  <h2 id="reglas"><span class="num">6</span> Reglas de oro</h2>
+  <div class="card">
+    <table>
+      <tr><th>Hacé</th><th>Por qué</th></tr>
+      <tr><td>Cargá <b>en el momento</b> (evaluaciones, purga, etapas).</td><td>El estado y las alertas dependen de eso. Si no cargás, la reacción “queda colgada”.</td></tr>
+      <tr><td>Usá siempre el <b>ID de producción</b> que te dio Planificación.</td><td>Es lo que une todo: fórmula, tanques, tickets de lab y stock.</td></tr>
+      <tr><td>Si algo no avanza, mirá <b>Estado de planta → Tablero</b>.</td><td>Te dice si está esperando al laboratorio o a vos.</td></tr>
+      <tr><td>Revisá <b>Alertas</b> al empezar el turno.</td><td>Ves de una lo urgente: purgas sin OK, tanques llenos, reacciones esperando.</td></tr>
+      <tr><td>No inventes valores para “que pase”.</td><td>El sistema valida rangos; un dato falso ensucia el stock y las decisiones.</td></tr>
+    </table>
+  </div>
+
+  <p class="muted" style="text-align:center;margin-top:30px">WORMS · Guía del sistema para el operario · uso interno</p>
+</div>
+</body>
+</html>

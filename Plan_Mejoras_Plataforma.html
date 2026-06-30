@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan de mejoras · WORMS</title>
+<style>
+  :root{--indigo:#4f46e5;--violet:#7c3aed;--ink:#1c2030;--muted:#5b6172;--line:#e6e8f0;
+    --bg:#f5f6fb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;--card:#fff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);line-height:1.6;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;padding-bottom:60px}
+  .wrap{max-width:920px;margin:0 auto;padding:0 18px}
+  header{background:linear-gradient(120deg,var(--indigo),var(--violet));color:#fff;padding:36px 18px 42px;text-align:center}
+  header h1{margin:0 0 6px;font-size:1.95rem}
+  header p{margin:0;opacity:.92}
+  h2{font-size:1.35rem;margin:36px 0 8px;border-bottom:2px solid var(--line);padding-bottom:6px}
+  h3{font-size:1.08rem;margin:20px 0 4px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin:14px 0;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+  .muted{color:var(--muted)}
+  code,.mono{font-family:ui-monospace,Menlo,Consolas,monospace;background:#11162a;color:#e8ecff;padding:1px 6px;border-radius:5px;font-size:.86em}
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;justify-content:center;margin:10px 0}
+  .box{flex:1;min-width:200px;border:2px solid var(--indigo);border-radius:12px;padding:12px 14px;background:#eef1fe}
+  .box h4{margin:0 0 4px;color:var(--indigo)}
+  .box p{margin:0;font-size:.9rem;color:var(--muted)}
+  .arrow{align-self:center;font-size:1.5rem;color:var(--violet);font-weight:800}
+  .pri{display:inline-block;border-radius:7px;padding:2px 10px;font-weight:800;font-size:.78rem;color:#fff;margin-right:6px}
+  .p0{background:var(--bad)}.p1{background:var(--warn)}.p2{background:#0ea5e9}
+  .imp{font-size:.82rem;color:var(--muted);margin-top:6px}
+  .imp b{color:var(--ink)}
+  table{width:100%;border-collapse:collapse;margin:8px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);font-size:.92rem;vertical-align:top}
+  th{background:#f3f4fb}
+  .finding{border-left:4px solid var(--bad);background:#fef4f4;border-radius:8px;padding:10px 14px;margin:10px 0;font-size:.95rem}
+  .win{border-left:4px solid var(--ok);background:#f0fdf4;border-radius:8px;padding:10px 14px;margin:10px 0;font-size:.95rem}
+  ul{margin:6px 0}
+  .tag{display:inline-block;background:#eef2ff;color:var(--indigo);border:1px solid #c7d2fe;border-radius:999px;padding:1px 9px;font-size:.8rem;font-weight:600;margin:2px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Plan de mejoras — WORMS</h1>
+  <p>Producción en planta · Laboratorio · Centro de Planificación</p>
+</header>
+<div class="wrap">
+
+  <h2>1 · Cómo se relacionan hoy las tres secciones</h2>
+  <div class="card">
+    <div class="flow">
+      <div class="box"><h4>🗓️ Planificación</h4><p>Dirección arma la reacción: reactor, MP, glicerina, fórmula, ARE objetivo y <b>tanques destino</b>. Genera el ID <span class="mono">RX-AAAA-NNNN</span>.</p></div>
+      <div class="arrow">→</div>
+      <div class="box"><h4>👷 Producción en planta</h4><p>El operario toma el ID, hace checklist + caldera y avanza estados. Genera tickets <b>R#</b> (validación) y <b>F#</b> (producto final).</p></div>
+      <div class="arrow">→</div>
+      <div class="box"><h4>🧪 Laboratorio</h4><p>Evalúa esos tickets y los de portería. Define calidad, desbloquea la reacción y asigna tanque de acopio.</p></div>
+    </div>
+    <p class="muted">El lazo se cierra de vuelta: Laboratorio valida (acidez, purga, azufre) y <b>destraba el cambio de estado</b> de la reacción; sus parámetros por tanque alimentan a Planificación cuando ésta elige la MP. Es un triángulo, no una línea.</p>
+  </div>
+
+  <h2>2 · Diagnóstico técnico (con respaldo)</h2>
+  <p class="muted">No son opiniones: son puntos verificados en el código y el modelo de datos.</p>
+
+  <div class="finding"><b>H1 — Los umbrales de "Condicionales" no los lee la producción.</b><br>
+  <span class="mono">PURGA_CORTE = 2.0</span> está fijo en <code>decantacion.py</code> y los cortes (acidez ≤13 / ≤10) viven en funciones SQL del motor de reglas. La tabla <code>dic_condicion_produccion</code> que editás en Condicionales <b>hoy no afecta la decisión real</b>. Dos fuentes de verdad → riesgo de que la planta corte con un valor distinto al que dirección cree.</div>
+
+  <div class="finding"><b>H2 — Dos tablas de laboratorio en paralelo.</b><br>
+  <code>lab_evaluaciones</code> (app) y <code>procesos_lab</code> (Access). La vista de Asignación de portería lee una y la de producción otra; por eso "Asignación → Producción" mostraba 5 filas y "Portería" ~800. Doble fuente, difícil de explicar y de auditar.</div>
+
+  <div class="finding"><b>H3 — El handoff Producción↔Laboratorio es por texto.</b><br>
+  La reacción guarda <code>ticket_validacion_lab</code> (R#) y <code>ticket_producto_final</code> (F#) como strings; el lab encuentra el batch por coincidencia de texto. No hay una <b>entidad "pedido de laboratorio"</b> con estado. Resultado: el lab no tiene una bandeja clara de "qué reacción me está esperando ahora".</div>
+
+  <div class="finding"><b>H4 — La asignación de tanque del producto final va por otro camino que el acopio.</b><br>
+  Planificación elige <code>id_tanque_are_final</code> a mano; el laboratorio ya tiene un motor de sugerencia + aprendizaje (capacidad + parámetros + preferencia) que <b>no se usa para el producto final</b>. Dos lógicas para el mismo problema.</div>
+
+  <div class="finding"><b>H5 — Falta trazabilidad de punta a punta.</b><br>
+  Los movimientos ya traen <code>id_batch</code> y <code>ticket_porteria</code>, pero no hay una vista que cuente la historia completa de un lote: de qué ticket/tanque salió la MP → qué reacción la consumió → qué producto salió → a qué tanque, con kg y mermas.</div>
+
+  <h2>3 · Plan de mejoras priorizado</h2>
+  <p><span class="pri p0">P0</span> impacto alto / desbloquea coherencia &nbsp; <span class="pri p1">P1</span> alto valor &nbsp; <span class="pri p2">P2</span> mejora incremental</p>
+
+  <h3>A · Funcionamiento (que sea coherente y confiable)</h3>
+
+  <div class="card">
+    <p><span class="pri p0">P0</span><b>1. Un solo lugar para los umbrales y que el motor los lea.</b></p>
+    <p class="muted">Hacer que el motor de reglas (SQL) y <code>decantacion.py</code> lean <code>dic_condicion_produccion</code> en vez de constantes. Editar el 2% / 13% / 10% en Condicionales debe cambiar de verdad el corte.</p>
+    <div class="imp"><b>Impacto:</b> elimina la doble verdad y le da control real a dirección. <b>Esfuerzo:</b> medio.</div>
+  </div>
+
+  <div class="card">
+    <p><span class="pri p0">P0</span><b>2. "Pedido de laboratorio" como entidad única.</b></p>
+    <p class="muted">Toda necesidad de lab (ingreso de portería, validación R# de reacción, producto final F#) es un <b>ticket con estado</b> (PENDIENTE → EVALUADO), tipo, <code>id_batch</code> y producto esperado. El lab trabaja desde <b>una bandeja</b>, no buscando strings.</p>
+    <div class="imp"><b>Impacto:</b> conecta Producción↔Lab sin fragilidad; habilita la bandeja y las alertas. <b>Esfuerzo:</b> alto.</div>
+  </div>
+
+  <div class="card">
+    <p><span class="pri p1">P1</span><b>3. Unificar las dos tablas de laboratorio</b> en una vista efectiva única que consuman todas las pantallas (asignación, resultados, dashboard). Una sola fuente de verdad.</p>
+    <div class="imp"><b>Impacto:</b> consistencia y menos bugs. <b>Esfuerzo:</b> medio.</div>
+  </div>
+
+  <div class="card">
+    <p><span class="pri p1">P1</span><b>4. Cerrar el lazo de tanque también para el producto final</b> con el mismo motor de sugerencia+aprendizaje del acopio (materia prima + parámetros + disponibilidad + score). Planificación sugiere, decantación/lab confirma, y entrena igual.</p>
+    <div class="imp"><b>Impacto:</b> una sola lógica de asignación en toda la planta. <b>Esfuerzo:</b> medio.</div>
+  </div>
+
+  <h3>B · Entendimiento (que se vea el estado de un vistazo)</h3>
+
+  <div class="card">
+    <p><span class="pri p0">P0</span><b>5. Tablero único "Estado de la planta".</b></p>
+    <p class="muted">Una línea de tiempo por reacción (PLANIFICADO → REACCIÓN → REPOSO → DECANTACIÓN → FINALIZADO) que muestre <b>a quién está esperando</b> (lab / operario / dirección), cuánto hace que está ahí, y las alertas. Es la vista que une las tres secciones.</p>
+    <div class="imp"><b>Impacto:</b> todos entienden en 5 segundos qué pasa y qué traba. <b>Esfuerzo:</b> medio.</div>
+  </div>
+
+  <div class="card">
+    <p><span class="pri p0">P0</span><b>6. Bandeja de laboratorio (inbox de validaciones).</b></p>
+    <p class="muted">"Qué reacciones esperan tu resultado ahora", priorizadas por antigüedad, con un click que carga la medición y <b>desbloquea el batch</b>. Hoy esa información está dispersa.</p>
+    <div class="imp"><b>Impacto:</b> menos reacciones paradas esperando lab. <b>Esfuerzo:</b> medio (depende de #2).</div>
+  </div>
+
+  <div class="card">
+    <p><span class="pri p1">P1</span><b>7. Trazabilidad de lote de punta a punta.</b></p>
+    <p class="muted">Una vista por lote: MP (ticket/tanque y kg) → reacción → producto final → tanque destino, con calidad y mermas. Sirve para calidad, reclamos y auditoría.</p>
+    <div class="imp"><b>Impacto:</b> control de calidad y respaldo ante clientes. <b>Esfuerzo:</b> medio (los datos ya están en el ledger).</div>
+  </div>
+
+  <h3>C · Uso (que sea fácil, rápido y sin errores)</h3>
+
+  <div class="card">
+    <p><span class="pri p1">P1</span><b>8. Alertas proactivas (tareas programadas).</b></p>
+    <p class="muted">Empujar en vez de esperar que miren: reacción esperando lab &gt; X horas, tanque &gt; 90% de capacidad, purga sin OK, acidez fuera de rango. Notificación diaria o por evento.</p>
+    <div class="imp"><b>Impacto:</b> se actúa antes de que sea problema. <b>Esfuerzo:</b> bajo-medio.</div>
+  </div>
+
+  <div class="card">
+    <p><span class="pri p1">P1</span><b>9. Validación de datos en el ingreso del lab.</b></p>
+    <p class="muted">Rangos por parámetro y producto + unidad explícita (% vs fracción, ppm). Los bugs de "%/fracción" salieron de esto. Avisar si un valor está fuera de rango esperado antes de guardar.</p>
+    <div class="imp"><b>Impacto:</b> datos limpios = sugerencias y stock confiables. <b>Esfuerzo:</b> bajo.</div>
+  </div>
+
+  <div class="card">
+    <p><span class="pri p2">P2</span><b>10. Asistente paso a paso para el operario</b> (un dato por pantalla, botones grandes, lenguaje simple) en producción y carga de lab. Pensado para uso en celular y gente sin experiencia con software.</p>
+    <div class="imp"><b>Impacto:</b> menos errores y menos capacitación. <b>Esfuerzo:</b> medio.</div>
+  </div>
+
+  <div class="card">
+    <p><span class="pri p2">P2</span><b>11. Rendimiento y mermas (planificado vs real).</b></p>
+    <p class="muted">ARE objetivo vs producido, insumos estimados vs reales, % de merma por reacción y su tendencia. Cierra el círculo con Planificación: ¿la fórmula estaba bien calibrada?</p>
+    <div class="imp"><b>Impacto:</b> mejora continua de fórmulas y costos. <b>Esfuerzo:</b> medio.</div>
+  </div>
+
+  <h2>4 · Por dónde empezar (orden sugerido)</h2>
+  <div class="win">
+    <b>Quick wins (1–2 pasos, alto valor):</b> #1 (umbrales reales), #9 (validación de ingreso), #8 (alertas). Son los de mejor relación impacto/esfuerzo y atacan H1.
+  </div>
+  <div class="card">
+    <table>
+      <tr><th>Etapa</th><th>Qué se hace</th><th>Resuelve</th></tr>
+      <tr><td><b>1</b></td><td>#1 umbrales + #9 validación + #8 alertas</td><td>H1 · datos confiables</td></tr>
+      <tr><td><b>2</b></td><td>#2 pedido de lab (entidad) + #6 bandeja</td><td>H3 · handoff Prod↔Lab</td></tr>
+      <tr><td><b>3</b></td><td>#3 unificar lab + #5 tablero de planta</td><td>H2 · entendimiento</td></tr>
+      <tr><td><b>4</b></td><td>#4 tanque final unificado + #7 trazabilidad</td><td>H4 · H5</td></tr>
+      <tr><td><b>5</b></td><td>#10 asistente + #11 mermas</td><td>uso · mejora continua</td></tr>
+    </table>
+  </div>
+
+  <h2>5 · Idea transversal</h2>
+  <div class="card">
+    <p>El hilo conductor de casi todo es <b>una sola "espina dorsal" de datos</b>: el <b>lote</b> (reacción) y el <b>ticket de laboratorio</b> como entidades vivas con estado, que Planificación crea, Producción avanza y Laboratorio resuelve. Hoy esa columna existe a medias (estados en el batch, tickets como texto). Consolidarla es lo que destraba el tablero único, la bandeja, las alertas y la trazabilidad — todo lo demás cuelga de ahí.</p>
+    <p class="muted">Etiquetas de lo que toca cada mejora: <span class="tag">motor de reglas</span><span class="tag">modelo de datos</span><span class="tag">UI operario</span><span class="tag">dirección</span><span class="tag">calidad</span><span class="tag">stock</span></p>
+  </div>
+
+  <p class="muted" style="text-align:center;margin-top:30px">WORMS · Plan de mejoras · documento de trabajo interno</p>
+</div>
+</body>
+</html>

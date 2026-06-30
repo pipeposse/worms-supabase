@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pipeline Producción ARE</title>
+<style>
+  :root{--indigo:#4f46e5;--violet:#7c3aed;--ink:#1c2030;--muted:#5b6172;--line:#e6e8f0;
+    --bg:#f5f6fb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;--card:#fff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);line-height:1.55;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;padding-bottom:60px}
+  .wrap{max-width:940px;margin:0 auto;padding:0 16px}
+  header{background:linear-gradient(120deg,var(--indigo),var(--violet));color:#fff;padding:32px 16px 40px;text-align:center}
+  header h1{margin:0 0 6px;font-size:1.8rem}header p{margin:0;opacity:.92}
+  h2{font-size:1.3rem;margin:34px 0 10px}
+  .muted{color:var(--muted)}
+  /* pipeline vertical */
+  .pipe{position:relative;margin:10px 0 10px 0;padding-left:8px}
+  .stage{display:flex;gap:14px;align-items:flex-start;margin:0 0 6px}
+  .dot{flex:none;width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:1.2rem;color:#fff;font-weight:800;box-shadow:0 4px 10px -4px rgba(0,0,0,.3)}
+  .who{font-size:.74rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em;border-radius:6px;padding:1px 7px}
+  .w-dir{background:#ede9fe;color:#6d28d9}.w-op{background:#dbeafe;color:#1d4ed8}.w-lab{background:#dcfce7;color:#15803d}.w-sys{background:#f1f5f9;color:#475569}
+  .stage .body{flex:1;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 16px;margin-bottom:6px;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+  .stage .body h3{margin:2px 0 4px;font-size:1.06rem;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .stage .body p{margin:4px 0 0;font-size:.93rem;color:var(--muted)}
+  .conn{height:14px;border-left:3px dashed #c7cbe8;margin-left:21px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 20px;margin:14px 0;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+  .pill{display:inline-block;border-radius:8px;padding:2px 9px;font-weight:700;font-size:.82rem;border:1px solid}
+  .ok{color:var(--ok);border-color:#bbf7d0;background:#f0fdf4}.warn{color:var(--warn);border-color:#fde68a;background:#fffbeb}
+  .bad{color:var(--bad);border-color:#fecaca;background:#fef2f2}.blue{color:var(--indigo);border-color:#c7d2fe;background:#eef2ff}
+  .mono{font-family:ui-monospace,Menlo,Consolas,monospace;background:#11162a;color:#e8ecff;padding:1px 6px;border-radius:5px;font-size:.86em}
+  /* decision tree */
+  .tree{display:flex;flex-direction:column;gap:0;margin:6px 0}
+  .node{background:#eef1fe;border:2px solid var(--indigo);border-radius:12px;padding:10px 14px;align-self:center;max-width:560px;text-align:center;font-weight:700}
+  .branch{display:flex;gap:14px;justify-content:center;margin:8px 0;flex-wrap:wrap}
+  .leaf{flex:1;min-width:240px;max-width:340px;border-radius:12px;padding:10px 14px;border:1px solid}
+  .leaf small{display:block;font-weight:400;color:var(--muted);margin-top:3px}
+  .vline{height:16px;border-left:3px solid #c7cbe8;align-self:center}
+  .formula{background:#0f1830;color:#dbe4ff;border-radius:14px;padding:16px 18px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.95rem;line-height:1.7;overflow-x:auto}
+  .formula b{color:#fde68a}
+  table{width:100%;border-collapse:collapse;margin:6px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);font-size:.92rem;vertical-align:top}
+  th{background:#f3f4fb}
+  .note{border-left:4px solid var(--indigo);background:#eef1fe;border-radius:8px;padding:10px 14px;margin:10px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚗️ Pipeline de Producción ARE</h1>
+  <p>El circuito completo y el árbol de decisión, paso a paso</p>
+</header>
+<div class="wrap">
+
+  <h2>1 · El pipeline (de la planificación al tanque)</h2>
+  <p class="muted">Cada paso muestra <b>quién</b> lo hace y qué pasa. Las condiciones de corte (acidez, purga) se configuran en <b>Fórmulas → Condicionales</b>.</p>
+
+  <div class="pipe">
+    <div class="stage"><div class="dot" style="background:#7c3aed">1</div><div class="body">
+      <h3>Planificación <span class="who w-dir">Dirección</span></h3>
+      <p>Elige reactor, materia prima (tanques/tickets), glicerina fresca + recuperada y la <b>fórmula</b>. Calcula el <b>ARE objetivo</b> y elige los <b>tanques destino</b>. Genera el ID <span class="mono">RX-2026-00NN</span>. Estado: <span class="pill blue">PLANIFICADO</span></p>
+    </div></div>
+    <div class="conn"></div>
+    <div class="stage"><div class="dot" style="background:#2563eb">2</div><div class="body">
+      <h3>Arranque <span class="who w-op">Operario</span></h3>
+      <p>Toma el ID, hace el <b>checklist</b> y prende la <b>caldera</b>. Estado: <span class="pill warn">REACCIÓN</span></p>
+    </div></div>
+    <div class="conn"></div>
+    <div class="stage"><div class="dot" style="background:#2563eb">3</div><div class="body">
+      <h3>Reacción + evaluación interna <span class="who w-op">Operario</span> <span class="who w-lab">Lab</span></h3>
+      <p>Se carga <b>acidez</b> y temperatura cada tanto. La acidez de la MP arranca ~60% y tiene que bajar. <b>El motor decide</b> (ver árbol abajo).</p>
+    </div></div>
+    <div class="conn"></div>
+    <div class="stage"><div class="dot" style="background:#0ea5e9">4</div><div class="body">
+      <h3>Reposo <span class="who w-sys">Sistema</span></h3>
+      <p>Cuando la acidez llega al objetivo, la reacción pasa sola a <span class="pill blue">REPOSO</span>. El producto decanta.</p>
+    </div></div>
+    <div class="conn"></div>
+    <div class="stage"><div class="dot" style="background:#16a34a">5</div><div class="body">
+      <h3>Decantación + purga <span class="who w-op">Operario</span> <span class="who w-lab">Lab</span></h3>
+      <p>Se saca purga y el laboratorio mide el <b>% de glicerina</b>. Decisión de corte (ver árbol). Estado: <span class="pill blue">DECANTACIÓN</span></p>
+    </div></div>
+    <div class="conn"></div>
+    <div class="stage"><div class="dot" style="background:#16a34a">6</div><div class="body">
+      <h3>Producto final a tanque <span class="who w-sys">Sistema</span></h3>
+      <p>El ARE va al <b>tanque destino</b>, se genera el ticket <span class="mono">F#</span> para laboratorio y el <b>stock se actualiza</b>. Estado: <span class="pill ok">FINALIZADO</span></p>
+    </div></div>
+  </div>
+
+  <h2>2 · Árbol de decisión durante la reacción</h2>
+  <p class="muted">En cada evaluación interna, el sistema mira la acidez y la temperatura y decide qué hacer. Los números salen de <b>Condicionales</b>.</p>
+  <div class="card">
+    <div class="tree">
+      <div class="node">Se carga una evaluación interna (acidez / temperatura)</div>
+      <div class="vline"></div>
+      <div class="branch">
+        <div class="leaf" style="background:#fffbeb;border-color:#fde68a">
+          <b>Acidez &gt; 13%</b>
+          <small>Sigue en REACCIÓN. Hay que seguir bajando la acidez (más fuel/tiempo).</small>
+        </div>
+        <div class="leaf" style="background:#f0fdf4;border-color:#bbf7d0">
+          <b>Acidez ≤ 13%</b>
+          <small>Corta la reacción → pasa a REPOSO. (Umbral <span class="mono">ARE_EVAL_ACIDEZ_MAX</span>)</small>
+        </div>
+        <div class="leaf" style="background:#eff6ff;border-color:#bfdbfe">
+          <b>Temp ≥ 85 °C (desgomado)</b>
+          <small>Corta por temperatura y pasa a REPOSO.</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>3 · Árbol de decisión en la purga (decantación)</h2>
+  <div class="card">
+    <div class="tree">
+      <div class="node">Laboratorio carga el % de glicerina del material purgado</div>
+      <div class="vline"></div>
+      <div class="branch">
+        <div class="leaf" style="background:#fef2f2;border-color:#fecaca">
+          <b>Glicerina &gt; 2%</b>
+          <small>🔴 Seguir decantando. Todavía no se puede enviar a destino.</small>
+        </div>
+        <div class="leaf" style="background:#f0fdf4;border-color:#bbf7d0">
+          <b>Glicerina ≤ 2%</b>
+          <small>✅ Purga OK → confirmar y enviar el ARE al tanque. (Umbral <span class="mono">ARE_PURGA_GLICERINA_MAX</span>, editable)</small>
+        </div>
+      </div>
+    </div>
+    <div class="note">El producto final aceptable se controla además por <b>acidez ≤ 10%</b> (<span class="mono">ARE_FINAL_ACIDEZ_MAX</span>) y, para exportación, azufre/fósforo &lt; 200.</div>
+  </div>
+
+  <h2>4 · Cómo se calcula el ARE objetivo</h2>
+  <div class="card">
+    <div class="formula">
+ARE objetivo (kg) = <b>kg de AG-C</b> − <b>agua del AG-C</b> + ( <b>aporte %</b> × litros de glicerina )
+<br><br>
+donde:
+<br>• <b>agua</b> sale del laboratorio de la materia prima
+<br>• <b>aporte %</b> = 10% por defecto — <b>editable en Condicionales</b> (ARE_APORTE_GLICERINA_PCT)
+<br>• la glicerina puede ser <b>fresca + recuperada</b> (su glicerol suma para cubrir lo requerido)
+    </div>
+    <p class="muted" style="margin-top:10px">El <b>glicerol requerido</b> depende de la acidez de la MP (cálculo estequiométrico); el sistema avisa si la glicerina cargada no alcanza a cubrirlo.</p>
+  </div>
+
+  <h2>5 · Dónde se cambia cada condición</h2>
+  <div class="card">
+    <table>
+      <tr><th>Quiero cambiar…</th><th>Dónde</th><th>¿Lo usa el sistema?</th></tr>
+      <tr><td>Corte de purga (≤ 2%)</td><td>Fórmulas → Condicionales → <b>Condiciones de producción</b></td><td><span class="pill ok">Sí, en vivo</span></td></tr>
+      <tr><td>% de glicerina (aporte)</td><td>Condiciones de producción</td><td><span class="pill ok">Sí (planificación)</span></td></tr>
+      <tr><td>Acidez objetivo / temp / tiempo</td><td>Condicionales → <b>Parámetros por proceso</b></td><td><span class="pill ok">Sí (planificación)</span></td></tr>
+      <tr><td>Acidez de corte (≤13) y ARE final (≤10)</td><td>Condiciones de producción</td><td><span class="pill warn">Referencia (cableado del motor: pendiente)</span></td></tr>
+      <tr><td>Qué acepta cada tanque (acidez/azufre/…)</td><td>Condicionales → <b>Parámetros por tanque</b></td><td><span class="pill ok">Sí (sugerencia de tanque)</span></td></tr>
+      <tr><td>Insumos / rendimiento de la fórmula</td><td>Fórmulas → Editar fórmula</td><td><span class="pill ok">Sí (planificación)</span></td></tr>
+    </table>
+  </div>
+
+  <p class="muted" style="text-align:center;margin-top:30px">WORMS · Pipeline y árbol de decisión de Producción ARE · uso interno</p>
+</div>
+</body>
+</html>

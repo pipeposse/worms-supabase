@@ -21,8 +21,8 @@ def render(USR, cat):
             "- Así, incluso un tanque medido 1 vez al día queda **vivo**. La **confianza** indica qué tan fresco es el dato.\n"
             "- **Real vs teórico**: comparamos la variación física medida contra lo que movió producción.")
 
-    tp, tcov, tctrl, t1, t2, t4, t3 = st.tabs(
-        ["📊 Por producto", "🌎 Cobertura total", "🎯 Control teórico",
+    tp, tcov, tctrl, tsal, t1, t2, t4, t3 = st.tabs(
+        ["📊 Por producto", "🌎 Cobertura total", "🎯 Control teórico", "📤 Salidas / balance",
          "🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
          "⚖️ Real vs teórico (por día)", "🛡️ Conciliación"])
 
@@ -151,6 +151,44 @@ def render(USR, cat):
             _dl(d, "trazabilidad_destino.csv", "dl_tr")
         st.caption("**OK** = llegó al tanque de su producto · **DESVIADO** = entró a un tanque de otro producto · "
                    "**SIN_DESTINO** = no se registró movimiento de stock para ese ticket.")
+
+    # ---------- SALIDAS / BALANCE ----------
+    with tsal:
+        st.caption("Todo lo que **sale** de la empresa por portería y el **balance** entró − salió = neto "
+                   "por producto. Las salidas reducen el stock teórico. Ventana: 180 días.")
+        bal = cat("SELECT producto, corriente, tn_entrada, tn_salida, tn_neto "
+                  "FROM produccion.v_balance_producto")
+        if bal is not None and not bal.empty:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("TN entró", f"{pd.to_numeric(bal['tn_entrada'], errors='coerce').sum():,.0f}")
+            m2.metric("TN salió", f"{pd.to_numeric(bal['tn_salida'], errors='coerce').sum():,.0f}")
+            m3.metric("Neto (entró − salió)", f"{pd.to_numeric(bal['tn_neto'], errors='coerce').sum():,.0f}")
+            st.markdown("**Balance por producto**")
+            st.dataframe(bal.rename(columns={
+                "producto": "Producto", "corriente": "Corriente", "tn_entrada": "TN entró",
+                "tn_salida": "TN salió", "tn_neto": "TN neto"}),
+                use_container_width=True, hide_index=True, column_config={
+                    "TN entró": st.column_config.NumberColumn(format="%.1f"),
+                    "TN salió": st.column_config.NumberColumn(format="%.1f"),
+                    "TN neto": st.column_config.NumberColumn(format="%.1f")})
+            _dl(bal, "balance_producto.csv", "dl_bal")
+        st.markdown("**📤 Detalle de salidas**")
+        sal = cat("SELECT fecha, ticket, producto, corriente, cliente, destino_final, kg "
+                  "FROM produccion.v_salidas_porteria ORDER BY fecha DESC, ticket DESC LIMIT 1500")
+        if sal is not None and not sal.empty:
+            prods = ["(todos)"] + sorted(sal["producto"].dropna().unique().tolist())
+            fp = st.selectbox("Producto", prods, key="sal_prod")
+            d = sal if fp == "(todos)" else sal[sal["producto"] == fp]
+            st.caption(f"{len(d)} salida(s) · {pd.to_numeric(d['kg'], errors='coerce').sum()/1000:,.0f} TN")
+            st.dataframe(d.rename(columns={
+                "fecha": "Fecha", "ticket": "Ticket", "producto": "Producto", "corriente": "Corriente",
+                "cliente": "Cliente", "destino_final": "Destino", "kg": "kg"}),
+                use_container_width=True, hide_index=True, column_config={
+                    "Fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                    "kg": st.column_config.NumberColumn(format="%.0f")})
+            _dl(d, "salidas_porteria.csv", "dl_sal")
+        else:
+            st.info("Sin salidas registradas en la ventana.")
 
     # ---------- 1 · Stock por tanque ----------
     with t1:

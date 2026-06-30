@@ -712,8 +712,10 @@ def resumen_evaluacion(get_conn=None, dias=(0, 1)):
     sql = ("select t.fecha_entrada::date d, count(*) total, "
            "count(*) filter (where COALESCE(t.evaluado,'NO')='SI') ev "
            "from produccion.v_transacciones_limpias t "
-           "where t.fecha_entrada::date = ANY(%s) and t.producto_base is not null "
-           "group by 1")
+           "where t.fecha_entrada::date = ANY(%s) and t.producto_base is not null"
+           + """ and t.corriente in (select corriente from produccion.dic_corriente_config where evaluable)"""
+           + """ and upper(t.producto_base) not in (select upper(producto_base) from produccion.dic_producto_base_config where not evaluable) """
+           + "group by 1")
     out = {}
     try:
         with _conn_cm(get_conn) as conn:
@@ -729,7 +731,9 @@ def resumen_evaluacion(get_conn=None, dias=(0, 1)):
 def tickets_pendientes(dia, get_conn=None, producto_base=None, limite=400):
     """Tickets evaluables (no evaluados aun) de un dia puntual, para la bandeja de pendientes."""
     where = ["t.fecha_entrada::date = %s", "COALESCE(t.evaluado,'NO') <> 'SI'",
-             "t.producto_base IS NOT NULL"]
+             "t.producto_base IS NOT NULL",
+             "t.corriente in (select corriente from produccion.dic_corriente_config where evaluable)",
+             "upper(t.producto_base) not in (select upper(producto_base) from produccion.dic_producto_base_config where not evaluable)"]
     params = [dia]
     if producto_base:
         where.append("t.producto_base = ANY(%s)")

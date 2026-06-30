@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Margen de transformación — explicado</title>
+<style>
+  :root{--ink:#13182a;--muted:#5b6172;--line:#e4e7f0;--bg:#f6f7fb;--card:#fff;
+    --green:#15803d;--red:#dc2626;--amber:#b45309;--indigo:#4338ca;--violet:#7c3aed}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);line-height:1.6;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Arial,sans-serif;padding-bottom:60px}
+  .wrap{max-width:900px;margin:0 auto;padding:0 18px}
+  header{background:linear-gradient(120deg,var(--indigo),var(--violet));color:#fff;padding:34px 18px 40px}
+  header h1{margin:6px 0 4px;font-size:1.85rem}header p{margin:0;color:#dfe3fb}
+  h2{font-size:1.3rem;margin:32px 0 6px;border-bottom:2px solid var(--line);padding-bottom:6px}
+  h3{font-size:1.05rem;margin:18px 0 4px}
+  .muted{color:var(--muted)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:12px 0;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+  .big{font-size:1.12rem}
+  .formula{background:#0f1830;color:#dbe4ff;border-radius:12px;padding:16px 18px;font-family:ui-monospace,Menlo,Consolas,monospace;line-height:1.8;overflow-x:auto}
+  .formula b{color:#fde68a}.formula .g{color:#86efac}.formula .r{color:#fca5a5}
+  table{width:100%;border-collapse:collapse;margin:6px 0;font-size:.95rem}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  th{background:#eef0f7;font-size:.82rem;text-transform:uppercase;letter-spacing:.03em;color:#414b6b}
+  tr.in td{background:#f0fdf4}tr.out td{background:#fef2f3}tr.res td{background:#eef2ff;font-weight:800}
+  .pill{display:inline-block;border-radius:7px;padding:2px 9px;font-weight:700;font-size:.82rem}
+  .pg{background:#dcfce7;color:var(--green)}.pr{background:#fee2e2;color:var(--red)}.pa{background:#fef3c7;color:var(--amber)}
+  .note{border-left:4px solid var(--indigo);background:#eef0ff;border-radius:8px;padding:12px 14px;margin:12px 0}
+  .danger{border-left:4px solid var(--red);background:#fef2f3;border-radius:8px;padding:12px 14px;margin:12px 0}
+  .step{display:flex;gap:12px;align-items:flex-start;margin:8px 0}
+  .num{flex:none;width:30px;height:30px;border-radius:50%;background:var(--indigo);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;background:#11162a;color:#e8ecff;padding:1px 6px;border-radius:5px;font-size:.86em}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1>💵 Margen de transformación por reacción</h1>
+  <p>Qué es, por qué importa, y cómo leerlo — con un ejemplo real (reacción RX‑2026‑0014).</p>
+</div></header>
+<div class="wrap">
+
+  <h2>1 · La idea en una frase</h2>
+  <div class="card big">
+    Cada reacción es una <b>mini‑fábrica</b>: entra <b>materia prima barata</b> (AG‑C/AFE) y sale un
+    <b>producto caro</b> (ARE, que se exporta como AG‑E). El <b>margen de transformación</b> es la plata que deja esa conversión:
+    <b>lo que vale lo que sale − lo que costó lo que entró</b>. Lo calculamos <b>reacción por reacción</b>.
+  </div>
+  <div class="note">Por qué es la mejora más importante: el análisis financiero mostró que el negocio de exportación deja apenas
+  <b>~4% de margen</b> y que la palanca #1 es el <b>costo de la materia prima y el rendimiento</b>. Esta métrica baja ese hallazgo
+  del Excel del cierre a la <b>bacha del día</b>: ahora se ve, en cada reacción, si ganó o perdió plata.</div>
+
+  <h2>2 · Qué entra y qué sale</h2>
+  <div class="card">
+    <table>
+      <tr><th>Entra (costos)</th><th>Sale (ingreso)</th></tr>
+      <tr><td>Materia prima (AG‑C, AFE…) — kg × precio compra</td><td rowspan="4" style="vertical-align:middle;background:#f0fdf4">
+        <b>ARE producido</b><br>kg × precio de venta<br><span class="muted">(se exporta como AG‑E)</span></td></tr>
+      <tr><td>Glicerina (fresca + recuperada) — litros × precio</td></tr>
+      <tr><td>Hidróxido de potasio (KOH) — kg × precio</td></tr>
+      <tr><td>Fuel oil (energía/calor) — litros × precio</td></tr>
+    </table>
+    <p class="muted">Todo se lleva a <b>USD</b> (la moneda natural de la MP y el ARE). Los insumos, que se compran en pesos, se pasan a USD con el tipo de cambio.</p>
+  </div>
+
+  <h2>3 · La fórmula</h2>
+  <div class="formula">
+<b>Margen</b> = <span class="g">Ingreso ARE</span> − <span class="r">Costo MP</span> − <span class="r">Costo insumos</span>
+<br><br>
+<span class="g">Ingreso ARE</span> = (kg ARE ÷ 1000) × precio venta (USD/TN)
+<br><span class="r">Costo MP</span>     = (kg MP  ÷ 1000) × precio compra (USD/TN)
+<br><span class="r">Costo insumos</span> = ( glicerina·precio + KOH·precio + fuel·precio ) ÷ TC
+  </div>
+  <p class="muted">Y dos indicadores clave: <b>Rendimiento</b> = kg ARE ÷ kg MP (cuánto producto sale por kg de materia prima),
+  y <b>Margen por TN de MP</b> = margen ÷ toneladas de MP (para comparar reacciones de distinto tamaño).</p>
+
+  <h2>4 · Ejemplo real — reacción RX‑2026‑0014</h2>
+  <div class="card">
+    <p>Datos de la reacción (los que ya están cargados):</p>
+    <table>
+      <tr><th>Concepto</th><th>Cantidad</th><th>Precio</th><th>USD</th></tr>
+      <tr class="in"><td>ARE producido (sale)</td><td>5.879 kg</td><td>1.008 USD/TN</td><td>+5.926</td></tr>
+      <tr class="out"><td>Materia prima AG‑C (entra)</td><td>6.072 kg</td><td>750 USD/TN</td><td>−4.554</td></tr>
+      <tr class="out"><td>Glicerina 800 L fresca + 1.500 L recup.</td><td>—</td><td>650 / 200 ARS/L</td><td>−630</td></tr>
+      <tr class="out"><td>KOH 25 kg + Fuel 950 L</td><td>—</td><td>4.722 / 684 ARS</td><td>−551</td></tr>
+      <tr class="res"><td>= Margen de la reacción</td><td>Rend. 96,8%</td><td>3,2%</td><td>+191</td></tr>
+    </table>
+    <p class="big">Esta reacción dejó <b class="pill pg">+191 USD</b> = <b>32 USD por tonelada de materia prima</b>, con un margen de <b>3,2%</b>.</p>
+    <p class="muted">Coincide con el ~4% que vimos en el cierre financiero: <b>el margen de exportación es fino</b>. Por eso cada detalle cuenta.</p>
+  </div>
+
+  <h2>5 · La palanca: el rendimiento</h2>
+  <div class="card">
+    <p>El <b>rendimiento</b> (kg de ARE por kg de MP) es lo que hace o deshace el margen. Si la materia prima trae <b>más agua</b>
+    o el proceso es <b>ineficiente</b>, sale <b>menos ARE</b> por la misma MP — y como la MP ya se pagó, el margen se desploma.</p>
+    <h3>Qué pasa si el rendimiento baja (misma reacción)</h3>
+    <table>
+      <tr><th>Rendimiento</th><th>kg ARE</th><th>Ingreso USD</th><th>Margen USD</th><th>Resultado</th></tr>
+      <tr><td>96,8% (real)</td><td>5.879</td><td>5.926</td><td>+191</td><td><span class="pill pg">gana</span></td></tr>
+      <tr><td>94%</td><td>5.708</td><td>5.754</td><td>+19</td><td><span class="pill pa">al límite</span></td></tr>
+      <tr><td>92%</td><td>5.586</td><td>5.631</td><td>−104</td><td><span class="pill pr">pierde</span></td></tr>
+      <tr><td>90%</td><td>5.465</td><td>5.509</td><td>−226</td><td><span class="pill pr">pierde feo</span></td></tr>
+    </table>
+    <div class="danger"><b>Lo importante:</b> una caída de rendimiento de apenas <b>~5 puntos</b> (de 97% a 92%) convierte una reacción que
+    <b>ganaba +191 USD en una que pierde −104 USD</b>. Por eso el sistema marca el <b>Δ rendimiento</b>: cuántos kg de ARE
+    (y cuántos USD) se ganaron o perdieron contra el objetivo de la fórmula.</div>
+  </div>
+
+  <h2>6 · Cómo se usa en la app</h2>
+  <div class="card">
+    <div class="step"><div class="num">1</div><div><b>Estado de planta → 💵 Margen por reacción.</b> Una fila por reacción con
+      ingreso, costos, margen, rendimiento real vs objetivo y margen por tonelada.</div></div>
+    <div class="step"><div class="num">2</div><div><b>Desglose</b> (gráfico de barras): ingreso → menos MP → menos insumos → margen, para ver dónde se va la plata.</div></div>
+    <div class="step"><div class="num">3</div><div><b>Precios de referencia</b> (solo dirección): editás el precio de venta del ARE (su valor como AG‑E exportado),
+      el de compra de cada MP, los insumos y el tipo de cambio. Todo recalcula al instante.</div></div>
+  </div>
+  <div class="note"><b>De dónde salen los precios:</b> se siembran con los valores reales de los cierres (AG‑C ~750, AG‑E export ~1.008 USD/TN,
+  glicerina/KOH/fuel de las facturas) y quedan <b>editables</b> en una tabla (<code>dim_precio_ref</code>), porque el valor del producto final
+  es conocimiento del negocio (ARE‑B se vende como AG‑E). Los kg de MP y de ARE salen solos de cada reacción
+  (<code>fact_batch_proceso</code> + los movimientos de stock).</div>
+
+  <h2>7 · Para qué sirve (decisiones)</h2>
+  <div class="card">
+    <ul>
+      <li><b>Detectar reacciones que pierden plata</b> el mismo día, no a fin de mes.</li>
+      <li><b>Comparar materias primas</b>: cuál deja más margen por tonelada procesada (mejor mix de compra).</li>
+      <li><b>Justificar la disciplina de rendimiento</b>: ponerle número en USD a una bacha que rindió mal.</li>
+      <li><b>Conectar planta y finanzas</b>: el operario ve la misma palanca (MP + rendimiento) que mueve el resultado de la empresa.</li>
+    </ul>
+  </div>
+
+  <p class="muted" style="text-align:center;margin-top:28px">WORMS · Margen de transformación · documento explicativo</p>
+</div>
+</body>
+</html>

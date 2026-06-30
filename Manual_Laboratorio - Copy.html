@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Manual · Laboratorio</title>
+<style>
+  :root{
+    --indigo:#4f46e5; --violet:#7c3aed; --ink:#1e2233; --muted:#5b6172;
+    --line:#e6e8f0; --bg:#f5f6fb; --ok:#16a34a; --warn:#d97706; --bad:#dc2626;
+    --card:#ffffff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;
+    line-height:1.55;padding-bottom:60px}
+  .wrap{max-width:860px;margin:0 auto;padding:0 16px}
+  header{background:linear-gradient(120deg,var(--indigo),var(--violet));color:#fff;
+    padding:34px 16px 40px;text-align:center}
+  header h1{margin:0 0 6px;font-size:1.9rem}
+  header p{margin:0;opacity:.92;font-size:1.05rem}
+  .chip{display:inline-block;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);
+    border-radius:999px;padding:4px 14px;margin-top:14px;font-weight:600;font-size:.95rem}
+  h2{font-size:1.3rem;margin:34px 0 6px;display:flex;align-items:center;gap:10px}
+  h2 .num{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;
+    background:var(--indigo);color:#fff;border-radius:50%;font-size:1rem;flex:none}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:18px 20px;margin:14px 0;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+  .lead{color:var(--muted);margin:-2px 0 0}
+  ol.steps{counter-reset:s;list-style:none;padding:0;margin:8px 0}
+  ol.steps li{position:relative;padding:10px 0 10px 44px;border-bottom:1px dashed var(--line)}
+  ol.steps li:last-child{border-bottom:0}
+  ol.steps li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:9px;
+    width:30px;height:30px;background:#eef0fd;color:var(--indigo);border-radius:50%;
+    display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.95rem}
+  b,strong{color:var(--ink)}
+  .pill{display:inline-block;border-radius:8px;padding:2px 9px;font-weight:700;font-size:.85rem;
+    border:1px solid}
+  .pill.ok{color:var(--ok);border-color:#bbf7d0;background:#f0fdf4}
+  .pill.warn{color:var(--warn);border-color:#fde68a;background:#fffbeb}
+  .pill.bad{color:var(--bad);border-color:#fecaca;background:#fef2f2}
+  .pill.blue{color:var(--indigo);border-color:#c7d2fe;background:#eef2ff}
+  .note{border-left:4px solid var(--indigo);background:#eef1fe;border-radius:8px;
+    padding:12px 14px;margin:12px 0}
+  .note.warn{border-color:var(--warn);background:#fff7ed}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:620px){.grid{grid-template-columns:1fr}}
+  .mini{background:#fafbff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .mini h4{margin:0 0 4px;font-size:1rem}
+  .mini p{margin:0;color:var(--muted);font-size:.94rem}
+  .tag{font-family:ui-monospace,Menlo,Consolas,monospace;background:#11162a;color:#e8ecff;
+    padding:2px 7px;border-radius:6px;font-size:.9rem}
+  table{width:100%;border-collapse:collapse;margin:8px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);font-size:.95rem}
+  th{background:#f3f4fb}
+  .toc{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .toc a{text-decoration:none;color:var(--indigo);background:#fff;border:1px solid var(--line);
+    border-radius:999px;padding:6px 12px;font-size:.9rem;font-weight:600}
+  footer{text-align:center;color:var(--muted);font-size:.85rem;margin-top:34px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🧪 Manual de Laboratorio</h1>
+  <p>Cómo cargar y revisar evaluaciones, paso a paso</p>
+  <span class="chip">Para operarios de laboratorio</span>
+</header>
+
+<div class="wrap">
+
+  <div class="toc">
+    <a href="#entrar">Entrar</a>
+    <a href="#vistas">Las 6 vistas</a>
+    <a href="#carga">Cargar una evaluación</a>
+    <a href="#tanque">Tanque destino</a>
+    <a href="#asignacion">Confirmar tanque</a>
+    <a href="#dudas">Dudas comunes</a>
+  </div>
+
+  <!-- ENTRAR -->
+  <h2 id="entrar"><span class="num">1</span> Entrar al sistema</h2>
+  <div class="card">
+    <ol class="steps">
+      <li>Abrí la página de WORMS en el navegador (celular o computadora).</li>
+      <li>Elegí el usuario <span class="tag">laboratorio</span> y escribí el PIN <span class="tag">1234</span>.</li>
+      <li>Entrás <b>directo a Laboratorio</b>. Este usuario solo ve Laboratorio: no te podés equivocar de sección.</li>
+    </ol>
+    <div class="note">Cuando termines, tocá <b>"Cerrar sesión"</b> en el costado. La sesión queda abierta aunque cierres el navegador, por eso conviene cerrarla en equipos compartidos.</div>
+  </div>
+
+  <!-- VISTAS -->
+  <h2 id="vistas"><span class="num">2</span> Las 6 vistas de Laboratorio</h2>
+  <p class="lead">Arriba hay botones redondos. Tocás uno y cambiás de vista. La más importante es la primera.</p>
+  <div class="card">
+    <div class="grid">
+      <div class="mini"><h4>➕ Carga / Edición</h4><p>Lo principal: cargar una evaluación nueva o corregir una existente.</p></div>
+      <div class="mini"><h4>🛢️ Parámetros por tanque</h4><p>Qué valores acepta cada tanque (lo define dirección/laboratorio).</p></div>
+      <div class="mini"><h4>🚛 Entrada diaria</h4><p>Los camiones que entraron por portería en el día.</p></div>
+      <div class="mini"><h4>📦 Asignación a tanque</h4><p>A qué tanque va lo evaluado y confirmar si fue así.</p></div>
+      <div class="mini"><h4>📊 Resultados</h4><p>Buscar y mirar evaluaciones cargadas, con filtros.</p></div>
+      <div class="mini"><h4>🔬 Producciones en marcha</h4><p>Reacciones en curso que esperan validación del laboratorio.</p></div>
+    </div>
+  </div>
+
+  <!-- CARGA -->
+  <h2 id="carga"><span class="num">3</span> Cargar una evaluación (lo más usado)</h2>
+  <p class="lead">Vista <b>➕ Carga / Edición</b>, modo <b>Nueva carga</b>.</p>
+  <div class="card">
+    <ol class="steps">
+      <li><b>Escribí el Nº de ticket primero.</b> Es lo más importante.
+        <div class="grid" style="margin-top:10px">
+          <div class="mini"><h4>Si es de portería</h4><p>Aparece en la lista. Al elegirlo, el sistema <b>autocompleta</b> patente, chasis y proveedor.</p></div>
+          <div class="mini"><h4>Si es de producción (ej. <span class="tag">F8</span>)</h4><p>El sistema reconoce que es una reacción y muestra el <b>nombre y tipo de reacción</b> y la fórmula.</p></div>
+        </div>
+      </li>
+      <li><b>Elegí el producto a evaluar.</b> Aparecen todos los productos. Si es uno raro, elegí <b>"OTRO (genérico)"</b> y vas a poder cargar todos los parámetros posibles.</li>
+      <li><b>Cargá los análisis</b> (acidez, agua, sedimentos, azufre, fósforo, etc.). Los campos que no tengas, dejalos vacíos.</li>
+      <li><b>Elegí el Responsable de carga</b> — es obligatorio: <span class="pill blue">Cielo</span> <span class="pill blue">Manu</span> <span class="pill blue">Rich</span> <span class="pill blue">Mili</span>. Si no lo elegís, no te deja guardar.</li>
+      <li>Revisá el <b>Tanque destino sugerido</b> (ver punto 4) y la <b>Calidad final</b>.</li>
+      <li>En <b>Aceptado/Rechazado</b> elegí lo que corresponda:
+        <span class="pill ok">ACEPTADO</span>
+        <span class="pill bad">RECHAZADO</span>
+        <span class="pill warn">FUERA DE ESPECIFICACION</span>
+        <span class="pill">REMUESTREO</span>
+      </li>
+      <li>Tocá <b>GUARDAR</b>. Listo: queda registrado con tu nombre.</li>
+    </ol>
+    <div class="note warn"><b>Para corregir algo ya cargado:</b> arriba, pasá el modo a <b>"✏️ Buscar y editar"</b>, buscá el registro por ticket, tocá <b>"Cargar para editar"</b>, cambiá lo que haga falta y guardá.</div>
+  </div>
+
+  <!-- TANQUE -->
+  <h2 id="tanque"><span class="num">4</span> Tanque destino: sugerido y editable</h2>
+  <div class="card">
+    <p>El sistema te propone un <b>tanque tentativo</b> según tres cosas:</p>
+    <div class="grid">
+      <div class="mini"><h4>🧪 Materia prima</h4><p>Que el tanque sea de ese producto.</p></div>
+      <div class="mini"><h4>📐 Parámetros</h4><p>Que tus valores entren dentro de lo que el tanque acepta.</p></div>
+      <div class="mini"><h4>📦 Disponibilidad</h4><p>Que tenga lugar para los kilos del ticket.</p></div>
+    </div>
+    <ol class="steps" style="margin-top:6px">
+      <li>El campo <b>"Tanque destino"</b> viene <b>precargado</b> con la sugerencia.</li>
+      <li>Si el producto va a <b>otro tanque</b>, cambialo a mano: tu elección reemplaza a la sugerida.</li>
+      <li>Si lo cambiaste, escribí el <b>Motivo</b> en "Motivo si cambiás el tanque". <b>Queda registrado</b> y sirve para que el sistema aprenda.</li>
+    </ol>
+    <div class="note">Mientras más confirmes el tanque real, <b>mejor sugiere la próxima vez</b>. El sistema aprende de lo que hacés.</div>
+  </div>
+
+  <!-- ASIGNACION -->
+  <h2 id="asignacion"><span class="num">5</span> Confirmar a qué tanque fue</h2>
+  <p class="lead">Vista <b>📦 Asignación a tanque</b> → <b>🚛 Portería (ingresos evaluados)</b>.</p>
+  <div class="card">
+    <p>Acá ves cada ticket con su producto, calidad, parámetros y el <b>tanque sugerido</b>, y cómo quedaría el tanque si entra. Abajo confirmás lo que pasó de verdad:</p>
+    <ol class="steps">
+      <li>Elegí el <b>ticket</b> a confirmar.</li>
+      <li>¿<b>Fue al tanque sugerido?</b> Marcá <b>Sí</b> o <b>No</b>.</li>
+      <li>Si fue <b>No</b>: elegí el <b>tanque real</b> y el <b>motivo del desvío</b>:
+        <table>
+          <tr><th>Motivo</th><th>Cuándo usarlo</th></tr>
+          <tr><td><b>DISPONIBILIDAD</b></td><td>El sugerido estaba lleno / sin lugar.</td></tr>
+          <tr><td><b>PARAMETROS</b></td><td>Por los valores del análisis no iba ahí.</td></tr>
+          <tr><td><b>MATERIA_PRIMA</b></td><td>Era otro producto / otra materia prima.</td></tr>
+          <tr><td><b>OTRO</b></td><td>Cualquier otra razón (aclarala en observación).</td></tr>
+        </table>
+      </li>
+      <li>Tocá <b>Guardar confirmación</b>.</li>
+    </ol>
+    <div class="note">En el panel <b>🧠 Aprendizaje</b> podés ver qué tanque "prefiere" el sistema para cada producto, según las confirmaciones que fueron cargando.</div>
+  </div>
+
+  <!-- DUDAS -->
+  <h2 id="dudas"><span class="num">6</span> Dudas comunes</h2>
+  <div class="card">
+    <table>
+      <tr><th>Situación</th><th>Qué hacer</th></tr>
+      <tr><td>No me deja guardar</td><td>Falta el <b>Responsable de carga</b> o el <b>ticket</b>. Completalos.</td></tr>
+      <tr><td>El ticket no aparece en la lista</td><td>Revisá el número. Si es una reacción (empieza con F) escribilo igual: el sistema lo reconoce como producción.</td></tr>
+      <tr><td>El producto no está en la lista</td><td>Usá <b>"OTRO (genérico)"</b> y cargá todos los parámetros que tengas.</td></tr>
+      <tr><td>Me equivoqué en un dato</td><td>Modo <b>"Buscar y editar"</b>, buscá por ticket y corregí.</td></tr>
+      <tr><td>El tanque sugerido no es el correcto</td><td>Cambialo a mano y escribí el motivo. Después confirmá el real en <b>Asignación a tanque</b>.</td></tr>
+      <tr><td>No puedo salir de Laboratorio</td><td>Es a propósito: este usuario solo trabaja en Laboratorio. Para otra cosa, usá otro usuario.</td></tr>
+    </table>
+  </div>
+
+  <footer>WORMS · Panel de producción — Manual de Laboratorio · Uso interno</footer>
+</div>
+</body>
+</html>

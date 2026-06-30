@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Informe de Rentabilidad · WORMS</title>
+<style>
+  :root{--ink:#13182a;--muted:#5b6172;--line:#e4e7f0;--bg:#f6f7fb;--card:#fff;
+    --green:#15803d;--red:#dc2626;--amber:#b45309;--blue:#1d4ed8;--indigo:#4338ca}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);line-height:1.55;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Arial,sans-serif;padding-bottom:60px}
+  .wrap{max-width:960px;margin:0 auto;padding:0 18px}
+  header{background:#11162a;color:#fff;padding:34px 18px 40px}
+  header .k{font-size:.8rem;letter-spacing:.12em;text-transform:uppercase;color:#9aa3c7}
+  header h1{margin:6px 0 4px;font-size:1.9rem}
+  header p{margin:0;color:#c3c9e6}
+  h2{font-size:1.25rem;margin:34px 0 4px;border-bottom:2px solid var(--line);padding-bottom:6px}
+  h3{font-size:1.05rem;margin:18px 0 4px}
+  .muted{color:var(--muted)}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0}
+  @media(max-width:680px){.kpis{grid-template-columns:repeat(2,1fr)}}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+  .kpi .l{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .kpi .v{font-size:1.5rem;font-weight:800;margin-top:2px}
+  .kpi .s{font-size:.82rem;color:var(--muted)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:12px 0}
+  table{width:100%;border-collapse:collapse;margin:6px 0;font-size:.92rem}
+  th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  th{background:#eef0f7;font-size:.8rem;text-transform:uppercase;letter-spacing:.03em;color:#414b6b}
+  tr.pos td{background:#f0fdf4}tr.neg td{background:#fef2f3}
+  .bar{height:10px;border-radius:5px;background:#e7eaf3;overflow:hidden;display:inline-block;width:90px;vertical-align:middle}
+  .bar>i{display:block;height:100%}
+  .tag{display:inline-block;border-radius:7px;padding:1px 8px;font-size:.8rem;font-weight:700}
+  .tg{background:#dcfce7;color:var(--green)}.tr{background:#fee2e2;color:var(--red)}.ta{background:#fef3c7;color:var(--amber)}
+  .note{border-left:4px solid var(--indigo);background:#eef0ff;border-radius:8px;padding:10px 14px;margin:10px 0;font-size:.95rem}
+  ul{margin:6px 0}
+  li{margin:3px 0}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <div class="k">WORMS · Cierres ene–may 2026 · Confidencial</div>
+  <h1>Informe de Rentabilidad</h1>
+  <p>P&L mensual, contribución por segmento, exposición a materia prima e insights. Cifras en ARS (millones).</p>
+</div></header>
+<div class="wrap">
+
+  <h2>1 · Síntesis ejecutiva</h2>
+  <div class="kpis">
+    <div class="kpi"><div class="l">Ingresos acum.</div><div class="v">22.288 M</div><div class="s">ene–may</div></div>
+    <div class="kpi"><div class="l">Resultado neto</div><div class="v">1.927 M</div><div class="s">~8,6% margen</div></div>
+    <div class="kpi"><div class="l">Materia prima</div><div class="v">19.334 M</div><div class="s">87% de los ingresos</div></div>
+    <div class="kpi"><div class="l">Q1 vs Q2*</div><div class="v">9,1% → 7,9%</div><div class="s">*Q2 sin junio</div></div>
+  </div>
+  <div class="note"><b>Tesis central:</b> el resultado es positivo todos los meses, pero el valor <b>no</b> proviene del gran negocio de exportación
+  (margen ~4%, casi todo se lo lleva la materia prima) sino de los <b>servicios ambientales de alto margen</b> (PILETAS ~87%, disposición final de líquidos ~56%).
+  La principal palanca de resultado es el <b>costo de la materia prima</b>.</div>
+
+  <h2>2 · P&L mensual</h2>
+  <div class="card">
+  <table>
+    <tr><th>Mes</th><th>Ingresos</th><th>M. Prima</th><th>Gastos</th><th>Resultado</th><th>Margen %</th></tr>
+    <tr><td>Enero</td><td>7.003</td><td>5.641</td><td>6.236</td><td>767</td><td>11,0%</td></tr>
+    <tr><td>Febrero</td><td>3.179</td><td>2.284</td><td>2.924</td><td>254</td><td>8,0%</td></tr>
+    <tr><td>Marzo</td><td>3.453</td><td>2.561</td><td>3.235</td><td>218</td><td>6,3%</td></tr>
+    <tr><td>Abril</td><td>4.605</td><td>3.658</td><td>4.256</td><td>349</td><td>7,6%</td></tr>
+    <tr><td>Mayo</td><td>4.048</td><td>3.190</td><td>3.709</td><td>339</td><td>8,4%</td></tr>
+    <tr style="font-weight:800"><td>Total</td><td>22.288</td><td>19.334</td><td>20.360</td><td>1.927</td><td>8,6%</td></tr>
+  </table>
+  <p class="muted">El margen se comprime cuando sube la MP (marzo, el más flojo: 6,3%). Enero concentra el pico de actividad exportadora.</p>
+  </div>
+
+  <h2>3 · Dónde se gana y dónde se pierde (contribución por segmento)</h2>
+  <div class="card">
+  <table>
+    <tr><th>Segmento</th><th>Ingreso</th><th>Costo dir.</th><th>Contribución</th><th>Margen</th><th></th></tr>
+    <tr class="pos"><td>PILETAS</td><td>1.414</td><td>190</td><td>+1.224</td><td>87%</td><td><span class="bar"><i style="width:90px;background:#16a34a"></i></span></td></tr>
+    <tr class="pos"><td>Exportación (oleoquímica)</td><td>17.546</td><td>16.865</td><td>+681</td><td>4%</td><td><span class="bar"><i style="width:50px;background:#16a34a"></i></span></td></tr>
+    <tr class="pos"><td>Disp. final líquidos</td><td>1.195</td><td>526</td><td>+669</td><td>56%</td><td><span class="bar"><i style="width:49px;background:#16a34a"></i></span></td></tr>
+    <tr class="pos"><td>Cereal &amp; polvillo</td><td>127</td><td>47</td><td>+81</td><td>63%</td><td><span class="bar"><i style="width:8px;background:#16a34a"></i></span></td></tr>
+    <tr class="neg"><td>Disp. final sólidos</td><td>56</td><td>91</td><td>−36</td><td>−64%</td><td><span class="bar"><i style="width:3px;background:#dc2626"></i></span></td></tr>
+    <tr class="neg"><td>Compost &amp; fertilizantes</td><td>3</td><td>47</td><td>−43</td><td>—</td><td><span class="bar"><i style="width:4px;background:#dc2626"></i></span></td></tr>
+    <tr class="neg"><td>Reactores*</td><td>1.184</td><td>1.252</td><td>−67</td><td>−6%</td><td><span class="bar"><i style="width:5px;background:#dc2626"></i></span></td></tr>
+    <tr class="neg"><td>Bachas*</td><td>590</td><td>695</td><td>−105</td><td>−18%</td><td><span class="bar"><i style="width:8px;background:#dc2626"></i></span></td></tr>
+    <tr class="neg"><td>NFU (neumáticos)</td><td>171</td><td>343</td><td>−172</td><td>−100%</td><td><span class="bar"><i style="width:13px;background:#dc2626"></i></span></td></tr>
+  </table>
+  <p class="muted">* <b>Transfer pricing:</b> Reactores y Bachas figuran negativos porque su costo se imputa a su sector, pero el valor que producen
+  se factura dentro de Exportación. La cadena oleoquímica integrada (Exportación + Reactores + Bachas) deja ~509 M de contribución — sigue siendo fina frente a Piletas.</p>
+  </div>
+  <div class="note"><b>El mapa del valor:</b> con apenas ~13% de los ingresos, los servicios ambientales (Piletas + disposición líquidos) aportan
+  <b>~1.900 M de contribución</b> — más que toda la exportación. Es el negocio defendible (infraestructura + habilitaciones ambientales).</div>
+
+  <h2>4 · Exposición a la materia prima (el riesgo #1)</h2>
+  <div class="card">
+    <p>La exportación compra <b>~19.300 M de materia prima</b> en 5 meses contra ~17.500 M de ingreso de exportación: la MP <b>es</b> el negocio.</p>
+    <ul>
+      <li><b>Sensibilidad:</b> cada <b>+1% en el precio de MP</b> (≈193 M anualizado en proporción) impacta casi 1:1 en resultado. Una suba del 4–5% borra la ganancia del segmento.</li>
+      <li><b>Palancas:</b> negociación/cobertura de MP, mejora de <b>rendimiento de reacción</b> (menos merma kg), y <b>mix</b> hacia productos de mayor spread.</li>
+    </ul>
+  </div>
+
+  <h2>5 · Observaciones y outliers</h2>
+  <div class="card">
+    <ul>
+      <li><span class="tag ta">Revisar</span> <b>Febrero</b>: ingresos (3.179 M) ~mitad de enero — ¿estacional o carga incompleta?</li>
+      <li><span class="tag ta">Datos</span> <b>~197 M de gastos sin clasificar</b> (tipo '0'), concentrados en febrero. Reclasificar para un P&L fijo/variable limpio.</li>
+      <li><span class="tag tr">Pérdida</span> <b>NFU</b>: ingreso de mayo cae a ~1 M (vs ~45 M) y acumula −172 M. Reprecificar o discontinuar.</li>
+      <li><span class="tag tr">Pérdida</span> <b>Bachas</b> (−105 M) y <b>disp. final sólidos</b> (−36 M): margen directo negativo.</li>
+      <li><span class="tag ta">Capex</span> <b>Inversión irregular</b>: 252 M en marzo vs 5 M en abril. Conviene prorratear y presupuestar.</li>
+    </ul>
+  </div>
+
+  <h2>6 · Insights: fortalezas y mejoras</h2>
+  <div class="card">
+    <h3>🟢 Fortalezas</h3>
+    <ul>
+      <li>Servicios ambientales de <b>margen 56–87%</b> con baja inversión: núcleo de valor y ventaja competitiva.</li>
+      <li>Escala y caja del negocio exportador; resultado positivo en los 5 meses.</li>
+    </ul>
+    <h3>🔴 A mejorar</h3>
+    <ul>
+      <li><b>Proteger el margen de exportación</b> ante el precio de MP (cobertura + rendimiento + mix).</li>
+      <li><b>Sanear</b> NFU, Bachas y disposición de sólidos (reprecio, costo o salida).</li>
+      <li><b>Asignar el overhead</b> (Admin, Intendencia, Taller, Lab ≈ 305 M) a segmentos para ver el margen real de cada negocio.</li>
+    </ul>
+    <h3>🎯 Hacia adelante</h3>
+    <ul>
+      <li><b>Escalar lo de alto margen</b> (capacidad de piletas / disposición de líquidos) — es donde está el ROIC.</li>
+      <li>Cerrar <b>junio</b> para completar la comparación <b>Q1 vs Q2</b> (la sección de la app ya lo tiene preparado).</li>
+    </ul>
+  </div>
+
+  <p class="muted" style="text-align:center;margin-top:28px">WORMS · Informe de rentabilidad sobre cierres ene–may 2026 · datos reales (schema cierres_worms)</p>
+</div>
+</body>
+</html>
