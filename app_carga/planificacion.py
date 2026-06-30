@@ -431,31 +431,51 @@ def _gli_tanques(cat, codigo):
 
 
 def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
-    """Selector de un tanque de glicerina + litros a cargar. Devuelve dict con sus parámetros."""
-    res = {"idt": None, "nombre": None, "l": 0.0, "dens": None, "glicerina_pct": None,
-           "glicerol_pct": None, "glicerol_kg": 0.0, "kg": 0.0, "agua_pct": None}
+    """Selector de UNO O VARIOS tanques de glicerina + litros por tanque.
+    Devuelve un dict AGREGADO (l, kg, glicerol_kg, % ponderados) con la lista 'tanques' adentro."""
+    agg = {"idt": None, "nombre": None, "l": 0.0, "dens": None, "glicerina_pct": None,
+           "glicerol_pct": None, "glicerol_kg": 0.0, "kg": 0.0, "agua_pct": None, "tanques": []}
     df = _gli_tanques(cat, codigo)
     if df is None or df.empty:
         st.info("Sin tanques activos.")
-        return res
-    opts = ["(no usar)"] + df.apply(lambda r: f"{r['nombre']} · {float(r['lt'] or 0):,.0f} L disp.", axis=1).tolist()
-    sel = st.selectbox("Tanque", opts, key=f"{key}_tk", label_visibility="collapsed")
-    if sel == "(no usar)":
-        return res
-    r = df.iloc[opts.index(sel) - 1]
-    gpct = float(r["glicerol"]) if pd.notna(r["glicerol"]) else None
-    npct = float(r["glicerina"]) if pd.notna(r["glicerina"]) else None
-    dens = float(r["densidad_g_ml"]) if pd.notna(r["densidad_g_ml"]) else \
-        (float(densidad_de(codigo)) if (callable(densidad_de) and densidad_de(codigo)) else 1.1)
-    l = st.number_input("Litros a cargar", 0.0, 1_000_000.0, value=float(default_l or 0.0), step=50.0, key=f"{key}_l")
-    st.caption(f"glicerina {npct or 0:.0f}% · glicerol {gpct or 0:.0f}% · "
-               f"agua {float(r['agua_pct'] or 0):.1f}% · dens {dens:g} kg/L")
-    res.update({"idt": int(r["id_tanque"]), "nombre": r["nombre"], "l": float(l), "dens": dens,
-                "glicerina_pct": npct, "glicerol_pct": gpct,
-                "agua_pct": (float(r["agua_pct"]) if pd.notna(r["agua_pct"]) else None),
-                "kg": float(l) * dens,
-                "glicerol_kg": float(l) * dens * ((npct or 0) / 100.0) * ((gpct or 0) / 100.0)})
-    return res
+        return agg
+    labels = df.apply(lambda r: f"{r['nombre']} · {float(r['lt'] or 0):,.0f} L disp.", axis=1).tolist()
+    sels = st.multiselect("Tanques (uno o varios)", labels, key=f"{key}_tks", label_visibility="collapsed")
+    if not sels:
+        return agg
+    _per = (float(default_l or 0.0) / len(sels)) if default_l else 0.0
+    picks = []
+    for i, sname in enumerate(sels):
+        r = df.iloc[labels.index(sname)]
+        gpct = float(r["glicerol"]) if pd.notna(r["glicerol"]) else None
+        npct = float(r["glicerina"]) if pd.notna(r["glicerina"]) else None
+        dens = float(r["densidad_g_ml"]) if pd.notna(r["densidad_g_ml"]) else \
+            (float(densidad_de(codigo)) if (callable(densidad_de) and densidad_de(codigo)) else 1.1)
+        l = st.number_input(f"Litros · {r['nombre']}", 0.0, 1_000_000.0, value=float(_per), step=50.0,
+                            key=f"{key}_l_{i}")
+        kg = float(l) * dens
+        picks.append({"idt": int(r["id_tanque"]), "nombre": r["nombre"], "l": float(l), "dens": dens,
+                      "glicerina_pct": npct, "glicerol_pct": gpct,
+                      "agua_pct": (float(r["agua_pct"]) if pd.notna(r["agua_pct"]) else None),
+                      "kg": kg,
+                      "glicerol_kg": kg * ((npct or 0) / 100.0) * ((gpct or 0) / 100.0)})
+    tot_l = sum(p["l"] for p in picks)
+    _wl = tot_l or 1.0
+    agg.update({
+        "tanques": picks,
+        "l": tot_l,
+        "kg": sum(p["kg"] for p in picks),
+        "glicerol_kg": sum(p["glicerol_kg"] for p in picks),
+        "glicerina_pct": sum((p["glicerina_pct"] or 0) * p["l"] for p in picks) / _wl,
+        "glicerol_pct": sum((p["glicerol_pct"] or 0) * p["l"] for p in picks) / _wl,
+        "agua_pct": sum((p["agua_pct"] or 0) * p["l"] for p in picks) / _wl,
+        "idt": picks[0]["idt"] if picks else None,
+        "nombre": ", ".join(p["nombre"] for p in picks),
+        "dens": picks[0]["dens"] if picks else None,
+    })
+    st.caption(f"Total: {tot_l:,.0f} L · {agg['kg']:,.0f} kg · glicerol {agg['glicerol_kg']:,.0f} kg "
+               f"(ponderado glicerina {agg['glicerina_pct']:.0f}% · glicerol {agg['glicerol_pct']:.0f}%)")
+    return agg
 
 
 _PLAN_TEXT_KEYS = {"pl_obs", "pl_aj_motivo", "pl_just_carga", "plb_obs", "plb_aj_motivo", "plb_just_carga"}
@@ -1186,19 +1206,24 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                     if proc == "PRODUCCION_ARE":
                         for _src, _txt, _pcode in ((gli_fresca, "Glicerina fresca", "GLICERINA"),
                                                    (gli_recup, "Glicerina recuperada", "GLICERINA-RECUP")):
-                            _ll = float(_src.get("l") or 0)
-                            if _ll <= 0:
-                                continue
-                            _dn = float(_src.get("dens") or dens_gli)
                             _pid = None
                             try:
                                 _pr = productos[productos["codigo_producto"] == _pcode]
                                 _pid = int(_pr.iloc[0]["id_producto"]) if not _pr.empty else None
                             except Exception:
                                 _pid = None
-                            _mov("INSUMO", _pid, _txt, None, ("TANQUE" if _src.get("idt") else "PORTERIA"),
-                                 _src.get("idt"), None, round(_ll * _dn, 1), round(_ll, 1))
-                            n_mov += 1
+                            _picks = _src.get("tanques") or (
+                                [{"idt": _src.get("idt"), "l": float(_src.get("l") or 0),
+                                  "dens": float(_src.get("dens") or dens_gli)}]
+                                if float(_src.get("l") or 0) > 0 else [])
+                            for _p in _picks:
+                                _ll = float(_p.get("l") or 0)
+                                if _ll <= 0:
+                                    continue
+                                _dn = float(_p.get("dens") or dens_gli)
+                                _mov("INSUMO", _pid, _txt, None, ("TANQUE" if _p.get("idt") else "PORTERIA"),
+                                     _p.get("idt"), None, round(_ll * _dn, 1), round(_ll, 1))
+                                n_mov += 1
 
                     # Insumos estimados (glicerina ya arriba; catalizador/fuel) → sólo movimiento
                     # (en la planificación aún no tienen ticket/tanque confirmado; la fuente real
