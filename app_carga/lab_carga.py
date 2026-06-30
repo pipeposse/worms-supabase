@@ -706,6 +706,26 @@ def tickets_porteria(producto_base=None, ticket=None, dias=30, limite=300, get_c
             return [dict(r) for r in cur.fetchall()]
 
 
+def resumen_evaluacion(get_conn=None, dias=(0, 1)):
+    """{fecha: (evaluados, evaluables)} para hoy y dias anteriores (avance del lab)."""
+    objetivo = [date.today() - timedelta(days=d) for d in dias]
+    sql = ("select t.fecha_entrada::date d, count(*) total, "
+           "count(*) filter (where COALESCE(t.evaluado,'NO')='SI') ev "
+           "from produccion.v_transacciones_limpias t "
+           "where t.fecha_entrada::date = ANY(%s) and t.producto_base is not null "
+           "group by 1")
+    out = {}
+    try:
+        with _conn_cm(get_conn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (objetivo,))
+                for d, total, ev in cur.fetchall():
+                    out[d] = (int(ev or 0), int(total or 0))
+    except Exception:
+        pass
+    return out
+
+
 def tickets_pendientes(dia, get_conn=None, producto_base=None, limite=400):
     """Tickets evaluables (no evaluados aun) de un dia puntual, para la bandeja de pendientes."""
     where = ["t.fecha_entrada::date = %s", "COALESCE(t.evaluado,'NO') <> 'SI'",
@@ -748,6 +768,26 @@ def render_laboratorio(get_conn=None, usr=None):
     st.header("🧪 Laboratorio · Carga y edicion")
     st.caption("Alta nueva o edicion. Al editar un registro de Access, la app lo adopta "
                "y tu version prevalece (aunque Access lo reescriba a diario).")
+
+    # --- Avance de evaluacion: hoy y ayer (evaluados / evaluables) ---
+    try:
+        _av = resumen_evaluacion(get_conn=get_conn)
+    except Exception:
+        _av = {}
+    _hoy_d = date.today(); _ayer_d = _hoy_d - timedelta(days=1)
+    def _kpi(col, etiqueta, dd):
+        ev, tot = _av.get(dd, (0, 0))
+        pend = max(tot - ev, 0)
+        pct = (100 * ev / tot) if tot else 0
+        if tot == 0:
+            col.metric(etiqueta, "0 / 0", "sin ingresos")
+        else:
+            col.metric(etiqueta, f"{ev} / {tot}",
+                       f"{pct:.0f}% · faltan {pend}" if pend else f"{pct:.0f}% · completo ✅",
+                       delta_color=("off" if pend == 0 else "normal"))
+    _kc1, _kc2 = st.columns(2)
+    _kpi(_kc1, "🧪 Evaluados hoy", _hoy_d)
+    _kpi(_kc2, "📅 Evaluados ayer", _ayer_d)
 
     ss = st.session_state
     ss.setdefault("lab_tok", uuid.uuid4().hex[:8])
