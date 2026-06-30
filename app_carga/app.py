@@ -1804,7 +1804,8 @@ def _form_param_tanque(cat, conectar, USR):
                "y producción los hereda al instante al elegir el tanque como fuente.")
     _lt = cat("SELECT t.id_tanque, t.codigo, t.nombre, t.sector, t.id_producto_principal, "
               "p.codigo_producto AS prod, pp.acidez_pct, pp.agua_pct, pp.sedimentos_pct, "
-              "pp.densidad_g_ml, pp.ppm_azufre, pp.ppm_fosforo, pp.corriente, pp.ultima_evaluacion_ts "
+              "pp.densidad_g_ml, pp.ppm_azufre, pp.ppm_fosforo, pp.glicerina_pct, pp.producto_pct, "
+              "pp.corriente, pp.ultima_evaluacion_ts "
               "FROM produccion.dim_tanque t "
               "LEFT JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
               "LEFT JOIN produccion.fact_param_tanque pp ON pp.id_tanque=t.id_tanque AND pp.id_producto=t.id_producto_principal "
@@ -1840,6 +1841,9 @@ def _form_param_tanque(cat, conectar, USR):
             _az = lc4.number_input("Azufre (ppm)", min_value=0.0, value=_pv("ppm_azufre"), step=1.0, format="%.1f", key="lab_az")
             _fo = lc5.number_input("Fósforo (ppm)", min_value=0.0, value=_pv("ppm_fosforo"), step=1.0, format="%.1f", key="lab_fo")
             _de = lc6.number_input("Densidad g/ml", min_value=0.0, value=_pv("densidad_g_ml", 0.91), step=0.01, format="%.3f", key="lab_de")
+            lc7, lc8, _lc9 = st.columns(3)
+            _gl = lc7.number_input("Glicerina %", min_value=0.0, value=_pv("glicerina_pct"), step=0.1, format="%.2f", key="lab_gl")
+            _pr = lc8.number_input("Producto %", min_value=0.0, value=_pv("producto_pct"), step=0.1, format="%.2f", key="lab_pr")
             _corr_opts = ["", "VEGETAL", "ANIMAL", "MIXTA"]
             _corr_cur = str(_lr.get("corriente")).upper() if pd.notna(_lr.get("corriente")) else ""
             _co = st.selectbox("Corriente", _corr_opts,
@@ -1853,17 +1857,19 @@ def _form_param_tanque(cat, conectar, USR):
                                 "INSERT INTO produccion.fact_param_tanque "
                                 "(id_tanque,id_producto,corriente,evaluado,ultima_evaluacion_ts,"
                                 " acidez_pct,agua_pct,sedimentos_pct,densidad_g_ml,ppm_azufre,ppm_fosforo,"
-                                " parametros_extra,actualizado_en) "
-                                "VALUES (%s,%s,%s,true,now(),%s,%s,%s,%s,%s,%s,%s,now()) "
+                                " glicerina_pct,producto_pct,parametros_extra,actualizado_en) "
+                                "VALUES (%s,%s,%s,true,now(),%s,%s,%s,%s,%s,%s,%s,%s,%s,now()) "
                                 "ON CONFLICT (id_tanque,id_producto) DO UPDATE SET "
                                 " corriente=EXCLUDED.corriente, evaluado=true, ultima_evaluacion_ts=now(), "
                                 " acidez_pct=EXCLUDED.acidez_pct, agua_pct=EXCLUDED.agua_pct, "
                                 " sedimentos_pct=EXCLUDED.sedimentos_pct, densidad_g_ml=EXCLUDED.densidad_g_ml, "
                                 " ppm_azufre=EXCLUDED.ppm_azufre, ppm_fosforo=EXCLUDED.ppm_fosforo, "
+                                " glicerina_pct=EXCLUDED.glicerina_pct, producto_pct=EXCLUDED.producto_pct, "
                                 " parametros_extra=COALESCE(produccion.fact_param_tanque.parametros_extra,'{}'::jsonb)||EXCLUDED.parametros_extra, "
                                 " actualizado_en=now()",
                                 (_lidt, int(_lpid), (_co or None),
                                  float(_ac), float(_ag), float(_se), float(_de), float(_az), float(_fo),
+                                 float(_gl), float(_pr),
                                  __import__("json").dumps({"comentario": _cm} if _cm else {})))
                         audit.log("U", "fact_param_tanque", _lidt,
                                   {"acidez_pct": float(_ac), "ppm_azufre": float(_az), "ppm_fosforo": float(_fo)})
@@ -1874,14 +1880,15 @@ def _form_param_tanque(cat, conectar, USR):
                     st.exception(e)
         st.divider()
         st.markdown("**Histórico reciente de este tanque**")
-        _hist = cat("SELECT registrado_en, origen, acidez_pct, agua_pct, sedimentos_pct, ppm_azufre, ppm_fosforo, corriente "
+        _hist = cat("SELECT registrado_en, origen, acidez_pct, agua_pct, sedimentos_pct, glicerina_pct, producto_pct, ppm_azufre, ppm_fosforo, corriente "
                     "FROM produccion.fact_param_tanque_hist WHERE id_tanque=%s "
                     "ORDER BY registrado_en DESC LIMIT 10", (_lidt,))
         if _hist.empty:
             st.caption("Sin historial todavía.")
         else:
             st.dataframe(_hist.rename(columns={"registrado_en":"Fecha","origen":"Origen","acidez_pct":"Acidez %",
-                         "agua_pct":"Agua %","sedimentos_pct":"Sed %","ppm_azufre":"Azufre","ppm_fosforo":"Fósforo",
+                         "agua_pct":"Agua %","sedimentos_pct":"Sed %","glicerina_pct":"Glicerina %","producto_pct":"Producto %",
+                         "ppm_azufre":"Azufre","ppm_fosforo":"Fósforo",
                          "corriente":"Corriente"}), use_container_width=True, hide_index=True,
                          column_config={"Fecha": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")})
 
@@ -6130,19 +6137,4 @@ with tab_objs[2]:
 
 # =========================================================================
 # TAB AUDIT  ·  tab_objs[3]
-# =========================================================================
-with tab_objs[3]:
-    st.subheader("🕒 Auditoría · últimos 100 eventos")
-    try:
-        df_aud = cat(
-            "SELECT e.ts, u.nombre AS usuario, u.nombre_full, e.operacion, e.tabla, e.pk_valor, e.cambios "
-            "FROM produccion.aud_eventos e "
-            "JOIN produccion.dim_usuario u ON u.id_usuario = e.id_usuario "
-            "ORDER BY e.ts DESC LIMIT 100"
-        )
-        if df_aud.empty:
-            st.info("Sin eventos de auditoría todavía.")
-        else:
-            st.dataframe(df_aud, use_container_width=True, hide_index=True)
-    except Exception as e:
-        st.exception(e)
+# ====================
