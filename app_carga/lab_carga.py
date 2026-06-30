@@ -33,6 +33,7 @@ from __future__ import annotations
 import os
 import uuid
 from contextlib import contextmanager
+from datetime import date, timedelta
 
 import streamlit as st
 
@@ -98,7 +99,7 @@ _RANGOS = {
 }
 CORRIENTE = ["VEGETAL", "ANIMAL"]
 CAL_AG    = ["A", "B", "C", "C.2da", "D", "E", "G"]
-CAL_AFE   = ["S", "SG", "B", "C", "A"]
+CAL_AFE   = ["S", "SG", "B", "C", "A", "GIRASOL"]
 CAL_ARE   = ["UNICA", "A", "B", "C"]
 CAL_EFLU  = ["LIQUIDO"]
 CAL_BORRA = ["UNICA", "B", "C", "D"]
@@ -222,41 +223,13 @@ def validar(tipo, d):
     comunes = [("producto_lab", "Producto laboratorio"),
                ("calidad_final_lab", "Calidad final"),
                ("rechazado", "Rechazado")]
+    # Validacion laxa: solo pedimos lo minimo para identificar el registro
+    # (producto, calidad y aceptado/rechazado). No se bloquea por parametros ni por
+    # la suma de composicion: el operario guarda con lo que tenga.
     err = []
-    if tipo == "AG":
-        falt = _falta(d, comunes + [
-            ("prc_acidez", "Acidez (%)"), ("prc_sedimentos", "Sedimentos (%)"),
-            ("prc_agua", "Agua (%)"), ("ticket", "Ticket"),
-            ("prc_producto", "Producto (%)"), ("ppm_azufre", "Azufre (ppm)"),
-            ("ppm_fosforo", "Fosforo (ppm)"), ("prc_emulsion", "Emulsion (%)")])
-        if falt:
-            err.append("Faltan campos: " + ", ".join(falt))
-        else:
-            ok, tot = _suma_uno(d.get("prc_sedimentos"), d.get("prc_agua"),
-                                d.get("prc_emulsion"), d.get("prc_producto"))
-            if not ok:
-                err.append(f"Sed+Agua+Emulsion+Producto debe sumar 1. Suma actual: {tot}")
-    elif tipo == "ARE":
-        falt = _falta(d, comunes + [
-            ("prc_acidez", "Acidez (%)"), ("prc_sedimentos", "Sedimentos (%)"),
-            ("prc_agua", "Agua (%)"), ("ticket", "Ticket"),
-            ("prc_producto", "Producto (%)")])
-        if falt:
-            err.append("Faltan campos: " + ", ".join(falt))
-        else:
-            ok, tot = _suma_uno(d.get("prc_sedimentos"), d.get("prc_agua"),
-                                d.get("prc_poliglicerol"), d.get("prc_glicerina"),
-                                d.get("prc_producto"))
-            if not ok:
-                err.append(f"Sed+Agua+Poliglicerol+Glicerina+Producto debe sumar 1. Suma actual: {tot}")
-    elif tipo == "AFE":
-        falt = _falta(d, comunes + [("ticket", "Ticket")])
-        if falt:
-            err.append("Faltan campos: " + ", ".join(falt))
-    else:  # EFLUENTE, BORRA, GENERICO -> solo comunes
-        falt = _falta(d, comunes)
-        if falt:
-            err.append("Faltan campos: " + ", ".join(falt))
+    falt = _falta(d, comunes)
+    if falt:
+        err.append("Faltan campos: " + ", ".join(falt))
     return (len(err) == 0), err
 
 
@@ -733,6 +706,28 @@ def tickets_porteria(producto_base=None, ticket=None, dias=30, limite=300, get_c
             return [dict(r) for r in cur.fetchall()]
 
 
+def tickets_pendientes(dia, get_conn=None, producto_base=None, limite=400):
+    """Tickets evaluables (no evaluados aun) de un dia puntual, para la bandeja de pendientes."""
+    where = ["t.fecha_entrada::date = %s", "COALESCE(t.evaluado,'NO') <> 'SI'",
+             "t.producto_base IS NOT NULL"]
+    params = [dia]
+    if producto_base:
+        where.append("t.producto_base = ANY(%s)")
+        params.append(list(producto_base))
+    sql = (
+        "select t.transaccion, t.producto_base, t.producto, t.cliente, t.fecha_entrada, "
+        "t.patente_chasis, t.patente_acoplado, t.corriente, t.peso_neto "
+        "from produccion.v_transacciones_limpias t "
+        f"where {' and '.join(where)} "
+        "order by t.transaccion desc limit %s"
+    )
+    params.append(limite)
+    with _conn_cm(get_conn) as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+
+
 def _lbl_tk(t):
     f = str(t.get("fecha_entrada") or "")[:10]
     pat = "/".join([x for x in [t.get("patente_chasis"), t.get("patente_acoplado")] if x])
@@ -764,8 +759,58 @@ def render_laboratorio(get_conn=None, usr=None):
     usuario = st.text_input("Empleado / usuario que carga (queda registrado en la base)",
                             value=_uname, key="lab_user")
 
-    modo = st.radio("Modo", ["➕ Nueva carga", "✏️ Buscar y editar"], horizontal=True,
-                    key="lab_modo")
+    # Cambio de modo diferido (desde "Evaluar" en Pendientes): se aplica ANTES de crear
+    # el radio para no violar la regla de Streamlit de no reasignar la key tras instanciar.
+    _force = ss.pop("_lab_force_modo", None)
+    if _force:
+        ss["lab_modo"] = _force
+
+    modo = st.radio("Modo", ["➕ Nueva carga", "📋 Pendientes", "✏️ Buscar y editar"],
+                    horizontal=True, key="lab_modo")
+
+    # -------- PENDIENTES (tickets evaluables del dia) --------
+    if modo.startswith("📋"):
+        st.markdown("**Tickets evaluables** — pendientes de laboratorio. Toca **Evaluar** "
+                    "y se abre la carga nueva con ese ticket ya cargado.")
+        ss.setdefault("lab_pend_dia", date.today())
+        cprev, cdia, cnext = st.columns([1, 2, 1])
+        if cprev.button("◀ Dia anterior", use_container_width=True):
+            ss["lab_pend_dia"] = ss["lab_pend_dia"] - timedelta(days=1)
+            st.rerun()
+        dia = cdia.date_input("Dia", value=ss["lab_pend_dia"], key="lab_pend_dia_inp",
+                              format="DD/MM/YYYY")
+        ss["lab_pend_dia"] = dia
+        _hoy = date.today()
+        if cnext.button("Dia siguiente ▶", use_container_width=True,
+                        disabled=(ss["lab_pend_dia"] >= _hoy)):
+            ss["lab_pend_dia"] = min(ss["lab_pend_dia"] + timedelta(days=1), _hoy)
+            st.rerun()
+        try:
+            pend = tickets_pendientes(ss["lab_pend_dia"], get_conn=get_conn)
+        except Exception as e:
+            pend = []
+            st.error(f"No pude leer pendientes: {e}")
+        _et = "hoy" if ss["lab_pend_dia"] == _hoy else ss["lab_pend_dia"].strftime("%d/%m/%Y")
+        if not pend:
+            st.success(f"✅ Sin tickets pendientes para {_et}.")
+        else:
+            st.caption(f"{len(pend)} ticket(s) sin evaluar · {_et}")
+            for _t in pend:
+                _pat = "/".join([x for x in [_t.get("patente_chasis"),
+                                             _t.get("patente_acoplado")] if x])
+                _tn = (abs(_t.get("peso_neto") or 0) / 1000.0)
+                c1, c2 = st.columns([5, 1])
+                c1.markdown(
+                    f"**#{_t['transaccion']}** · {_t.get('producto_base') or '?'}"
+                    f" · {(_t.get('cliente') or '')[:28]}"
+                    f"{(' · ' + _pat) if _pat else ''}"
+                    f"{(f' · {_tn:,.1f} TN' if _tn else '')}")
+                if c2.button("Evaluar", key=f"pend_ev_{_t['transaccion']}",
+                             use_container_width=True):
+                    ss["lab_ftk"] = str(_t["transaccion"])
+                    ss["_lab_force_modo"] = "➕ Nueva carga"
+                    st.rerun()
+        return
 
     # -------- BUSCAR Y EDITAR --------
     if modo.startswith("✏️"):
