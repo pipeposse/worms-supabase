@@ -21,9 +21,9 @@ def render(USR, cat):
             "- Así, incluso un tanque medido 1 vez al día queda **vivo**. La **confianza** indica qué tan fresco es el dato.\n"
             "- **Real vs teórico**: comparamos la variación física medida contra lo que movió producción.")
 
-    tp, tcov, tctrl, tsal, t1, t2, t4, t3 = st.tabs(
-        ["📊 Por producto", "🌎 Cobertura total", "🎯 Control teórico", "📤 Salidas / balance",
-         "🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
+    tp, tcov, tctrl, tdes, tsal, t1, t2, t4, t3 = st.tabs(
+        ["📊 Por producto", "🌎 Cobertura total", "🎯 Control teórico", "🤖 Designación auto",
+         "📤 Salidas / balance", "🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
          "⚖️ Real vs teórico (por día)", "🛡️ Conciliación"])
 
     # ---------- 0 · Stock por producto ----------
@@ -151,6 +151,63 @@ def render(USR, cat):
             _dl(d, "trazabilidad_destino.csv", "dl_tr")
         st.caption("**OK** = llegó al tanque de su producto · **DESVIADO** = entró a un tanque de otro producto · "
                    "**SIN_DESTINO** = no se registró movimiento de stock para ese ticket.")
+
+    # ---------- DESIGNACION AUTOMATICA: acierto vs desvio ----------
+    with tdes:
+        st.caption("¿La **asignación automática** de tanque acertó? Comparamos el tanque que el algoritmo "
+                   "sugeriría (producto + capacidad libre + score aprendido) contra **dónde el laboratorio "
+                   "realmente lo mandó**. Ventana: 60 días.")
+        dz = cat("SELECT ticket, fecha, producto, kg, tanque_sugerido, tanque_real, tanque_lab_texto, "
+                 "prod_tanque_real, motivo_desvio, veredicto FROM produccion.v_designacion_auto "
+                 "ORDER BY fecha DESC, ticket DESC")
+        if dz is None or dz.empty:
+            st.info("Sin evaluaciones con tanque asignado en la ventana.")
+        else:
+            n_ac = int((dz["veredicto"] == "ACIERTO").sum())
+            n_dv = int((dz["veredicto"] == "DESVIO").sum())
+            n_sm = int((dz["veredicto"] == "SIN_MAPEAR").sum())
+            n_ss = int((dz["veredicto"] == "SIN_SUGERENCIA").sum())
+            base = n_ac + n_dv
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Acierto designación", f"{(100*n_ac/base if base else 0):.0f}%",
+                      help=f"{n_ac} acierto / {n_dv} desvío (sobre los comparables)")
+            m2.metric("Desvíos", n_dv)
+            m3.metric("Sin mapear (alias)", n_sm, help="Abreviatura de tanque del lab que falta mapear")
+            m4.metric("Sin sugerencia", n_ss, help="El algoritmo no encontró tanque con lugar/match")
+
+            rs = cat("SELECT producto, evaluaciones, aciertos, desvios, sin_mapear, sin_sugerencia, pct_acierto "
+                     "FROM produccion.v_designacion_resumen")
+            if rs is not None and not rs.empty:
+                st.markdown("**Por producto**")
+                st.dataframe(rs.rename(columns={
+                    "producto": "Producto", "evaluaciones": "Evals", "aciertos": "Acierto",
+                    "desvios": "Desvío", "sin_mapear": "Sin mapear", "sin_sugerencia": "Sin sug.",
+                    "pct_acierto": "Acierto %"}),
+                    use_container_width=True, hide_index=True, column_config={
+                        "Acierto %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
+
+            st.markdown("**🔎 Detalle por evaluación — sugerido vs real**")
+            vf = st.selectbox("Veredicto", ["(todos)", "DESVIO", "ACIERTO", "SIN_SUGERENCIA", "SIN_MAPEAR"],
+                              key="des_ver")
+            d = dz if vf == "(todos)" else dz[dz["veredicto"] == vf]
+            st.caption(f"{len(d)} evaluación(es)")
+            st.dataframe(d.rename(columns={
+                "ticket": "Ticket", "fecha": "Fecha", "producto": "Producto", "kg": "kg",
+                "tanque_sugerido": "Sugerido", "tanque_real": "Real", "tanque_lab_texto": "Texto lab",
+                "prod_tanque_real": "Prod. tanque real", "motivo_desvio": "Motivo", "veredicto": "Veredicto"}),
+                use_container_width=True, hide_index=True, column_config={
+                    "Fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                    "kg": st.column_config.NumberColumn(format="%.0f")})
+            _dl(dz, "designacion_auto.csv", "dl_des")
+
+            unm = dz[dz["veredicto"] == "SIN_MAPEAR"]["tanque_lab_texto"].dropna().unique().tolist()
+            if unm:
+                st.markdown("**🧩 Abreviaturas del lab sin mapear** (cargalas en `produccion.dim_tanque_alias` "
+                            "para que cuenten en el control):")
+                st.code(", ".join(sorted(map(str, unm))))
+        st.caption("**ACIERTO** = fue al tanque que sugería el algoritmo · **DESVIO** = fue a otro (mirá el motivo) · "
+                   "**SIN_SUGERENCIA** = el algoritmo no tenía tanque válido (sin lugar o producto sin tanque) · "
+                   "**SIN_MAPEAR** = falta el alias del tanque que escribió el lab.")
 
     # ---------- SALIDAS / BALANCE ----------
     with tsal:
