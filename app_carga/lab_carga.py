@@ -693,7 +693,7 @@ def tickets_porteria(producto_base=None, ticket=None, dias=30, limite=300, get_c
         where.append("t.cliente = %s")
         params.append(cliente)
     sql = (
-        "select t.transaccion, t.producto_base, t.producto, t.cliente, t.fecha_entrada, "
+        "select t.transaccion::bigint AS transaccion, t.producto_base, t.producto, t.cliente, t.fecha_entrada, "
         "t.patente_chasis, t.patente_acoplado, t.corriente, t.evaluado "
         "from produccion.v_transacciones_limpias t "
         f"where {' and '.join(where)} "
@@ -739,7 +739,7 @@ def tickets_pendientes(dia, get_conn=None, producto_base=None, limite=400):
         where.append("t.producto_base = ANY(%s)")
         params.append(list(producto_base))
     sql = (
-        "select t.transaccion, t.producto_base, t.producto, t.cliente, t.fecha_entrada, "
+        "select t.transaccion::bigint AS transaccion, t.producto_base, t.producto, t.cliente, t.fecha_entrada, "
         "t.patente_chasis, t.patente_acoplado, t.corriente, t.peso_neto "
         "from produccion.v_transacciones_limpias t "
         f"where {' and '.join(where)} "
