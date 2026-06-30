@@ -1545,9 +1545,9 @@ def _porteria_entrada_diaria(cat):
             # ---------------- REVISION HISTORICA ----------------
 
 
-def _render_estado_planta(cat):
+def _render_estado_planta(cat, conectar=None, USR=None):
     st.title("📈 Estado de planta")
-    t1, t2, t3, t4, t5 = st.tabs(["🏭 Tablero", "🧪 Bandeja lab", "🔗 Trazabilidad", "📉 Mermas", "🔔 Alertas"])
+    t1, t2, t3, t4, t5, t6 = st.tabs(["🏭 Tablero", "🧪 Bandeja lab", "🔗 Trazabilidad", "📉 Mermas", "🔔 Alertas", "💵 Margen por reacción"])
     with t1:
         st.caption("Cada reacción activa: en qué estado está y a quién está esperando.")
         df = cat("SELECT identificador_unidad AS \"Reacción\", tipo_proceso AS \"Proceso\", estado AS \"Estado\", "
@@ -1606,6 +1606,61 @@ def _render_estado_planta(cat):
             for _, r in df.iterrows():
                 _ic = "🔴" if r["severidad"] == "alta" else "🟠"
                 st.warning(f"{_ic} **{r['tipo']}** — {r['mensaje']}")
+
+    with t6:
+        import pandas as pd
+        st.subheader("💵 Margen de transformación por reacción")
+        st.caption("Cuánto vale lo que **sale** (ARE-B, que se exporta como AG-E) menos lo que **entra** "
+                   "(materia prima + glicerina + KOH + fuel), por cada reacción. Es el negocio real a nivel de bacha: "
+                   "acá se ve si una reacción ganó o perdió plata, y cuánto pesa el **rendimiento** (kg de ARE por kg de MP).")
+        if conectar is not None and (USR or {}).get("rol") in ("SUPERVISOR", "ADMIN"):
+            with st.expander("⚙️ Precios de referencia (editar)", expanded=False):
+                st.caption("Venta del producto final (ARE-B = su valor como **AG-E exportado**), compra de cada MP (USD/TN), "
+                           "insumos (glicerina, KOH, fuel en ARS por su unidad) y TC (ARS por USD).")
+                _pr = cat("SELECT codigo, rol, precio, unidad, moneda, COALESCE(descripcion,'') descripcion "
+                          "FROM produccion.dim_precio_ref ORDER BY rol, codigo")
+                if _pr is not None and not _pr.empty:
+                    _ped = st.data_editor(_pr.rename(columns={"codigo":"Código","rol":"Rol","precio":"Precio","unidad":"Unidad","moneda":"Moneda","descripcion":"Descripción"}),
+                                          hide_index=True, use_container_width=True, key="precio_ref_ed",
+                                          disabled=["Código","Rol","Unidad","Moneda"])
+                    if st.button("💾 Guardar precios", type="primary", key="precio_ref_save"):
+                        try:
+                            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                                with conn.cursor() as cur:
+                                    for _, rr in _ped.iterrows():
+                                        cur.execute("UPDATE produccion.dim_precio_ref SET precio=%s, actualizado_en=now() WHERE codigo=%s",
+                                                    (float(rr["Precio"]) if pd.notna(rr["Precio"]) else None, rr["Código"]))
+                                audit.log("U", "dim_precio_ref", 0, {"n": len(_ped)})
+                            st.success("Precios actualizados."); cat.clear(); st.rerun()
+                        except Exception as _e:
+                            st.exception(_e)
+        dfm = cat("SELECT identificador_unidad, mp_codigo, kg_mp, kg_are, rendimiento_pct, rendimiento_obj_pct, "
+                  "ingreso_are_usd, costo_mp_usd, costo_insumos_usd, margen_usd, margen_por_tn_mp_usd, margen_pct, impacto_rendimiento_usd "
+                  "FROM produccion.v_margen_transformacion ORDER BY fecha DESC NULLS LAST")
+        if dfm is None or dfm.empty:
+            st.info("No hay reacciones de ARE para calcular margen.")
+        else:
+            _tm = pd.to_numeric(dfm["margen_usd"], errors="coerce").sum()
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Reacciones", len(dfm))
+            k2.metric("Margen total", f"{_tm:,.0f} USD")
+            k3.metric("Margen medio / TN de MP", f"{pd.to_numeric(dfm['margen_por_tn_mp_usd'],errors='coerce').mean():,.0f} USD")
+            st.dataframe(dfm.rename(columns={"identificador_unidad":"Reacción","mp_codigo":"MP","kg_mp":"kg MP","kg_are":"kg ARE",
+                "rendimiento_pct":"Rend. %","rendimiento_obj_pct":"Rend. obj. %","ingreso_are_usd":"Ingreso USD","costo_mp_usd":"Costo MP USD",
+                "costo_insumos_usd":"Insumos USD","margen_usd":"Margen USD","margen_por_tn_mp_usd":"Margen/TN MP","margen_pct":"Margen %",
+                "impacto_rendimiento_usd":"Δ rendim. USD"}),
+                hide_index=True, use_container_width=True,
+                column_config={c: st.column_config.NumberColumn(format="%.0f") for c in
+                               ["kg MP","kg ARE","Ingreso USD","Costo MP USD","Insumos USD","Margen USD","Margen/TN MP","Δ rendim. USD"]})
+            _r = dfm.iloc[0]
+            st.markdown(f"**Desglose de la reacción {_r['identificador_unidad']}** (USD):")
+            _wf = pd.DataFrame({"Concepto": ["Ingreso ARE", "− Costo MP", "− Insumos", "= Margen"],
+                                "USD": [float(_r["ingreso_are_usd"]), -float(_r["costo_mp_usd"]),
+                                        -float(_r["costo_insumos_usd"]), float(_r["margen_usd"])]})
+            st.bar_chart(_wf.set_index("Concepto"), use_container_width=True)
+            st.info("**Cómo leerlo:** el **rendimiento** (kg ARE / kg MP) es la palanca. Si baja (MP con más agua o proceso ineficiente), "
+                    "sale menos ARE por la misma materia prima y el margen se achica. **Δ rendim. USD** = lo que se ganó/perdió "
+                    "respecto del rendimiento objetivo de la fórmula. Los precios de referencia se editan arriba (solo dirección).")
 
 
 def _lab_asignacion(cat, conectar=None, USR=None):
@@ -3553,7 +3608,7 @@ if st.session_state.section != "CARGAS":
 
     elif st.session_state.section == "ESTADO":
         try:
-            _render_estado_planta(cat)
+            _render_estado_planta(cat, conectar, USR)
         except Exception as _e:
             import traceback as _tbe
             st.error(f"No se pudo cargar Estado de planta: {_e}")
