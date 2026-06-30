@@ -1799,6 +1799,9 @@ def _lab_asignacion(cat, conectar=None, USR=None):
 
 
 def _form_param_tanque(cat, conectar, USR):
+    if st.session_state.pop("param_tk_celebrar", False):
+        st.balloons()
+        st.toast("Parámetros del tanque cargados ✅")
     st.markdown("### 🧪 Cargar parámetros de laboratorio por tanque")
     st.caption("El laboratorio actualiza acá los parámetros del tanque. Queda histórico con fecha y usuario, "
                "y producción los hereda al instante al elegir el tanque como fuente.")
@@ -1874,6 +1877,7 @@ def _form_param_tanque(cat, conectar, USR):
                         audit.log("U", "fact_param_tanque", _lidt,
                                   {"acidez_pct": float(_ac), "ppm_azufre": float(_az), "ppm_fosforo": float(_fo)})
                     st.success(f"Parámetros guardados para {_lr['nombre']} · {_lr['prod']}.")
+                    st.session_state["param_tk_celebrar"] = True
                     cat.clear()
                     st.rerun()
                 except Exception as e:
@@ -6137,4 +6141,19 @@ with tab_objs[2]:
 
 # =========================================================================
 # TAB AUDIT  ·  tab_objs[3]
-# ==========
+# =========================================================================
+with tab_objs[3]:
+    st.subheader("🕒 Auditoría · últimos 100 eventos")
+    try:
+        df_aud = cat(
+            "SELECT e.ts, u.nombre AS usuario, u.nombre_full, e.operacion, e.tabla, e.pk_valor, e.cambios "
+            "FROM produccion.aud_eventos e "
+            "JOIN produccion.dim_usuario u ON u.id_usuario = e.id_usuario "
+            "ORDER BY e.ts DESC LIMIT 100"
+        )
+        if df_aud.empty:
+            st.info("Sin eventos de auditoría todavía.")
+        else:
+            st.dataframe(df_aud, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.exception(e)
