@@ -1844,7 +1844,7 @@ def _form_param_tanque(cat, conectar, USR):
             lc7, lc8, _lc9 = st.columns(3)
             _gl = lc7.number_input("Glicerina %", min_value=0.0, value=_pv("glicerina_pct"), step=0.1, format="%.2f", key="lab_gl")
             _pr = lc8.number_input("Producto %", min_value=0.0, value=_pv("producto_pct"), step=0.1, format="%.2f", key="lab_pr")
-            _corr_opts = ["", "VEGETAL", "ANIMAL", "MIXTA"]
+            _corr_opts = ["", "VEGETAL", "ANIMAL", "INSUMO", "MIXTA"]
             _corr_cur = str(_lr.get("corriente")).upper() if pd.notna(_lr.get("corriente")) else ""
             _co = st.selectbox("Corriente", _corr_opts,
                                index=_corr_opts.index(_corr_cur) if _corr_cur in _corr_opts else 0, key="lab_co")
@@ -6137,4 +6137,4 @@ with tab_objs[2]:
 
 # =========================================================================
 # TAB AUDIT  ·  tab_objs[3]
-# ====================
+# ==========
