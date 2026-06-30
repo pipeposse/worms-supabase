@@ -21,18 +21,20 @@ def render(USR, cat):
             "- Así, incluso un tanque medido 1 vez al día queda **vivo**. La **confianza** indica qué tan fresco es el dato.\n"
             "- **Real vs teórico**: comparamos la variación física medida contra lo que movió producción.")
 
-    tp, t1, t2, t4, t3 = st.tabs(["📊 Por producto", "🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
-                                 "⚖️ Real vs teórico (por día)", "🛡️ Conciliación"])
+    tp, tcov, tctrl, t1, t2, t4, t3 = st.tabs(
+        ["📊 Por producto", "🌎 Cobertura total", "🎯 Control teórico",
+         "🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
+         "⚖️ Real vs teórico (por día)", "🛡️ Conciliación"])
 
     # ---------- 0 · Stock por producto ----------
     with tp:
         st.caption("Cuánto hay de cada producto, cuánta **capacidad de acopio aperturada** (tanques asignados) "
                    "y cuánto **queda disponible** — total y abierto por tanque.")
-        pp = cat("SELECT producto_principal AS producto, count(*) tanques, "
+        pp = cat("SELECT produccion.fn_prod_label(producto_principal) AS producto, count(*) tanques, "
                  "SUM(COALESCE(litros_actual,0)) litros, SUM(COALESCE(kg_actual,0)) kg, "
                  "SUM(COALESCE(capacidad_litros,0)) capacidad "
                  "FROM produccion.vw_tanque_panel WHERE activo AND producto_principal IS NOT NULL "
-                 "GROUP BY producto_principal ORDER BY litros DESC NULLS LAST")
+                 "GROUP BY produccion.fn_prod_label(producto_principal) ORDER BY litros DESC NULLS LAST")
         if pp is None or pp.empty:
             st.info("Sin datos de stock por producto.")
         else:
@@ -63,7 +65,7 @@ def render(USR, cat):
                      "COALESCE(litros_actual,0) AS \"Stock (L)\", COALESCE(capacidad_litros,0) AS \"Capacidad (L)\", "
                      "GREATEST(COALESCE(capacidad_litros,0)-COALESCE(litros_actual,0),0) AS \"Disponible (L)\", "
                      "COALESCE(nivel_pct_actual,0) AS \"Ocupación %%\" "
-                     "FROM produccion.vw_tanque_panel WHERE activo AND producto_principal=%s "
+                     "FROM produccion.vw_tanque_panel WHERE activo AND produccion.fn_prod_label(producto_principal)=%s "
                      "ORDER BY litros_actual DESC NULLS LAST", (_psel,))
             if tq is not None and not tq.empty:
                 st.dataframe(tq, use_container_width=True, hide_index=True, column_config={
@@ -71,6 +73,84 @@ def render(USR, cat):
                     "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
                     "Disponible (L)": st.column_config.NumberColumn(format="%.0f"),
                     "Ocupación %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
+
+    # ---------- COBERTURA TOTAL ----------
+    with tcov:
+        st.caption("Todo lo que hay en planta: **tanques reales** (rótulo oficial del diccionario) más "
+                   "**tanques provisorios** para lo que entró sin destino asignado. Líquidos → PILETAS.")
+        sv = cat("SELECT tipo, codigo, nombre, sector, producto, corriente, litros, tn, nivel_pct, es_provisorio "
+                 "FROM reporting.v_stock_total ORDER BY es_provisorio DESC, tn DESC NULLS LAST")
+        if sv is None or sv.empty:
+            st.info("Sin datos de cobertura.")
+        else:
+            prov = sv[sv["es_provisorio"] == True]
+            real = sv[sv["es_provisorio"] == False]
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Tanques reales", len(real))
+            c2.metric("Provisorios (sin destino)", len(prov))
+            c3.metric("TN sin destino", f"{pd.to_numeric(prov['tn'], errors='coerce').sum():,.0f}")
+            if not prov.empty:
+                st.markdown("**🟠 Provisorios — entró a planta sin tanque asignado**")
+                st.dataframe(prov[["codigo", "producto", "corriente", "tn"]].rename(columns={
+                    "codigo": "Bucket", "producto": "Producto", "corriente": "Corriente", "tn": "TN"}),
+                    use_container_width=True, hide_index=True,
+                    column_config={"TN": st.column_config.NumberColumn(format="%.1f")})
+            st.markdown("**🟢 Tanques reales**")
+            st.dataframe(real[["codigo", "nombre", "sector", "producto", "corriente", "litros", "tn", "nivel_pct"]].rename(columns={
+                "codigo": "Código", "nombre": "Tanque", "sector": "Sector", "producto": "Producto",
+                "corriente": "Corriente", "litros": "Stock (L)", "tn": "TN", "nivel_pct": "Nivel %"}),
+                use_container_width=True, hide_index=True, column_config={
+                    "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
+                    "TN": st.column_config.NumberColumn(format="%.1f"),
+                    "Nivel %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
+            _dl(sv, "stock_total.csv", "dl_cov")
+
+    # ---------- CONTROL TEORICO vs REAL ----------
+    with tctrl:
+        st.caption("¿Todo lo que entra por portería llega a destino? Comparamos el **destino teórico** "
+                   "(tanque del producto declarado) contra **dónde fue realmente**. Ventana: 180 días.")
+        ct = cat("SELECT producto, corriente, tickets, tn_ingresado, tn_ok, tn_desviado, tn_sin_destino, pct_control "
+                 "FROM produccion.v_control_teorico_producto")
+        if ct is not None and not ct.empty:
+            _in = pd.to_numeric(ct["tn_ingresado"], errors="coerce").sum()
+            _ok = pd.to_numeric(ct["tn_ok"], errors="coerce").sum()
+            _sd = pd.to_numeric(ct["tn_sin_destino"], errors="coerce").sum()
+            _dv = pd.to_numeric(ct["tn_desviado"], errors="coerce").sum()
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("TN ingresadas", f"{_in:,.0f}")
+            m2.metric("Control teórico", f"{(100*_ok/_in if _in else 0):.0f}%",
+                      help="% de TN que llegó al tanque correcto")
+            m3.metric("Desviadas", f"{_dv:,.0f} TN")
+            m4.metric("Sin destino", f"{_sd:,.0f} TN")
+            st.dataframe(ct.rename(columns={
+                "producto": "Producto", "corriente": "Corriente", "tickets": "Tickets",
+                "tn_ingresado": "TN in", "tn_ok": "TN OK", "tn_desviado": "TN desviado",
+                "tn_sin_destino": "TN sin destino", "pct_control": "Control %"}),
+                use_container_width=True, hide_index=True, column_config={
+                    "TN in": st.column_config.NumberColumn(format="%.1f"),
+                    "TN OK": st.column_config.NumberColumn(format="%.1f"),
+                    "TN desviado": st.column_config.NumberColumn(format="%.1f"),
+                    "TN sin destino": st.column_config.NumberColumn(format="%.1f"),
+                    "Control %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
+            _dl(ct, "control_teorico_producto.csv", "dl_ct")
+        st.markdown("**🔎 Detalle por ticket — teórico vs real**")
+        ef = st.selectbox("Estado", ["(todos)", "SIN_DESTINO", "DESVIADO", "OK"], key="ctrl_estado")
+        tr = cat("SELECT fecha, ticket, producto, cliente, kg, estado, tanque_real, prod_tanque_real, "
+                 "tiene_tanque_teorico FROM produccion.v_trazabilidad_destino "
+                 "ORDER BY fecha DESC, ticket DESC LIMIT 1500")
+        if tr is not None and not tr.empty:
+            d = tr if ef == "(todos)" else tr[tr["estado"] == ef]
+            st.caption(f"{len(d)} ticket(s)")
+            st.dataframe(d.rename(columns={
+                "fecha": "Fecha", "ticket": "Ticket", "producto": "Producto", "cliente": "Proveedor",
+                "kg": "kg", "estado": "Estado", "tanque_real": "Tanque real",
+                "prod_tanque_real": "Producto del tanque", "tiene_tanque_teorico": "Tiene tanque teórico"}),
+                use_container_width=True, hide_index=True, column_config={
+                    "Fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                    "kg": st.column_config.NumberColumn(format="%.0f")})
+            _dl(d, "trazabilidad_destino.csv", "dl_tr")
+        st.caption("**OK** = llegó al tanque de su producto · **DESVIADO** = entró a un tanque de otro producto · "
+                   "**SIN_DESTINO** = no se registró movimiento de stock para ese ticket.")
 
     # ---------- 1 · Stock por tanque ----------
     with t1:
