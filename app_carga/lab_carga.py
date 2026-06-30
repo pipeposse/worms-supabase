@@ -798,8 +798,7 @@ def render_laboratorio(get_conn=None, usr=None):
     ss.setdefault("lab_tok", uuid.uuid4().hex[:8])
     ss.setdefault("lab_edit_ctx", None)
     if ss.pop("lab_celebrar", False):
-        st.balloons()
-        st.toast("Evaluación cargada ✅")
+        st.toast("Evaluación cargada", icon="✅")
 
     _uname = ""
     if usr:

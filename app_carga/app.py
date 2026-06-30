@@ -1800,8 +1800,7 @@ def _lab_asignacion(cat, conectar=None, USR=None):
 
 def _form_param_tanque(cat, conectar, USR):
     if st.session_state.pop("param_tk_celebrar", False):
-        st.balloons()
-        st.toast("Parámetros del tanque cargados ✅")
+        st.toast("Parámetros del tanque cargados", icon="✅")
     st.markdown("### 🧪 Cargar parámetros de laboratorio por tanque")
     st.caption("El laboratorio actualiza acá los parámetros del tanque. Queda histórico con fecha y usuario, "
                "y producción los hereda al instante al elegir el tanque como fuente.")
