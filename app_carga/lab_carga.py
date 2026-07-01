@@ -637,12 +637,15 @@ def sugerir_tanque(get_conn=None, producto_base=None, kg=None):
            "SELECT t.id_tanque, t.nombre, t.codigo, "
            "  GREATEST(COALESCE(t.capacidad_litros,0)-COALESCE(s.litros_actual,0),0) AS disp "
            "FROM produccion.dim_tanque t "
-           "JOIN prod p ON p.id_producto=t.id_producto_principal "
+           "JOIN produccion.dim_tanque_producto_permitido pp ON pp.id_tanque=t.id_tanque "
+           "JOIN prod p ON p.id_producto=pp.id_producto "
            "LEFT JOIN produccion.vw_stock_tanque_actual s ON s.id_tanque=t.id_tanque "
-           "LEFT JOIN produccion.dic_tanque_preferencia pref ON pref.id_producto=t.id_producto_principal AND pref.id_tanque=t.id_tanque "
+           "LEFT JOIN produccion.dic_tanque_preferencia pref ON pref.id_producto=pp.id_producto AND pref.id_tanque=t.id_tanque "
            "WHERE COALESCE(t.activo,true) "
+           "  AND COALESCE(t.condicion,'EN USO')<>'FUERA DE USO' "
+           "  AND COALESCE(t.uso,'ACOPIO')='ACOPIO' "
            "  AND GREATEST(COALESCE(t.capacidad_litros,0)-COALESCE(s.litros_actual,0),0) >= COALESCE(%s,0) "
-           "ORDER BY COALESCE(pref.score,0) DESC, disp DESC LIMIT 1")
+           "ORDER BY pp.es_principal DESC, COALESCE(pref.score,0) DESC, disp DESC LIMIT 1")
     try:
         with _conn_cm(get_conn) as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
