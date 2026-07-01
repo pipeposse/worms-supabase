@@ -1549,6 +1549,7 @@ def _render_estado_planta(cat, conectar=None, USR=None):
     st.title("📈 Estado de planta")
     t1, t2, t3, t4, t5, t6, t7 = st.tabs(["🏭 Tablero", "🧪 Bandeja lab", "🔗 Trazabilidad", "📉 Mermas", "🔔 Alertas", "💵 Margen por reacción", "🧫 Evaluaciones internas"])
     with t7:
+        import pandas as pd
         st.caption("Evaluaciones internas de cada reacción. Si se cargó mal la **hora** o un **parámetro**, corregilo acá.")
         _reac = cat("SELECT DISTINCT b.identificador_unidad, b.id_batch "
                     "FROM produccion.fact_evaluacion_interna ei "
