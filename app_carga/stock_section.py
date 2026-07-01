@@ -2,8 +2,28 @@
 real-vs-teórico por día, y conciliación. Todo descargable.
 render(USR, cat) recibe el helper cacheado de app.py.
 """
+import os
 import pandas as pd
 import streamlit as st
+
+
+def _wconn():
+    import psycopg2
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        try:
+            url = st.secrets.get("DATABASE_URL")  # type: ignore[attr-defined]
+        except Exception:
+            url = None
+    return psycopg2.connect(url)
+
+
+def _reasignar(id_mov, id_tanque, motivo, uid):
+    with _wconn() as c:
+        with c.cursor() as cur:
+            cur.execute("SELECT produccion.fn_reasignar_movimiento(%s,%s,%s,%s)",
+                        (int(id_mov), int(id_tanque), motivo, (int(uid) if uid else None)))
+        c.commit()
 
 
 def _dl(df, name, key):
@@ -21,9 +41,10 @@ def render(USR, cat):
             "- Así, incluso un tanque medido 1 vez al día queda **vivo**. La **confianza** indica qué tan fresco es el dato.\n"
             "- **Real vs teórico**: comparamos la variación física medida contra lo que movió producción.")
 
-    tp, tcov, tctrl, tdes, tsal, t1, t2, t4, t3 = st.tabs(
+    tp, tcov, tctrl, tdes, tsal, tmov, t1, t2, t4, t3 = st.tabs(
         ["📊 Por producto", "🌎 Cobertura total", "🎯 Control teórico", "🤖 Designación auto",
-         "📤 Salidas / balance", "🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
+         "📤 Salidas / balance", "🧭 Movimientos y reasignación",
+         "🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
          "⚖️ Real vs teórico (por día)", "🛡️ Conciliación"])
 
     # ---------- 0 · Stock por producto ----------
@@ -246,6 +267,146 @@ def render(USR, cat):
             _dl(d, "salidas_porteria.csv", "dl_sal")
         else:
             st.info("Sin salidas registradas en la ventana.")
+
+    # ---------- MOVIMIENTOS Y REASIGNACION ----------
+    with tmov:
+        st.caption("Todo lo que pasó en cada tanque, qué quedó **sin asignar** y qué **entró sin registrarse**. "
+                   "Reasigná en un clic si algo fue al tanque equivocado.")
+        _sub = st.radio("Ver", ["📖 Libro por tanque", "🟠 Sin asignar / reasignar",
+                                "🕳️ Huecos (sin movimiento)", "🔴 No explicado"],
+                        horizontal=True, key="mov_sub")
+
+        if _sub.startswith("📖"):
+            _ORIG = {"lab_sync": "Laboratorio", "planificacion": "Planificación",
+                     "carga_operario": "Operario", "decantacion": "Decantación",
+                     "sistema": "Reconciliación", "sync_wedo": "Sensor WeDo",
+                     "ajuste_manual": "Ajuste manual", "porteria_sync": "Portería"}
+            _modo = st.radio("Agrupar por", ["🛢️ Por tanque", "🧪 Por producto"],
+                             horizontal=True, key="mov_modo")
+            _con_aj = st.checkbox("Incluir ajustes (movimiento no explicado por la reconciliación)",
+                                  value=False, key="mov_aj")
+            _df = None
+            _grpcol = "producto"
+            _sel = None
+            if _modo.startswith("🛢️"):
+                _tk = cat("SELECT DISTINCT id_tanque, tanque FROM produccion.v_tanque_libro ORDER BY tanque")
+                if _tk is not None and not _tk.empty:
+                    _opt = _tk["tanque"].tolist()
+                    _sel = st.selectbox("Tanque", _opt, key="mov_libro_tk")
+                    _idt = int(_tk.iloc[_opt.index(_sel)]["id_tanque"])
+                    _df = cat("SELECT momento, tipo_movimiento, producto, tanque, kg_neto, litros_neto, "
+                              "ticket_porteria, ticket_lab, origen FROM produccion.v_tanque_libro "
+                              "WHERE id_tanque=%s ORDER BY momento DESC", (_idt,))
+                    _grpcol = "producto"
+            else:
+                _pr = cat("SELECT DISTINCT producto FROM produccion.v_tanque_libro "
+                          "WHERE producto IS NOT NULL ORDER BY producto")
+                if _pr is not None and not _pr.empty:
+                    _opt = _pr["producto"].tolist()
+                    _sel = st.selectbox("Producto", _opt, key="mov_libro_pr")
+                    _df = cat("SELECT momento, tipo_movimiento, producto, tanque, kg_neto, litros_neto, "
+                              "ticket_porteria, ticket_lab, origen FROM produccion.v_tanque_libro "
+                              "WHERE producto=%s ORDER BY momento DESC", (_sel,))
+                    _grpcol = "tanque"
+
+            if _df is None or _df.empty:
+                st.info("Sin movimientos registrados todavía.")
+            else:
+                d = _df.copy()
+                d["kg_neto"] = pd.to_numeric(d["kg_neto"], errors="coerce").fillna(0)
+                d["litros_neto"] = pd.to_numeric(d["litros_neto"], errors="coerce").fillna(0)
+                if not _con_aj:
+                    d = d[d["tipo_movimiento"] != "AJUSTE"]
+                if d.empty:
+                    st.info("No hay entradas ni salidas registradas (probá tildar «Incluir ajustes»).")
+                else:
+                    _ent = d.loc[d["tipo_movimiento"] == "ENTRADA", "kg_neto"].sum() / 1000.0
+                    _sal = -d.loc[d["tipo_movimiento"] == "SALIDA", "kg_neto"].sum() / 1000.0
+                    _sdo = d["kg_neto"].sum() / 1000.0
+                    k1, k2, k3 = st.columns(3)
+                    k1.metric("🟢 Entró", f"{_ent:,.1f} TN")
+                    k2.metric("🔴 Salió", f"{_sal:,.1f} TN")
+                    k3.metric("Saldo del período", f"{_sdo:,.1f} TN")
+                    d["Movimiento"] = d["tipo_movimiento"].map(
+                        {"ENTRADA": "🟢 Entró", "SALIDA": "🔴 Salió", "AJUSTE": "🟡 Ajuste"}).fillna(d["tipo_movimiento"])
+                    d["Cantidad"] = d.apply(
+                        lambda r: (f"{abs(r['kg_neto'])/1000.0:,.1f} TN" if r["tipo_movimiento"] != "AJUSTE"
+                                   else f"{r['litros_neto']:,.0f} L"), axis=1)
+                    d["Ticket"] = d["ticket_porteria"].fillna(d["ticket_lab"])
+                    d["Origen"] = d["origen"].map(_ORIG).fillna(d["origen"])
+                    _hdr = "Tanque" if _grpcol == "tanque" else "Producto"
+                    st.dataframe(
+                        d[["momento", "Movimiento", _grpcol, "Cantidad", "Ticket", "Origen"]].rename(
+                            columns={"momento": "Fecha", _grpcol: _hdr}),
+                        use_container_width=True, hide_index=True,
+                        column_config={"Fecha": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")})
+                    _dl(d, f"movimientos_{_sel}.csv", "dl_libro")
+
+        elif _sub.startswith("🟠"):
+            sa = cat("SELECT id_mov_stock, momento, tipo_movimiento, producto, kg, litros, "
+                     "ticket_porteria, ticket_lab, origen, estado_mov FROM produccion.v_mov_sin_asignar")
+            if sa is None or sa.empty:
+                st.success("✅ No hay movimientos sin asignar.")
+            else:
+                st.caption(f"{len(sa)} movimiento(s) sin tanque asignado")
+                st.dataframe(sa.rename(columns={
+                    "id_mov_stock": "# Mov", "momento": "Fecha", "tipo_movimiento": "Tipo",
+                    "producto": "Producto", "kg": "kg", "litros": "L", "ticket_porteria": "Tk portería",
+                    "ticket_lab": "Tk lab", "origen": "Origen", "estado_mov": "Estado"}),
+                    use_container_width=True, hide_index=True, column_config={
+                        "Fecha": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")})
+                st.markdown("**↪️ Reasignar un movimiento a su tanque**")
+                _ids = sa["id_mov_stock"].tolist()
+                r1, r2, r3 = st.columns([1, 2, 2])
+                _mid = r1.selectbox("# Movimiento", _ids, key="rea_mid")
+                _tks = cat("SELECT id_tanque, codigo, nombre FROM produccion.dim_tanque "
+                           "WHERE COALESCE(activo,true) ORDER BY codigo")
+                _tkl = _tks.apply(lambda x: f"{x['codigo']} · {x['nombre']}", axis=1).tolist()
+                _tsel = r2.selectbox("Tanque destino", _tkl, key="rea_tk")
+                _tid = int(_tks.iloc[_tkl.index(_tsel)]["id_tanque"])
+                _mot = r3.text_input("Motivo", key="rea_mot")
+                if st.button("↪️ Reasignar", type="primary", key="rea_btn"):
+                    try:
+                        _reasignar(_mid, _tid, _mot or None, USR.get("id_usuario"))
+                        st.toast("Movimiento reasignado", icon="✅")
+                        cat.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"No se pudo reasignar: {e}")
+
+        elif _sub.startswith("🕳️"):
+            hk = cat("SELECT fecha, ticket, producto, corriente, cliente, kg, tiene_tanque_teorico "
+                     "FROM produccion.v_gaps_movimiento LIMIT 1000")
+            if hk is None or hk.empty:
+                st.success("✅ No hay entradas sin movimiento.")
+            else:
+                st.warning(f"{len(hk)} entrada(s) de portería sin movimiento de stock "
+                           "(no llegaron a un tanque en el sistema).")
+                st.dataframe(hk.rename(columns={
+                    "fecha": "Fecha", "ticket": "Ticket", "producto": "Producto", "corriente": "Corriente",
+                    "cliente": "Proveedor", "kg": "kg", "tiene_tanque_teorico": "Hay tanque p/producto"}),
+                    use_container_width=True, hide_index=True, column_config={
+                        "Fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                        "kg": st.column_config.NumberColumn(format="%.0f")})
+                st.caption("Estos huecos se cierran en Fase 2 (portería genera el movimiento sola). "
+                           "Por ahora es la lista de lo que se está escapando.")
+
+        else:
+            ne = cat("SELECT tanque, sector, producto, ajustes, litros_no_explicados, movs_explicados, ultimo_ajuste "
+                     "FROM produccion.v_tanque_no_explicado")
+            if ne is None or ne.empty:
+                st.success("✅ No hay movimiento sin explicar.")
+            else:
+                st.caption("Los **ajustes** son cambios físicos del tanque que producción NO justifica: "
+                           "movimiento no explicado. Ordenado por magnitud (dónde se pierde el control).")
+                st.dataframe(ne.rename(columns={
+                    "tanque": "Tanque", "sector": "Sector", "producto": "Producto", "ajustes": "# Ajustes",
+                    "litros_no_explicados": "L no explicados", "movs_explicados": "Movs explicados",
+                    "ultimo_ajuste": "Último ajuste"}),
+                    use_container_width=True, hide_index=True, column_config={
+                        "L no explicados": st.column_config.NumberColumn(format="%.0f"),
+                        "Último ajuste": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")})
+                _dl(ne, "no_explicado.csv", "dl_ne")
 
     # ---------- 1 · Stock por tanque ----------
     with t1:
