@@ -1547,7 +1547,73 @@ def _porteria_entrada_diaria(cat):
 
 def _render_estado_planta(cat, conectar=None, USR=None):
     st.title("📈 Estado de planta")
-    t1, t2, t3, t4, t5, t6 = st.tabs(["🏭 Tablero", "🧪 Bandeja lab", "🔗 Trazabilidad", "📉 Mermas", "🔔 Alertas", "💵 Margen por reacción"])
+    t1, t2, t3, t4, t5, t6, t7 = st.tabs(["🏭 Tablero", "🧪 Bandeja lab", "🔗 Trazabilidad", "📉 Mermas", "🔔 Alertas", "💵 Margen por reacción", "🧫 Evaluaciones internas"])
+    with t7:
+        st.caption("Evaluaciones internas de cada reacción. Si se cargó mal la **hora** o un **parámetro**, corregilo acá.")
+        _reac = cat("SELECT DISTINCT b.identificador_unidad, b.id_batch "
+                    "FROM produccion.fact_evaluacion_interna ei "
+                    "JOIN produccion.fact_batch_proceso b ON b.id_batch=ei.id_batch "
+                    "WHERE NOT ei.anulado AND b.identificador_unidad IS NOT NULL "
+                    "ORDER BY b.id_batch DESC")
+        if _reac is None or _reac.empty:
+            st.info("Todavia no hay evaluaciones internas cargadas.")
+        else:
+            _ro = _reac["identificador_unidad"].tolist()
+            _rsel = st.selectbox("Reaccion", _ro, key="ep_ei_reac")
+            _bid = int(_reac.iloc[_ro.index(_rsel)]["id_batch"])
+            _ev = cat("SELECT id_eval, ts, etapa, (mediciones->>'acidez')::numeric acidez, "
+                      "(mediciones->>'temperatura')::numeric temperatura, (mediciones->>'fosforo')::numeric fosforo, "
+                      "(mediciones->>'azufre')::numeric azufre, observaciones "
+                      "FROM produccion.fact_evaluacion_interna WHERE id_batch=%s AND NOT anulado ORDER BY ts", (_bid,))
+            if _ev is None or _ev.empty:
+                st.info("Sin evaluaciones para esta reaccion.")
+            else:
+                st.dataframe(_ev.drop(columns=["id_eval"]).rename(columns={
+                    "ts": "Hora", "etapa": "Etapa", "acidez": "Acidez", "temperatura": "Temp",
+                    "fosforo": "Fosforo", "azufre": "Azufre", "observaciones": "Obs"}),
+                    use_container_width=True, hide_index=True,
+                    column_config={"Hora": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")})
+                if _ev["acidez"].notna().any():
+                    st.caption("Caida de acidez en el tiempo")
+                    st.line_chart(_ev.dropna(subset=["acidez"]).set_index("ts")["acidez"])
+                st.divider()
+                st.markdown("**Corregir una evaluacion**")
+                _lbls = _ev.apply(lambda r: f"#{int(r['id_eval'])} - {pd.to_datetime(r['ts']).strftime('%d/%m %H:%M')} - "
+                                            f"{r['etapa'] or ''} - ac {r['acidez'] if pd.notna(r['acidez']) else '-'}", axis=1).tolist()
+                _pick = st.selectbox("Evaluacion a corregir", _lbls, key="ep_ei_pick")
+                _row = _ev.iloc[_lbls.index(_pick)]
+                _eid = int(_row["id_eval"]); _ts0 = pd.to_datetime(_row["ts"])
+                def _vv(c):
+                    return float(_row[c]) if pd.notna(_row[c]) else 0.0
+                ec1, ec2, ec3 = st.columns(3)
+                _f = ec1.date_input("Fecha", value=_ts0.date(), key="ep_ei_f")
+                _h = ec2.time_input("Hora", value=_ts0.time(), key="ep_ei_h")
+                _ac = ec3.number_input("Acidez %", value=_vv("acidez"), step=0.1, format="%.2f", key="ep_ei_ac")
+                ec4, ec5, ec6 = st.columns(3)
+                _tp = ec4.number_input("Temp C", value=_vv("temperatura"), step=1.0, key="ep_ei_tp")
+                _fo = ec5.number_input("Fosforo (ppm)", value=_vv("fosforo"), step=1.0, key="ep_ei_fo")
+                _az = ec6.number_input("Azufre (ppm)", value=_vv("azufre"), step=1.0, key="ep_ei_az")
+                _ob = st.text_input("Observaciones", value=(_row["observaciones"] or ""), key="ep_ei_ob")
+                if st.button("Guardar correccion", type="primary", key="ep_ei_save", use_container_width=True):
+                    if conectar is None:
+                        st.error("Sin conexion de escritura disponible.")
+                    else:
+                        try:
+                            import datetime as _dtm
+                            _newts = _dtm.datetime.combine(_f, _h)
+                            with conectar(USR["id_usuario"]) as (conn, audit):
+                                with conn.cursor() as cur:
+                                    cur.execute(
+                                        "UPDATE produccion.fact_evaluacion_interna SET ts=%s, "
+                                        "mediciones = COALESCE(mediciones,'{}'::jsonb) || jsonb_build_object("
+                                        "'acidez',%s::numeric,'temperatura',%s::numeric,'fosforo',%s::numeric,'azufre',%s::numeric), "
+                                        "observaciones=%s WHERE id_eval=%s",
+                                        (_newts, _ac, _tp, _fo, _az, (_ob or None), _eid))
+                                audit.log("U", "fact_evaluacion_interna", _eid, {"ts": str(_newts), "acidez": _ac})
+                            st.toast("Evaluacion corregida", icon="✅")
+                            cat.clear(); st.rerun()
+                        except Exception as e:
+                            st.exception(e)
     with t1:
         st.caption("Cada reacción activa: en qué estado está y a quién está esperando.")
         df = cat("SELECT identificador_unidad AS \"Reacción\", tipo_proceso AS \"Proceso\", estado AS \"Estado\", "
