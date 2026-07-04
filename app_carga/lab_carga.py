@@ -104,6 +104,8 @@ CAL_ARE   = ["UNICA", "A", "B", "C"]
 CAL_EFLU  = ["LIQUIDO"]
 CAL_BORRA = ["UNICA", "B", "C", "D"]
 CAL_GEN   = ["UNICA", "A", "B", "C", "D", "E"]
+CAL_GLI   = ["UNICA", "FRESCA", "RECUPERADA", "F/E", "FUERA DE ESPECIFICACION"]
+CAL_INS   = ["UNICA", "FUERA DE ESPECIFICACION", "RECHAZADO"]
 
 _TABLE = "produccion.lab_evaluaciones"
 _EFECTIVO = "produccion.v_procesos_lab_efectivo"
@@ -122,6 +124,7 @@ _VALID_COLS = {
     "eflu_conductividad_ms", "eflu_prc_agua", "eflu_prc_sedimentos",
     "eflu_prc_grasa", "eflu_dequo_mg02_l", "borra_prc_grasa", "borra_ph",
     "borra_alcalinidad", "sebo_indice_yodo_gyodo_gmuestra", "concentracion",
+    "gli_glicerol", "gli_ceniza", "gli_mong",
 }
 
 
@@ -568,9 +571,73 @@ def _form_para_producto(producto_lab):
         return _form_EFLUENTE
     if p in ("BORRA", "EMULSION"):
         return _form_BORRA
+    if p.startswith("GLICERINA"):
+        return _form_GLICERINA
+    if _es_insumo_base(p):
+        return _form_INSUMO
     if p in _FORMS:
         return _FORMS[p]
     return _form_GENERICO
+
+
+def _form_GLICERINA(pf, ctx, tok, get_conn, usuario):
+    """Glicerina: parámetros de calidad (glicerol, cenizas, MONG, pH, etc.)."""
+    p = "gli"
+    st.subheader("🧴 Glicerina · calidad")
+    with st.form(_k(p, tok, "form")):
+        cab = _cab(p, pf, tok)
+        st.markdown("**Parámetros de glicerina**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            gli_glicerol = _n("Glicerol (%)", "gli_glicerol", pf, p, tok, "glol")
+            gli_ceniza = _n("Cenizas (%)", "gli_ceniza", pf, p, tok, "cen")
+        with c2:
+            gli_mong = _n("MONG (%)", "gli_mong", pf, p, tok, "mong")
+            gli_ph = _n("pH", "eflu_ph", pf, p, tok, "ph")
+        with c3:
+            prc_gli = _n("Glicerina (%)", "prc_glicerina", pf, p, tok, "gli")
+            prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
+        densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
+        producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
+        cier = _cierre(p, pf, tok, CAL_GLI, default_corriente="VEGETAL")
+        enviar = st.form_submit_button("GUARDAR", use_container_width=True)
+    if enviar:
+        data = dict(tipo_formulario="GLICERINA", producto_lab=(producto_lab or "GLICERINA"),
+                    gli_glicerol=gli_glicerol, gli_ceniza=gli_ceniza, gli_mong=gli_mong,
+                    eflu_ph=gli_ph, prc_glicerina=prc_gli, prc_agua=prc_agua,
+                    densidad__g_ml=densidad, **cab, **cier)
+        if _persistir("GLICERINA", data, ctx, get_conn, usuario):
+            _reset(tok)
+
+
+def _form_INSUMO(pf, ctx, tok, get_conn, usuario):
+    """Insumos (ácido sulfúrico, soda, KOH, etc.): concentración / pureza."""
+    p = "ins"
+    prod = (pf or {}).get("producto_lab") or ""
+    st.subheader("🧪 Insumo · concentración / pureza" + (f" · {prod}" if prod else ""))
+    with st.form(_k(p, tok, "form")):
+        cab = _cab(p, pf, tok)
+        st.markdown("**Parámetros del insumo**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            concentracion = _n("Concentración / pureza (%)", "concentracion", pf, p, tok, "conc")
+        with c2:
+            densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
+        with c3:
+            ph = _n("pH", "eflu_ph", pf, p, tok, "ph")
+        producto_lab = _t("Insumo (producto laboratorio) *", "producto_lab", pf, p, tok, "plab")
+        cier = _cierre(p, pf, tok, CAL_INS, default_corriente="INSUMO")
+        enviar = st.form_submit_button("GUARDAR", use_container_width=True)
+    if enviar:
+        data = dict(tipo_formulario="INSUMO", producto_lab=producto_lab,
+                    concentracion=concentracion, densidad__g_ml=densidad, eflu_ph=ph, **cab, **cier)
+        if _persistir("INSUMO", data, ctx, get_conn, usuario):
+            _reset(tok)
+
+
+def _es_insumo_base(b):
+    return any(k in b for k in ("ACIDO", "SULF", "SODA", "KOH", "POTAS", "FUEL",
+                                "GASOIL", "METANOL", "FLOCUL", "CATALIZ"))
 
 
 def _form_para_base(base):
@@ -584,6 +651,10 @@ def _form_para_base(base):
         return _form_AFE
     if "EFLUENTE" in b or "EFLIUENTE" in b or "DISPOSICION FINAL DE LIQU" in b:
         return _form_EFLUENTE
+    if b.startswith("GLICERINA"):
+        return _form_GLICERINA
+    if _es_insumo_base(b):
+        return _form_INSUMO
     if b in ("BORRA", "EMULSION"):
         return _form_BORRA
     return _form_GENERICO
