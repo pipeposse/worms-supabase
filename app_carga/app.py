@@ -1719,12 +1719,31 @@ def _render_estado_planta(cat, conectar=None, USR=None):
                 hide_index=True, use_container_width=True,
                 column_config={c: st.column_config.NumberColumn(format="%.0f") for c in
                                ["kg MP","kg ARE","Ingreso USD","Costo MP USD","Insumos USD","Margen USD","Margen/TN MP","Δ rendim. USD"]})
-            _r = dfm.iloc[0]
-            st.markdown(f"**Desglose de la reacción {_r['identificador_unidad']}** (USD):")
-            _wf = pd.DataFrame({"Concepto": ["Ingreso ARE", "− Costo MP", "− Insumos", "= Margen"],
-                                "USD": [float(_r["ingreso_are_usd"]), -float(_r["costo_mp_usd"]),
-                                        -float(_r["costo_insumos_usd"]), float(_r["margen_usd"])]})
-            st.bar_chart(_wf.set_index("Concepto"), use_container_width=True)
+            st.divider()
+            st.markdown("**🔎 Desglose por ítem — cantidades y precios (para validar)**")
+            _reacs = dfm["identificador_unidad"].tolist()
+            _rsel = st.selectbox("Reacción", _reacs, key="mgn_desg_reac")
+            _rowm = dfm[dfm["identificador_unidad"] == _rsel].iloc[0]
+            mm1, mm2, mm3, mm4 = st.columns(4)
+            mm1.metric("Ingreso ARE", f"{float(_rowm['ingreso_are_usd']):,.0f} USD")
+            mm2.metric("Costo MP", f"{float(_rowm['costo_mp_usd']):,.0f} USD")
+            mm3.metric("Insumos", f"{float(_rowm['costo_insumos_usd']):,.0f} USD")
+            mm4.metric("Margen", f"{float(_rowm['margen_usd']):,.0f} USD")
+            _dg = cat("SELECT concepto, cantidad, unidad, precio, precio_unidad, usd "
+                      "FROM produccion.v_margen_desglose WHERE reaccion=%s ORDER BY orden", (_rsel,))
+            if _dg is not None and not _dg.empty:
+                st.dataframe(_dg.rename(columns={"concepto": "Concepto", "cantidad": "Cantidad", "unidad": "Unidad",
+                    "precio": "Precio", "precio_unidad": "Precio unidad", "usd": "USD"}),
+                    hide_index=True, use_container_width=True, column_config={
+                        "Cantidad": st.column_config.NumberColumn(format="%.0f"),
+                        "Precio": st.column_config.NumberColumn(format="%.2f"),
+                        "USD": st.column_config.NumberColumn(format="%.0f")})
+                st.caption("Cantidad × Precio = USD. Positivo = ingreso, negativo = costo. Los insumos en ARS se pasan a USD con el TC. "
+                           "Los precios se editan arriba (solo dirección).")
+                _wf = pd.DataFrame({"Concepto": ["Ingreso ARE", "− Costo MP", "− Insumos", "= Margen"],
+                                    "USD": [float(_rowm["ingreso_are_usd"]), -float(_rowm["costo_mp_usd"]),
+                                            -float(_rowm["costo_insumos_usd"]), float(_rowm["margen_usd"])]})
+                st.bar_chart(_wf.set_index("Concepto"), use_container_width=True)
             st.info("**Cómo leerlo:** el **rendimiento** (kg ARE / kg MP) es la palanca. Si baja (MP con más agua o proceso ineficiente), "
                     "sale menos ARE por la misma materia prima y el margen se achica. **Δ rendim. USD** = lo que se ganó/perdió "
                     "respecto del rendimiento objetivo de la fórmula. Los precios de referencia se editan arriba (solo dirección).")
