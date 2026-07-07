@@ -316,6 +316,45 @@ if st.session_state.section is None:
     </div>
     """, unsafe_allow_html=True)
 
+    # --- Estado de sincronización de datos (Access → Supabase) ---
+    try:
+        _sc = cat("SELECT source_id, machine_name, last_status, COALESCE(last_error,'') last_error, "
+                  "last_successful_sync, rows_last_batch, "
+                  "round(extract(epoch from now()-updated_at)/60.0,0) AS hace_min "
+                  "FROM produccion.sync_control ORDER BY source_id")
+        _ultp = cat("SELECT max(fecha_entrada) ult, max(transaccion) tk FROM produccion.v_transacciones_limpias")
+        _ultl = cat("SELECT max(fecha) ult FROM produccion.v_procesos_lab_efectivo")
+    except Exception:
+        _sc = None; _ultp = None; _ultl = None
+    if _sc is not None and not _sc.empty:
+        st.markdown('<div class="section-title">Estado de datos · portería y laboratorio</div>', unsafe_allow_html=True)
+        _scols = st.columns(len(_sc))
+        for _i, (_, _r) in enumerate(_sc.iterrows()):
+            _sid = str(_r["source_id"])
+            _nom = "🚛 Portería" if _sid.startswith("porteria") else ("🧪 Laboratorio" if _sid.startswith("laboratorio") else _sid)
+            _ok = str(_r["last_status"]).upper() == "OK"
+            _hace = _r["hace_min"]
+            _hn = int(_hace) if pd.notna(_hace) else None
+            _viejo = (_hn is not None and _hn > 60)
+            _icon = "🟢" if (_ok and not _viejo) else ("🟠" if _ok else "🔴")
+            _when = pd.to_datetime(_r["last_successful_sync"]).strftime("%d/%m %H:%M") if pd.notna(_r["last_successful_sync"]) else "—"
+            with _scols[_i]:
+                st.markdown(f"**{_icon} {_nom}**")
+                st.caption(f"PC: **{_r['machine_name'] or '—'}** · último OK: **{_when}**"
+                           + (f" (hace {_hn} min)" if _hn is not None else "")
+                           + f" · {int(_r['rows_last_batch'] or 0)} filas")
+                if not _ok and _r["last_error"]:
+                    st.error(f"⚠️ Error de sincronización: {_r['last_error']}")
+                elif _viejo:
+                    st.warning(f"Sin refrescar hace {_hn} min — revisá la PC de sincronización.")
+        if _ultp is not None and not _ultp.empty:
+            _up = _ultp.iloc[0]
+            _upf = pd.to_datetime(_up["ult"]).strftime("%d/%m/%Y") if pd.notna(_up["ult"]) else "—"
+            _tk = f"#{int(_up['tk'])}" if pd.notna(_up["tk"]) else "—"
+            _ul = _ultl.iloc[0]["ult"] if (_ultl is not None and not _ultl.empty) else None
+            _ulf = pd.to_datetime(_ul).strftime("%d/%m/%Y") if pd.notna(_ul) else "—"
+            st.caption(f"📅 Último dato de **portería**: {_upf} (ticket {_tk}) · último dato de **laboratorio**: {_ulf}")
+
     k = _landing_kpis()
     if k:
         esp_cls = "bad" if (k['esp_valid'] or 0) > 0 else "ok"
