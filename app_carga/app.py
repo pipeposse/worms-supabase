@@ -355,6 +355,28 @@ if st.session_state.section is None:
             _ulf = pd.to_datetime(_ul).strftime("%d/%m/%Y") if pd.notna(_ul) else "—"
             st.caption(f"📅 Último dato de **portería**: {_upf} (ticket {_tk}) · último dato de **laboratorio**: {_ulf}")
 
+    # --- PCs que intentan subir (heartbeat): cuál sube efectivamente ---
+    try:
+        _pcs = cat("SELECT fuente, machine_name, hace_min, activa, ok, con_error, es_la_que_sube, "
+                   "COALESCE(ultimo_error,'') ultimo_error FROM produccion.v_sync_pcs "
+                   "ORDER BY fuente, ultimo_latido DESC")
+    except Exception:
+        _pcs = None
+    if _pcs is not None and not _pcs.empty:
+        _nact = int(_pcs["activa"].fillna(False).astype(bool).sum())
+        with st.expander(f"🖥️ PCs intentando subir ({_nact} activa(s) en 15 min) — cuál sube efectivamente", expanded=False):
+            for _fu in _pcs["fuente"].unique():
+                st.markdown(f"**{_fu}**")
+                for _, _p in _pcs[_pcs["fuente"] == _fu].iterrows():
+                    _mark = ("✅ **sube esta**" if _p["es_la_que_sube"]
+                             else ("🟢 activa" if _p["activa"] else "⚪ inactiva"))
+                    _hn = int(_p["hace_min"]) if pd.notna(_p["hace_min"]) else "—"
+                    _err = (f" · último error: {str(_p['ultimo_error'])[:90]}" if _p["ultimo_error"] else "")
+                    st.write(f"- {_mark} · **{_p['machine_name']}** · latido hace {_hn} min · "
+                             f"{int(_p['ok'] or 0)} OK / {int(_p['con_error'] or 0)} error{_err}")
+            st.caption("Varias PCs pueden intentar subir el mismo Access; **sube la del último latido OK**. "
+                       "Muchos errores suele ser choque por acceso concurrente al archivo — conviene dejar una sola PC subiendo.")
+
     k = _landing_kpis()
     if k:
         esp_cls = "bad" if (k['esp_valid'] or 0) > 0 else "ok"
