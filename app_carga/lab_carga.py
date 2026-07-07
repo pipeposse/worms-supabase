@@ -573,6 +573,10 @@ def _form_para_producto(producto_lab):
         return _form_BORRA
     if p.startswith("GLICERINA"):
         return _form_GLICERINA
+    if p.startswith("SEBO"):
+        return _form_SEBO
+    if p.startswith("FONDO"):
+        return _form_FONDO
     if _es_insumo_base(p):
         return _form_INSUMO
     if p in _FORMS:
@@ -597,6 +601,8 @@ def _form_GLICERINA(pf, ctx, tok, get_conn, usuario):
         with c3:
             prc_gli = _n("Glicerina (%)", "prc_glicerina", pf, p, tok, "gli")
             prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
+            ppm_azufre = _n("Azufre (ppm)", "ppm_azufre", pf, p, tok, "az")
+            ppm_fosforo = _n("Fosforo (ppm)", "ppm_fosforo", pf, p, tok, "fos")
         densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
         producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
         cier = _cierre(p, pf, tok, CAL_GLI, default_corriente="VEGETAL")
@@ -605,6 +611,7 @@ def _form_GLICERINA(pf, ctx, tok, get_conn, usuario):
         data = dict(tipo_formulario="GLICERINA", producto_lab=(producto_lab or "GLICERINA"),
                     gli_glicerol=gli_glicerol, gli_ceniza=gli_ceniza, gli_mong=gli_mong,
                     eflu_ph=gli_ph, prc_glicerina=prc_gli, prc_agua=prc_agua,
+                    ppm_azufre=ppm_azufre, ppm_fosforo=ppm_fosforo,
                     densidad__g_ml=densidad, **cab, **cier)
         if _persistir("GLICERINA", data, ctx, get_conn, usuario):
             _reset(tok)
@@ -635,6 +642,63 @@ def _form_INSUMO(pf, ctx, tok, get_conn, usuario):
             _reset(tok)
 
 
+def _form_SEBO(pf, ctx, tok, get_conn, usuario):
+    """Sebo (grasa animal): índice de yodo + acidez/agua/impurezas."""
+    p = "sebo"
+    st.subheader("🥩 Sebo · calidad")
+    with st.form(_k(p, tok, "form")):
+        cab = _cab(p, pf, tok)
+        st.markdown("**Parámetros de sebo**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            yodo = _n("Índice de yodo (%)", "sebo_indice_yodo_gyodo_gmuestra", pf, p, tok, "yodo")
+            prc_acidez = _n("Acidez (%)", "prc_acidez", pf, p, tok, "ac")
+        with c2:
+            prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
+            prc_sedimentos = _n("Sedimentos / impurezas (%)", "prc_sedimentos", pf, p, tok, "sed")
+        with c3:
+            densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
+        producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
+        cier = _cierre(p, pf, tok, CAL_GEN, default_corriente="ANIMAL")
+        enviar = st.form_submit_button("GUARDAR", use_container_width=True)
+    if enviar:
+        data = dict(tipo_formulario="SEBO", producto_lab=(producto_lab or "SEBO"),
+                    sebo_indice_yodo_gyodo_gmuestra=yodo, prc_acidez=prc_acidez,
+                    prc_agua=prc_agua, prc_sedimentos=prc_sedimentos,
+                    densidad__g_ml=densidad, **cab, **cier)
+        if _persistir("SEBO", data, ctx, get_conn, usuario):
+            _reset(tok)
+
+
+def _form_FONDO(pf, ctx, tok, get_conn, usuario):
+    """Fondo de tanque: alcalinidad, materia grasa, pH."""
+    p = "fondo"
+    st.subheader("🛢️ Fondo de tanque · calidad")
+    with st.form(_k(p, tok, "form")):
+        cab = _cab(p, pf, tok)
+        st.markdown("**Parámetros del fondo de tanque**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            alcalinidad = _n("Alcalinidad", "borra_alcalinidad", pf, p, tok, "alc")
+            grasa = _n("Materia grasa (%)", "borra_prc_grasa", pf, p, tok, "grasa")
+        with c2:
+            ph = _n("pH", "borra_ph", pf, p, tok, "ph")
+            prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
+        with c3:
+            prc_sedimentos = _n("Sedimentos (%)", "prc_sedimentos", pf, p, tok, "sed")
+            densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
+        producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
+        cier = _cierre(p, pf, tok, CAL_GEN, default_corriente="VEGETAL")
+        enviar = st.form_submit_button("GUARDAR", use_container_width=True)
+    if enviar:
+        data = dict(tipo_formulario="FONDO", producto_lab=(producto_lab or "FONDO-TK"),
+                    borra_alcalinidad=alcalinidad, borra_prc_grasa=grasa, borra_ph=ph,
+                    prc_agua=prc_agua, prc_sedimentos=prc_sedimentos,
+                    densidad__g_ml=densidad, **cab, **cier)
+        if _persistir("FONDO", data, ctx, get_conn, usuario):
+            _reset(tok)
+
+
 def _es_insumo_base(b):
     return any(k in b for k in ("ACIDO", "SULF", "SODA", "KOH", "POTAS", "FUEL",
                                 "GASOIL", "METANOL", "FLOCUL", "CATALIZ"))
@@ -653,6 +717,10 @@ def _form_para_base(base):
         return _form_EFLUENTE
     if b.startswith("GLICERINA"):
         return _form_GLICERINA
+    if b.startswith("SEBO"):
+        return _form_SEBO
+    if b.startswith("FONDO"):
+        return _form_FONDO
     if _es_insumo_base(b):
         return _form_INSUMO
     if b in ("BORRA", "EMULSION"):
