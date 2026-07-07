@@ -56,7 +56,7 @@ def _batches(cat):
         "       bu.nombre_ui AS reactor, "
         "       b.desg_reposo_modo, b.desg_id_tanque_reposo, b.desg_reposo_ini_ts, "
         "       b.desg_agua_sed_pct, b.desg_lab_ok, b.desg_id_tanque_destino, "
-        "       b.desg_recipiente_vacio, b.desg_confirmada_ts, b.id_producto_buscado, "
+        "       b.desg_recipiente_vacio, b.desg_confirmada_ts, b.id_producto_buscado, b.desg_incidente, b.desg_incidente_motivo, "
         "       b.parametros_proceso, b.litros_inicial, b.kg_inicial "
         "FROM produccion.fact_batch_proceso b "
         "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
@@ -71,7 +71,7 @@ def _batch_one(cat, id_batch):
         "       bu.nombre_ui AS reactor, "
         "       b.desg_reposo_modo, b.desg_id_tanque_reposo, b.desg_reposo_ini_ts, "
         "       b.desg_agua_sed_pct, b.desg_lab_ok, b.desg_id_tanque_destino, "
-        "       b.desg_recipiente_vacio, b.desg_confirmada_ts, b.id_producto_buscado, "
+        "       b.desg_recipiente_vacio, b.desg_confirmada_ts, b.id_producto_buscado, b.desg_incidente, b.desg_incidente_motivo, "
         "       b.parametros_proceso, b.litros_inicial, b.kg_inicial "
         "FROM produccion.fact_batch_proceso b "
         "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
@@ -316,24 +316,82 @@ def produccion(USR, cat, conectar, id_batch=None):
     nt = cat("SELECT nombre FROM produccion.dim_tanque WHERE id_tanque=%s", (int(dest),))
     dest_nm = nt.iloc[0]["nombre"] if (nt is not None and not nt.empty) else f"tanque {int(dest)}"
 
-    # cantidad producida (editable, default = litros del batch)
+    # ---- envíos ya registrados (pases anteriores) ----
+    _tot = cat("SELECT COALESCE(SUM(litros_afe),0) t FROM produccion.fact_desg_envio WHERE id_batch=%s", (int(b["id_batch"]),))
+    _enviado = float(_tot.iloc[0]["t"]) if (_tot is not None and not _tot.empty) else 0.0
+    if _enviado > 0:
+        st.info(f"📦 Ya enviado a destino en pases anteriores: **{_enviado:,.0f} L** de AFE-S. "
+                "Terminá de sacar el remanente y cerrá cuando el recipiente quede vacío.")
+        _eh = cat("SELECT to_char(ts,'DD/MM HH24:MI') AS \"Hora\", litros_afe AS \"AFE-S L\", "
+                  "litros_remanente AS \"Remanente L\", "
+                  "CASE WHEN recipiente_vacio THEN 'cierre ✅' WHEN es_error THEN 'parcial ⚠️' ELSE 'parcial' END AS \"Tipo\", "
+                  "COALESCE(motivo,'') AS \"Motivo\" "
+                  "FROM produccion.fact_desg_envio WHERE id_batch=%s ORDER BY ts DESC", (int(b["id_batch"]),))
+        if _eh is not None and not _eh.empty:
+            st.dataframe(_eh, use_container_width=True, hide_index=True)
+    if b.get("desg_incidente"):
+        st.warning(f"⚠️ Este desgomado tiene un **incidente** registrado: {b.get('desg_incidente_motivo') or 'decantación parcial'}.")
+
     _lit_def = float(b["litros_inicial"] or 0) or (float(b["kg_inicial"] or 0) / DENS_AFE if b["kg_inicial"] else 0.0)
+    _lit_def = max(_lit_def - _enviado, 0.0)
+
+    modo = st.radio("¿Cómo cerrás este envío?",
+                    ["✅ Envié todo — el recipiente quedó vacío",
+                     "⚠️ Envié solo una parte — quedó remanente (error)"],
+                    key="desg_cierre_modo")
+    es_parcial = modo.startswith("⚠️")
+
     c1, c2 = st.columns(2)
-    l_afe = c1.number_input(f"AFE-S a {dest_nm} (L)", min_value=0.0, max_value=1_000_000.0,
+    l_afe = c1.number_input(f"AFE-S enviado a {dest_nm} en este pase (L)", min_value=0.0, max_value=1_000_000.0,
                             value=float(round(_lit_def, 0)), step=10.0, key="desg_l_afe")
     l_fondo = c2.number_input("Fondo de tanque (L, opcional)", min_value=0.0, max_value=1_000_000.0,
                               value=0.0, step=10.0, key="desg_l_fondo")
 
-    # VALIDACIÓN DURA: recipiente sin líquido
+    def _envio(cur, vacio, es_err, l_rem, motivo):
+        id_afe = int(b["id_producto_buscado"]) if pd.notna(b["id_producto_buscado"]) else AFE_S_ID
+        _mov(cur, b, uid, "PRODUCTO_FINAL", id_afe, "AFE-S", int(dest), l_afe, DENS_AFE)
+        if l_fondo and l_fondo > 0:
+            _mov(cur, b, uid, "SUBPRODUCTO", FONDO_TK_ID, "Fondo de tanque", int(dest), l_fondo, 1.0)
+        cur.execute("INSERT INTO produccion.fact_desg_envio "
+                    "(id_batch,litros_afe,litros_fondo,id_tanque_destino,recipiente_vacio,es_error,litros_remanente,motivo,id_usuario) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (int(b["id_batch"]), float(l_afe), float(l_fondo or 0), int(dest),
+                     bool(vacio), bool(es_err), (float(l_rem) if l_rem else None), (motivo or None), uid))
+
+    if es_parcial:
+        st.markdown("##### ⚠️ Envío parcial / remanente por error")
+        cc1, cc2 = st.columns(2)
+        l_rem = cc1.number_input("Remanente estimado que quedó en el recipiente (L)", min_value=0.0, max_value=1_000_000.0,
+                                 value=float(round(_lit_def, 0)), step=10.0, key="desg_l_rem")
+        motivo = cc2.text_input("¿Qué pasó?", value="Error del operario: se decantó solo la mitad", key="desg_inc_motivo")
+        st.caption(f"Se registra lo enviado y el incidente. **{_recipiente_nombre(cat, b)}** queda con remanente y el "
+                   "batch sigue **en decantación** para terminar de sacarlo en otro pase.")
+        if st.button("⚠️ Registrar envío parcial (queda abierto)", type="primary", use_container_width=True, key="desg_parcial"):
+            try:
+                with conectar(uid) as (conn, audit):
+                    with conn.cursor() as cur:
+                        _envio(cur, vacio=False, es_err=True, l_rem=l_rem, motivo=motivo)
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET desg_incidente=true, "
+                                    "desg_incidente_motivo=%s, id_usuario_estado=%s, "
+                                    "motivo_estado=%s WHERE id_batch=%s",
+                                    ((motivo or "Envío parcial"), uid,
+                                     "INCIDENTE: decantación parcial, quedó remanente (" + (motivo or "") + ")",
+                                     int(b["id_batch"])))
+                    audit.log("U", "fact_batch_proceso", int(b["id_batch"]),
+                              {"envio_parcial_L": l_afe, "remanente_L": l_rem, "incidente": True})
+                st.success("Envío parcial e incidente registrados. El desgomado sigue abierto para terminar de decantar.")
+                cat.clear(); st.rerun()
+            except Exception as e:
+                st.exception(e)
+        return
+
+    # ---- cierre normal: recipiente vacío (validación dura) ----
     st.markdown("##### 🚱 Validación: recipiente sin líquido")
-    st.caption(f"Antes de cerrar, confirmá que **{_recipiente_nombre(cat, b)}** quedó SIN líquido "
-               "(chequeá por canilla o por visión desde arriba).")
+    st.caption(f"Confirmá que **{_recipiente_nombre(cat, b)}** quedó SIN líquido (canilla o visión desde arriba).")
     metodo = st.radio("¿Cómo lo verificaste?", ["🚰 Por canilla", "👁️ Por visión (desde arriba)"],
                       key="desg_metodo", horizontal=True)
-    vacio_ok = st.checkbox(f"Confirmo que **{_recipiente_nombre(cat, b)}** quedó sin líquido.",
-                           key="desg_vacio_ok")
-
-    if st.button("🚚 Confirmar y generar movimientos", type="primary", use_container_width=True,
+    vacio_ok = st.checkbox(f"Confirmo que **{_recipiente_nombre(cat, b)}** quedó sin líquido.", key="desg_vacio_ok")
+    if st.button("🚚 Confirmar y FINALIZAR", type="primary", use_container_width=True,
                  key="desg_confirm", disabled=not vacio_ok):
         if not vacio_ok:
             st.error("Tenés que confirmar que el recipiente quedó sin líquido.")
@@ -341,10 +399,7 @@ def produccion(USR, cat, conectar, id_batch=None):
         try:
             with conectar(uid) as (conn, audit):
                 with conn.cursor() as cur:
-                    id_afe = int(b["id_producto_buscado"]) if pd.notna(b["id_producto_buscado"]) else AFE_S_ID
-                    _mov(cur, b, uid, "PRODUCTO_FINAL", id_afe, "AFE-S", int(dest), l_afe, DENS_AFE)
-                    if l_fondo and l_fondo > 0:
-                        _mov(cur, b, uid, "SUBPRODUCTO", FONDO_TK_ID, "Fondo de tanque", int(dest), l_fondo, 1.0)
+                    _envio(cur, vacio=True, es_err=False, l_rem=None, motivo=None)
                     cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL",
                                 (int(b["id_batch"]),))
                     cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,fin_ts,id_usuario) "
