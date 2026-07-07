@@ -790,7 +790,9 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         kg_src, ports, lab_avg, corr_src = 0.0, [], {}, None
     lab_avg = lab_avg or {}
     kg_used = float(kg_src) if (kg_src and kg_src > 0) else float(q_ag)
-    acidez = (float(lab_avg["prc_acidez"]) * 100) if lab_avg.get("prc_acidez") is not None else (acidez_obj or 0.0)
+    _rawac = lab_avg.get("prc_acidez")
+    acidez = ((float(_rawac) * 100 if float(_rawac) <= 1 else float(_rawac))
+              if _rawac is not None else (acidez_obj or 0.0))  # datos mezclados frac/%: <=1 es fraccion
 
     # ---------- Llenado del reactor (en LITROS) — incluye MP + glicerina ----------
     litros_mp = (kg_used / dens) if dens else 0.0
@@ -1001,7 +1003,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             if v is None:
                 cols[i].metric(lbl, "—")
             elif k in ("prc_acidez", "prc_agua", "prc_sedimentos"):
-                cols[i].metric(lbl, f"{float(v)*100:.2f}")
+                _fv = float(v)
+                cols[i].metric(lbl, f"{(_fv*100 if _fv <= 1 else _fv):.2f}")
             else:
                 cols[i].metric(lbl, f"{float(v):.2f}")
 
