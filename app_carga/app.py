@@ -5827,7 +5827,7 @@ with tab_objs[0]:
                 st.caption("Salidas esperadas para este proceso: " + ", ".join(_dec_pf["label"].tolist()))
             _tipos_pf = _dec_pf["tipo_salida"].tolist()
             _sug_pf = [c for c in _dec_pf["codigo_producto"].tolist() if pd.notna(c) and c]
-            if "GLICERINA_RECUP" in _tipos_pf: _sug_pf += ["GLICERINA", "GLICERINA-FE"]
+            if "GLICERINA_RECUP" in _tipos_pf: _sug_pf += ["GLICERINA-PURA", "GLICERINA-FE"]
             if "AGUA_PROCESO" in _tipos_pf: _sug_pf += ["AGUA-PROC"]
             _opt_dec_pf = [c for c in dict.fromkeys(_sug_pf) if c in productos["codigo_producto"].tolist()]
             # mapa codigo_producto -> tipo_salida (para etiquetar el movimiento)

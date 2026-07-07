@@ -777,7 +777,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _gcf, _gcr = st.columns(2)
         with _gcf:
             st.markdown("**🟢 Glicerina fresca**")
-            gli_fresca = _pick_gli(cat, "GLICERINA", "pl_fresca", densidad_de, default_l=_fresca_def)
+            gli_fresca = _pick_gli(cat, "GLICERINA-PURA", "pl_fresca", densidad_de, default_l=_fresca_def)
         with _gcr:
             st.markdown("**🟡 Glicerina recuperada**")
             gli_recup = _pick_gli(cat, "GLICERINA-RECUP", "pl_recup", densidad_de, default_l=_recup_def)
@@ -1213,7 +1213,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
                     # Glicerina: fresca y recuperada, cada una como movimiento desde su tanque
                     if proc == "PRODUCCION_ARE":
-                        for _src, _txt, _pcode in ((gli_fresca, "Glicerina fresca", "GLICERINA"),
+                        for _src, _txt, _pcode in ((gli_fresca, "Glicerina fresca", "GLICERINA-PURA"),
                                                    (gli_recup, "Glicerina recuperada", "GLICERINA-RECUP")):
                             _pid = None
                             try:
