@@ -26,17 +26,43 @@ from etl.config import DATABASE_URL
 import auth_persist as _auth
 
 from contextlib import contextmanager as _lab_cm
+
+@st.cache_resource
+def _lab_pool():
+    """Pool de conexiones reutilizable para Laboratorio (evita reconectar en cada query)."""
+    from psycopg2.pool import ThreadedConnectionPool
+    return ThreadedConnectionPool(1, 8, DATABASE_URL)
+
+_LAB_SET = "SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'"
+
 @_lab_cm
 def _lab_conn():
-    """Conexion para la seccion Laboratorio (carga/edicion)."""
-    import psycopg2 as _pg
-    c = _pg.connect(DATABASE_URL)
+    """Conexion de Laboratorio: toma una del pool (sin handshake) y la devuelve al terminar."""
+    pool = _lab_pool()
+    c = pool.getconn()
     try:
-        with c.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
+        try:
+            with c.cursor() as cur:
+                cur.execute(_LAB_SET)
+        except Exception:
+            # la conexion del pool murio: descartarla y tomar otra
+            try:
+                pool.putconn(c, close=True)
+            except Exception:
+                pass
+            c = pool.getconn()
+            with c.cursor() as cur:
+                cur.execute(_LAB_SET)
         yield c
     finally:
-        c.close()
+        try:
+            c.rollback()  # deja limpia la conexion (los writers ya hicieron commit)
+        except Exception:
+            pass
+        try:
+            pool.putconn(c)
+        except Exception:
+            pass
 
 st.set_page_config(page_title="WORMS Carga", layout="wide", page_icon="🏭")
 
