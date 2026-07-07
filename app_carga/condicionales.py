@@ -138,14 +138,86 @@ def editor_tanques(USR, cat, conectar):
             st.exception(e)
 
 
+
+def editor_alias(USR, cat, conectar):
+    st.caption("Portería define **familia** (la calidad y la corriente las pone el laboratorio). "
+               "Resolvé acá cada nombre de portería a su **producto oficial**. Al guardar, portería lo normaliza "
+               "sola en toda la app (ej.: BORRILLA → BORRA, P → AFE-P).")
+    df = cat("SELECT nombre_porteria, COALESCE(oficial,'') AS oficial, COALESCE(oficial_final,'') AS resuelto, "
+             "COALESCE(tipo,'') AS tipo, COALESCE(nota,'') AS nota "
+             "FROM produccion.dim_maestro_alias_porteria ORDER BY (oficial_final IS NULL) DESC, nombre_porteria")
+    if df is None or df.empty:
+        st.info("Sin alias cargados.")
+        return
+    _pend = int((df["resuelto"].astype(str).str.strip() == "").sum())
+    c1, c2 = st.columns([1, 3])
+    c1.metric("Pendientes por resolver", _pend)
+    solo_pend = c2.checkbox("Ver solo pendientes (sin resolver / ??? / NO EXISTE)", value=(_pend > 0), key="alias_solo_pend")
+    _view = df[df["resuelto"].astype(str).str.strip() == ""] if solo_pend else df
+    if _view.empty:
+        st.success("✅ No quedan alias pendientes de resolver.")
+        _view = df
+    _d = _view.rename(columns={"nombre_porteria": "Nombre en portería", "oficial": "Oficial (editar)",
+                               "resuelto": "Resuelto", "tipo": "Tipo", "nota": "Nota"})
+    _tipos = ["", "MP", "INSUMO", "FINAL", "RESIDUO", "SERVICIO"]
+    _ed = st.data_editor(
+        _d, hide_index=True, use_container_width=True, key="alias_ed",
+        disabled=["Nombre en portería", "Resuelto"],
+        column_config={
+            "Oficial (editar)": st.column_config.TextColumn(
+                "Oficial (editar)", help="Familia/producto oficial. Poné 'OK' si el nombre ya es el oficial."),
+            "Tipo": st.column_config.SelectboxColumn("Tipo", options=_tipos),
+        })
+    if st.button("💾 Guardar alias de portería", type="primary", key="alias_save"):
+        try:
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    for _, r in _ed.iterrows():
+                        cur.execute("UPDATE produccion.dim_maestro_alias_porteria "
+                                    "SET oficial=%s, tipo=%s, nota=%s WHERE nombre_porteria=%s",
+                                    ((str(r["Oficial (editar)"]).strip() or None),
+                                     (str(r["Tipo"]).strip() or None),
+                                     (str(r["Nota"]).strip() or None), r["Nombre en portería"]))
+                    cur.execute("SELECT produccion.fn_sync_porteria_alias()")
+                audit.log("U", "dim_maestro_alias_porteria", 0, {"n": len(_ed)})
+            st.success("Alias guardados. Portería ya los normaliza sola (se resincronizó).")
+            st.balloons(); cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+
+    with st.expander("➕ Agregar un nombre de portería nuevo"):
+        n1, n2, n3 = st.columns(3)
+        _nn = n1.text_input("Nombre en portería", key="alias_new_nom")
+        _no = n2.text_input("Oficial (familia)", key="alias_new_of", help="Poné 'OK' si el nombre ya es oficial.")
+        _nt = n3.selectbox("Tipo", _tipos, key="alias_new_tipo")
+        if st.button("Agregar alias", key="alias_new_save"):
+            if not (_nn or "").strip():
+                st.error("Poné el nombre de portería.")
+            else:
+                try:
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("INSERT INTO produccion.dim_maestro_alias_porteria(nombre_porteria,oficial,tipo) "
+                                        "VALUES (%s,%s,%s) ON CONFLICT (nombre_porteria) DO UPDATE SET oficial=EXCLUDED.oficial, tipo=EXCLUDED.tipo",
+                                        (_nn.strip(), (_no.strip() or None), (_nt or None)))
+                        audit.log("I", "dim_maestro_alias_porteria", 0, {"nombre": _nn.strip()})
+                    st.success(f"Alias '{_nn.strip()}' agregado y sincronizado.")
+                    cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
+
+
+
 def render_tabs(USR, cat, conectar):
-    t1, t2, t3 = st.tabs(["Condiciones de produccion", "Parametros por proceso", "Parametros por tanque"])
+    t1, t2, t3, t4 = st.tabs(["Condiciones de produccion", "Parametros por proceso", "Parametros por tanque", "Maestro de alias (porteria)"])
     with t1:
         editor_produccion(USR, cat, conectar)
     with t2:
         editor_proceso(USR, cat, conectar)
     with t3:
         editor_tanques(USR, cat, conectar)
+    with t4:
+        editor_alias(USR, cat, conectar)
 
 
 def render(USR, cat, conectar):
