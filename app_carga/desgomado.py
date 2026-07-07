@@ -335,86 +335,95 @@ def produccion(USR, cat, conectar, id_batch=None):
     _lit_def = float(b["litros_inicial"] or 0) or (float(b["kg_inicial"] or 0) / DENS_AFE if b["kg_inicial"] else 0.0)
     _lit_def = max(_lit_def - _enviado, 0.0)
 
-    modo = st.radio("¿Cómo cerrás este envío?",
-                    ["✅ Envié todo — el recipiente quedó vacío",
-                     "⚠️ Envié solo una parte — quedó remanente (error)"],
-                    key="desg_cierre_modo")
-    es_parcial = modo.startswith("⚠️")
-
-    c1, c2 = st.columns(2)
-    l_afe = c1.number_input(f"AFE-S enviado a {dest_nm} en este pase (L)", min_value=0.0, max_value=1_000_000.0,
+    # ---- CIERRE CON AJUSTE: lo que realmente se vació y lo que quedó ----
+    st.markdown("##### 🚚 Cierre con ajuste (lo que realmente salió y lo que quedó)")
+    st.caption(f"Estimado a sacar en este pase: **{_lit_def:,.0f} L**. Cargá lo que **realmente vaciaste** a destino "
+               "y **cuánto quedó** en el tanque.")
+    c1, c2, c3 = st.columns(3)
+    l_afe = c1.number_input(f"AFE-S vaciado a {dest_nm} (L)", min_value=0.0, max_value=1_000_000.0,
                             value=float(round(_lit_def, 0)), step=10.0, key="desg_l_afe")
-    l_fondo = c2.number_input("Fondo de tanque (L, opcional)", min_value=0.0, max_value=1_000_000.0,
+    l_rem = c2.number_input("¿Cuánto quedó en el tanque? (L)", min_value=0.0, max_value=1_000_000.0,
+                            value=0.0, step=10.0, key="desg_l_rem",
+                            help="0 si vaciaste todo. Si quedó líquido, cargá el remanente estimado.")
+    l_fondo = c3.number_input("Fondo de tanque (L, opcional)", min_value=0.0, max_value=1_000_000.0,
                               value=0.0, step=10.0, key="desg_l_fondo")
+    _merma = round(_lit_def - l_afe - l_rem, 0)
+    if abs(_merma) >= 1:
+        st.caption(f"Ajuste vs estimado: {'merma' if _merma>0 else 'excedente'} de **{abs(_merma):,.0f} L** "
+                   f"(estimado {_lit_def:,.0f} − vaciado {l_afe:,.0f} − quedó {l_rem:,.0f}).")
 
-    def _envio(cur, vacio, es_err, l_rem, motivo):
+    # confirmación de vaciado: DOS chequeos
+    st.markdown("###### Confirmación de vaciado")
+    k1, k2 = st.columns(2)
+    canilla_ok = k1.checkbox("🚰 Probé la **canilla** y ya no tira más", key="desg_canilla_ok")
+    vision_ok = k2.checkbox("👁️ Verifiqué **por visión desde arriba** que quedó vacío", key="desg_vision_ok")
+    motivo = st.text_input("Nota / motivo (obligatorio si quedó remanente)",
+                           value=("Error del operario: se decantó solo una parte" if l_rem > 0 else ""),
+                           key="desg_inc_motivo")
+
+    es_vacio = (l_rem <= 0) and canilla_ok and vision_ok
+
+    def _envio(cur, vacio, es_err, l_rem_, motivo_):
         id_afe = int(b["id_producto_buscado"]) if pd.notna(b["id_producto_buscado"]) else AFE_S_ID
         _mov(cur, b, uid, "PRODUCTO_FINAL", id_afe, "AFE-S", int(dest), l_afe, DENS_AFE)
         if l_fondo and l_fondo > 0:
             _mov(cur, b, uid, "SUBPRODUCTO", FONDO_TK_ID, "Fondo de tanque", int(dest), l_fondo, 1.0)
         cur.execute("INSERT INTO produccion.fact_desg_envio "
-                    "(id_batch,litros_afe,litros_fondo,id_tanque_destino,recipiente_vacio,es_error,litros_remanente,motivo,id_usuario) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "(id_batch,litros_afe,litros_fondo,id_tanque_destino,recipiente_vacio,es_error,"
+                    " litros_remanente,motivo,canilla_ok,vision_ok,id_usuario) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (int(b["id_batch"]), float(l_afe), float(l_fondo or 0), int(dest),
-                     bool(vacio), bool(es_err), (float(l_rem) if l_rem else None), (motivo or None), uid))
+                     bool(vacio), bool(es_err), (float(l_rem_) if l_rem_ else None), (motivo_ or None),
+                     bool(canilla_ok), bool(vision_ok), uid))
 
-    if es_parcial:
-        st.markdown("##### ⚠️ Envío parcial / remanente por error")
-        cc1, cc2 = st.columns(2)
-        l_rem = cc1.number_input("Remanente estimado que quedó en el recipiente (L)", min_value=0.0, max_value=1_000_000.0,
-                                 value=float(round(_lit_def, 0)), step=10.0, key="desg_l_rem")
-        motivo = cc2.text_input("¿Qué pasó?", value="Error del operario: se decantó solo la mitad", key="desg_inc_motivo")
-        st.caption(f"Se registra lo enviado y el incidente. **{_recipiente_nombre(cat, b)}** queda con remanente y el "
-                   "batch sigue **en decantación** para terminar de sacarlo en otro pase.")
-        if st.button("⚠️ Registrar envío parcial (queda abierto)", type="primary", use_container_width=True, key="desg_parcial"):
-            try:
-                with conectar(uid) as (conn, audit):
-                    with conn.cursor() as cur:
-                        _envio(cur, vacio=False, es_err=True, l_rem=l_rem, motivo=motivo)
-                        cur.execute("UPDATE produccion.fact_batch_proceso SET desg_incidente=true, "
-                                    "desg_incidente_motivo=%s, id_usuario_estado=%s, "
-                                    "motivo_estado=%s WHERE id_batch=%s",
-                                    ((motivo or "Envío parcial"), uid,
-                                     "INCIDENTE: decantación parcial, quedó remanente (" + (motivo or "") + ")",
-                                     int(b["id_batch"])))
-                    audit.log("U", "fact_batch_proceso", int(b["id_batch"]),
-                              {"envio_parcial_L": l_afe, "remanente_L": l_rem, "incidente": True})
-                st.success("Envío parcial e incidente registrados. El desgomado sigue abierto para terminar de decantar.")
-                cat.clear(); st.rerun()
-            except Exception as e:
-                st.exception(e)
-        return
+    if es_vacio:
+        st.success("✅ Vaciado confirmado por canilla y visión. Al registrar, el desgomado queda FINALIZADO.")
+    elif l_rem > 0:
+        st.warning(f"⚠️ Quedó **{l_rem:,.0f} L** en {_recipiente_nombre(cat, b)}. Se registra el ajuste como "
+                   "**incidente** y el batch sigue en decantación para terminar de sacarlo.")
+    else:
+        st.info("Para cerrar como vacío marcá **canilla** y **visión**. Si quedó líquido, cargá cuánto quedó.")
 
-    # ---- cierre normal: recipiente vacío (validación dura) ----
-    st.markdown("##### 🚱 Validación: recipiente sin líquido")
-    st.caption(f"Confirmá que **{_recipiente_nombre(cat, b)}** quedó SIN líquido (canilla o visión desde arriba).")
-    metodo = st.radio("¿Cómo lo verificaste?", ["🚰 Por canilla", "👁️ Por visión (desde arriba)"],
-                      key="desg_metodo", horizontal=True)
-    vacio_ok = st.checkbox(f"Confirmo que **{_recipiente_nombre(cat, b)}** quedó sin líquido.", key="desg_vacio_ok")
-    if st.button("🚚 Confirmar y FINALIZAR", type="primary", use_container_width=True,
-                 key="desg_confirm", disabled=not vacio_ok):
-        if not vacio_ok:
-            st.error("Tenés que confirmar que el recipiente quedó sin líquido.")
+    if st.button("💾 Registrar vaciado", type="primary", use_container_width=True, key="desg_reg"):
+        if l_afe <= 0 and l_rem <= 0:
+            st.error("Cargá cuánto vaciaste (y/o cuánto quedó).")
+            return
+        if l_rem <= 0 and not (canilla_ok and vision_ok):
+            st.error("Para cerrar como vacío tenés que confirmar **canilla** y **visión**. Si quedó líquido, cargá el remanente.")
+            return
+        if l_rem > 0 and not (motivo or "").strip():
+            st.error("Si quedó remanente, poné el motivo.")
             return
         try:
             with conectar(uid) as (conn, audit):
                 with conn.cursor() as cur:
-                    _envio(cur, vacio=True, es_err=False, l_rem=None, motivo=None)
-                    cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL",
-                                (int(b["id_batch"]),))
-                    cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,fin_ts,id_usuario) "
-                                "VALUES (%s,'EN_TANQUE',now(),now(),%s)", (int(b["id_batch"]), uid))
-                    cur.execute(
-                        "UPDATE produccion.fact_batch_proceso SET estado='FINALIZADO', etapa_actual='EN_TANQUE', "
-                        "desg_recipiente_vacio=true, desg_recipiente_metodo=%s, desg_recipiente_ts=now(), "
-                        "desg_confirmada_ts=now(), id_usuario_estado=%s, "
-                        "motivo_estado='Desgomado confirmado: AFE-S a destino; recipiente validado sin líquido' "
-                        "WHERE id_batch=%s",
-                        ("CANILLA" if metodo.startswith("🚰") else "VISION", uid, int(b["id_batch"])))
-                audit.log("U", "fact_batch_proceso", int(b["id_batch"]),
-                          {"estado": "FINALIZADO", "recipiente_vacio": True})
-            st.success("Desgomado FINALIZADO. Movimientos generados y recipiente validado.")
-            st.balloons(); cat.clear(); st.rerun()
+                    _envio(cur, vacio=es_vacio, es_err=(l_rem > 0), l_rem_=l_rem, motivo_=motivo)
+                    if es_vacio:
+                        cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL",
+                                    (int(b["id_batch"]),))
+                        cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,fin_ts,id_usuario) "
+                                    "VALUES (%s,'EN_TANQUE',now(),now(),%s)", (int(b["id_batch"]), uid))
+                        cur.execute(
+                            "UPDATE produccion.fact_batch_proceso SET estado='FINALIZADO', etapa_actual='EN_TANQUE', "
+                            "desg_recipiente_vacio=true, desg_recipiente_metodo='CANILLA+VISION', desg_recipiente_ts=now(), "
+                            "desg_confirmada_ts=now(), id_usuario_estado=%s, "
+                            "motivo_estado='Desgomado FINALIZADO: vaciado confirmado (canilla + visión)' WHERE id_batch=%s",
+                            (uid, int(b["id_batch"])))
+                    else:
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET desg_incidente=true, "
+                                    "desg_incidente_motivo=%s, id_usuario_estado=%s, "
+                                    "motivo_estado=%s WHERE id_batch=%s",
+                                    ((motivo or "Quedó remanente"), uid,
+                                     "AJUSTE: vaciado " + f"{l_afe:.0f}" + " L, quedó " + f"{l_rem:.0f}" + " L (" + (motivo or "") + ")",
+                                     int(b["id_batch"])))
+                    audit.log("U", "fact_batch_proceso", int(b["id_batch"]),
+                              {"vaciado_L": l_afe, "quedo_L": l_rem, "vacio": es_vacio})
+            if es_vacio:
+                st.success("Desgomado FINALIZADO. Vaciado confirmado (canilla + visión).")
+                st.balloons()
+            else:
+                st.success(f"Ajuste registrado: vaciaste {l_afe:,.0f} L, quedaron {l_rem:,.0f} L. Sigue en decantación.")
+            cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
 
