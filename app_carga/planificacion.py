@@ -661,7 +661,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
 
-    modo = st.radio("Planificar en", ["🏭 Reactores", "🛁 Bachas", "🧴 Decantación ARE", "⚙️ Cronogramas"],
+    modo = st.radio("Planificar en", ["🏭 Reactores", "🛁 Bachas", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⚙️ Cronogramas"],
                     horizontal=True, key="pl_modo")
     if modo.startswith("🛁"):
         _render_bachas(USR, cat, conectar, siguiente_identificador, H)
@@ -669,6 +669,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     if modo.startswith("🧴"):
         import decantacion
         decantacion.destinos(USR, cat, conectar)
+        return
+    if modo.startswith("🫧"):
+        import desgomado
+        desgomado.planificacion(USR, cat, conectar)
         return
     if modo.startswith("⚙️"):
         _render_cronogramas(USR, cat, conectar)

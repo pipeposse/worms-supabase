@@ -2511,8 +2511,14 @@ if st.session_state.section != "CARGAS":
         _lab_view = st.radio("Vista", ["➕ Carga / Edición", "🛢️ Parámetros por tanque", "🚛 Entrada diaria", "📦 Asignación a tanque", "📊 Resultados", "🔬 Producciones en marcha"],
                              horizontal=True, key="lab_view_sel", label_visibility="collapsed")
         if _lab_view.startswith("🔬"):
-            import decantacion
-            decantacion.laboratorio(USR, cat, conectar)
+            _pm_tipo = st.radio("Tipo de proceso", ["🧴 ARE (decantación)", "🫧 Desgomado acuoso"],
+                                horizontal=True, key="lab_prodmarcha_tipo", label_visibility="collapsed")
+            if _pm_tipo.startswith("🫧"):
+                import desgomado
+                desgomado.laboratorio(USR, cat, conectar)
+            else:
+                import decantacion
+                decantacion.laboratorio(USR, cat, conectar)
         elif _lab_view.startswith("🛢️"):
             _form_param_tanque(cat, conectar, USR)
         elif _lab_view.startswith("🚛"):

@@ -128,15 +128,24 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
     st.markdown(_stepper(estado), unsafe_allow_html=True)
     _banner_corriente(b["corriente"])
 
+    es_desgomado = str(b["tipo_proceso"]) == "DESGOMADO_ACUOSO"
     if estado == "PLANIFICADO":
         _paso_arrancar(USR, cat, conectar, b)
     elif estado == "REACCION":
         _paso_reaccion(USR, cat, conectar, b)
     elif estado == "REPOSO":
-        _paso_reposo(USR, cat, conectar, b)
+        if es_desgomado:
+            import desgomado
+            desgomado.produccion(USR, cat, conectar, id_batch=id_batch)
+        else:
+            _paso_reposo(USR, cat, conectar, b)
     elif estado == "DECANTACION":
-        import decantacion
-        decantacion.produccion(USR, cat, conectar, id_batch=id_batch)
+        if es_desgomado:
+            import desgomado
+            desgomado.produccion(USR, cat, conectar, id_batch=id_batch)
+        else:
+            import decantacion
+            decantacion.produccion(USR, cat, conectar, id_batch=id_batch)
 
     _detalles(cat, id_batch)
 
