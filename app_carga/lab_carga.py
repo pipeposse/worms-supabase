@@ -98,14 +98,17 @@ _RANGOS = {
     "ppm_azufre": (0, 100000), "ppm_fosforo": (0, 100000), "densidad__g_ml": (0.4, 1.7),
 }
 CORRIENTE = ["VEGETAL", "ANIMAL"]
-CAL_AG    = ["A", "B", "C", "C.2da", "D", "E", "G"]
-CAL_AFE   = ["S", "SG", "B", "C", "A", "GIRASOL"]
-CAL_ARE   = ["UNICA", "A", "B", "C"]
+# Calidades por familia — alineadas al maestro_final (revisado dirección 2026-07-07)
+FUERA = "FUERA DE ESPECIFICACION"
+CAL_AG    = ["A", "B", "C", "D", "E", FUERA]                 # AG-A..E
+CAL_AFE   = ["S", "SG", "G", "P", "AL", FUERA]               # variantes AFE del maestro
+CAL_ARE   = ["A", "B", FUERA]                                # ARE-A / ARE-B
 CAL_EFLU  = ["LIQUIDO"]
-CAL_BORRA = ["UNICA", "B", "C", "D"]
-CAL_GEN   = ["UNICA", "A", "B", "C", "D", "E"]
-CAL_GLI   = ["UNICA", "FRESCA", "RECUPERADA", "F/E", "FUERA DE ESPECIFICACION"]
-CAL_INS   = ["UNICA", "FUERA DE ESPECIFICACION", "RECHAZADO"]
+CAL_BORRA = ["A", "B", "ANIMAL", "PES", FUERA]               # BORRA-A/B (V) + animal + pescado
+CAL_SEBO  = ["A-1RA", "A-2DA", "B-1RA", "B-2DA", "C-2DA", FUERA]  # sebo: grado + 1ra/2da (ya NO A/B/C solo)
+CAL_GEN   = ["UNICA", "A", "B", "C", "D", "E", FUERA]
+CAL_GLI   = ["A", "B", "C", "D", "F/E", FUERA]              # glicerina por glicerol%: A>80 B>70 C/D
+CAL_INS   = ["UNICA", FUERA, "RECHAZADO"]
 
 _TABLE = "produccion.lab_evaluaciones"
 _EFECTIVO = "produccion.v_procesos_lab_efectivo"
@@ -659,7 +662,7 @@ def _form_SEBO(pf, ctx, tok, get_conn, usuario):
         with c3:
             densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
         producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
-        cier = _cierre(p, pf, tok, CAL_GEN, default_corriente="ANIMAL")
+        cier = _cierre(p, pf, tok, CAL_SEBO, default_corriente="ANIMAL")
         enviar = st.form_submit_button("GUARDAR", use_container_width=True)
     if enviar:
         data = dict(tipo_formulario="SEBO", producto_lab=(producto_lab or "SEBO"),
