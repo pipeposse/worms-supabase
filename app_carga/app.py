@@ -320,7 +320,7 @@ if st.session_state.section is None:
     try:
         _sc = cat("SELECT source_id, machine_name, last_status, COALESCE(last_error,'') last_error, "
                   "last_successful_sync, rows_last_batch, "
-                  "round(extract(epoch from now()-updated_at)/60.0,0) AS hace_min "
+                  "round((extract(epoch from now()-updated_at)/60.0)::numeric,0) AS hace_min "
                   "FROM produccion.sync_control ORDER BY source_id")
         _ultp = cat("SELECT max(fecha_entrada) ult, max(transaccion) tk FROM produccion.v_transacciones_limpias")
         _ultl = cat("SELECT max(fecha) ult FROM produccion.v_procesos_lab_efectivo")
