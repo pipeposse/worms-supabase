@@ -302,6 +302,26 @@ def _landing_kpis():
     except Exception:
         return None
 
+
+def _home_df(sql, params=None):
+    """Query directa para el home (cat() aun no esta definido en este punto del script)."""
+    if not DATABASE_URL:
+        return None
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
+                cur.execute(sql, params)
+                cols = [d[0] for d in cur.description]
+                rows = cur.fetchall()
+            return pd.DataFrame(rows, columns=cols)
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
 if st.session_state.section is None:
     if st.session_state.get("_sec_cookie"):
         _auth.set_section_cookie(None)
@@ -318,12 +338,12 @@ if st.session_state.section is None:
 
     # --- Estado de sincronización de datos (Access → Supabase) ---
     try:
-        _sc = cat("SELECT source_id, machine_name, last_status, COALESCE(last_error,'') last_error, "
+        _sc = _home_df("SELECT source_id, machine_name, last_status, COALESCE(last_error,'') last_error, "
                   "last_successful_sync, rows_last_batch, "
                   "round((extract(epoch from now()-updated_at)/60.0)::numeric,0) AS hace_min "
                   "FROM produccion.sync_control ORDER BY source_id")
-        _ultp = cat("SELECT max(fecha_entrada) ult, max(transaccion) tk FROM produccion.v_transacciones_limpias")
-        _ultl = cat("SELECT max(fecha) ult FROM produccion.v_procesos_lab_efectivo")
+        _ultp = _home_df("SELECT max(fecha_entrada) ult, max(transaccion) tk FROM produccion.v_transacciones_limpias")
+        _ultl = _home_df("SELECT max(fecha) ult FROM produccion.v_procesos_lab_efectivo")
     except Exception:
         _sc = None; _ultp = None; _ultl = None
     if _sc is not None and not _sc.empty:
@@ -357,7 +377,7 @@ if st.session_state.section is None:
 
     # --- PCs que intentan subir (heartbeat): cuál sube efectivamente ---
     try:
-        _pcs = cat("SELECT fuente, machine_name, hace_min, activa, ok, con_error, es_la_que_sube, "
+        _pcs = _home_df("SELECT fuente, machine_name, hace_min, activa, ok, con_error, es_la_que_sube, "
                    "COALESCE(ultimo_error,'') ultimo_error FROM produccion.v_sync_pcs "
                    "ORDER BY fuente, ultimo_latido DESC")
     except Exception:
