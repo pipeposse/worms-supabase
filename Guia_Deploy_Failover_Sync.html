@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deploy · Failover de sincronización (sube la PC que puede)</title>
+<style>
+  :root{--ink:#13182a;--muted:#5b6172;--line:#e4e7f0;--bg:#f6f7fb;--card:#fff;
+    --green:#15803d;--red:#dc2626;--amber:#b45309;--indigo:#4338ca;--violet:#7c3aed}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);line-height:1.6;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Arial,sans-serif;padding-bottom:60px}
+  .wrap{max-width:900px;margin:0 auto;padding:0 18px}
+  header{background:linear-gradient(120deg,var(--indigo),var(--violet));color:#fff;padding:32px 18px 38px}
+  header h1{margin:6px 0 4px;font-size:1.65rem}header p{margin:0;color:#e6e9fb;opacity:.95}
+  h2{font-size:1.22rem;margin:30px 0 6px;border-bottom:2px solid var(--line);padding-bottom:6px}
+  h3{font-size:1.02rem;margin:16px 0 4px}
+  .muted{color:var(--muted)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:12px 0;box-shadow:0 1px 3px rgba(16,24,40,.05)}
+  code{background:#11162a;color:#e8ecff;padding:1px 6px;border-radius:5px;font-size:.86em;font-family:ui-monospace,Menlo,Consolas,monospace}
+  pre{background:#0f1830;color:#e8ecff;padding:14px 16px;border-radius:10px;overflow-x:auto;font-size:.86rem;line-height:1.5}
+  .step{display:flex;gap:12px;align-items:flex-start;margin:10px 0}
+  .num{flex:none;width:30px;height:30px;border-radius:50%;background:var(--indigo);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800}
+  .ok{border-left:4px solid var(--green);background:#f0fdf4;border-radius:8px;padding:12px 14px;margin:12px 0}
+  .warn{border-left:4px solid var(--amber);background:#fffbeb;border-radius:8px;padding:12px 14px;margin:12px 0}
+  .note{border-left:4px solid var(--indigo);background:#eef0ff;border-radius:8px;padding:12px 14px;margin:12px 0}
+  .bad{border-left:4px solid var(--red);background:#fef2f2;border-radius:8px;padding:12px 14px;margin:12px 0}
+  table{width:100%;border-collapse:collapse;margin:6px 0;font-size:.93rem}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:#eef0f7;font-size:.8rem;text-transform:uppercase;letter-spacing:.03em;color:#414b6b}
+  .pill{display:inline-block;border-radius:7px;padding:1px 9px;font-weight:700;font-size:.8rem;background:#dcfce7;color:var(--green)}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1>🔁 Failover de sincronización — “sube la PC que puede”</h1>
+  <p>Para Sistemas · Access → Supabase (agente <code>access_sync_agent</code>)</p>
+</div></header>
+<div class="wrap">
+
+  <h2>1 · Qué problema resuelve</h2>
+  <div class="card">
+    Pasaba que una PC (ej. <b>PC_LABORATORIO</b>) tenía el <b>turno de subida</b> pero <b>no podía abrir los Access</b>
+    de <code>\\192.168.1.5\...</code> — daba <code>FileNotFoundError: Archivo Access no encontrado</code> — porque
+    <b>no tenía acceso a esa carpeta de red</b> (unidad no montada / sin permiso / servidor caído). Igual retenía el
+    turno, así que la otra PC (<b>PC_EUGE</b>), que <b>sí</b> lee los Access, quedaba esperando y no subía nada.
+    <div class="note">Ahora hay <b>failover automático</b>: si una PC <b>no puede leer</b> el Access, <b>libera el turno</b>
+    y entra en pausa unos minutos; la PC que <b>sí</b> tiene acceso toma el turno, sube y lo mantiene. Nadie tiene que tocar nada.</div>
+  </div>
+
+  <h2>2 · Lo que ya está hecho (no tocar la base)</h2>
+  <div class="ok">
+    ✅ En Supabase ya está la función <code>produccion.fn_sync_release_lease(source, machine)</code> (libera el turno).
+    ✅ El <b>panel de la Home</b> de la app ya explica el motivo del error (no accede a la red / archivo bloqueado /
+    timeout / driver ODBC). <b>No hay que correr ningún SQL.</b>
+  </div>
+
+  <h2>3 · Lo que hay que desplegar en CADA PC</h2>
+  <div class="card">
+    Cambió <b>un solo archivo</b> del agente:
+    <pre>access_sync_agent\app\sync_engine.py</pre>
+    Reemplazarlo por la versión nueva en <b>cada PC</b> que corre el agente y <b>reiniciar el agente</b>.
+    <div class="warn">⚠️ La carpeta del agente <b>no es un repositorio git</b>. Copiá el archivo a mano (o desde la carpeta
+    compartida donde tengan la versión maestra). No cambia ningún otro archivo, ni <code>config.yaml</code>, ni <code>.env</code>.</div>
+  </div>
+
+  <h3>Pasos por PC</h3>
+  <div class="card">
+    <div class="step"><div class="num">1</div><div>Backup del viejo: renombrá <code>sync_engine.py</code> a <code>sync_engine.py.bak</code>.</div></div>
+    <div class="step"><div class="num">2</div><div>Copiá el nuevo <code>app\sync_engine.py</code> sobre el existente en <code>...\access_sync_agent\app\</code>.</div></div>
+    <div class="step"><div class="num">3</div><div>Reiniciar el agente:
+      <ul>
+        <li><b>Simple:</b> terminar los <code>python.exe</code> del agente en el Administrador de tareas. El <b>watchdog</b> (tarea programada, cada 5 min) lo vuelve a levantar solo con el código nuevo.</li>
+        <li><b>Inmediato:</b> ejecutar <code>start_silent.vbs</code> de la carpeta del agente, o reiniciar la tarea programada del agente.</li>
+      </ul></div></div>
+    <div class="step"><div class="num">4</div><div>Verificar (punto 4). Repetir en cada PC.</div></div>
+  </div>
+
+  <div class="note">Probar en una sola PC primero (opcional):
+  <pre>cd ...\access_sync_agent
+.\.venv\Scripts\python.exe main.py --once</pre>
+  En los logs vas a ver <code>OK</code> / <code>NO_CHANGES</code> / <code>SKIP</code> y, si una PC no llega al Access,
+  <code>Turno liberado por esta PC (para que suba otra)</code> — <b>eso no es un error</b>, es el failover funcionando.</div>
+
+  <h2>4 · Cómo verificar que quedó bien</h2>
+  <div class="card">
+    <table>
+      <tr><th>Dónde</th><th>Qué mirar</th></tr>
+      <tr><td>App WORMS · <b>Inicio</b> → “PCs intentando subir”</td>
+          <td>La marca ✅ <span class="pill">sube esta</span> debe estar en la PC que tiene acceso a la red
+              (la de <b>OK</b> subiendo). La PC sin acceso muestra el motivo claro
+              (“🚫 No accede a la carpeta de red…”) y sus errores <b>dejan de crecer</b>.</td></tr>
+      <tr><td>Logs del agente (<code>access_sync_agent\logs</code>)</td>
+          <td>En la PC sin acceso: <code>cede el turno</code> / <code>Turno liberado</code>. En la PC con acceso: <code>OK - N filas subidas</code>.</td></tr>
+      <tr><td>Datos</td>
+          <td>Que el “último dato disponible” de portería/lab en la Home <b>avance</b> con normalidad.</td></tr>
+    </table>
+  </div>
+
+  <h2>5 · Recomendado (opcional, deja todo redondo)</h2>
+  <div class="card">
+    El failover ya evita que se trabe, pero lo ideal es una de estas dos:
+    <ul>
+      <li><b>Dar acceso de red</b> a la PC que falla: montar <code>\\192.168.1.5</code> con el usuario del servicio
+      (misma cuenta con la que corre el agente) para que vea las carpetas <code>ZG Empresas\...</code> y <code>Porteria\</code>.</li>
+      <li><b>O</b> dejar una <b>PC titular por fuente</b>: en la PC que no tiene acceso, poner <code>enabled: false</code>
+      en las fuentes de lab/portería dentro de su <code>config.yaml</code>, y dejar a la PC con acceso como única.</li>
+    </ul>
+  </div>
+
+  <h2>6 · Si algo sale mal (rollback)</h2>
+  <div class="card">
+    Restaurá <code>sync_engine.py.bak</code> sobre <code>sync_engine.py</code> y reiniciá el agente. La base no requiere
+    rollback: si el código viejo no llama a <code>fn_sync_release_lease</code>, la función simplemente no se usa. El código
+    nuevo además es <b>tolerante</b>: si no puede liberar el turno, no se traba.
+  </div>
+
+  <p class="muted" style="text-align:center;margin-top:28px">WORMS · Despliegue del failover de sincronización · documento para Sistemas</p>
+</div>
+</body>
+</html>
