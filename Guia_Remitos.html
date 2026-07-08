@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Guía · Carga de Remitos por Foto — WORMS Argentina</title>
+<style>
+  :root{
+    --verde:#1a7f4e; --verde-claro:#e8f5ee; --azul:#1d4ed8; --azul-claro:#eaf0ff;
+    --amarillo:#b45309; --amarillo-claro:#fef3c7; --rojo:#b91c1c; --rojo-claro:#fee2e2;
+    --gris:#475569; --gris-claro:#f1f5f9; --borde:#e2e8f0; --tinta:#0f172a;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{font-family:'Segoe UI', system-ui, sans-serif; color:var(--tinta); background:#f8fafc; line-height:1.6;}
+  .wrap{max-width:900px; margin:0 auto; padding:24px 20px 60px;}
+  header{background:linear-gradient(135deg,#0d5c38,#1a7f4e); color:#fff; border-radius:16px; padding:34px 30px; margin-bottom:28px;}
+  header h1{font-size:1.7rem; margin-bottom:6px;}
+  header p{opacity:.92; max-width:640px;}
+  header .chip{display:inline-block; background:rgba(255,255,255,.18); border-radius:99px; padding:3px 14px; font-size:.8rem; margin-bottom:14px; letter-spacing:.4px;}
+  h2{font-size:1.25rem; margin:34px 0 12px; display:flex; align-items:center; gap:10px;}
+  h2 .n{background:var(--verde); color:#fff; width:30px; height:30px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:.95rem; flex-shrink:0;}
+  .card{background:#fff; border:1px solid var(--borde); border-radius:12px; padding:20px 22px; margin-bottom:14px;}
+  .paso{display:flex; gap:14px; margin-bottom:14px;}
+  .paso .ico{font-size:1.6rem; flex-shrink:0; width:44px; height:44px; background:var(--verde-claro); border-radius:10px; display:flex; align-items:center; justify-content:center;}
+  .paso b{display:block;}
+  .paso small{color:var(--gris);}
+  table{width:100%; border-collapse:collapse; font-size:.92rem;}
+  th,td{padding:10px 12px; text-align:left; border-bottom:1px solid var(--borde); vertical-align:top;}
+  th{background:var(--gris-claro); font-size:.8rem; text-transform:uppercase; letter-spacing:.5px; color:var(--gris);}
+  .b{display:inline-block; border-radius:99px; padding:2px 12px; font-weight:600; font-size:.85rem; white-space:nowrap;}
+  .b-ok{background:var(--verde-claro); color:var(--verde);}
+  .b-info{background:var(--azul-claro); color:var(--azul);}
+  .b-warn{background:var(--amarillo-claro); color:var(--amarillo);}
+  .b-dup{background:#f3e8ff; color:#7e22ce;}
+  .b-err{background:var(--rojo-claro); color:var(--rojo);}
+  .tip{border-left:4px solid var(--verde); background:var(--verde-claro); border-radius:0 10px 10px 0; padding:12px 16px; margin:10px 0;}
+  .ojo{border-left:4px solid var(--amarillo); background:var(--amarillo-claro); border-radius:0 10px 10px 0; padding:12px 16px; margin:10px 0;}
+  .no{border-left:4px solid var(--rojo); background:var(--rojo-claro); border-radius:0 10px 10px 0; padding:12px 16px; margin:10px 0;}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr;}}
+  .faq b{display:block; margin-bottom:4px;}
+  .faq .card{margin-bottom:10px;}
+  footer{margin-top:40px; text-align:center; color:var(--gris); font-size:.85rem;}
+  kbd{background:var(--gris-claro); border:1px solid var(--borde); border-radius:6px; padding:1px 8px; font-family:inherit; font-size:.88em;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <span class="chip">GUÍA RÁPIDA · ADMINISTRACIÓN</span>
+  <h1>📸 Carga de Remitos por Foto</h1>
+  <p>Le sacás una foto al remito del proveedor, el sistema lee los datos solo,
+  vos los revisás y quedan guardados en la base junto al ticket de nuestra balanza.
+  <b>Nada de tipear remitos a mano.</b></p>
+</header>
+
+<h2><span class="n">1</span> Entrar a la sección</h2>
+<div class="card">
+  <div class="paso"><div class="ico">🔑</div><div><b>Iniciá sesión como siempre</b>
+  <small>Con tu usuario y PIN en la página de carga.</small></div></div>
+  <div class="paso"><div class="ico">📸</div><div><b>En la pantalla de inicio tocá la tarjeta «Remitos»</b>
+  <small>Está en la sección <b>Accesos</b>, entre «Stock» y «Estado de planta».</small></div></div>
+  <div class="paso"><div class="ico">📥</div><div><b>Quedate en la pestaña «Cargar remitos»</b>
+  <small>La otra pestaña («Historial y control») es para consultar lo ya cargado.</small></div></div>
+</div>
+
+<h2><span class="n">2</span> Subir las fotos</h2>
+<div class="card">
+  <div class="paso"><div class="ico">🖱️</div><div><b>Arrastrá las fotos al recuadro (pueden ser muchas juntas)</b>
+  <small>Podés seleccionar todas las fotos de una carpeta y soltarlas de una sola vez.
+  También sirve el botón <kbd>Browse files</kbd> o la opción <kbd>📷 Usar cámara</kbd> desde el celular.</small></div></div>
+  <div class="paso"><div class="ico">🤖</div><div><b>Esperá la barrita de progreso</b>
+  <small>El sistema lee cada remito (tarda unos segundos por foto). Cada foto se procesa una sola vez.</small></div></div>
+  <div class="paso"><div class="ico">📋</div><div><b>Mirá la tabla resumen</b>
+  <small>Aparece una fila por foto con el estado, el N° de remito, el emisor, los kilos y el ticket de balanza que encontró.</small></div></div>
+</div>
+
+<div class="tip"><b>💡 Solo remitos del proveedor.</b> Los comprobantes de pesaje de Worms NO se suben:
+esos ya entran solos al sistema desde la balanza. El sistema los usa para comparar.</div>
+
+<h2><span class="n">3</span> Entender los estados</h2>
+<div class="card">
+<table>
+  <tr><th>Estado</th><th>Qué significa</th><th>Qué tenés que hacer</th></tr>
+  <tr><td><span class="b b-ok">✅ Listo</span></td>
+      <td>Se leyó todo bien y encontró el ticket de nuestra balanza.</td>
+      <td>Nada. Se sube con el botón azul.</td></tr>
+  <tr><td><span class="b b-info">🎫 Sin ticket</span></td>
+      <td>El remito se leyó bien pero no hay pesada de balanza que coincida (todavía).</td>
+      <td>Se sube igual. Después se puede vincular desde «Historial».</td></tr>
+  <tr><td><span class="b b-warn">⚠️ Revisar</span></td>
+      <td>Falta un dato obligatorio o el sistema no está seguro de lo que leyó (por ej. el N° de remito).</td>
+      <td>Abrí la tarjeta de esa foto, corregí el dato mirando la imagen y tocá «Subir este remito».</td></tr>
+  <tr><td><span class="b b-dup">🔁 Duplicado</span></td>
+      <td>Ese N° de remito ya está cargado en la base (o hay dos fotos iguales en el mismo lote). Te dice quién y cuándo lo cargó.</td>
+      <td>Nada: el sistema NO lo va a subir dos veces. Si creés que es un error, avisá a tu supervisor.</td></tr>
+  <tr><td><span class="b b-err">❌ Error</span></td>
+      <td>No se pudo leer la foto (muy borrosa, cortada, oscura).</td>
+      <td>Sacá la foto de nuevo y volvé a subirla.</td></tr>
+</table>
+</div>
+
+<h2><span class="n">4</span> Confirmar y subir</h2>
+<div class="card">
+  <div class="paso"><div class="ico">☁️</div><div><b>Tocá el botón «Subir N remito(s) a la base»</b>
+  <small>Sube todos los que están ✅ Listo y 🎫 Sin ticket de un saque. Los duplicados y errores quedan afuera solos.</small></div></div>
+  <div class="paso"><div class="ico">📄</div><div><b>Revisá el Informe de carga</b>
+  <small>Al final de la pantalla queda el resumen: cuántos se subieron, cuántos duplicados se omitieron,
+  errores y toneladas totales. Se puede descargar en CSV para mandar por mail.</small></div></div>
+  <div class="paso"><div class="ico">🧹</div><div><b>«Nueva carga» para empezar otro lote</b>
+  <small>Limpia la pantalla y podés seguir con la próxima pila de remitos.</small></div></div>
+</div>
+
+<h2><span class="n">5</span> Consultar lo cargado (Historial y control)</h2>
+<div class="card">
+  <p>En la pestaña <b>«📋 Historial y control»</b> está todo lo que se cargó, para jugar con filtros:</p>
+  <div class="grid2" style="margin-top:10px">
+    <div class="ojo" style="border-color:var(--azul); background:var(--azul-claro)"><b>Filtros:</b> fechas, emisor, producto, con/sin ticket, estado, y buscador por N° de remito, patente o quién lo cargó.</div>
+    <div class="ojo" style="border-color:var(--azul); background:var(--azul-claro)"><b>Control de diferencias:</b> con «Dif. mínima ±%» ves solo los remitos donde el proveedor declaró más (o menos) kilos que nuestra balanza.</div>
+    <div class="ojo" style="border-color:var(--azul); background:var(--azul-claro)"><b>Gráficos:</b> toneladas por emisor y por día, según los filtros que tengas puestos.</div>
+    <div class="ojo" style="border-color:var(--azul); background:var(--azul-claro)"><b>Exportar:</b> el botón CSV baja exactamente lo que estás viendo en pantalla.</div>
+  </div>
+</div>
+
+<h2><span class="n">6</span> Cómo sacar una buena foto</h2>
+<div class="card">
+  <div class="grid2">
+    <div>
+      <div class="tip">✔️ Remito completo dentro del cuadro, apoyado en la mesa.</div>
+      <div class="tip">✔️ Con buena luz, sin sombras encima de los números.</div>
+      <div class="tip">✔️ Lo más derecho posible (un poco torcido no es problema).</div>
+    </div>
+    <div>
+      <div class="no">✖️ Cortar el N° de remito o los kilos.</div>
+      <div class="no">✖️ Fotos movidas o con flash quemando el papel.</div>
+      <div class="no">✖️ Varios remitos distintos en una misma foto.</div>
+    </div>
+  </div>
+  <p style="margin-top:10px; color:var(--gris)"><b>El dato de oro es el N° de remito</b> (ej. <kbd>00004-00016352</kbd>):
+  es el identificador único. Si en la foto no se lee, el sistema te lo va a pedir.</p>
+</div>
+
+<h2><span class="n">7</span> Preguntas frecuentes</h2>
+<div class="faq">
+  <div class="card"><b>¿Se guarda la foto?</b>
+  No. Solo se guardan los datos del remito. La foto se descarta después de leerla.</div>
+  <div class="card"><b>¿Qué pasa si subo el mismo remito dos veces?</b>
+  Nada malo: el sistema lo detecta por el N° de remito, te avisa quién lo cargó y cuándo, y no lo duplica. Aunque dos personas lo suban al mismo tiempo, la base solo acepta uno.</div>
+  <div class="card"><b>El remito dice toneladas y no kilos, ¿lo cargo igual?</b>
+  Sí. El sistema convierte solo (28,90 TN → 28.900 kg). Igual revisá que el neto tenga sentido.</div>
+  <div class="card"><b>No aparece el ticket de balanza, ¿está mal?</b>
+  No siempre: puede que el camión todavía no haya pesado o que la balanza aún no sincronizó. Se sube «Sin ticket» y un supervisor lo vincula después desde Historial.</div>
+  <div class="card"><b>La diferencia de kilos está en amarillo, ¿qué hago?</b>
+  Amarillo = más de 2% de diferencia entre lo que declaró el proveedor y nuestra balanza. Se puede subir igual, pero avisale a tu supervisor: para eso está el control.</div>
+  <div class="card"><b>Me equivoqué en un dato ya subido.</b>
+  Un usuario SUPERVISOR o ADMIN puede anular el remito desde «Historial y control» y lo volvés a cargar bien.</div>
+</div>
+
+<footer>WORMS Argentina S.A. · Sistema de carga de remitos por foto · Julio 2026</footer>
+</div>
+</body>
+</html>
