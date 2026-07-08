@@ -535,6 +535,76 @@ def _borrador_limpiar(conectar, USR):
         pass
 
 
+def _avanzar_fase(USR, cat, conectar):
+    st.subheader("⏭️ Avanzar de fase (manual · dirección)")
+    st.caption("Forzá el pase de una reacción a la **siguiente fase**, más allá del tiempo/umbral que debería tardar "
+               "(ej.: acortar reposo, cortar reacción antes). Queda registrado quién y por qué.")
+    df = cat("SELECT b.id_batch, b.identificador_unidad AS ident, b.tipo_proceso, b.estado, "
+             "       b.etapa_actual, b.id_producto_buscado, b.ticket_producto_final, bu.nombre_ui AS reactor "
+             "FROM produccion.fact_batch_proceso b "
+             "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+             "WHERE b.sector='REACTORES' AND COALESCE(b.anulado,false)=false "
+             "  AND b.estado IN ('REACCION','REPOSO') ORDER BY b.creado_en DESC")
+    if df is None or df.empty:
+        st.info("No hay reacciones en REACCIÓN o REPOSO para avanzar.")
+        return
+    _opt = df.apply(lambda r: f"#{r['id_batch']} · {r['ident'] or '—'} · {r['tipo_proceso']} · "
+                              f"{r['reactor'] or '—'} · {r['estado']}", axis=1).tolist()
+    sel = st.selectbox("Reacción", _opt, key="avf_sel")
+    r = df.iloc[_opt.index(sel)]
+    _next = {"REACCION": "REPOSO", "REPOSO": "DECANTACION"}.get(r["estado"])
+    _etapa = {"REPOSO": "REPOSANDO", "DECANTACION": "DECANTACION"}.get(_next)
+    _es_are = str(r["tipo_proceso"]) == "PRODUCCION_ARE"
+    _es_desg = str(r["tipo_proceso"]) == "DESGOMADO_ACUOSO"
+    st.info(f"Estado actual: **{r['estado']}** → siguiente: **{_next}**.")
+    if r["estado"] == "REACCION" and _es_are and not r["ticket_producto_final"]:
+        st.caption("Al pasar a reposo se generará el **ticket de producto final** (para que laboratorio evalúe), igual que el pase automático.")
+    motivo = st.text_input("Motivo (obligatorio)", key="avf_mot",
+                           placeholder="Ej.: la reacción ya está lista antes de tiempo / acortar reposo")
+    if st.button(f"⏭️ Forzar pase a {_next}", type="primary", use_container_width=True, key="avf_go", disabled=(_next is None)):
+        if not (motivo or "").strip():
+            st.error("Poné el motivo del pase manual.")
+            return
+        try:
+            uid = int(USR["id_usuario"])
+            _mot = "Forzado por planificación: " + motivo.strip()
+            with conectar(uid) as (conn, audit):
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() "
+                                "WHERE id_batch=%s AND fin_ts IS NULL", (int(r["id_batch"]),))
+                    cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,id_usuario) "
+                                "VALUES (%s,%s,now(),%s)", (int(r["id_batch"]), _etapa, uid))
+                    # ARE que pasa a REPOSO: crear ticket producto final + validación (como la regla automática)
+                    if r["estado"] == "REACCION" and _es_are and not r["ticket_producto_final"]:
+                        cur.execute("SELECT ticket_lab FROM produccion.fact_ticket_lab "
+                                    "WHERE id_batch=%s AND rol='MP' ORDER BY id_ticket LIMIT 1", (int(r["id_batch"]),))
+                        _mp = cur.fetchone(); _mp = _mp[0] if _mp else None
+                        cur.execute("SELECT produccion.fn_ticket_lab('FINAL')")
+                        _tf = cur.fetchone()[0]
+                        cur.execute("INSERT INTO produccion.fact_ticket_lab (ticket_lab,id_batch,rol,id_producto,fuente,estado) "
+                                    "VALUES (%s,%s,'FINAL',%s,'PROCESO','PENDIENTE')",
+                                    (_tf, int(r["id_batch"]), (int(r["id_producto_buscado"]) if pd.notna(r["id_producto_buscado"]) else None)))
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET estado='REPOSO', etapa_actual='REPOSANDO', "
+                                    "esperando_validacion_lab=true, ticket_validacion_lab=%s, ticket_producto_final=%s, "
+                                    "id_usuario_estado=%s, motivo_estado=%s WHERE id_batch=%s",
+                                    (_mp, _tf, uid, _mot, int(r["id_batch"])))
+                    elif r["estado"] == "REACCION" and _es_desg:
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET estado='REPOSO', etapa_actual='REPOSANDO', "
+                                    "desg_reposo_ini_ts=COALESCE(desg_reposo_ini_ts,now()), "
+                                    "id_usuario_estado=%s, motivo_estado=%s WHERE id_batch=%s",
+                                    (uid, _mot, int(r["id_batch"])))
+                    else:
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET estado=%s, etapa_actual=%s, "
+                                    "id_usuario_estado=%s, motivo_estado=%s WHERE id_batch=%s",
+                                    (_next, _etapa, uid, _mot, int(r["id_batch"])))
+                audit.log("U", "fact_batch_proceso", int(r["id_batch"]),
+                          {"forzar_fase": _next, "motivo": motivo})
+            st.success(f"Reacción #{int(r['id_batch'])} pasada a **{_next}** (manual).")
+            st.balloons(); cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+
+
 def _render_cronogramas(USR, cat, conectar):
     st.subheader("⚙️ Editar cronogramas de etapas (por proceso y por reactor)")
     st.caption("Cambiá el **nombre** de cada etapa y su **duración** (horas y minutos). "
@@ -668,11 +738,14 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # ----- Administrar procesos en curso (no es carga: se decide sobre reacciones ya arrancadas) -----
     if _grupo.startswith("⚙️"):
         st.caption("Reacciones ya en marcha que esperan una decisión de dirección (reposo, destino, etc.).")
-        _admin = st.radio("Proceso a administrar", ["🧴 Decantación ARE", "🫧 Desgomado acuoso"],
+        _admin = st.radio("Proceso a administrar",
+                          ["🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"],
                           horizontal=True, key="pl_admin")
         if _admin.startswith("🧴"):
             import decantacion
             decantacion.destinos(USR, cat, conectar)
+        elif _admin.startswith("⏭️"):
+            _avanzar_fase(USR, cat, conectar)
         else:
             import desgomado
             desgomado.planificacion(USR, cat, conectar)
