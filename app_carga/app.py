@@ -408,6 +408,25 @@ if st.session_state.section is None:
                    "ORDER BY fuente, ultimo_latido DESC")
     except Exception:
         _pcs = None
+
+    def _motivo_sync(_raw):
+        t = (_raw or "").lower()
+        if not t:
+            return ""
+        if ("no puede acceder al access" in t or "filenotfound" in t or "archivo access no encontrado" in t
+                or "winerror 64" in t or "nombre de red" in t or "no est\xe1 disponible" in t):
+            return ("🚫 **No accede a la carpeta de red** (\\192.168.1.5): la unidad de red no está montada, "
+                    "sin permiso, o el servidor está caído. Esta PC **no puede leer el Access** → debe subir otra PC.")
+        if "cede el turno" in t:
+            return "↪️ Cede el turno (recién no pudo acceder al Access); está subiendo otra PC."
+        if any(x in t for x in ("lock", "bloque", "in use", "being used", "sharing violation")):
+            return "🔒 El archivo Access está **abierto/bloqueado** por otra aplicación o PC. Cerralo y reintenta."
+        if "timeout" in t:
+            return "⏱️ **Timeout** al leer/subir (red lenta o base ocupada). Reintenta solo."
+        if "password" in t or "not a valid account" in t or "odbc" in t:
+            return "🔑 Problema de **driver/credenciales ODBC** de Access en esta PC."
+        return "⚠️ " + (_raw[:140])
+
     if _pcs is not None and not _pcs.empty:
         _nact = int(_pcs["activa"].fillna(False).astype(bool).sum())
         with st.expander(f"🖥️ PCs intentando subir ({_nact} activa(s) en 15 min) — cuál sube efectivamente", expanded=False):
@@ -417,11 +436,13 @@ if st.session_state.section is None:
                     _mark = ("✅ **sube esta**" if _p["es_la_que_sube"]
                              else ("🟢 activa" if _p["activa"] else "⚪ inactiva"))
                     _hn = int(_p["hace_min"]) if pd.notna(_p["hace_min"]) else "—"
-                    _err = (f" · último error: {str(_p['ultimo_error'])[:90]}" if _p["ultimo_error"] else "")
                     st.write(f"- {_mark} · **{_p['machine_name']}** · latido hace {_hn} min · "
-                             f"{int(_p['ok'] or 0)} OK / {int(_p['con_error'] or 0)} error{_err}")
-            st.caption("Varias PCs pueden intentar subir el mismo Access; **sube la del último latido OK**. "
-                       "Muchos errores suele ser choque por acceso concurrente al archivo — conviene dejar una sola PC subiendo.")
+                             f"{int(_p['ok'] or 0)} OK / {int(_p['con_error'] or 0)} error")
+                    _mot = _motivo_sync(str(_p["ultimo_error"] or ""))
+                    if _mot:
+                        st.caption("&nbsp;&nbsp;&nbsp;&nbsp;↳ " + _mot, unsafe_allow_html=True)
+            st.caption("**Failover automático:** si una PC no puede leer el Access (carpeta de red no accesible), "
+                       "libera el turno y **sube la PC que sí tiene acceso**. Igual conviene dejar una PC titular por fuente.")
 
     k = _landing_kpis()
     if k:
