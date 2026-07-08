@@ -264,10 +264,18 @@ def _insert_remito(cur, usr, datos: dict, ticket, diferencia) -> int:
     return cur.fetchone()[0]
 
 
-def _subir_lote(conectar, usr, items: list[dict]) -> list[dict]:
+def _fila_informe(it, d, resultado, detalle):
+    return {"foto": it["name"], "nro_remito": d.get("nro_remito"),
+            "fecha": d.get("fecha_remito"), "emisor": d.get("emisor"),
+            "producto": d.get("producto"), "neto_kg": d.get("neto_kg"),
+            "ticket_balanza": it.get("ticket_sel"), "dif_kg": it.get("dif_kg"),
+            "resultado": resultado, "detalle": detalle}
+
+
+def _subir_lote(conectar, usr, items):
     """Inserta cada item con savepoint (un duplicado no tumba el resto). Devuelve informe."""
     informe = []
-    with conectar(usr["id"]) as (conn, _aud):
+    with conectar(usr["id_usuario"]) as (conn, _aud):
         with conn.cursor() as cur:
             for it in items:
                 d = {k: v for k, v in (it["datos"] or {}).items() if k != "campos_dudosos"}
@@ -276,24 +284,15 @@ def _subir_lote(conectar, usr, items: list[dict]) -> list[dict]:
                     rid = _insert_remito(cur, usr, d, it.get("ticket_sel"), it.get("dif_kg"))
                     cur.execute("RELEASE SAVEPOINT sp_rem")
                     it["guardado"] = rid
-                    informe.append({"foto": it["name"], "nro_remito": d.get("nro_remito"),
-                                    "emisor": d.get("emisor"), "neto_kg": d.get("neto_kg"),
-                                    "ticket": it.get("ticket_sel"), "dif_kg": it.get("dif_kg"),
-                                    "resultado": "SUBIDO", "detalle": f"id {rid}"})
+                    informe.append(_fila_informe(it, d, "SUBIDO", f"id {rid}"))
                 except psycopg2.errors.UniqueViolation:
                     cur.execute("ROLLBACK TO SAVEPOINT sp_rem")
                     it["estado"], it["motivo"] = "DUPLICADO", "Ya existía en la base"
-                    informe.append({"foto": it["name"], "nro_remito": d.get("nro_remito"),
-                                    "emisor": d.get("emisor"), "neto_kg": d.get("neto_kg"),
-                                    "ticket": it.get("ticket_sel"), "dif_kg": it.get("dif_kg"),
-                                    "resultado": "OMITIDO_DUPLICADO",
-                                    "detalle": "El N° de remito ya estaba cargado"})
+                    informe.append(_fila_informe(it, d, "OMITIDO_DUPLICADO",
+                                                 "El N° de remito ya estaba cargado"))
                 except Exception as e:
                     cur.execute("ROLLBACK TO SAVEPOINT sp_rem")
-                    informe.append({"foto": it["name"], "nro_remito": d.get("nro_remito"),
-                                    "emisor": d.get("emisor"), "neto_kg": d.get("neto_kg"),
-                                    "ticket": it.get("ticket_sel"), "dif_kg": it.get("dif_kg"),
-                                    "resultado": "ERROR", "detalle": str(e)[:200]})
+                    informe.append(_fila_informe(it, d, "ERROR", str(e)[:200]))
     return informe
 
 
@@ -338,6 +337,8 @@ def _card_revision(item: dict, h: str):
             datos["chofer_dni"] = d5.text_input("DNI chofer", datos.get("chofer_dni") or "", key=f"dn_{h}")
             datos["lugar_entrega"] = d6.text_input("Lugar entrega", datos.get("lugar_entrega") or "", key=f"lu_{h}")
             datos["observaciones"] = st.text_input("Observaciones", datos.get("observaciones") or "", key=f"ob_{h}")
+            datos["ticket"] = st.text_input("Ticket del proveedor (impreso en el remito)",
+                                            str(datos.get("ticket") or ""), key=f"tp_{h}")
 
         # ---- ticket de balanza ----
         cand = item.get("cand")
@@ -354,7 +355,7 @@ def _card_revision(item: dict, h: str):
                    for r in cand.itertuples()}
             etiquetas = list(ops) + ["Sin ticket"]
             idx_def = 0 if item.get("ticket_sel") else len(etiquetas) - 1
-            sel = st.radio("🎫 Ticket de balanza", etiquetas, index=min(idx_def, len(etiquetas)-1), key=f"tk_{h}")
+            sel = st.radio("🎫 Ticket de balanza WORMS", etiquetas, index=min(idx_def, len(etiquetas)-1), key=f"tk_{h}")
             item["ticket_sel"] = ops.get(sel)
             if item["ticket_sel"]:
                 neto_bal = float(cand.loc[cand.transaccion == item["ticket_sel"], "neto_balanza"].iloc[0])
@@ -427,7 +428,7 @@ def render(USR, conectar):
                     it["dif_kg"] = float(it["datos"].get("neto_kg") or 0) - neto_bal
 
         # clasificar (dedup base + lote)
-        norms_lote: dict = {}
+        norms_lote = {}
         for it in items:
             _clasificar(it, norms_lote)
 
@@ -436,13 +437,18 @@ def render(USR, conectar):
             df_res = pd.DataFrame([{
                 "Foto": it["name"], "Estado": _BADGE.get(it["estado"], it["estado"]),
                 "N° remito": (it["datos"] or {}).get("nro_remito"),
+                "Fecha": (it["datos"] or {}).get("fecha_remito"),
                 "Emisor": (it["datos"] or {}).get("emisor"),
+                "Producto": (it["datos"] or {}).get("producto"),
                 "Neto kg": (it["datos"] or {}).get("neto_kg"),
-                "Ticket": it.get("ticket_sel"),
+                "Ticket prov.": (it["datos"] or {}).get("ticket"),
+                "Ticket balanza": it.get("ticket_sel"),
                 "Dif kg": None if it.get("dif_kg") is None else round(it["dif_kg"]),
                 "Motivo": it.get("motivo"),
             } for it in items])
             st.dataframe(df_res, use_container_width=True, hide_index=True)
+            st.caption("**Ticket prov.** = número impreso en el remito del proveedor · "
+                       "**Ticket balanza** = pesada en nuestra balanza (transacción WORMS) con la que se compara el neto.")
 
             n_listo = sum(1 for it in items if it["estado"] in ("LISTO", "SIN_TICKET"))
             n_dup = sum(1 for it in items if it["estado"] == "DUPLICADO")
@@ -591,7 +597,7 @@ def render(USR, conectar):
         df_show = df.rename(columns={
             "fecha_remito": "Fecha", "emisor": "Emisor", "nro_remito": "N° remito",
             "producto": "Producto", "neto_remito_kg": "Neto remito (kg)",
-            "ticket": "Ticket", "neto_balanza_kg": "Neto balanza (kg)",
+            "ticket": "Ticket balanza", "neto_balanza_kg": "Neto balanza (kg)",
             "diferencia_kg": "Dif (kg)", "diferencia_pct": "Dif %", "patcha": "Patente",
             "estado": "Estado", "cargado_por": "Cargado por", "fecha_carga": "Fecha carga"})
         st.dataframe(
@@ -613,7 +619,7 @@ def render(USR, conectar):
                 tk = cta.number_input("Ticket balanza", min_value=0, step=1, key="rh_tk")
                 if cta.button("Vincular ticket", key="rh_btn_tk") and tk:
                     try:
-                        with conectar(USR["id"]) as (conn, _a):
+                        with conectar(USR["id_usuario"]) as (conn, _a):
                             with conn.cursor() as cur:
                                 cur.execute(
                                     "UPDATE produccion.fact_remito SET ticket_balanza=%s, "
@@ -625,7 +631,7 @@ def render(USR, conectar):
                         st.error(f"No se pudo vincular: {e}")
                 if ctb.button("🗑️ Anular remito", key="rh_btn_an"):
                     try:
-                        with conectar(USR["id"]) as (conn, _a):
+                        with conectar(USR["id_usuario"]) as (conn, _a):
                             with conn.cursor() as cur:
                                 cur.execute("UPDATE produccion.fact_remito SET estado='ANULADO' "
                                             "WHERE id=%s", (int(rid),))
