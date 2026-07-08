@@ -47,54 +47,71 @@ def render(USR, cat):
          "🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
          "⚖️ Real vs teórico (por día)", "🛡️ Conciliación", "🧮 Composición del stock"])
 
-    # ---------- Composición del stock (medición base + ingresos que suman) ----------
+    # ---------- Composición del stock / impacto de tickets evaluados ----------
     with tcomp:
-        st.caption("Descomponé el stock de un producto: **última medición (base) + ingresos posteriores que están sumando**. "
-                   "Un ingreso evaluado por laboratorio (pesado por portería) solo suma si su hora es **posterior** a la "
-                   "última medición del tanque; si es anterior, la medición ya lo refleja.")
-        _prods = cat("SELECT DISTINCT producto FROM produccion.v_ingreso_lab_por_ticket WHERE producto IS NOT NULL ORDER BY 1")
-        _plist = _prods["producto"].tolist() if (_prods is not None and not _prods.empty) else ["AFE-S"]
-        _defi = _plist.index("AFE-S") if "AFE-S" in _plist else 0
-        _prod = st.selectbox("Producto", _plist, index=_defi, key="comp_prod")
+        st.caption("¿Los **tickets evaluados por laboratorio** (pesados por portería) están **impactando el stock**? "
+                   "Ticket por ticket: si generó su entrada y, si no, **por qué**.")
+        _impp = cat("SELECT DISTINCT producto_lab FROM produccion.v_lab_ticket_impacto_stock WHERE producto_lab IS NOT NULL ORDER BY 1")
+        _iplist = ["(todos)"] + (_impp["producto_lab"].tolist() if (_impp is not None and not _impp.empty) else [])
+        cA, cB, cC = st.columns([2, 1, 1])
+        _pf = cA.selectbox("Producto", _iplist, index=(_iplist.index("AFE") if "AFE" in _iplist else 0), key="comp_prodf")
+        _dias = cB.selectbox("Últimos días", [3, 7, 15, 30], index=1, key="comp_dias")
+        _solo_no = cC.checkbox("Solo los que NO impactan", key="comp_solo_no")
 
-        st.markdown("##### 🎫 Ingresos de laboratorio por ticket (pesados por portería)")
-        _ing = cat("SELECT ticket, tanque, round(kg) AS kg, to_char(entrada_ts,'DD/MM HH24:MI') AS entrada, "
-                   "to_char(ultima_medicion,'DD/MM HH24:MI') AS medicion, "
-                   "CASE WHEN suma_al_stock THEN '✅ suma' ELSE '⏸️ ya en medición' END AS estado, motivo "
-                   "FROM produccion.v_ingreso_lab_por_ticket WHERE producto=%s ORDER BY entrada_ts DESC LIMIT 40", (_prod,))
-        if _ing is not None and not _ing.empty:
-            _nsum = int((_ing["estado"] == "✅ suma").sum())
-            st.caption(f"De los últimos {len(_ing)} ingresos de **{_prod}**, **{_nsum}** están sumando al stock "
-                       "(posteriores a la medición de su tanque); el resto ya está incluido en la medición.")
-            st.dataframe(_ing, use_container_width=True, hide_index=True)
-            _dl(_ing, f"ingresos_lab_{_prod}.csv", "dl_comp_ing")
-        else:
-            st.info("No hay ingresos de laboratorio para ese producto.")
+        _w = "fecha >= current_date - %s"
+        _pr = [int(_dias)]
+        if _pf != "(todos)":
+            _w += " AND producto_lab=%s"; _pr.append(_pf)
+        if _solo_no:
+            _w += " AND NOT impacta_stock"
 
-        st.markdown("##### 🧮 Composición por tanque (medición + movimientos que suman = stock actual)")
-        _tks = cat("SELECT DISTINCT c.id_tanque, c.tanque_nombre FROM produccion.v_stock_composicion_tanque c "
-                   "WHERE c.producto_tanque=%s OR c.id_tanque IN "
-                   "  (SELECT id_tanque FROM produccion.v_ingreso_lab_por_ticket WHERE producto=%s) "
-                   "ORDER BY c.tanque_nombre", (_prod, _prod))
-        if _tks is None or _tks.empty:
-            st.info("No hay tanques con ese producto.")
+        _kpi = cat("SELECT count(*) t, count(*) FILTER (WHERE impacta_stock) si "
+                   "FROM produccion.v_lab_ticket_impacto_stock WHERE " + _w, tuple(_pr))
+        if _kpi is not None and not _kpi.empty:
+            _t = int(_kpi.iloc[0]["t"]); _si = int(_kpi.iloc[0]["si"])
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Tickets evaluados", _t)
+            m2.metric("Impactan el stock ✅", _si)
+            m3.metric("No impactan", _t - _si)
+
+        _imp = cat("SELECT ticket, producto_lab AS producto, calidad, COALESCE(tanque_en_stock,'—') AS tanque, "
+                   "kg, to_char(fecha,'DD/MM HH24:MI') AS evaluado, motivo "
+                   "FROM produccion.v_lab_ticket_impacto_stock WHERE " + _w +
+                   " ORDER BY impacta_stock ASC, fecha DESC LIMIT 300", tuple(_pr))
+        if _imp is not None and not _imp.empty:
+            st.dataframe(_imp, use_container_width=True, hide_index=True)
+            _dl(_imp, "impacto_lab_stock.csv", "dl_comp_imp")
+            st.caption("‘No impacta’ esperable: efluentes/fondo/insumos sin tanque de acopio. A revisar: "
+                       "‘sin pesada de portería’ o ‘tanque del lab no reconocido’.")
         else:
-            _gk = 0.0; _gl = 0.0
-            for _, _t in _tks.iterrows():
-                _comp = cat("SELECT tipo, to_char(ts,'DD/MM HH24:MI') AS hora, COALESCE(ticket,'') AS ticket, "
-                            "producto_mov AS producto, detalle, round(kg) AS kg, round(litros) AS litros "
-                            "FROM produccion.v_stock_composicion_tanque WHERE id_tanque=%s ORDER BY orden, ts",
-                            (int(_t["id_tanque"]),))
-                if _comp is None or _comp.empty:
-                    continue
-                _tk = float(pd.to_numeric(_comp["kg"], errors="coerce").fillna(0).sum())
-                _tl = float(pd.to_numeric(_comp["litros"], errors="coerce").fillna(0).sum())
-                _nmov = int((_comp["tipo"] == "MOVIMIENTO").sum())
-                _gk += _tk; _gl += _tl
-                with st.expander(f"🛢️ {_t['tanque_nombre']} — total {_tk:,.0f} kg / {_tl:,.0f} L  ·  {_nmov} mov. sumando",
-                                 expanded=(_nmov > 0)):
+            st.info("Sin tickets evaluados en el período.")
+
+        with st.expander("🧮 Composición del stock físico por tanque (medición + movimientos que suman)", expanded=False):
+            _prods = cat("SELECT DISTINCT producto FROM produccion.v_ingreso_lab_por_ticket WHERE producto IS NOT NULL ORDER BY 1")
+            _plist = _prods["producto"].tolist() if (_prods is not None and not _prods.empty) else ["AFE-S"]
+            _defi = _plist.index("AFE-S") if "AFE-S" in _plist else 0
+            _prod = st.selectbox("Producto (stock físico)", _plist, index=_defi, key="comp_prod")
+            _tks = cat("SELECT DISTINCT c.id_tanque, c.tanque_nombre FROM produccion.v_stock_composicion_tanque c "
+                       "WHERE c.producto_tanque=%s OR c.id_tanque IN "
+                       "  (SELECT id_tanque FROM produccion.v_ingreso_lab_por_ticket WHERE producto=%s) "
+                       "ORDER BY c.tanque_nombre", (_prod, _prod))
+            if _tks is None or _tks.empty:
+                st.info("No hay tanques con ese producto.")
+            else:
+                _gk = 0.0; _gl = 0.0
+                for _, _t in _tks.iterrows():
+                    _comp = cat("SELECT tipo, to_char(ts,'DD/MM HH24:MI') AS hora, COALESCE(ticket,'') AS ticket, "
+                                "producto_mov AS producto, detalle, round(kg) AS kg, round(litros) AS litros "
+                                "FROM produccion.v_stock_composicion_tanque WHERE id_tanque=%s ORDER BY orden, ts",
+                                (int(_t["id_tanque"]),))
+                    if _comp is None or _comp.empty:
+                        continue
+                    _tk = float(pd.to_numeric(_comp["kg"], errors="coerce").fillna(0).sum())
+                    _tl = float(pd.to_numeric(_comp["litros"], errors="coerce").fillna(0).sum())
+                    _nmov = int((_comp["tipo"] == "MOVIMIENTO").sum()); _gk += _tk; _gl += _tl
+                    st.markdown(f"**🛢️ {_t['tanque_nombre']}** — {_tk:,.0f} kg / {_tl:,.0f} L · {_nmov} mov. sumando")
                     st.dataframe(_comp, use_container_width=True, hide_index=True)
-            st.metric(f"Total {_prod} (medición + movimientos que suman)", f"{_gk:,.0f} kg", f"{_gl:,.0f} L")
+                st.metric(f"Total {_prod}", f"{_gk:,.0f} kg", f"{_gl:,.0f} L")
 
     # ---------- 0 · Stock por producto ----------
     with tp:
