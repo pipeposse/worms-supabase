@@ -168,25 +168,33 @@ def _remito_en_base(norm: str | None) -> dict | None:
 
 
 def _buscar_tickets(datos: dict) -> pd.DataFrame:
-    """Candidatos de balanza: 1° por nro de remito, 2° por patente ±30 días."""
+    """Candidatos de portería: 1° por nro de remito, 2° por patente ±30 días.
+    Incluye lo que registró laboratorio para ese ticket (producto/calidad)."""
     norm = _norm_remito(datos.get("nro_remito"))
-    base = ("SELECT transaccion, fecha_e, comprnum1, comprnum2, producto, procedencia, "
-            "patcha, patacopl, abs(pesoneto) AS neto_balanza "
-            "FROM produccion.transacciones WHERE comprobtip='REM' ")
+    base = ("SELECT t.transaccion, t.fecha_e, t.comprnum1, t.comprnum2, t.producto, "
+            "t.procedencia, t.patcha, t.patacopl, abs(t.pesoneto) AS neto_balanza, "
+            "l.producto_lab, l.calidad_final_lab AS calidad_lab, l.rechazado AS lab_estado "
+            "FROM produccion.transacciones t "
+            "LEFT JOIN LATERAL ("
+            "  SELECT pl.producto_lab, pl.calidad_final_lab, pl.rechazado "
+            "  FROM produccion.procesos_lab pl "
+            "  WHERE btrim(pl.ticket) = (t.transaccion)::bigint::text "
+            "  ORDER BY pl.fecha DESC NULLS LAST LIMIT 1) l ON true "
+            "WHERE t.comprobtip='REM' ")
     if norm:
-        df = _read_df(base + "AND (produccion.fn_norm_remito(comprnum2)=%s "
-                             "OR produccion.fn_norm_remito(comprnum1)=%s) "
-                             "ORDER BY transaccion DESC LIMIT 5", (norm, norm))
+        df = _read_df(base + "AND (produccion.fn_norm_remito(t.comprnum2)=%s "
+                             "OR produccion.fn_norm_remito(t.comprnum1)=%s) "
+                             "ORDER BY t.transaccion DESC LIMIT 5", (norm, norm))
         if not df.empty:
             df["match"] = "N° remito"
             return df
     pats = [p for p in (datos.get("patente_chasis"), datos.get("patente_acoplado")) if p]
     if pats:
-        df = _read_df(base + "AND (upper(replace(patcha,' ',''))=ANY(%s) "
-                             "OR upper(replace(patacopl,' ',''))=ANY(%s)) "
-                             "AND to_date(nullif(fecha_e,''),'DD/MM/YYYY') "
+        df = _read_df(base + "AND (upper(replace(t.patcha,' ',''))=ANY(%s) "
+                             "OR upper(replace(t.patacopl,' ',''))=ANY(%s)) "
+                             "AND to_date(nullif(t.fecha_e,''),'DD/MM/YYYY') "
                              "BETWEEN current_date-30 AND current_date "
-                             "ORDER BY transaccion DESC LIMIT 5",
+                             "ORDER BY t.transaccion DESC LIMIT 5",
                       ([p.upper().replace(" ", "") for p in pats],) * 2)
         if not df.empty:
             df["match"] = "Patente"
@@ -351,7 +359,10 @@ def _card_revision(item: dict, h: str):
             item["cand"] = cand
         if cand is not None and not cand.empty:
             ops = {f"#{int(r.transaccion)} · {r.fecha_e} · {r.procedencia} · "
-                   f"{r.neto_balanza:,.0f} kg · {r.patcha} ({r.match})": int(r.transaccion)
+                   f"{r.neto_balanza:,.0f} kg · {r.patcha} · "
+                   f"lab: {getattr(r, 'producto_lab', None) or '—'}"
+                   f"{' / ' + r.calidad_lab if getattr(r, 'calidad_lab', None) else ''} "
+                   f"({r.match})": int(r.transaccion)
                    for r in cand.itertuples()}
             etiquetas = list(ops) + ["Sin ticket"]
             idx_def = 0 if item.get("ticket_sel") else len(etiquetas) - 1
@@ -434,21 +445,38 @@ def render(USR, conectar):
 
         if items:
             # --- resumen del lote ---
-            df_res = pd.DataFrame([{
-                "Foto": it["name"], "Estado": _BADGE.get(it["estado"], it["estado"]),
-                "N° remito": (it["datos"] or {}).get("nro_remito"),
-                "Fecha": (it["datos"] or {}).get("fecha_remito"),
-                "Emisor": (it["datos"] or {}).get("emisor"),
-                "Producto": (it["datos"] or {}).get("producto"),
-                "Neto kg": (it["datos"] or {}).get("neto_kg"),
-                "Ticket prov.": (it["datos"] or {}).get("ticket"),
-                "Ticket balanza": it.get("ticket_sel"),
-                "Dif kg": None if it.get("dif_kg") is None else round(it["dif_kg"]),
-                "Motivo": it.get("motivo"),
-            } for it in items])
+            def _cand_row(it):
+                c = it.get("cand")
+                if c is None or getattr(c, "empty", True) or not it.get("ticket_sel"):
+                    return None
+                m = c[c.transaccion == it["ticket_sel"]]
+                return None if m.empty else m.iloc[0]
+
+            _filas = []
+            for it in items:
+                d = it["datos"] or {}
+                cr = _cand_row(it)
+                _filas.append({
+                    "Foto": it["name"], "Estado": _BADGE.get(it["estado"], it["estado"]),
+                    "N° remito": d.get("nro_remito"),
+                    "Fecha": d.get("fecha_remito"),
+                    "Emisor": d.get("emisor"),
+                    "Prod. remito": d.get("producto"),
+                    "Neto remito kg": d.get("neto_kg"),
+                    "Ticket prov.": d.get("ticket"),
+                    "Ticket portería": it.get("ticket_sel"),
+                    "Neto portería kg": None if cr is None else float(cr["neto_balanza"]),
+                    "Dif kg (rem−port)": None if it.get("dif_kg") is None else round(it["dif_kg"]),
+                    "Prod. lab": None if cr is None else cr.get("producto_lab"),
+                    "Calidad lab": None if cr is None else cr.get("calidad_lab"),
+                    "Motivo": it.get("motivo"),
+                })
+            df_res = pd.DataFrame(_filas)
             st.dataframe(df_res, use_container_width=True, hide_index=True)
-            st.caption("**Ticket prov.** = número impreso en el remito del proveedor · "
-                       "**Ticket balanza** = pesada en nuestra balanza (transacción WORMS) con la que se compara el neto.")
+            st.caption("**Remito** = lo que declara el proveedor (foto) · "
+                       "**Portería** = pesada en nuestra balanza (ticket WORMS) · "
+                       "**Lab** = producto y calidad que registró laboratorio para ese ticket · "
+                       "**Ticket prov.** = número interno impreso en el remito.")
 
             n_listo = sum(1 for it in items if it["estado"] in ("LISTO", "SIN_TICKET"))
             n_dup = sum(1 for it in items if it["estado"] == "DUPLICADO")
@@ -524,6 +552,7 @@ def render(USR, conectar):
             df = _read_df(
                 "SELECT id, fecha_remito, emisor, nro_remito, producto, neto_remito_kg, "
                 "ticket, neto_balanza_kg, diferencia_kg, diferencia_pct, patcha, "
+                "producto_lab, calidad_lab, lab_estado, "
                 "estado, cargado_por, creado_en::date AS fecha_carga "
                 "FROM produccion.v_remito_vs_balanza "
                 "WHERE fecha_remito BETWEEN %s AND %s ORDER BY id DESC",
@@ -596,16 +625,17 @@ def render(USR, conectar):
         # ---- tabla ----
         df_show = df.rename(columns={
             "fecha_remito": "Fecha", "emisor": "Emisor", "nro_remito": "N° remito",
-            "producto": "Producto", "neto_remito_kg": "Neto remito (kg)",
-            "ticket": "Ticket balanza", "neto_balanza_kg": "Neto balanza (kg)",
-            "diferencia_kg": "Dif (kg)", "diferencia_pct": "Dif %", "patcha": "Patente",
+            "producto": "Prod. remito", "neto_remito_kg": "Neto remito (kg)",
+            "ticket": "Ticket portería", "neto_balanza_kg": "Neto portería (kg)",
+            "diferencia_kg": "Dif (kg) rem−port", "diferencia_pct": "Dif %", "patcha": "Patente",
+            "producto_lab": "Prod. lab", "calidad_lab": "Calidad lab", "lab_estado": "Lab",
             "estado": "Estado", "cargado_por": "Cargado por", "fecha_carga": "Fecha carga"})
         st.dataframe(
             df_show, use_container_width=True, hide_index=True,
             column_config={
                 "Neto remito (kg)": st.column_config.NumberColumn(format="%,.0f"),
-                "Neto balanza (kg)": st.column_config.NumberColumn(format="%,.0f"),
-                "Dif (kg)": st.column_config.NumberColumn(format="%,.0f"),
+                "Neto portería (kg)": st.column_config.NumberColumn(format="%,.0f"),
+                "Dif (kg) rem−port": st.column_config.NumberColumn(format="%,.0f"),
                 "Dif %": st.column_config.NumberColumn(format="%.2f%%"),
             })
         st.download_button("⬇️ CSV (con filtros aplicados)",
