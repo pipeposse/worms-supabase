@@ -661,21 +661,31 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
 
-    modo = st.radio("Planificar en", ["🏭 Reactores", "🛁 Bachas", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⚙️ Cronogramas"],
-                    horizontal=True, key="pl_modo")
+    _grupo = st.radio("¿Qué querés hacer?",
+                      ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas"],
+                      horizontal=True, key="pl_grupo")
+
+    # ----- Administrar procesos en curso (no es carga: se decide sobre reacciones ya arrancadas) -----
+    if _grupo.startswith("⚙️"):
+        st.caption("Reacciones ya en marcha que esperan una decisión de dirección (reposo, destino, etc.).")
+        _admin = st.radio("Proceso a administrar", ["🧴 Decantación ARE", "🫧 Desgomado acuoso"],
+                          horizontal=True, key="pl_admin")
+        if _admin.startswith("🧴"):
+            import decantacion
+            decantacion.destinos(USR, cat, conectar)
+        else:
+            import desgomado
+            desgomado.planificacion(USR, cat, conectar)
+        return
+
+    if _grupo.startswith("📅"):
+        _render_cronogramas(USR, cat, conectar)
+        return
+
+    # ----- Cargar nueva reacción: reactores o bachas -----
+    modo = st.radio("Tipo de carga", ["🏭 Reactores", "🛁 Bachas"], horizontal=True, key="pl_modo")
     if modo.startswith("🛁"):
         _render_bachas(USR, cat, conectar, siguiente_identificador, H)
-        return
-    if modo.startswith("🧴"):
-        import decantacion
-        decantacion.destinos(USR, cat, conectar)
-        return
-    if modo.startswith("🫧"):
-        import desgomado
-        desgomado.planificacion(USR, cat, conectar)
-        return
-    if modo.startswith("⚙️"):
-        _render_cronogramas(USR, cat, conectar)
         return
     st.caption("Misma lógica que Cargas: elegí reactor y materia prima; el proceso, la capacidad y todas las fórmulas se calculan solos.")
 
