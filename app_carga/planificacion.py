@@ -535,6 +535,47 @@ def _borrador_limpiar(conectar, USR):
         pass
 
 
+def _tipo_badge(tp):
+    _lbl = {"PRODUCCION_ARE": "🧴 PRODUCCIÓN ARE", "DESGOMADO_ACUOSO": "🫧 DESGOMADO ACUOSO"}.get(str(tp or ""), str(tp or "—"))
+    _bg = {"PRODUCCION_ARE": "#4338ca", "DESGOMADO_ACUOSO": "#0f766e"}.get(str(tp or ""), "#334155")
+    st.markdown(f"<div style='background:{_bg};border-radius:12px;padding:9px 14px;margin:2px 0 10px;"
+                f"text-align:center;color:#fff;font-weight:800;letter-spacing:1.5px;font-size:1.2rem'>{_lbl}</div>",
+                unsafe_allow_html=True)
+
+
+def _editar_id_reaccion(USR, cat, conectar):
+    st.subheader("✏️ Editar N° de reacción")
+    st.caption("Cambiá el número identificador de una reacción. Queda registrado.")
+    df = cat("SELECT b.id_batch, b.identificador_unidad AS ident, b.tipo_proceso, b.estado, bu.nombre_ui AS reactor "
+             "FROM produccion.fact_batch_proceso b LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+             "WHERE b.sector='REACTORES' AND COALESCE(b.anulado,false)=false "
+             "  AND b.estado IN ('PLANIFICADO','REACCION','REPOSO','DECANTACION') ORDER BY b.creado_en DESC")
+    if df is None or df.empty:
+        st.info("No hay reacciones activas.")
+        return
+    _opt = df.apply(lambda r: f"#{r['id_batch']} · {r['ident'] or '—'} · {r['tipo_proceso']} · {r['reactor'] or '—'} · {r['estado']}", axis=1).tolist()
+    sel = st.selectbox("Reacción", _opt, key="edid_sel")
+    r = df.iloc[_opt.index(sel)]
+    _tipo_badge(r["tipo_proceso"])
+    _nid = st.text_input("Nuevo N°", value=str(r["ident"] or ""), key="edid_val")
+    if st.button("💾 Guardar N°", type="primary", key="edid_go"):
+        _nv = (_nid or "").strip()
+        if not _nv:
+            st.error("El N° no puede quedar vacío.")
+            return
+        try:
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE produccion.fact_batch_proceso SET identificador_unidad=%s WHERE id_batch=%s",
+                                (_nv, int(r["id_batch"])))
+                audit.log("U", "fact_batch_proceso", int(r["id_batch"]), {"ident": _nv})
+            st.success(f"N° actualizado a {_nv}.")
+            cat.clear(); st.rerun()
+        except Exception as e:
+            st.error("No se pudo cambiar el N° (¿ya existe ese número?).")
+            st.exception(e)
+
+
 def _avanzar_fase(USR, cat, conectar):
     st.subheader("⏭️ Avanzar de fase (manual · dirección)")
     st.caption("Forzá el pase de una reacción a la **siguiente fase**, más allá del tiempo/umbral que debería tardar "
@@ -552,6 +593,7 @@ def _avanzar_fase(USR, cat, conectar):
                               f"{r['reactor'] or '—'} · {r['estado']}", axis=1).tolist()
     sel = st.selectbox("Reacción", _opt, key="avf_sel")
     r = df.iloc[_opt.index(sel)]
+    _tipo_badge(r["tipo_proceso"])
     _next = {"REACCION": "REPOSO", "REPOSO": "DECANTACION"}.get(r["estado"])
     _etapa = {"REPOSO": "REPOSANDO", "DECANTACION": "DECANTACION"}.get(_next)
     _es_are = str(r["tipo_proceso"]) == "PRODUCCION_ARE"
@@ -739,13 +781,15 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     if _grupo.startswith("⚙️"):
         st.caption("Reacciones ya en marcha que esperan una decisión de dirección (reposo, destino, etc.).")
         _admin = st.radio("Proceso a administrar",
-                          ["🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"],
+                          ["🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)", "✏️ Editar N°"],
                           horizontal=True, key="pl_admin")
         if _admin.startswith("🧴"):
             import decantacion
             decantacion.destinos(USR, cat, conectar)
         elif _admin.startswith("⏭️"):
             _avanzar_fase(USR, cat, conectar)
+        elif _admin.startswith("✏️"):
+            _editar_id_reaccion(USR, cat, conectar)
         else:
             import desgomado
             desgomado.planificacion(USR, cat, conectar)

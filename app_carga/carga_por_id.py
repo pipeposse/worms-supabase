@@ -122,11 +122,36 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
 
     st.markdown(
         f"<div style='background:#1e293b;border-radius:14px;padding:14px 18px;margin:6px 0 10px;text-align:center'>"
-        f"<div style='color:#94a3b8;font-size:.8rem;font-weight:700;letter-spacing:1px'>N° DE PRODUCCIÓN / REACCIÓN (no cambia)</div>"
+        f"<div style='color:#94a3b8;font-size:.8rem;font-weight:700;letter-spacing:1px'>N° DE PRODUCCIÓN / REACCIÓN</div>"
         f"<div style='color:#fff;font-size:2.1rem;font-weight:900;letter-spacing:1px'>{b['ident']}</div></div>",
+        unsafe_allow_html=True)
+    _tp = str(b["tipo_proceso"] or "")
+    _tp_lbl = {"PRODUCCION_ARE": "🧴 PRODUCCIÓN ARE", "DESGOMADO_ACUOSO": "🫧 DESGOMADO ACUOSO"}.get(_tp, _tp or "—")
+    _tp_bg = {"PRODUCCION_ARE": "#4338ca", "DESGOMADO_ACUOSO": "#0f766e"}.get(_tp, "#334155")
+    st.markdown(
+        f"<div style='background:{_tp_bg};border-radius:12px;padding:9px 14px;margin:2px 0 10px;"
+        f"text-align:center;color:#fff;font-weight:800;letter-spacing:1.5px;font-size:1.2rem'>{_tp_lbl}</div>",
         unsafe_allow_html=True)
     st.markdown(_stepper(estado), unsafe_allow_html=True)
     _banner_corriente(b["corriente"])
+    with st.expander("✏️ Editar N° de producción / reacción"):
+        _nid = st.text_input("Nuevo N°", value=str(b["ident"] or ""), key=f"pp_editid_{id_batch}")
+        if st.button("💾 Guardar N°", key=f"pp_editid_go_{id_batch}"):
+            _nv = (_nid or "").strip()
+            if not _nv:
+                st.error("El N° no puede quedar vacío.")
+            else:
+                try:
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE produccion.fact_batch_proceso SET identificador_unidad=%s WHERE id_batch=%s",
+                                        (_nv, id_batch))
+                        audit.log("U", "fact_batch_proceso", id_batch, {"ident": _nv})
+                    st.success(f"N° actualizado a {_nv}.")
+                    cat.clear(); st.rerun()
+                except Exception as e:
+                    st.error("No se pudo cambiar el N° (¿ya existe ese número?).")
+                    st.exception(e)
 
     es_desgomado = str(b["tipo_proceso"]) == "DESGOMADO_ACUOSO"
     if estado == "PLANIFICADO":
