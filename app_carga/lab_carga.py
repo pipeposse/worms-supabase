@@ -630,7 +630,7 @@ def _form_INSUMO(pf, ctx, tok, get_conn, usuario):
         st.markdown("**Parámetros del insumo**")
         c1, c2, c3 = st.columns(3)
         with c1:
-            concentracion = _n("Concentración / pureza (%)", "concentracion", pf, p, tok, "conc")
+            concentracion = _n("Concentración / pureza (%)", "concentracion", pf, p, tok, "concen")
         with c2:
             densidad = _n("Densidad g/ml", "densidad__g_ml", pf, p, tok, "den")
         with c3:
