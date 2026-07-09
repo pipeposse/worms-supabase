@@ -96,6 +96,7 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
         "       bu.nombre_ui AS reactor, bu.capacidad_max_l, bu.reposo_horas, "
         "       p.nombre_producto AS producto, b.corriente, b.parametros_proceso, "
         "       b.tiempo_estimado_horas, "
+        "       to_char(b.creado_en AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS creado_fmt, "
         "       (SELECT inicio_ts FROM produccion.fact_etapa_evento e "
         "          WHERE e.id_batch=b.id_batch AND e.etapa='REPOSANDO' "
         "          ORDER BY e.inicio_ts DESC LIMIT 1) AS reposo_ini "
@@ -113,8 +114,10 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
     _emoji = {"PLANIFICADO": "🅿️", "REACCION": "🔥", "REPOSO": "🧊", "DECANTACION": "🧴"}
     _label = {"PLANIFICADO": "Para arrancar", "REACCION": "En reacción",
               "REPOSO": "Reposando", "DECANTACION": "Decantando"}
-    opts = act.apply(lambda r: f"{_emoji.get(r['estado'],'•')} {r['ident']} · {r['reactor'] or '—'} · "
-                               f"{_label.get(r['estado'], r['estado'])}", axis=1).tolist()
+    _tp_short = {"PRODUCCION_ARE": "ARE", "DESGOMADO_ACUOSO": "DESGOMADO"}
+    opts = act.apply(lambda r: f"{_emoji.get(r['estado'],'•')} {r['ident']} · "
+                               f"{_tp_short.get(r['tipo_proceso'], r['tipo_proceso'] or '—')} · {r['reactor'] or '—'} · "
+                               f"{_label.get(r['estado'], r['estado'])} · 🗓️ {r['creado_fmt'] or '—'}", axis=1).tolist()
     sel = st.selectbox("¿En qué producción vas a trabajar?", opts, key="pp_sel")
     b = act.iloc[opts.index(sel)]
     estado = str(b["estado"])
