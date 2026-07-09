@@ -202,17 +202,29 @@ def destinos(USR, cat, conectar):
         dest_gli = int(gt.iloc[gop.index(gsel)]["id_tanque"])
 
     st.markdown("##### 🎯 Tanque destino del ARE final")
+    _buscado = b.get("id_producto_buscado")
+    _bid = int(_buscado) if pd.notna(_buscado) else -1
     ft = cat(
-        "SELECT t.id_tanque, t.nombre, t.codigo, t.sector, COALESCE(s.litros_actual,0) lt, COALESCE(t.capacidad_litros,0) cap "
-        "FROM produccion.dim_tanque t JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
+        "SELECT t.id_tanque, t.nombre, t.codigo, t.sector, COALESCE(p.codigo_producto,'') AS prod, "
+        "       COALESCE(s.litros_actual,0) lt, COALESCE(t.capacidad_litros,0) cap "
+        "FROM produccion.dim_tanque t "
+        "LEFT JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
         "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
-        "WHERE COALESCE(t.activo,true) AND (p.codigo_producto='ARE-B' OR t.sector ILIKE 'Exporta%%' OR t.codigo='FORM-AG-E') "
-        "ORDER BY (t.sector ILIKE 'Exporta%%') DESC, t.nombre")
+        "WHERE COALESCE(t.activo,true) AND ( "
+        "   t.id_producto_principal=%s "
+        "   OR p.codigo_producto ILIKE 'ARE%%' "
+        "   OR EXISTS (SELECT 1 FROM produccion.dim_tanque_producto_permitido pp "
+        "              JOIN produccion.dim_producto p2 ON p2.id_producto=pp.id_producto "
+        "              WHERE pp.id_tanque=t.id_tanque AND (pp.id_producto=%s OR p2.codigo_producto ILIKE 'ARE%%')) "
+        "   OR t.sector ILIKE 'Exporta%%' OR t.codigo='FORM-AG-E') "
+        "ORDER BY (t.id_producto_principal=%s) DESC, (t.sector ILIKE '%%Acopio%%') DESC, "
+        "         (t.sector ILIKE 'Exporta%%') ASC, t.nombre",
+        (_bid, _bid, _bid))
     if ft is None or ft.empty:
-        st.warning("No hay tanques destino para ARE-B.")
+        st.warning("No hay tanques destino para ese ARE.")
         dest_fin = None
     else:
-        fop = ft.apply(lambda r: f"{r['nombre']} · {r['sector']} · {float(r['lt']):,.0f}/{float(r['cap']):,.0f} L", axis=1).tolist()
+        fop = ft.apply(lambda r: f"{r['nombre']} · {r['prod'] or '—'} · {r['sector']} · {float(r['lt']):,.0f}/{float(r['cap']):,.0f} L", axis=1).tolist()
         _curf = b["id_tanque_are_final"]
         _ixf = next((i for i, (_, r) in enumerate(ft.iterrows()) if int(r["id_tanque"]) == (int(_curf) if pd.notna(_curf) else -1)), 0)
         fsel = st.selectbox("Tanque destino del ARE final", fop, index=_ixf, key="dec_fin_tk")
