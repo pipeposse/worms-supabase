@@ -6,6 +6,8 @@ import os
 import pandas as pd
 import streamlit as st
 
+DENS_TN = 0.91  # densidad media planta: litros -> toneladas donde no hay kg
+
 
 def _wconn():
     import psycopg2
@@ -98,67 +100,66 @@ def render(USR, cat):
             if _tks is None or _tks.empty:
                 st.info("No hay tanques con ese producto.")
             else:
-                _gk = 0.0; _gl = 0.0
+                _gk = 0.0
                 for _, _t in _tks.iterrows():
                     _comp = cat("SELECT tipo, to_char(ts,'DD/MM HH24:MI') AS hora, COALESCE(ticket,'') AS ticket, "
-                                "producto_mov AS producto, detalle, round(kg) AS kg, round(litros) AS litros "
+                                "producto_mov AS producto, detalle, round((kg/1000.0)::numeric,2) AS \"TN\" "
                                 "FROM produccion.v_stock_composicion_tanque WHERE id_tanque=%s ORDER BY orden, ts",
                                 (int(_t["id_tanque"]),))
                     if _comp is None or _comp.empty:
                         continue
-                    _tk = float(pd.to_numeric(_comp["kg"], errors="coerce").fillna(0).sum())
-                    _tl = float(pd.to_numeric(_comp["litros"], errors="coerce").fillna(0).sum())
-                    _nmov = int((_comp["tipo"] == "MOVIMIENTO").sum()); _gk += _tk; _gl += _tl
-                    st.markdown(f"**🛢️ {_t['tanque_nombre']}** — {_tk:,.0f} kg / {_tl:,.0f} L · {_nmov} mov. sumando")
-                    st.dataframe(_comp, use_container_width=True, hide_index=True)
-                st.metric(f"Total {_prod}", f"{_gk:,.0f} kg", f"{_gl:,.0f} L")
+                    _tk = float(pd.to_numeric(_comp["TN"], errors="coerce").fillna(0).sum())
+                    _nmov = int((_comp["tipo"] == "MOVIMIENTO").sum()); _gk += _tk
+                    st.markdown(f"**🛢️ {_t['tanque_nombre']}** — {_tk:,.1f} t · {_nmov} mov. sumando")
+                    st.dataframe(_comp, use_container_width=True, hide_index=True,
+                                 column_config={"TN": st.column_config.NumberColumn(format="%.2f")})
+                st.metric(f"Total {_prod}", f"{_gk:,.1f} t")
 
     # ---------- 0 · Stock por producto ----------
     with tp:
         st.caption("Cuánto hay de cada producto, cuánta **capacidad de acopio aperturada** (tanques asignados) "
                    "y cuánto **queda disponible** — total y abierto por tanque.")
         pp = cat("SELECT produccion.fn_prod_label(producto_principal) AS producto, count(*) tanques, "
-                 "SUM(COALESCE(litros_actual,0)) litros, SUM(COALESCE(kg_actual,0)) kg, "
-                 "SUM(COALESCE(capacidad_litros,0)) capacidad "
+                 "SUM(COALESCE(kg_actual,0))/1000.0 tn, "
+                 "SUM(COALESCE(capacidad_litros,0)*COALESCE(densidad,0.91))/1000.0 capacidad_tn "
                  "FROM produccion.vw_tanque_panel WHERE activo AND producto_principal IS NOT NULL "
-                 "GROUP BY produccion.fn_prod_label(producto_principal) ORDER BY litros DESC NULLS LAST")
+                 "GROUP BY produccion.fn_prod_label(producto_principal) ORDER BY tn DESC NULLS LAST")
         if pp is None or pp.empty:
             st.info("Sin datos de stock por producto.")
         else:
             pp = pp.copy()
-            _lt = pd.to_numeric(pp["litros"], errors="coerce").fillna(0)
-            _cap = pd.to_numeric(pp["capacidad"], errors="coerce").fillna(0)
-            pp["disponible"] = (_cap - _lt).clip(lower=0)
-            pp["ocupacion"] = (_lt / _cap.replace(0, pd.NA) * 100).fillna(0)
-            t_lt = float(_lt.sum()); t_cap = float(_cap.sum()); t_disp = float(pp["disponible"].sum())
+            _tn = pd.to_numeric(pp["tn"], errors="coerce").fillna(0)
+            _cap = pd.to_numeric(pp["capacidad_tn"], errors="coerce").fillna(0)
+            pp["disponible"] = (_cap - _tn).clip(lower=0)
+            pp["ocupacion"] = (_tn / _cap.replace(0, pd.NA) * 100).fillna(0)
+            t_tn = float(_tn.sum()); t_cap = float(_cap.sum()); t_disp = float(pp["disponible"].sum())
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Stock total (L)", f"{t_lt:,.0f}")
-            m2.metric("Capacidad aperturada (L)", f"{t_cap:,.0f}")
-            m3.metric("Disponible (L)", f"{t_disp:,.0f}")
-            m4.metric("Ocupación total", f"{(t_lt/t_cap*100 if t_cap else 0):.0f}%")
-            _disp = pp.rename(columns={"producto": "Producto", "tanques": "Tanques", "litros": "Stock (L)",
-                                       "kg": "Stock (kg)", "capacidad": "Capacidad (L)",
-                                       "disponible": "Disponible (L)", "ocupacion": "Ocupación %"})
-            st.dataframe(_disp[["Producto", "Tanques", "Stock (L)", "Capacidad (L)", "Disponible (L)", "Ocupación %"]],
+            m1.metric("Stock total", f"{t_tn:,.1f} t")
+            m2.metric("Capacidad aperturada", f"{t_cap:,.1f} t")
+            m3.metric("Disponible", f"{t_disp:,.1f} t")
+            m4.metric("Ocupación total", f"{(t_tn/t_cap*100 if t_cap else 0):.0f}%")
+            _disp = pp.rename(columns={"producto": "Producto", "tanques": "Tanques", "tn": "Stock (t)",
+                                       "capacidad_tn": "Capacidad (t)",
+                                       "disponible": "Disponible (t)", "ocupacion": "Ocupación %"})
+            st.dataframe(_disp[["Producto", "Tanques", "Stock (t)", "Capacidad (t)", "Disponible (t)", "Ocupación %"]],
                          use_container_width=True, hide_index=True, column_config={
-                "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
-                "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
-                "Disponible (L)": st.column_config.NumberColumn(format="%.0f"),
+                "Stock (t)": st.column_config.NumberColumn(format="%.1f"),
+                "Capacidad (t)": st.column_config.NumberColumn(format="%.1f"),
+                "Disponible (t)": st.column_config.NumberColumn(format="%.1f"),
                 "Ocupación %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
             _dl(_disp, "stock_por_producto.csv", "dl_pp")
             st.markdown("**🛢️ Aperturado por tanque**")
             _psel = st.selectbox("Producto", pp["producto"].tolist(), key="stk_pp_sel")
             tq = cat("SELECT nombre AS \"Tanque\", codigo AS \"Código\", sector AS \"Sector\", "
-                     "COALESCE(litros_actual,0) AS \"Stock (L)\", COALESCE(capacidad_litros,0) AS \"Capacidad (L)\", "
-                     "GREATEST(COALESCE(capacidad_litros,0)-COALESCE(litros_actual,0),0) AS \"Disponible (L)\", "
+                     "round((COALESCE(kg_actual,0)/1000.0)::numeric,2) AS \"Stock (t)\", "
+                     "round((COALESCE(capacidad_litros,0)*COALESCE(densidad,0.91)/1000.0)::numeric,2) AS \"Capacidad (t)\", "
                      "COALESCE(nivel_pct_actual,0) AS \"Ocupación %%\" "
                      "FROM produccion.vw_tanque_panel WHERE activo AND produccion.fn_prod_label(producto_principal)=%s "
-                     "ORDER BY litros_actual DESC NULLS LAST", (_psel,))
+                     "ORDER BY kg_actual DESC NULLS LAST", (_psel,))
             if tq is not None and not tq.empty:
                 st.dataframe(tq, use_container_width=True, hide_index=True, column_config={
-                    "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
-                    "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
-                    "Disponible (L)": st.column_config.NumberColumn(format="%.0f"),
+                    "Stock (t)": st.column_config.NumberColumn(format="%.2f"),
+                    "Capacidad (t)": st.column_config.NumberColumn(format="%.2f"),
                     "Ocupación %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
 
     # ---------- COBERTURA TOTAL ----------
@@ -183,11 +184,10 @@ def render(USR, cat):
                     use_container_width=True, hide_index=True,
                     column_config={"TN": st.column_config.NumberColumn(format="%.1f")})
             st.markdown("**🟢 Tanques reales**")
-            st.dataframe(real[["codigo", "nombre", "sector", "producto", "corriente", "litros", "tn", "nivel_pct"]].rename(columns={
+            st.dataframe(real[["codigo", "nombre", "sector", "producto", "corriente", "tn", "nivel_pct"]].rename(columns={
                 "codigo": "Código", "nombre": "Tanque", "sector": "Sector", "producto": "Producto",
-                "corriente": "Corriente", "litros": "Stock (L)", "tn": "TN", "nivel_pct": "Nivel %"}),
+                "corriente": "Corriente", "tn": "TN", "nivel_pct": "Nivel %"}),
                 use_container_width=True, hide_index=True, column_config={
-                    "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
                     "TN": st.column_config.NumberColumn(format="%.1f"),
                     "Nivel %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
             _dl(sv, "stock_total.csv", "dl_cov")
@@ -222,7 +222,7 @@ def render(USR, cat):
             _dl(ct, "control_teorico_producto.csv", "dl_ct")
         st.markdown("**🔎 Detalle por ticket — teórico vs real**")
         ef = st.selectbox("Estado", ["(todos)", "SIN_DESTINO", "DESVIADO", "OK"], key="ctrl_estado")
-        tr = cat("SELECT fecha, ticket, producto, cliente, kg, estado, tanque_real, prod_tanque_real, "
+        tr = cat("SELECT fecha, ticket, producto, cliente, round((kg/1000.0)::numeric,2) AS tn, estado, tanque_real, prod_tanque_real, "
                  "tiene_tanque_teorico FROM produccion.v_trazabilidad_destino "
                  "ORDER BY fecha DESC, ticket DESC LIMIT 1500")
         if tr is not None and not tr.empty:
@@ -230,11 +230,11 @@ def render(USR, cat):
             st.caption(f"{len(d)} ticket(s)")
             st.dataframe(d.rename(columns={
                 "fecha": "Fecha", "ticket": "Ticket", "producto": "Producto", "cliente": "Proveedor",
-                "kg": "kg", "estado": "Estado", "tanque_real": "Tanque real",
+                "tn": "TN", "estado": "Estado", "tanque_real": "Tanque real",
                 "prod_tanque_real": "Producto del tanque", "tiene_tanque_teorico": "Tiene tanque teórico"}),
                 use_container_width=True, hide_index=True, column_config={
                     "Fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                    "kg": st.column_config.NumberColumn(format="%.0f")})
+                    "TN": st.column_config.NumberColumn(format="%.2f")})
             _dl(d, "trazabilidad_destino.csv", "dl_tr")
         st.caption("**OK** = llegó al tanque de su producto · **DESVIADO** = entró a un tanque de otro producto · "
                    "**SIN_DESTINO** = no se registró movimiento de stock para ese ticket.")
@@ -244,7 +244,7 @@ def render(USR, cat):
         st.caption("¿La **asignación automática** de tanque acertó? Comparamos el tanque que el algoritmo "
                    "sugeriría (producto + capacidad libre + score aprendido) contra **dónde el laboratorio "
                    "realmente lo mandó**. Ventana: 60 días.")
-        dz = cat("SELECT ticket, fecha, producto, kg, tanque_sugerido, tanque_real, tanque_lab_texto, "
+        dz = cat("SELECT ticket, fecha, producto, round((kg/1000.0)::numeric,2) AS tn, tanque_sugerido, tanque_real, tanque_lab_texto, "
                  "prod_tanque_real, motivo_desvio, veredicto FROM produccion.v_designacion_auto "
                  "ORDER BY fecha DESC, ticket DESC")
         if dz is None or dz.empty:
@@ -279,12 +279,12 @@ def render(USR, cat):
             d = dz if vf == "(todos)" else dz[dz["veredicto"] == vf]
             st.caption(f"{len(d)} evaluación(es)")
             st.dataframe(d.rename(columns={
-                "ticket": "Ticket", "fecha": "Fecha", "producto": "Producto", "kg": "kg",
+                "ticket": "Ticket", "fecha": "Fecha", "producto": "Producto", "tn": "TN",
                 "tanque_sugerido": "Sugerido", "tanque_real": "Real", "tanque_lab_texto": "Texto lab",
                 "prod_tanque_real": "Prod. tanque real", "motivo_desvio": "Motivo", "veredicto": "Veredicto"}),
                 use_container_width=True, hide_index=True, column_config={
                     "Fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                    "kg": st.column_config.NumberColumn(format="%.0f")})
+                    "TN": st.column_config.NumberColumn(format="%.2f")})
             _dl(dz, "designacion_auto.csv", "dl_des")
 
             unm = dz[dz["veredicto"] == "SIN_MAPEAR"]["tanque_lab_texto"].dropna().unique().tolist()
@@ -317,19 +317,19 @@ def render(USR, cat):
                     "TN neto": st.column_config.NumberColumn(format="%.1f")})
             _dl(bal, "balance_producto.csv", "dl_bal")
         st.markdown("**📤 Detalle de salidas**")
-        sal = cat("SELECT fecha, ticket, producto, corriente, cliente, destino_final, kg "
+        sal = cat("SELECT fecha, ticket, producto, corriente, cliente, destino_final, round((kg/1000.0)::numeric,2) AS tn "
                   "FROM produccion.v_salidas_porteria ORDER BY fecha DESC, ticket DESC LIMIT 1500")
         if sal is not None and not sal.empty:
             prods = ["(todos)"] + sorted(sal["producto"].dropna().unique().tolist())
             fp = st.selectbox("Producto", prods, key="sal_prod")
             d = sal if fp == "(todos)" else sal[sal["producto"] == fp]
-            st.caption(f"{len(d)} salida(s) · {pd.to_numeric(d['kg'], errors='coerce').sum()/1000:,.0f} TN")
+            st.caption(f"{len(d)} salida(s) · {pd.to_numeric(d['tn'], errors='coerce').sum():,.1f} t")
             st.dataframe(d.rename(columns={
                 "fecha": "Fecha", "ticket": "Ticket", "producto": "Producto", "corriente": "Corriente",
-                "cliente": "Cliente", "destino_final": "Destino", "kg": "kg"}),
+                "cliente": "Cliente", "destino_final": "Destino", "tn": "TN"}),
                 use_container_width=True, hide_index=True, column_config={
                     "Fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                    "kg": st.column_config.NumberColumn(format="%.0f")})
+                    "TN": st.column_config.NumberColumn(format="%.2f")})
             _dl(d, "salidas_porteria.csv", "dl_sal")
         else:
             st.info("Sin salidas registradas en la ventana.")
@@ -396,8 +396,8 @@ def render(USR, cat):
                     d["Movimiento"] = d["tipo_movimiento"].map(
                         {"ENTRADA": "🟢 Entró", "SALIDA": "🔴 Salió", "AJUSTE": "🟡 Ajuste"}).fillna(d["tipo_movimiento"])
                     d["Cantidad"] = d.apply(
-                        lambda r: (f"{abs(r['kg_neto'])/1000.0:,.1f} TN" if r["tipo_movimiento"] != "AJUSTE"
-                                   else f"{r['litros_neto']:,.0f} L"), axis=1)
+                        lambda r: (f"{abs(r['kg_neto'])/1000.0:,.2f} t" if r["tipo_movimiento"] != "AJUSTE"
+                                   else f"{abs(r['litros_neto'])*DENS_TN/1000.0:,.2f} t"), axis=1)
                     d["Ticket"] = d["ticket_porteria"].fillna(d["ticket_lab"])
                     d["Origen"] = d["origen"].map(_ORIG).fillna(d["origen"])
                     _hdr = "Tanque" if _grpcol == "tanque" else "Producto"
@@ -409,7 +409,7 @@ def render(USR, cat):
                     _dl(d, f"movimientos_{_sel}.csv", "dl_libro")
 
         elif _sub.startswith("🟠"):
-            sa = cat("SELECT id_mov_stock, momento, tipo_movimiento, producto, kg, litros, "
+            sa = cat("SELECT id_mov_stock, momento, tipo_movimiento, producto, round((kg/1000.0)::numeric,2) AS tn, "
                      "ticket_porteria, ticket_lab, origen, estado_mov FROM produccion.v_mov_sin_asignar")
             if sa is None or sa.empty:
                 st.success("✅ No hay movimientos sin asignar.")
@@ -417,10 +417,11 @@ def render(USR, cat):
                 st.caption(f"{len(sa)} movimiento(s) sin tanque asignado")
                 st.dataframe(sa.rename(columns={
                     "id_mov_stock": "# Mov", "momento": "Fecha", "tipo_movimiento": "Tipo",
-                    "producto": "Producto", "kg": "kg", "litros": "L", "ticket_porteria": "Tk portería",
+                    "producto": "Producto", "tn": "TN", "ticket_porteria": "Tk portería",
                     "ticket_lab": "Tk lab", "origen": "Origen", "estado_mov": "Estado"}),
                     use_container_width=True, hide_index=True, column_config={
-                        "Fecha": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")})
+                        "Fecha": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm"),
+                        "TN": st.column_config.NumberColumn(format="%.2f")})
                 st.markdown("**↪️ Reasignar un movimiento a su tanque**")
                 _ids = sa["id_mov_stock"].tolist()
                 r1, r2, r3 = st.columns([1, 2, 2])
@@ -441,7 +442,7 @@ def render(USR, cat):
                         st.error(f"No se pudo reasignar: {e}")
 
         elif _sub.startswith("🕳️"):
-            hk = cat("SELECT fecha, ticket, producto, corriente, cliente, kg, tiene_tanque_teorico "
+            hk = cat("SELECT fecha, ticket, producto, corriente, cliente, round((kg/1000.0)::numeric,2) AS tn, tiene_tanque_teorico "
                      "FROM produccion.v_gaps_movimiento LIMIT 1000")
             if hk is None or hk.empty:
                 st.success("✅ No hay entradas sin movimiento.")
@@ -450,16 +451,17 @@ def render(USR, cat):
                            "(no llegaron a un tanque en el sistema).")
                 st.dataframe(hk.rename(columns={
                     "fecha": "Fecha", "ticket": "Ticket", "producto": "Producto", "corriente": "Corriente",
-                    "cliente": "Proveedor", "kg": "kg", "tiene_tanque_teorico": "Hay tanque p/producto"}),
+                    "cliente": "Proveedor", "tn": "TN", "tiene_tanque_teorico": "Hay tanque p/producto"}),
                     use_container_width=True, hide_index=True, column_config={
                         "Fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                        "kg": st.column_config.NumberColumn(format="%.0f")})
+                        "TN": st.column_config.NumberColumn(format="%.2f")})
                 st.caption("Estos huecos se cierran en Fase 2 (portería genera el movimiento sola). "
                            "Por ahora es la lista de lo que se está escapando.")
 
         else:
-            ne = cat("SELECT tanque, sector, producto, ajustes, litros_no_explicados, movs_explicados, ultimo_ajuste "
-                     "FROM produccion.v_tanque_no_explicado")
+            ne = cat("SELECT tanque, sector, producto, ajustes, "
+                     "round((litros_no_explicados*0.91/1000.0)::numeric,2) AS tn_no_explicadas, "
+                     "movs_explicados, ultimo_ajuste FROM produccion.v_tanque_no_explicado")
             if ne is None or ne.empty:
                 st.success("✅ No hay movimiento sin explicar.")
             else:
@@ -467,10 +469,10 @@ def render(USR, cat):
                            "movimiento no explicado. Ordenado por magnitud (dónde se pierde el control).")
                 st.dataframe(ne.rename(columns={
                     "tanque": "Tanque", "sector": "Sector", "producto": "Producto", "ajustes": "# Ajustes",
-                    "litros_no_explicados": "L no explicados", "movs_explicados": "Movs explicados",
+                    "tn_no_explicadas": "TN no explicadas", "movs_explicados": "Movs explicados",
                     "ultimo_ajuste": "Último ajuste"}),
                     use_container_width=True, hide_index=True, column_config={
-                        "L no explicados": st.column_config.NumberColumn(format="%.0f"),
+                        "TN no explicadas": st.column_config.NumberColumn(format="%.2f"),
                         "Último ajuste": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")})
                 _dl(ne, "no_explicado.csv", "dl_ne")
 
@@ -495,16 +497,19 @@ def render(USR, cat):
             d = d[d["confianza"] == fcon]
         k1, k2, k3 = st.columns(3)
         k1.metric("Tanques", len(d))
-        k2.metric("Stock estimado (L)", f"{pd.to_numeric(d['litros_estimado'], errors='coerce').sum():,.0f}")
+        k2.metric("Stock estimado", f"{pd.to_numeric(d['litros_estimado'], errors='coerce').fillna(0).sum()*DENS_TN/1000.0:,.1f} t")
         k3.metric("Con baja confianza", int((d["confianza"].isin(["BAJA", "SIN_DATO"])).sum()))
-        st.dataframe(d, use_container_width=True, hide_index=True, column_config={
-            "litros_medido": st.column_config.NumberColumn("Medido (L)", format="%.0f"),
-            "delta_litros_ejecutado": st.column_config.NumberColumn("Δ movimientos (L)", format="%.0f"),
-            "litros_estimado": st.column_config.NumberColumn("Estimado (L)", format="%.0f"),
+        _d = d.copy()
+        for _c in ["litros_medido", "delta_litros_ejecutado", "litros_estimado"]:
+            _d[_c] = pd.to_numeric(_d[_c], errors="coerce") * DENS_TN / 1000.0
+        st.dataframe(_d, use_container_width=True, hide_index=True, column_config={
+            "litros_medido": st.column_config.NumberColumn("Medido (t)", format="%.2f"),
+            "delta_litros_ejecutado": st.column_config.NumberColumn("Δ movimientos (t)", format="%.2f"),
+            "litros_estimado": st.column_config.NumberColumn("Estimado (t)", format="%.2f"),
             "antiguedad_min": st.column_config.NumberColumn("Antigüedad (min)", format="%.0f"),
             "cadencia_sensor_min": st.column_config.NumberColumn("Cadencia (min)", format="%.0f"),
         })
-        _dl(d, "stock_tanques.csv", "dl_stk")
+        _dl(_d, "stock_tanques.csv", "dl_stk")
 
     # ---------- 2 · Movimientos ----------
     with t2:
@@ -526,16 +531,18 @@ def render(USR, cat):
             d = d[d["fuente"] == ffue]
         k1, k2, k3 = st.columns(3)
         k1.metric("Movimientos", len(d))
-        k2.metric("Ingresos netos (kg)", f"{pd.to_numeric(d['kg_neto'], errors='coerce').clip(lower=0).sum():,.0f}")
-        k3.metric("Egresos netos (kg)", f"{-pd.to_numeric(d['kg_neto'], errors='coerce').clip(upper=0).sum():,.0f}")
-        st.dataframe(d, use_container_width=True, hide_index=True, column_config={
+        k2.metric("Ingresos netos", f"{pd.to_numeric(d['kg_neto'], errors='coerce').clip(lower=0).sum()/1000.0:,.1f} t")
+        k3.metric("Egresos netos", f"{-pd.to_numeric(d['kg_neto'], errors='coerce').clip(upper=0).sum()/1000.0:,.1f} t")
+        _d = d.copy()
+        _d["TN"] = pd.to_numeric(_d["kg"], errors="coerce") / 1000.0
+        _d["TN neto"] = pd.to_numeric(_d["kg_neto"], errors="coerce") / 1000.0
+        _d = _d.drop(columns=["kg", "litros", "kg_neto", "litros_neto", "cantidad", "unidad"], errors="ignore")
+        st.dataframe(_d, use_container_width=True, hide_index=True, column_config={
             "momento": st.column_config.DatetimeColumn("Momento", format="DD/MM/YYYY HH:mm"),
-            "kg": st.column_config.NumberColumn(format="%.0f"),
-            "litros": st.column_config.NumberColumn(format="%.0f"),
-            "kg_neto": st.column_config.NumberColumn("kg neto", format="%.0f"),
-            "litros_neto": st.column_config.NumberColumn("L neto", format="%.0f"),
+            "TN": st.column_config.NumberColumn(format="%.2f"),
+            "TN neto": st.column_config.NumberColumn(format="%.2f"),
         })
-        _dl(d, "movimientos_stock.csv", "dl_mv")
+        _dl(_d, "movimientos_stock.csv", "dl_mv")
         st.caption("PLANIFICADO = creado por dirección · EJECUTADO = confirmado por el operario (afecta stock).")
 
     # ---------- 4 · Real vs teórico por día ----------
@@ -552,16 +559,19 @@ def render(USR, cat):
             d = d[d["tanque"] == ftq]
         if solo_dif:
             d = d[pd.to_numeric(d["diferencia_litros"], errors="coerce").abs() > 100]
-        st.dataframe(d, use_container_width=True, hide_index=True, column_config={
+        _d = d.copy()
+        for _c in ["litros_medido_dia", "litros_teorico_dia", "diferencia_litros"]:
+            _d[_c] = pd.to_numeric(_d[_c], errors="coerce") * DENS_TN / 1000.0
+        st.dataframe(_d, use_container_width=True, hide_index=True, column_config={
             "fecha": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
-            "litros_medido_dia": st.column_config.NumberColumn("Medido físico (L/día)", format="%.0f"),
-            "litros_teorico_dia": st.column_config.NumberColumn("Teórico producción (L/día)", format="%.0f"),
-            "diferencia_litros": st.column_config.NumberColumn("Diferencia (L)", format="%.0f"),
+            "litros_medido_dia": st.column_config.NumberColumn("Medido físico (t/día)", format="%.2f"),
+            "litros_teorico_dia": st.column_config.NumberColumn("Teórico producción (t/día)", format="%.2f"),
+            "diferencia_litros": st.column_config.NumberColumn("Diferencia (t)", format="%.2f"),
             "movimientos_produccion": st.column_config.NumberColumn("# mov. prod.", format="%.0f"),
         })
-        _dl(d, "real_vs_teorico.csv", "dl_rv")
+        _dl(_d, "real_vs_teorico.csv", "dl_rv")
         st.caption("**Medido** = variación física real del tanque (sensor/manual). **Teórico** = lo que movió producción ese día. "
-                   "**Diferencia** = lo no explicado por producción (camiones a tanque, ventas, fugas).")
+                   "**Diferencia** = lo no explicado por producción (camiones a tanque, ventas, fugas). Toneladas ≈ litros × 0,91.")
 
     # ---------- 3 · Conciliación ----------
     with t3:
@@ -575,11 +585,14 @@ def render(USR, cat):
             a2.metric("Alertas", int((rc["severidad"] == "ALERTA").sum()))
             solo_alerta = st.toggle("Sólo alertas", value=False, key="rc_alerta")
             d = rc[rc["severidad"] == "ALERTA"] if solo_alerta else rc
-            st.dataframe(d, use_container_width=True, hide_index=True, column_config={
+            _d = d.copy()
+            for _c in ["litros_medido", "litros_esperado", "discrepancia_litros"]:
+                _d[_c] = pd.to_numeric(_d[_c], errors="coerce") * DENS_TN / 1000.0
+            st.dataframe(_d, use_container_width=True, hide_index=True, column_config={
                 "momento": st.column_config.DatetimeColumn("Momento", format="DD/MM/YYYY HH:mm"),
-                "litros_medido": st.column_config.NumberColumn("Medido (L)", format="%.0f"),
-                "litros_esperado": st.column_config.NumberColumn("Esperado libro (L)", format="%.0f"),
-                "discrepancia_litros": st.column_config.NumberColumn("Discrepancia (L)", format="%.0f"),
+                "litros_medido": st.column_config.NumberColumn("Medido (t)", format="%.2f"),
+                "litros_esperado": st.column_config.NumberColumn("Esperado libro (t)", format="%.2f"),
+                "discrepancia_litros": st.column_config.NumberColumn("Discrepancia (t)", format="%.2f"),
             })
-            _dl(d, "conciliacion_stock.csv", "dl_rc")
+            _dl(_d, "conciliacion_stock.csv", "dl_rc")
             st.caption("ALERTA = discrepancia sobre el umbral (300 L o 2%). Se postea un AJUSTE con su ticket.")
