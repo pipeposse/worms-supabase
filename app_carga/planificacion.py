@@ -732,6 +732,7 @@ def _dlg_reaccion(USR, cat, conectar, idb):
     info = cat("SELECT identificador_unidad AS ident, estado, tipo_proceso, "
                " et.etiqueta, "
                " (b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS inicio_local, "
+               " b.parametros_proceso, "
                " COALESCE(b.tanque_destino,'') AS destino "
                "FROM produccion.fact_batch_proceso b "
                "LEFT JOIN produccion.v_reaccion_etiqueta et ON et.id_batch=b.id_batch "
@@ -747,25 +748,66 @@ def _dlg_reaccion(USR, cat, conectar, idb):
 
     with t1:
         _nid = st.text_input("N° / nombre de la reacción", value=str(b["ident"] or ""), key=f"dlg_nid_{idb}")
+        _pp = b.get("parametros_proceso")
+        if isinstance(_pp, str):
+            try: _pp = _json.loads(_pp)
+            except Exception: _pp = {}
+        _pp = _pp or {}
+        _prog = _pp.get("inicio_programado")
         _ini = b["inicio_local"]
         _ini_ts = pd.to_datetime(_ini) if pd.notna(_ini) else None
+        # arranque de referencia: programado > inicio_ts real
+        _ref = pd.to_datetime(_prog, errors="coerce") if _prog else None
+        if _ref is None or pd.isna(_ref):
+            _ref = _ini_ts
+        st.caption("Cambiá el inicio para **posponer/adelantar** la reacción. Si dejás tildado *recalcular etapas*, "
+                   "se corre todo el cronograma (y la ETA/semáforo del tablero) por la misma diferencia.")
+        if _ref is not None:
+            st.caption(f"Inicio actual: **{pd.to_datetime(_ref).strftime('%d/%m/%Y %H:%M')}**")
         cA, cB = st.columns(2)
-        _d = cA.date_input("Fecha de inicio", value=(_ini_ts.date() if _ini_ts is not None else None), key=f"dlg_d_{idb}", format="DD/MM/YYYY")
-        _t = cB.time_input("Hora de inicio", value=(_ini_ts.time() if _ini_ts is not None else None), key=f"dlg_t_{idb}", step=300)
+        _dref = pd.to_datetime(_ref) if _ref is not None else None
+        _d = cA.date_input("Nueva fecha de inicio", value=(_dref.date() if _dref is not None else None), key=f"dlg_d_{idb}", format="DD/MM/YYYY")
+        _t = cB.time_input("Nueva hora de inicio", value=(_dref.time() if _dref is not None else None), key=f"dlg_t_{idb}", step=300)
+        _reprog = st.checkbox("Recalcular etapas (posponer todo el cronograma)", value=True, key=f"dlg_reprog_{idb}")
         if st.button("💾 Guardar nombre y horario", type="primary", key=f"dlg_save1_{idb}", use_container_width=True):
             try:
+                _new_start = pd.Timestamp(f"{_d.isoformat()} {_t.strftime('%H:%M:%S')}") if (_d is not None and _t is not None) else None
+                _delta = (_new_start - pd.to_datetime(_ref)) if (_new_start is not None and _ref is not None and pd.notna(_ref)) else None
+                _now_r = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").tz_localize(None)
                 with conectar(int(USR["id_usuario"])) as (conn, audit):
                     with conn.cursor() as cur:
                         _nv = (_nid or "").strip()
                         if _nv and _nv != str(b["ident"] or "").strip():
                             cur.execute("UPDATE produccion.fact_batch_proceso SET identificador_unidad=%s WHERE id_batch=%s", (_nv, int(idb)))
-                        if _d is not None and _t is not None:
-                            _iso = f"{_d.isoformat()} {_t.strftime('%H:%M:%S')}"
+                        if _new_start is not None:
+                            _iso = _new_start.strftime("%Y-%m-%d %H:%M:%S")
                             cur.execute("UPDATE produccion.fact_batch_proceso "
                                         "SET inicio_ts=(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') WHERE id_batch=%s",
                                         (_iso, int(idb)))
-                        audit.log("U", "fact_batch_proceso", int(idb), {"ficha": "nombre/inicio"})
-                st.success("Guardado."); cat.clear(); st.rerun()
+                            if _reprog and _delta is not None and abs(_delta.total_seconds()) >= 60:
+                                _crono = _pp.get("cronograma") or []
+                                for _e in _crono:
+                                    for _campo in ("Inicio", "Fin"):
+                                        _dt0 = _crono_dt(_e.get(_campo), _now_r)
+                                        if _dt0 is not None:
+                                            _e[_campo] = (_dt0 + _delta).strftime("%d/%m %H:%M")
+                                _pp["cronograma"] = _crono
+                                _pp["inicio_programado"] = _new_start.strftime("%Y-%m-%dT%H:%M:%S")
+                                cur.execute("UPDATE produccion.fact_batch_proceso SET parametros_proceso=%s::jsonb WHERE id_batch=%s",
+                                            (_json.dumps(_pp), int(idb)))
+                                _secs = int(_delta.total_seconds())
+                                cur.execute("UPDATE produccion.fact_etapa_evento "
+                                            "SET inicio_ts = inicio_ts + %s * interval '1 second', "
+                                            "    fin_ts = CASE WHEN fin_ts IS NULL THEN NULL ELSE fin_ts + %s * interval '1 second' END "
+                                            "WHERE id_batch=%s", (_secs, _secs, int(idb)))
+                        audit.log("U", "fact_batch_proceso", int(idb),
+                                  {"ficha": "nombre/inicio", "reprogramado": bool(_reprog and _delta is not None),
+                                   "delta_h": (round(_delta.total_seconds()/3600.0, 1) if _delta is not None else None)})
+                if _delta is not None and abs(_delta.total_seconds()) >= 60 and _reprog:
+                    st.success(f"Reacción reprogramada {_delta.total_seconds()/3600.0:+.1f} h (cronograma y etapas corridos).")
+                else:
+                    st.success("Guardado.")
+                cat.clear(); st.rerun()
             except Exception as e:
                 st.error("No se pudo guardar (¿N° repetido?)."); st.exception(e)
 
