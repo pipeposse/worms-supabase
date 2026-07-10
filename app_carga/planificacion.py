@@ -709,10 +709,97 @@ def _panel_evals(USR, cat, conectar):
             st.exception(e)
 
 
+def _crono_dt(sval, now):
+    try:
+        d, t = str(sval).split()
+        dd, mm = (int(x) for x in d.split("/"))
+        hh, mi = (int(x) for x in t.split(":"))
+        cand = pd.Timestamp(year=now.year, month=mm, day=dd, hour=hh, minute=mi)
+        if (now - cand).days > 180:
+            cand = pd.Timestamp(year=now.year + 1, month=mm, day=dd, hour=hh, minute=mi)
+        elif (cand - now).days > 180:
+            cand = pd.Timestamp(year=now.year - 1, month=mm, day=dd, hour=hh, minute=mi)
+        return cand
+    except Exception:
+        return None
+
+
+_EST_KW = {"PLANIFICADO": "carga", "REACCION": "reacci", "REPOSO": "repos", "DECANTACION": "decant"}
+
+
+def _panel_tablero(USR, cat, conectar):
+    st.caption("Centro de mando: cada reacción con su **etiqueta**, MP → producto (t), próxima etapa, ETA y "
+               "**semáforo de atraso** (🔴 atrasada · 🟡 por vencer · 🟢 a tiempo), comparando el reloj real con el cronograma.")
+    df = cat("SELECT b.id_batch, b.identificador_unidad AS ident, et.etiqueta, "
+             " CASE b.tipo_proceso WHEN 'PRODUCCION_ARE' THEN 'ARE' WHEN 'DESGOMADO_ACUOSO' THEN 'DESGOMADO' ELSE b.tipo_proceso END AS tipo, "
+             " bu.nombre_ui AS reactor, b.estado, "
+             " COALESCE(mp.mp,'—') AS mp, COALESCE(mp.mp_tn,0) AS mp_tn, "
+             " COALESCE(dp.codigo_producto,'—') AS producto, "
+             " round((COALESCE(NULLIF(b.parametros_proceso->>'are_objetivo_kg','')::numeric, "
+             "         NULLIF(b.parametros_proceso->>'kg_objetivo','')::numeric, b.kg_obtenido, 0)/1000.0)::numeric,2) AS obj_tn, "
+             " b.parametros_proceso "
+             "FROM produccion.fact_batch_proceso b "
+             "LEFT JOIN produccion.v_reaccion_etiqueta et ON et.id_batch=b.id_batch "
+             "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+             "LEFT JOIN produccion.dim_producto dp ON dp.id_producto=b.id_producto_buscado "
+             "LEFT JOIN produccion.v_reaccion_mp mp ON mp.id_batch=b.id_batch "
+             "WHERE b.sector='REACTORES' AND COALESCE(b.anulado,false)=false "
+             "  AND b.estado IN ('PLANIFICADO','REACCION','REPOSO','DECANTACION') "
+             "ORDER BY array_position(ARRAY['REACCION','DECANTACION','REPOSO','PLANIFICADO'], b.estado), b.creado_en DESC")
+    if df is None or df.empty:
+        st.info("No hay reacciones en marcha.")
+        return
+    now = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").tz_localize(None)
+    rows = []; n_atras = 0
+    for _, r in df.iterrows():
+        pp = r["parametros_proceso"]
+        if isinstance(pp, str):
+            try: pp = _json.loads(pp)
+            except Exception: pp = {}
+        pp = pp or {}
+        crono = pp.get("cronograma") or []
+        kw = _EST_KW.get(str(r["estado"]), "")
+        cur_i = None
+        for i, e in enumerate(crono):
+            if kw and kw in str(e.get("Etapa", "")).lower():
+                cur_i = i; break
+        eta = prox = "—"; sem = "⚪"; atraso_h = None
+        if cur_i is not None:
+            fin = _crono_dt(crono[cur_i].get("Fin"), now)
+            if cur_i + 1 < len(crono):
+                prox = str(crono[cur_i + 1].get("Etapa", "")).split(" · ")[0]
+            if fin is not None:
+                eta = fin.strftime("%d/%m %H:%M")
+                dh = (now - fin).total_seconds() / 3600.0
+                if dh > 0.5:
+                    sem = "🔴"; atraso_h = round(dh, 1); n_atras += 1
+                elif dh > -2:
+                    sem = "🟡"
+                else:
+                    sem = "🟢"
+        rows.append({"⚑": sem, "N°": r["ident"], "Reacción": r["etiqueta"], "Estado": r["estado"],
+                     "MP": r["mp"], "MP (t)": float(r["mp_tn"] or 0), "→ Producto": r["producto"],
+                     "Obj (t)": float(r["obj_tn"] or 0), "Próxima etapa": prox, "ETA": eta,
+                     "Atraso (h)": atraso_h})
+    disp = pd.DataFrame(rows)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("En marcha", len(disp))
+    k2.metric("MP en proceso (t)", f"{disp['MP (t)'].sum():.1f}")
+    k3.metric("Objetivo (t)", f"{disp['Obj (t)'].sum():.1f}")
+    k4.metric("🔴 Atrasadas", n_atras)
+    st.dataframe(disp, hide_index=True, use_container_width=True,
+                 column_config={"MP (t)": st.column_config.NumberColumn(format="%.2f"),
+                                "Obj (t)": st.column_config.NumberColumn(format="%.2f"),
+                                "Atraso (h)": st.column_config.NumberColumn(format="%.1f")})
+    st.caption("Corregí horarios en **Etapas & horarios**; trabajá la reacción (arrancar/muestras/decantar) en **Trabajar**.")
+
+
 def _gestion_reacciones(USR, cat, conectar):
     st.subheader("🛠️ Gestión de reacciones")
-    _g1, _g2, _g3, _g4 = st.tabs(["⏯️ Trabajar (arrancar / cargar muestras / decantar)",
-                                  "📋 En marcha & nombres", "🕐 Etapas & horarios", "🧫 Evaluaciones internas"])
+    _g0, _g1, _g2, _g3, _g4 = st.tabs(["🎛️ Tablero", "⏯️ Trabajar (arrancar / cargar muestras / decantar)",
+                                       "📋 En marcha & nombres", "🕐 Etapas & horarios", "🧫 Evaluaciones internas"])
+    with _g0:
+        _panel_tablero(USR, cat, conectar)
     with _g1:
         st.caption("Mismo flujo que **Producción en planta**: arrancar la reacción, cargar muestras de evaluación interna y decantar.")
         try:
