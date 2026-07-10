@@ -97,12 +97,14 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
         "       p.nombre_producto AS producto, b.corriente, b.parametros_proceso, "
         "       b.tiempo_estimado_horas, "
         "       to_char(b.creado_en AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS creado_fmt, "
+        "       COALESCE(mp.mp,'—') AS mp, COALESCE(mp.mp_tn,0) AS mp_tn, "
         "       (SELECT inicio_ts FROM produccion.fact_etapa_evento e "
         "          WHERE e.id_batch=b.id_batch AND e.etapa='REPOSANDO' "
         "          ORDER BY e.inicio_ts DESC LIMIT 1) AS reposo_ini "
         "FROM produccion.fact_batch_proceso b "
         "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
         "LEFT JOIN produccion.dim_producto p ON p.id_producto=b.id_producto_buscado "
+        "LEFT JOIN produccion.v_reaccion_mp mp ON mp.id_batch=b.id_batch "
         "WHERE b.sector='REACTORES' AND COALESCE(b.anulado,false)=false "
         "  AND b.estado IN ('PLANIFICADO','REACCION','REPOSO','DECANTACION') "
         "ORDER BY array_position(ARRAY['REACCION','DECANTACION','REPOSO','PLANIFICADO'], b.estado), b.creado_en DESC")
@@ -117,6 +119,7 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
     _tp_short = {"PRODUCCION_ARE": "ARE", "DESGOMADO_ACUOSO": "DESGOMADO"}
     opts = act.apply(lambda r: f"{_emoji.get(r['estado'],'•')} {r['ident']} · "
                                f"{_tp_short.get(r['tipo_proceso'], r['tipo_proceso'] or '—')} · {r['reactor'] or '—'} · "
+                               f"MP: {r['mp']} ({float(r['mp_tn'] or 0):.1f} t) · "
                                f"{_label.get(r['estado'], r['estado'])} · 🗓️ {r['creado_fmt'] or '—'}", axis=1).tolist()
     sel = st.selectbox("¿En qué producción vas a trabajar?", opts, key="pp_sel")
     b = act.iloc[opts.index(sel)]

@@ -1752,11 +1752,13 @@ def _render_estado_planta(cat, conectar=None, USR=None):
             "to_char(b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Inicio\", "
             "to_char(b.fin_ts AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Fin\", "
             "v.horas_activo AS \"Horas\", "
-            "round((COALESCE(b.kg_inicial,0)/1000.0)::numeric,2) AS \"MP (t)\", "
+            "COALESCE(mp.mp,'—') AS \"Materia prima\", "
+            "COALESCE(mp.mp_tn, round((COALESCE(b.kg_inicial,0)/1000.0)::numeric,2)) AS \"MP (t)\", "
             "round((COALESCE(b.kg_obtenido, v.are_objetivo_kg, 0)/1000.0)::numeric,2) AS \"Prod. final (t)\", "
             "v.tanque_destino AS \"Tanque destino\" "
             "FROM produccion.v_estado_planta v "
             "JOIN produccion.fact_batch_proceso b ON b.id_batch=v.id_batch "
+            "LEFT JOIN produccion.v_reaccion_mp mp ON mp.id_batch=v.id_batch "
             "ORDER BY v.horas_activo DESC NULLS LAST")
         if df is None or df.empty:
             st.info("No hay reacciones activas.")

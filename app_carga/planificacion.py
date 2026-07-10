@@ -576,21 +576,166 @@ def _editar_id_reaccion(USR, cat, conectar):
             st.exception(e)
 
 
+def _sel_reaccion_mp(cat, key, estados=("PLANIFICADO","REACCION","REPOSO","DECANTACION")):
+    _est = "','".join(estados)
+    df = cat("SELECT b.id_batch, b.identificador_unidad AS ident, b.tipo_proceso, b.estado, "
+             "bu.nombre_ui AS reactor, COALESCE(mp.mp,'—') AS mp, COALESCE(mp.mp_tn,0) AS mp_tn "
+             "FROM produccion.fact_batch_proceso b "
+             "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+             "LEFT JOIN produccion.v_reaccion_mp mp ON mp.id_batch=b.id_batch "
+             "WHERE b.sector='REACTORES' AND COALESCE(b.anulado,false)=false "
+             "  AND b.estado IN ('" + _est + "') ORDER BY b.creado_en DESC LIMIT 200")
+    if df is None or df.empty:
+        st.info("No hay reacciones.")
+        return None
+    _tp = {"PRODUCCION_ARE": "ARE", "DESGOMADO_ACUOSO": "DESGOMADO"}
+    opt = df.apply(lambda r: f"#{r['id_batch']} · {r['ident'] or '—'} · {_tp.get(r['tipo_proceso'], r['tipo_proceso'] or '—')} · "
+                             f"{r['reactor'] or '—'} · MP: {r['mp']} ({float(r['mp_tn']):.1f} t) · {r['estado']}", axis=1).tolist()
+    sel = st.selectbox("Reacción", opt, key=key)
+    return df.iloc[opt.index(sel)]
+
+
+def _panel_en_marcha(USR, cat, conectar):
+    st.caption("Todas las reacciones en marcha: tipo, **materia prima y cantidad**, estado, inicio y fin. "
+               "Cambiá el N° directo en la tabla (rápido) y guardá.")
+    df = cat("SELECT b.id_batch, b.identificador_unidad AS \"N°\", "
+             " CASE b.tipo_proceso WHEN 'PRODUCCION_ARE' THEN 'ARE' WHEN 'DESGOMADO_ACUOSO' THEN 'DESGOMADO' ELSE b.tipo_proceso END AS \"Tipo\", "
+             " bu.nombre_ui AS \"Reactor\", b.estado AS \"Estado\", "
+             " COALESCE(mp.mp,'—') AS \"Materia prima\", COALESCE(mp.mp_tn,0) AS \"MP (t)\", "
+             " to_char(b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Inicio\", "
+             " to_char(b.fin_ts AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Fin\" "
+             "FROM produccion.fact_batch_proceso b "
+             "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+             "LEFT JOIN produccion.v_reaccion_mp mp ON mp.id_batch=b.id_batch "
+             "WHERE b.sector='REACTORES' AND COALESCE(b.anulado,false)=false "
+             "  AND b.estado IN ('PLANIFICADO','REACCION','REPOSO','DECANTACION') ORDER BY b.creado_en DESC")
+    if df is None or df.empty:
+        st.info("No hay reacciones en marcha.")
+        return
+    _orig = {int(df.iloc[i]["id_batch"]): str(df.iloc[i]["N°"] or "").strip() for i in range(len(df))}
+    ed = st.data_editor(df.drop(columns=["id_batch"]), hide_index=True, use_container_width=True,
+                        disabled=["Tipo", "Reactor", "Estado", "Materia prima", "MP (t)", "Inicio", "Fin"],
+                        column_config={"MP (t)": st.column_config.NumberColumn(format="%.2f")}, key="gr_marcha_ed")
+    if st.button("💾 Guardar nombres", type="primary", key="gr_marcha_save"):
+        try:
+            n = 0
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    for i in range(len(ed)):
+                        _idb = int(df.iloc[i]["id_batch"]); _new = str(ed.iloc[i]["N°"] or "").strip()
+                        if _new and _new != _orig.get(_idb, ""):
+                            cur.execute("UPDATE produccion.fact_batch_proceso SET identificador_unidad=%s WHERE id_batch=%s",
+                                        (_new, _idb)); n += 1
+                    audit.log("U", "fact_batch_proceso", 0, {"renombres": n})
+            st.success(f"{n} nombre(s) actualizado(s)."); cat.clear(); st.rerun()
+        except Exception as e:
+            st.error("No se pudo guardar (¿algún número repetido?)."); st.exception(e)
+
+
+def _panel_etapas(USR, cat, conectar):
+    st.caption("Corregí los **horarios de inicio/fin de cada etapa** de una reacción (por si se cargaron mal).")
+    r = _sel_reaccion_mp(cat, "gr_et_sel", estados=("PLANIFICADO","REACCION","REPOSO","DECANTACION","FINALIZADO"))
+    if r is None:
+        return
+    idb = int(r["id_batch"])
+    _ev = cat("SELECT id_evento_etapa, etapa, (inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS inicio, "
+              "(fin_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS fin "
+              "FROM produccion.fact_etapa_evento WHERE id_batch=%s ORDER BY inicio_ts NULLS LAST", (idb,))
+    if _ev is None or _ev.empty:
+        st.info("Esta reacción no tiene etapas registradas.")
+        return
+    ed = st.data_editor(_ev.drop(columns=["id_evento_etapa"]), hide_index=True, use_container_width=True,
+                        disabled=["etapa"], key=f"gr_et_ed_{idb}",
+                        column_config={"etapa": st.column_config.TextColumn("Etapa"),
+                                       "inicio": st.column_config.DatetimeColumn("Inicio", format="DD/MM/YYYY HH:mm"),
+                                       "fin": st.column_config.DatetimeColumn("Fin", format="DD/MM/YYYY HH:mm")})
+    if st.button("💾 Guardar horarios de etapas", type="primary", key="gr_et_save"):
+        try:
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    for i in range(len(ed)):
+                        _ide = int(_ev.iloc[i]["id_evento_etapa"])
+                        _ini = ed.iloc[i]["inicio"]; _fin = ed.iloc[i]["fin"]
+                        cur.execute("UPDATE produccion.fact_etapa_evento "
+                                    "SET inicio_ts=(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires'), "
+                                    "    fin_ts=(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') "
+                                    "WHERE id_evento_etapa=%s",
+                                    ((str(_ini) if pd.notna(_ini) else None),
+                                     (str(_fin) if pd.notna(_fin) else None), _ide))
+                audit.log("U", "fact_etapa_evento", idb, {"n": len(ed)})
+            st.success("Horarios de etapas actualizados."); cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+
+
+def _panel_evals(USR, cat, conectar):
+    st.caption("Corregí la **fecha/hora de las evaluaciones internas** cargadas (por si se subieron con hora equivocada).")
+    r = _sel_reaccion_mp(cat, "gr_ev_sel", estados=("PLANIFICADO","REACCION","REPOSO","DECANTACION","FINALIZADO"))
+    if r is None:
+        return
+    idb = int(r["id_batch"])
+    _ev = cat("SELECT id_eval, etapa, (ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS hora, "
+              "COALESCE((mediciones->>'acidez'),'') AS acidez, COALESCE((mediciones->>'temperatura'),'') AS temperatura, "
+              "COALESCE(observaciones,'') AS obs "
+              "FROM produccion.fact_evaluacion_interna WHERE id_batch=%s AND NOT COALESCE(anulado,false) ORDER BY ts", (idb,))
+    if _ev is None or _ev.empty:
+        st.info("Sin evaluaciones internas cargadas para esta reacción.")
+        return
+    ed = st.data_editor(_ev.drop(columns=["id_eval"]), hide_index=True, use_container_width=True,
+                        disabled=["etapa", "acidez", "temperatura", "obs"], key=f"gr_ev_ed_{idb}",
+                        column_config={"hora": st.column_config.DatetimeColumn("Fecha/hora", format="DD/MM/YYYY HH:mm")})
+    if st.button("💾 Guardar horarios de evaluaciones", type="primary", key="gr_ev_save"):
+        try:
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    for i in range(len(ed)):
+                        _ide = int(_ev.iloc[i]["id_eval"]); _h = ed.iloc[i]["hora"]
+                        if pd.notna(_h):
+                            cur.execute("UPDATE produccion.fact_evaluacion_interna "
+                                        "SET ts=(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') WHERE id_eval=%s",
+                                        (str(_h), _ide))
+                audit.log("U", "fact_evaluacion_interna", idb, {"n": len(ed)})
+            st.success("Horarios de evaluaciones actualizados."); cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+
+
+def _gestion_reacciones(USR, cat, conectar):
+    st.subheader("🛠️ Gestión de reacciones")
+    _g1, _g2, _g3, _g4 = st.tabs(["⏯️ Trabajar (arrancar / cargar muestras / decantar)",
+                                  "📋 En marcha & nombres", "🕐 Etapas & horarios", "🧫 Evaluaciones internas"])
+    with _g1:
+        st.caption("Mismo flujo que **Producción en planta**: arrancar la reacción, cargar muestras de evaluación interna y decantar.")
+        try:
+            import carga_por_id
+            carga_por_id.render(USR, cat, conectar)
+        except Exception as e:
+            st.error("No se pudo cargar el flujo de producción."); st.exception(e)
+    with _g2:
+        _panel_en_marcha(USR, cat, conectar)
+    with _g3:
+        _panel_etapas(USR, cat, conectar)
+    with _g4:
+        _panel_evals(USR, cat, conectar)
+
+
 def _avanzar_fase(USR, cat, conectar):
     st.subheader("⏭️ Avanzar de fase (manual · dirección)")
     st.caption("Forzá el pase de una reacción a la **siguiente fase**, más allá del tiempo/umbral que debería tardar "
                "(ej.: acortar reposo, cortar reacción antes). Queda registrado quién y por qué.")
     df = cat("SELECT b.id_batch, b.identificador_unidad AS ident, b.tipo_proceso, b.estado, "
-             "       b.etapa_actual, b.id_producto_buscado, b.ticket_producto_final, bu.nombre_ui AS reactor "
+             "       b.etapa_actual, b.id_producto_buscado, b.ticket_producto_final, bu.nombre_ui AS reactor, "
+             "       COALESCE(mp.mp,'—') AS mp, COALESCE(mp.mp_tn,0) AS mp_tn "
              "FROM produccion.fact_batch_proceso b "
              "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+             "LEFT JOIN produccion.v_reaccion_mp mp ON mp.id_batch=b.id_batch "
              "WHERE b.sector='REACTORES' AND COALESCE(b.anulado,false)=false "
              "  AND b.estado IN ('REACCION','REPOSO') ORDER BY b.creado_en DESC")
     if df is None or df.empty:
         st.info("No hay reacciones en REACCIÓN o REPOSO para avanzar.")
         return
     _opt = df.apply(lambda r: f"#{r['id_batch']} · {r['ident'] or '—'} · {r['tipo_proceso']} · "
-                              f"{r['reactor'] or '—'} · {r['estado']}", axis=1).tolist()
+                              f"{r['reactor'] or '—'} · MP: {r.get('mp','—')} ({float(r.get('mp_tn',0) or 0):.1f} t) · {r['estado']}", axis=1).tolist()
     sel = st.selectbox("Reacción", _opt, key="avf_sel")
     r = df.iloc[_opt.index(sel)]
     _tipo_badge(r["tipo_proceso"])
@@ -781,15 +926,15 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     if _grupo.startswith("⚙️"):
         st.caption("Reacciones ya en marcha que esperan una decisión de dirección (reposo, destino, etc.).")
         _admin = st.radio("Proceso a administrar",
-                          ["🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)", "✏️ Editar N°"],
+                          ["🛠️ Gestión de reacciones", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"],
                           horizontal=True, key="pl_admin")
-        if _admin.startswith("🧴"):
+        if _admin.startswith("🛠️"):
+            _gestion_reacciones(USR, cat, conectar)
+        elif _admin.startswith("🧴"):
             import decantacion
             decantacion.destinos(USR, cat, conectar)
         elif _admin.startswith("⏭️"):
             _avanzar_fase(USR, cat, conectar)
-        elif _admin.startswith("✏️"):
-            _editar_id_reaccion(USR, cat, conectar)
         else:
             import desgomado
             desgomado.planificacion(USR, cat, conectar)
