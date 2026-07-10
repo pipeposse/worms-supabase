@@ -376,10 +376,13 @@ def _form_AG(pf, ctx, tok, get_conn, usuario):
         with c3:
             ppm_azufre = _n("Azufre (ppm)", "ppm_azufre", pf, p, tok, "az")
             ppm_fosforo = _n("Fosforo (ppm)", "ppm_fosforo", pf, p, tok, "fos")
-        cier = _cierre(p, pf, tok, CAL_AG, default_corriente="VEGETAL")
+        producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
+        _pl0 = (producto_lab or (pf or {}).get("producto_lab") or "")
+        _defc = "ANIMAL" if "PES" in _pl0.upper() else "VEGETAL"
+        cier = _cierre(p, pf, tok, CAL_AG, default_corriente=_defc)
         enviar = st.form_submit_button("GUARDAR", use_container_width=True)
     if enviar:
-        data = dict(tipo_formulario="AG", producto_lab="AG",
+        data = dict(tipo_formulario="AG", producto_lab=(producto_lab or "AG"),
                     prc_acidez=prc_acidez, prc_emulsion=prc_emulsion,
                     prc_sedimentos=prc_sedimentos, prc_agua=prc_agua,
                     prc_producto=prc_producto, prc_hkf=prc_hkf, densidad__g_ml=densidad,
@@ -572,7 +575,7 @@ def _form_para_producto(producto_lab):
     p = producto_lab.strip().upper()
     if p == "EFLUENTE":
         return _form_EFLUENTE
-    if p in ("BORRA", "EMULSION"):
+    if p.startswith("BORRA") or p == "EMULSION":
         return _form_BORRA
     if p.startswith("GLICERINA"):
         return _form_GLICERINA
@@ -757,7 +760,7 @@ def _form_para_base(base):
         return _form_FONDO
     if _es_insumo_base(b):
         return _form_INSUMO
-    if b in ("BORRA", "EMULSION"):
+    if b.startswith("BORRA") or b == "EMULSION":
         return _form_BORRA
     return _form_GENERICO
 
@@ -1164,7 +1167,7 @@ def render_laboratorio(get_conn=None, usr=None):
 
     st.divider()
     st.markdown("**2) Producto a evaluar**")
-    _all_bases = sorted({b for b in _pbases if b} | {"AG", "ARE", "AFE", "DISPOSICION FINAL DE LIQUIDOS", "BORRA", "SEBO", "GLICERINA"})
+    _all_bases = sorted({b for b in _pbases if b} | {"AG", "AG-PES", "ARE", "AFE", "DISPOSICION FINAL DE LIQUIDOS", "BORRA", "BORRA-PES", "SEBO", "GLICERINA"})
     _all_bases = _all_bases + ["OTRO (genérico)"]
     _raw_base = ((tk_sel or {}).get("producto_base") or (prod_ctx.get("codigo") if prod_ctx else "") or "")
     _sugbase = str(_raw_base).upper()
@@ -1190,9 +1193,10 @@ def render_laboratorio(get_conn=None, usr=None):
     _tk_id = (f_tk.strip() or (str(tk_sel["transaccion"]) if tk_sel else "blank"))
     _form_tok = f"{ss['lab_tok']}_{_tk_id}_{base_sel}"
     _fn = _form_para_base(base_sel)
-    if _fn is _form_GENERICO and base_sel != "OTRO (genérico)":
+    if base_sel != "OTRO (genérico)":
         pf_new = dict(pf_new or {})
-        pf_new.setdefault("producto_lab", base_sel)
+        _plab_def = (str((tk_sel or {}).get("producto_base") or "").strip() or base_sel)
+        pf_new.setdefault("producto_lab", _plab_def)
     _fn(pf_new or None, None, _form_tok, get_conn, usuario)
 
     # -------- Tabla: todo lo cargado hoy --------
