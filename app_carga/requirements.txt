@@ -1,5 +1,5 @@
 streamlit==1.44.1
-pyarrow==17.0.0
+pyarrow==18.1.0
 pandas==2.2.3
 openpyxl>=3.1
 psycopg2-binary>=2.9
