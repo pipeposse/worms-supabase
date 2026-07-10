@@ -727,6 +727,105 @@ def _crono_dt(sval, now):
 _EST_KW = {"PLANIFICADO": "carga", "REACCION": "reacci", "REPOSO": "repos", "DECANTACION": "decant"}
 
 
+@st.dialog("🗂️ Ficha de reacción", width="large")
+def _dlg_reaccion(USR, cat, conectar, idb):
+    info = cat("SELECT identificador_unidad AS ident, estado, tipo_proceso, "
+               " et.etiqueta, "
+               " (b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS inicio_local, "
+               " COALESCE(b.tanque_destino,'') AS destino "
+               "FROM produccion.fact_batch_proceso b "
+               "LEFT JOIN produccion.v_reaccion_etiqueta et ON et.id_batch=b.id_batch "
+               "WHERE b.id_batch=%s", (int(idb),))
+    if info is None or info.empty:
+        st.error("No se encontró la reacción."); return
+    b = info.iloc[0]
+    _tp = str(b["tipo_proceso"] or "")
+    _tp_lbl = {"PRODUCCION_ARE": "🧴 PRODUCCIÓN ARE", "DESGOMADO_ACUOSO": "🫧 DESGOMADO ACUOSO"}.get(_tp, _tp or "—")
+    st.markdown(f"### {b['ident']}  \n{b['etiqueta'] or '—'}")
+    st.caption(f"{_tp_lbl} · estado **{b['estado']}**")
+    t1, t2, t3, t4 = st.tabs(["📝 Nombre & inicio", "🧫 Evaluación interna", "🎯 Destino final", "⏯️ Trabajar"])
+
+    with t1:
+        _nid = st.text_input("N° / nombre de la reacción", value=str(b["ident"] or ""), key=f"dlg_nid_{idb}")
+        _ini = b["inicio_local"]
+        _ini_ts = pd.to_datetime(_ini) if pd.notna(_ini) else None
+        cA, cB = st.columns(2)
+        _d = cA.date_input("Fecha de inicio", value=(_ini_ts.date() if _ini_ts is not None else None), key=f"dlg_d_{idb}", format="DD/MM/YYYY")
+        _t = cB.time_input("Hora de inicio", value=(_ini_ts.time() if _ini_ts is not None else None), key=f"dlg_t_{idb}", step=300)
+        if st.button("💾 Guardar nombre y horario", type="primary", key=f"dlg_save1_{idb}", use_container_width=True):
+            try:
+                with conectar(int(USR["id_usuario"])) as (conn, audit):
+                    with conn.cursor() as cur:
+                        _nv = (_nid or "").strip()
+                        if _nv and _nv != str(b["ident"] or "").strip():
+                            cur.execute("UPDATE produccion.fact_batch_proceso SET identificador_unidad=%s WHERE id_batch=%s", (_nv, int(idb)))
+                        if _d is not None and _t is not None:
+                            _iso = f"{_d.isoformat()} {_t.strftime('%H:%M:%S')}"
+                            cur.execute("UPDATE produccion.fact_batch_proceso "
+                                        "SET inicio_ts=(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') WHERE id_batch=%s",
+                                        (_iso, int(idb)))
+                        audit.log("U", "fact_batch_proceso", int(idb), {"ficha": "nombre/inicio"})
+                st.success("Guardado."); cat.clear(); st.rerun()
+            except Exception as e:
+                st.error("No se pudo guardar (¿N° repetido?)."); st.exception(e)
+
+    with t2:
+        _et_opts = ["Carga", "Reacción", "Reposo", "Decantación", "Acopio final"]
+        _et_def = {"PLANIFICADO": "Carga", "REACCION": "Reacción", "REPOSO": "Reposo", "DECANTACION": "Decantación"}.get(str(b["estado"]), "Reacción")
+        _et = st.selectbox("Etapa", _et_opts, index=_et_opts.index(_et_def) if _et_def in _et_opts else 1, key=f"dlg_et_{idb}")
+        c1, c2 = st.columns(2)
+        _ac = c1.number_input("Acidez (%)", value=None, step=0.1, format="%g", key=f"dlg_ac_{idb}")
+        _tp_c = c2.number_input("Temperatura (°C)", value=None, step=1.0, format="%g", key=f"dlg_tmp_{idb}")
+        _obs = st.text_area("Observaciones", key=f"dlg_obs_{idb}")
+        if st.button("💾 Guardar evaluación interna", type="primary", key=f"dlg_save2_{idb}", use_container_width=True):
+            med = {}
+            if _ac is not None: med["acidez"] = float(_ac)
+            if _tp_c is not None: med["temperatura"] = float(_tp_c)
+            if not med and not (_obs or "").strip():
+                st.warning("Cargá al menos una medición o una observación.")
+            else:
+                try:
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("INSERT INTO produccion.fact_evaluacion_interna "
+                                        "(id_batch, id_usuario, etapa, ts, mediciones, observaciones) "
+                                        "VALUES (%s,%s,%s, now(), %s::jsonb, %s)",
+                                        (int(idb), int(USR["id_usuario"]), _et, _json.dumps(med), (_obs or "").strip() or None))
+                            audit.log("I", "fact_evaluacion_interna", int(idb), {"etapa": _et, **med})
+                    st.success("Evaluación interna cargada."); cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
+
+    with t3:
+        _tks = cat("SELECT id_tanque, codigo, nombre FROM produccion.dim_tanque WHERE COALESCE(activo,true) ORDER BY nombre")
+        if _tks is None or _tks.empty:
+            st.info("No hay tanques.")
+        else:
+            _opt = _tks.apply(lambda r: f"{r['nombre']} · {r['codigo']}", axis=1).tolist()
+            _cur = str(b["destino"] or "")
+            _idx = next((i for i, o in enumerate(_opt) if _cur and (_cur in o or o in _cur)), None)
+            st.caption(f"Destino actual: **{_cur or '—'}**")
+            _seldest = st.selectbox("Tanque de destino final", _opt, index=(_idx if _idx is not None else 0), key=f"dlg_dest_{idb}")
+            if st.button("💾 Guardar destino final", type="primary", key=f"dlg_save3_{idb}", use_container_width=True):
+                _rr = _tks.iloc[_opt.index(_seldest)]
+                try:
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE produccion.fact_batch_proceso SET tanque_destino=%s WHERE id_batch=%s",
+                                        (f"{_rr['nombre']} · {_rr['codigo']}", int(idb)))
+                            if _tp == "DESGOMADO_ACUOSO":
+                                cur.execute("UPDATE produccion.fact_batch_proceso SET desg_id_tanque_destino=%s WHERE id_batch=%s",
+                                            (int(_rr["id_tanque"]), int(idb)))
+                            audit.log("U", "fact_batch_proceso", int(idb), {"destino": _rr["codigo"]})
+                    st.success("Destino final guardado."); cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
+
+    with t4:
+        st.caption("Para el flujo completo (arrancar, cargar muestras paso a paso, decantar) usá la pestaña "
+                   "**Trabajar** del panel. Esta ficha es para ediciones rápidas.")
+
+
 def _panel_tablero(USR, cat, conectar):
     st.caption("Centro de mando: cada reacción con su **etiqueta**, MP → producto (t), próxima etapa, ETA y "
                "**semáforo de atraso** (🔴 atrasada · 🟡 por vencer · 🟢 a tiempo), comparando el reloj real con el cronograma.")
@@ -795,12 +894,20 @@ def _panel_tablero(USR, cat, conectar):
     k2.metric("MP en proceso (t)", f"{disp['MP (t)'].sum():.1f}")
     k3.metric("Objetivo (t)", f"{disp['Obj (t)'].sum():.1f}")
     k4.metric("🔴 Atrasadas", n_atras)
-    st.dataframe(disp, hide_index=True, use_container_width=True,
-                 column_config={"MP (t)": st.column_config.NumberColumn(format="%.2f"),
-                                "Obj (t)": st.column_config.NumberColumn(format="%.2f"),
-                                "Atraso (h)": st.column_config.NumberColumn(format="%.1f")})
-    st.caption("Corregí horarios en **Etapas & horarios**; trabajá la reacción (arrancar/muestras/decantar) en **Trabajar**.")
+    st.caption("👉 Hacé **clic en una fila** para abrir la ficha (nombre, hora de inicio, evaluación interna, destino final).")
+    ids = [int(x) for x in df["id_batch"].tolist()]
+    _evt = st.dataframe(disp, hide_index=True, use_container_width=True, on_select="rerun",
+                        selection_mode="single-row", key="gr_tab_df",
+                        column_config={"MP (t)": st.column_config.NumberColumn(format="%.2f"),
+                                       "Obj (t)": st.column_config.NumberColumn(format="%.2f"),
+                                       "Atraso (h)": st.column_config.NumberColumn(format="%.1f")})
+    try:
+        _rowsel = list(_evt.selection["rows"])
+    except Exception:
+        _rowsel = []
     _render_gantt(_gantt, now)
+    if _rowsel:
+        _dlg_reaccion(USR, cat, conectar, ids[_rowsel[0]])
 
 
 _STAGE_COLOR = [("carga", "#64748b"), ("reacci", "#ef4444"), ("repos", "#3b82f6"),
