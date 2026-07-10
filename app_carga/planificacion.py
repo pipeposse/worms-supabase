@@ -730,12 +730,14 @@ _EST_KW = {"PLANIFICADO": "carga", "REACCION": "reacci", "REPOSO": "repos", "DEC
 @st.dialog("🗂️ Ficha de reacción", width="large")
 def _dlg_reaccion(USR, cat, conectar, idb):
     info = cat("SELECT identificador_unidad AS ident, estado, tipo_proceso, "
-               " et.etiqueta, "
+               " et.etiqueta, bu.nombre_ui AS reactor, dpb.codigo_producto AS producto_obj, "
                " (b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS inicio_local, "
                " b.parametros_proceso, "
                " COALESCE(b.tanque_destino,'') AS destino "
                "FROM produccion.fact_batch_proceso b "
                "LEFT JOIN produccion.v_reaccion_etiqueta et ON et.id_batch=b.id_batch "
+               "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+               "LEFT JOIN produccion.dim_producto dpb ON dpb.id_producto=b.id_producto_buscado "
                "WHERE b.id_batch=%s", (int(idb),))
     if info is None or info.empty:
         st.error("No se encontró la reacción."); return
@@ -744,7 +746,64 @@ def _dlg_reaccion(USR, cat, conectar, idb):
     _tp_lbl = {"PRODUCCION_ARE": "🧴 PRODUCCIÓN ARE", "DESGOMADO_ACUOSO": "🫧 DESGOMADO ACUOSO"}.get(_tp, _tp or "—")
     st.markdown(f"### {b['ident']}  \n{b['etiqueta'] or '—'}")
     st.caption(f"{_tp_lbl} · estado **{b['estado']}**")
-    t1, t2, t3, t4 = st.tabs(["📝 Nombre & inicio", "🧫 Evaluación interna", "🎯 Destino final", "⏯️ Trabajar"])
+    t0, t1, t2, t3, t4 = st.tabs(["📄 Resumen", "📝 Nombre & inicio", "🧫 Evaluación interna", "🎯 Destino final", "⏯️ Trabajar"])
+
+    with t0:
+        _rp = b.get("parametros_proceso")
+        if isinstance(_rp, str):
+            try: _rp = _json.loads(_rp)
+            except Exception: _rp = {}
+        _rp = _rp or {}
+        _obj_kg = _rp.get("are_objetivo_kg") or _rp.get("kg_objetivo")
+        try: _obj_tn = float(_obj_kg) / 1000.0 if _obj_kg else None
+        except (TypeError, ValueError): _obj_tn = None
+        _mov = cat("SELECT m.rol, COALESCE(m.producto, m.codigo_insumo, '—') AS item, "
+                   " COALESCE(NULLIF(m.tanque_label,''), dt.nombre, "
+                   "   CASE WHEN m.ticket_porteria IS NOT NULL THEN 'Ticket portería ' || m.ticket_porteria END, "
+                   "   CASE WHEN m.ticket_lab IS NOT NULL THEN 'Ticket lab ' || m.ticket_lab END, "
+                   "   CASE m.fuente WHEN 'TANQUE' THEN 'Tanque (sin especificar)' WHEN 'TICKET' THEN 'Ticket de portería' ELSE NULLIF(m.fuente,'') END, '—') AS origen, "
+                   " round((abs(COALESCE(m.kg,0))/1000.0)::numeric,2) AS tn, "
+                   " round(abs(COALESCE(m.litros,0))::numeric,0) AS litros, "
+                   " round(abs(COALESCE(m.cantidad,0))::numeric,1) AS cantidad, COALESCE(m.unidad,'') AS unidad "
+                   "FROM produccion.fact_movimiento_stock m "
+                   "LEFT JOIN produccion.dim_tanque dt ON dt.id_tanque=m.id_tanque "
+                   "WHERE m.id_batch=%s AND COALESCE(m.anulado,false)=false "
+                   "ORDER BY array_position(ARRAY['MP','INSUMO','CATALIZADOR','FINAL','SUBPRODUCTO'], m.rol) NULLS LAST, item", (int(idb),))
+        _mp_tn = float(_mov[_mov["rol"] == "MP"]["tn"].sum()) if (_mov is not None and not _mov.empty) else 0.0
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Reactor", b.get("reactor") or "—")
+        m2.metric("Producto objetivo", b.get("producto_obj") or "—")
+        m3.metric("MP inicial (t)", f"{_mp_tn:.2f}")
+        m4.metric("Final prevista (t)", f"{_obj_tn:.2f}" if _obj_tn else "—")
+        if _rp.get("formula_nombre"):
+            st.caption(f"🧪 Fórmula: **{_rp['formula_nombre']}**")
+        if _rp.get("inicio_programado"):
+            try:
+                st.caption(f"🗓️ Inicio programado: **{pd.to_datetime(_rp['inicio_programado']).strftime('%d/%m/%Y %H:%M')}**")
+            except Exception:
+                pass
+        if _mov is None or _mov.empty:
+            st.info("Esta reacción todavía no tiene movimientos de materia prima / insumos cargados.")
+        else:
+            _mpd = _mov[_mov["rol"] == "MP"]
+            if not _mpd.empty:
+                st.markdown("**Materia prima — de dónde vino**")
+                _tmp = _mpd[["item", "origen", "tn", "litros"]].rename(
+                    columns={"item": "Producto", "origen": "De dónde vino", "tn": "t", "litros": "Litros"})
+                st.dataframe(_tmp, hide_index=True, use_container_width=True,
+                             column_config={"t": st.column_config.NumberColumn(format="%.2f")})
+            _ins = _mov[_mov["rol"].isin(["INSUMO", "CATALIZADOR"])].copy()
+            if not _ins.empty:
+                def _cant(r):
+                    if r["cantidad"] and r["cantidad"] > 0: return f"{r['cantidad']:g} {r['unidad']}".strip()
+                    if r["litros"] and r["litros"] > 0: return f"{r['litros']:g} L"
+                    if r["tn"] and r["tn"] > 0: return f"{r['tn']:g} t"
+                    return "—"
+                _ins["Cantidad"] = _ins.apply(_cant, axis=1)
+                st.markdown("**Insumos y catalizador — de dónde vinieron**")
+                _tin = _ins[["item", "origen", "Cantidad"]].rename(columns={"item": "Insumo", "origen": "De dónde vino"})
+                st.dataframe(_tin, hide_index=True, use_container_width=True)
+        st.caption("Editá nombre/inicio, evaluación interna y destino en las otras solapas.")
 
     with t1:
         _nid = st.text_input("N° / nombre de la reacción", value=str(b["ident"] or ""), key=f"dlg_nid_{idb}")
