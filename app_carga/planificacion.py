@@ -602,20 +602,29 @@ def _panel_en_marcha(USR, cat, conectar):
              " CASE b.tipo_proceso WHEN 'PRODUCCION_ARE' THEN 'ARE' WHEN 'DESGOMADO_ACUOSO' THEN 'DESGOMADO' ELSE b.tipo_proceso END AS \"Tipo\", "
              " bu.nombre_ui AS \"Reactor\", b.estado AS \"Estado\", "
              " COALESCE(mp.mp,'—') AS \"Materia prima\", COALESCE(mp.mp_tn,0) AS \"MP (t)\", "
+             " COALESCE(dp.codigo_producto,'—') AS \"Producto\", "
+             " round((COALESCE(NULLIF(b.parametros_proceso->>'are_objetivo_kg','')::numeric, "
+             "         NULLIF(b.parametros_proceso->>'kg_objetivo','')::numeric, b.kg_obtenido, 0)/1000.0)::numeric,2) AS \"Obj. (t)\", "
              " to_char(b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Inicio\", "
              " to_char(b.fin_ts AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Fin\" "
              "FROM produccion.fact_batch_proceso b "
              "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+             "LEFT JOIN produccion.dim_producto dp ON dp.id_producto=b.id_producto_buscado "
              "LEFT JOIN produccion.v_reaccion_mp mp ON mp.id_batch=b.id_batch "
              "WHERE b.sector='REACTORES' AND COALESCE(b.anulado,false)=false "
-             "  AND b.estado IN ('PLANIFICADO','REACCION','REPOSO','DECANTACION') ORDER BY b.creado_en DESC")
+             "  AND b.estado IN ('PLANIFICADO','REACCION','REPOSO','DECANTACION') "
+             "ORDER BY array_position(ARRAY['REACCION','DECANTACION','REPOSO','PLANIFICADO'], b.estado), b.creado_en DESC")
     if df is None or df.empty:
         st.info("No hay reacciones en marcha.")
         return
+    _cnt = df["Estado"].value_counts().to_dict()
+    _emj = {"PLANIFICADO":"🅿️","REACCION":"🔥","REPOSO":"🧊","DECANTACion":"🧴","DECANTACION":"🧴"}
+    st.markdown("**" + str(len(df)) + " en marcha** · " + " · ".join(f"{_emj.get(k,'•')} {k}: {v}" for k, v in _cnt.items()))
     _orig = {int(df.iloc[i]["id_batch"]): str(df.iloc[i]["N°"] or "").strip() for i in range(len(df))}
     ed = st.data_editor(df.drop(columns=["id_batch"]), hide_index=True, use_container_width=True,
-                        disabled=["Tipo", "Reactor", "Estado", "Materia prima", "MP (t)", "Inicio", "Fin"],
-                        column_config={"MP (t)": st.column_config.NumberColumn(format="%.2f")}, key="gr_marcha_ed")
+                        disabled=["Tipo", "Reactor", "Estado", "Materia prima", "MP (t)", "Producto", "Obj. (t)", "Inicio", "Fin"],
+                        column_config={"MP (t)": st.column_config.NumberColumn(format="%.2f"),
+                                       "Obj. (t)": st.column_config.NumberColumn(format="%.2f")}, key="gr_marcha_ed")
     if st.button("💾 Guardar nombres", type="primary", key="gr_marcha_save"):
         try:
             n = 0
