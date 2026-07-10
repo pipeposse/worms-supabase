@@ -727,10 +727,111 @@ def _crono_dt(sval, now):
 _EST_KW = {"PLANIFICADO": "carga", "REACCION": "reacci", "REPOSO": "repos", "DECANTACION": "decant"}
 
 
+def _recompute_final(cur, idb):
+    cur.execute("UPDATE produccion.fact_batch_proceso SET kg_obtenido=("
+                " SELECT COALESCE(sum(kg),0) FROM produccion.fact_batch_ticket_final "
+                " WHERE id_batch=%s AND NOT COALESCE(anulado,false)) WHERE id_batch=%s", (int(idb), int(idb)))
+
+
+def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
+    st.caption("Asigná los **tickets de balanza (pesadas) ya evaluados por laboratorio** del producto final. "
+               "La **suma de estos tickets define los kilos finales** de la reacción (editable por ticket).")
+    _pobj = (producto_obj or "").strip()
+    if not _pobj:
+        st.info("Esta reacción no tiene producto final definido."); return
+    asg = cat("SELECT id, ticket, producto, calidad, kg FROM produccion.fact_batch_ticket_final "
+              "WHERE id_batch=%s AND NOT COALESCE(anulado,false) ORDER BY ticket", (int(idb),))
+    _tot_kg = float(asg["kg"].fillna(0).sum()) if (asg is not None and not asg.empty) else 0.0
+    c1, c2 = st.columns(2)
+    c1.metric("Producto final", _pobj)
+    c2.metric("Total asignado (t)", f"{_tot_kg/1000:.2f}")
+    cand = cat("SELECT tx.transaccion::text AS ticket, tx.lab_calidad AS calidad, "
+               " round(abs(COALESCE(tx.peso_neto,0))::numeric,0) AS kg, tx.fecha_entrada AS fecha "
+               "FROM produccion.v_transacciones_limpias tx "
+               "WHERE tx.evaluado='SI' AND tx.peso_neto IS NOT NULL "
+               "  AND upper(COALESCE(tx.lab_producto,'')||'-'||COALESCE(tx.lab_calidad,''))=upper(%s) "
+               "  AND NOT EXISTS (SELECT 1 FROM produccion.fact_batch_ticket_final f "
+               "                  WHERE f.ticket=tx.transaccion::text AND NOT COALESCE(f.anulado,false)) "
+               "ORDER BY tx.fecha_entrada DESC NULLS LAST, tx.transaccion DESC LIMIT 200", (_pobj,))
+    st.markdown(f"**Tickets pesados disponibles** (evaluados como {_pobj})")
+    if cand is not None and not cand.empty:
+        _copt = cand.apply(lambda r: f"#{r['ticket']} · {float(r['kg'] or 0)/1000:.2f} t · cal {r['calidad'] or '-'} · {r['fecha']}", axis=1).tolist()
+        _selc = st.multiselect("Elegí tickets para asignar", _copt, key=f"pf_sel_{idb}")
+        if st.button("➕ Asignar seleccionados", type="primary", key=f"pf_add_{idb}", use_container_width=True) and _selc:
+            try:
+                with conectar(int(USR["id_usuario"])) as (conn, audit):
+                    with conn.cursor() as cur:
+                        for _sc in _selc:
+                            _rc = cand.iloc[_copt.index(_sc)]
+                            cur.execute("INSERT INTO produccion.fact_batch_ticket_final "
+                                        "(id_batch,ticket,producto,calidad,kg,fecha,id_usuario) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                                        "ON CONFLICT (ticket) WHERE anulado=false DO NOTHING",
+                                        (int(idb), str(_rc["ticket"]), _pobj, _rc["calidad"], float(_rc["kg"] or 0),
+                                         (str(_rc["fecha"]) if pd.notna(_rc["fecha"]) else None), int(USR["id_usuario"])))
+                        _recompute_final(cur, int(idb))
+                        audit.log("I", "fact_batch_ticket_final", int(idb), {"asignados": len(_selc)})
+                st.success(f"{len(_selc)} ticket(s) asignados."); cat.clear(); st.rerun()
+            except Exception as e:
+                st.exception(e)
+    else:
+        st.caption("No hay tickets pesados sin asignar para este producto. Podés agregar uno manual abajo.")
+    with st.expander("➕ Agregar ticket manual"):
+        _mt = st.text_input("N° de ticket", key=f"pf_mt_{idb}")
+        _mk = st.number_input("Kilos (si lo dejás vacío, se busca de balanza)", min_value=0.0, value=None, step=10.0, format="%g", key=f"pf_mk_{idb}")
+        _mc = st.text_input("Calidad", value="", key=f"pf_mc_{idb}")
+        if st.button("➕ Asignar manual", key=f"pf_addman_{idb}"):
+            _mtv = (_mt or "").strip()
+            if not _mtv:
+                st.warning("Poné el N° de ticket.")
+            else:
+                try:
+                    _kgv = _mk; _calv = (_mc or "").strip() or None
+                    if _kgv is None:
+                        _look = cat("SELECT round(abs(COALESCE(peso_neto,0))::numeric,0) AS kg, lab_calidad "
+                                    "FROM produccion.v_transacciones_limpias WHERE transaccion::text=%s LIMIT 1", (_mtv,))
+                        if _look is not None and not _look.empty:
+                            _kgv = float(_look.iloc[0]["kg"] or 0)
+                            if not _calv: _calv = _look.iloc[0]["lab_calidad"]
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("INSERT INTO produccion.fact_batch_ticket_final (id_batch,ticket,producto,calidad,kg,id_usuario) "
+                                        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (ticket) WHERE anulado=false DO NOTHING",
+                                        (int(idb), _mtv, _pobj, _calv, float(_kgv or 0), int(USR["id_usuario"])))
+                            _recompute_final(cur, int(idb))
+                    st.success("Ticket asignado."); cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
+    if asg is not None and not asg.empty:
+        st.markdown("**Tickets asignados** (editá los kilos o marcá *Quitar*)")
+        _disp = asg.copy(); _disp["Quitar"] = False
+        _disp = _disp.rename(columns={"ticket": "Ticket", "producto": "Producto", "calidad": "Calidad", "kg": "Kg"})
+        edp = st.data_editor(_disp[["Ticket", "Producto", "Calidad", "Kg", "Quitar"]], hide_index=True, use_container_width=True,
+                             disabled=["Ticket", "Producto", "Calidad"], key=f"pf_ed_{idb}",
+                             column_config={"Kg": st.column_config.NumberColumn(format="%g"),
+                                            "Quitar": st.column_config.CheckboxColumn()})
+        if st.button("💾 Guardar (definir kilos finales por estos tickets)", type="primary", key=f"pf_save_{idb}", use_container_width=True):
+            try:
+                with conectar(int(USR["id_usuario"])) as (conn, audit):
+                    with conn.cursor() as cur:
+                        for i in range(len(edp)):
+                            _idr = int(asg.iloc[i]["id"])
+                            if bool(edp.iloc[i]["Quitar"]):
+                                cur.execute("UPDATE produccion.fact_batch_ticket_final SET anulado=true WHERE id=%s", (_idr,))
+                            else:
+                                cur.execute("UPDATE produccion.fact_batch_ticket_final SET kg=%s WHERE id=%s",
+                                            (float(edp.iloc[i]["Kg"] or 0), _idr))
+                        _recompute_final(cur, int(idb))
+                        audit.log("U", "fact_batch_ticket_final", int(idb), {"n": len(edp)})
+                st.success("Kilos finales actualizados por los tickets."); cat.clear(); st.rerun()
+            except Exception as e:
+                st.exception(e)
+        st.caption(f"⚖️ **Kilos finales de la reacción = {_tot_kg:,.0f} kg ({_tot_kg/1000:.2f} t)** — suma de los tickets asignados.")
+
+
 @st.dialog("🗂️ Ficha de reacción", width="large")
 def _dlg_reaccion(USR, cat, conectar, idb):
     info = cat("SELECT identificador_unidad AS ident, estado, tipo_proceso, "
-               " et.etiqueta, bu.nombre_ui AS reactor, dpb.codigo_producto AS producto_obj, "
+               " et.etiqueta, bu.nombre_ui AS reactor, dpb.codigo_producto AS producto_obj, b.kg_obtenido, "
                " (b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS inicio_local, "
                " b.parametros_proceso, "
                " COALESCE(b.tanque_destino,'') AS destino "
@@ -746,7 +847,7 @@ def _dlg_reaccion(USR, cat, conectar, idb):
     _tp_lbl = {"PRODUCCION_ARE": "🧴 PRODUCCIÓN ARE", "DESGOMADO_ACUOSO": "🫧 DESGOMADO ACUOSO"}.get(_tp, _tp or "—")
     st.markdown(f"### {b['ident']}  \n{b['etiqueta'] or '—'}")
     st.caption(f"{_tp_lbl} · estado **{b['estado']}**")
-    t0, t1, t2, t3, t4 = st.tabs(["📄 Resumen", "📝 Nombre & inicio", "🧫 Evaluación interna", "🎯 Destino final", "⏯️ Trabajar"])
+    t0, t1, t2, t3, tPF, t4 = st.tabs(["📄 Resumen", "📝 Nombre & inicio", "🧫 Evaluación interna", "🎯 Destino final", "🏁 Producto final (tickets)", "⏯️ Trabajar"])
 
     with t0:
         _rp = b.get("parametros_proceso")
@@ -774,7 +875,13 @@ def _dlg_reaccion(USR, cat, conectar, idb):
         m1.metric("Reactor", b.get("reactor") or "—")
         m2.metric("Producto objetivo", b.get("producto_obj") or "—")
         m3.metric("MP inicial (t)", f"{_mp_tn:.2f}")
-        m4.metric("Final prevista (t)", f"{_obj_tn:.2f}" if _obj_tn else "—")
+        _real_kg = b.get("kg_obtenido")
+        try: _real_tn = float(_real_kg)/1000.0 if _real_kg else None
+        except (TypeError, ValueError): _real_tn = None
+        m4.metric("Final (t)", f"{_real_tn:.2f}" if _real_tn else (f"{_obj_tn:.2f}" if _obj_tn else "—"),
+                  help="Real por tickets de balanza si hay; si no, la prevista por fórmula.")
+        if _real_tn and _obj_tn:
+            st.caption(f"⚖️ Final real por tickets: **{_real_tn:.2f} t** · prevista por fórmula: {_obj_tn:.2f} t")
         if _rp.get("formula_nombre"):
             st.caption(f"🧪 Fórmula: **{_rp['formula_nombre']}**")
         if _rp.get("inicio_programado"):
@@ -939,6 +1046,9 @@ def _dlg_reaccion(USR, cat, conectar, idb):
                     st.success("Destino final guardado."); cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
+
+    with tPF:
+        _ficha_final_tickets(USR, cat, conectar, int(idb), b.get("producto_obj"))
 
     with t4:
         st.caption("Para el flujo completo (arrancar, cargar muestras paso a paso, decantar) usá la pestaña "
