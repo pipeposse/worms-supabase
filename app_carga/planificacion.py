@@ -750,7 +750,7 @@ def _panel_tablero(USR, cat, conectar):
         st.info("No hay reacciones en marcha.")
         return
     now = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").tz_localize(None)
-    rows = []; n_atras = 0
+    rows = []; n_atras = 0; _gantt = []
     for _, r in df.iterrows():
         pp = r["parametros_proceso"]
         if isinstance(pp, str):
@@ -758,6 +758,14 @@ def _panel_tablero(USR, cat, conectar):
             except Exception: pp = {}
         pp = pp or {}
         crono = pp.get("cronograma") or []
+        _stages = []
+        for e in crono:
+            _s = _crono_dt(e.get("Inicio"), now); _f = _crono_dt(e.get("Fin"), now)
+            if _s is not None and _f is not None and _f > _s:
+                _nm = str(e.get("Etapa", "")).split(" · ")[0]
+                _stages.append((_nm, _s, _f))
+        _gantt.append({"reactor": r["reactor"] or "—", "label": (r["ident"] or "") ,
+                       "sub": (r["mp"] or "—"), "estado": r["estado"], "stages": _stages})
         kw = _EST_KW.get(str(r["estado"]), "")
         cur_i = None
         for i, e in enumerate(crono):
@@ -792,6 +800,66 @@ def _panel_tablero(USR, cat, conectar):
                                 "Obj (t)": st.column_config.NumberColumn(format="%.2f"),
                                 "Atraso (h)": st.column_config.NumberColumn(format="%.1f")})
     st.caption("Corregí horarios en **Etapas & horarios**; trabajá la reacción (arrancar/muestras/decantar) en **Trabajar**.")
+    _render_gantt(_gantt, now)
+
+
+_STAGE_COLOR = [("carga", "#64748b"), ("reacci", "#ef4444"), ("repos", "#3b82f6"),
+                ("decant", "#a855f7"), ("acopio", "#16a34a")]
+
+
+def _stage_color(nm):
+    n = (nm or "").lower()
+    for kw, c in _STAGE_COLOR:
+        if kw in n:
+            return c
+    return "#9ca3af"
+
+
+def _render_gantt(items, now):
+    stages_all = [st_ for it in items for st_ in it["stages"]]
+    if not stages_all:
+        return
+    t0 = min(s[1] for s in stages_all); t1 = max(s[2] for s in stages_all)
+    lo = min(t0, now - pd.Timedelta(hours=2)); hi = max(t1, now + pd.Timedelta(hours=2))
+    span = (hi - lo).total_seconds()
+    if span <= 0:
+        return
+
+    def pct(ts):
+        return max(0.0, min(100.0, (ts - lo).total_seconds() / span * 100.0))
+
+    st.markdown("##### 📅 Línea de tiempo por reactor")
+    # leyenda
+    leg = " ".join(f"<span style='display:inline-block;width:11px;height:11px;border-radius:3px;background:{c};"
+                   f"vertical-align:middle;margin:0 4px 0 10px'></span>{kw.capitalize()}" for kw, c in _STAGE_COLOR)
+    st.markdown(f"<div style='font-size:.8rem;color:#475569;margin:2px 0 8px'>{leg}</div>", unsafe_allow_html=True)
+    now_pct = pct(now)
+    # agrupar por reactor
+    reactores = {}
+    for it in items:
+        reactores.setdefault(it["reactor"], []).append(it)
+    html = ["<div style='border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px;background:#fff'>"]
+    html.append(f"<div style='font-size:.72rem;color:#64748b;margin-bottom:2px'>{lo.strftime('%d/%m %H:%M')} "
+                f"&rarr; {hi.strftime('%d/%m %H:%M')} &middot; línea roja = ahora</div>")
+    for reactor, its in reactores.items():
+        html.append(f"<div style='font-weight:800;margin:8px 0 2px;color:#0f172a'>{reactor}</div>")
+        for it in its:
+            bars = ""
+            for nm, sdt, fdt in it["stages"]:
+                left = pct(sdt); width = max(0.6, pct(fdt) - left)
+                bars += (f"<div title='{nm} {sdt.strftime('%d/%m %H:%M')}→{fdt.strftime('%H:%M')}' "
+                         f"style='position:absolute;left:{left:.2f}%;width:{width:.2f}%;top:3px;height:16px;"
+                         f"background:{_stage_color(nm)};border-radius:3px'></div>")
+            html.append(
+                f"<div style='display:flex;align-items:center;gap:8px;margin:3px 0'>"
+                f"<div style='flex:0 0 190px;font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>"
+                f"<b>{it['label']}</b> · {it['sub']}</div>"
+                f"<div style='position:relative;flex:1;height:22px;background:#f1f5f9;border-radius:4px'>"
+                f"{bars}"
+                f"<div style='position:absolute;left:{now_pct:.2f}%;top:-2px;height:26px;width:2px;background:#dc2626'></div>"
+                f"</div></div>")
+    html.append("</div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
 
 
 def _gestion_reacciones(USR, cat, conectar):
