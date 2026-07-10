@@ -2025,6 +2025,44 @@ def _lab_asignacion(cat, conectar=None, USR=None):
                     st.exception(e)
 
 
+_TK_BASE_PARAM = {"ACIDEZ", "H2O", "AGUA", "SEDIMENTO", "SEDIMENTOS", "DENSIDAD", "DENSIDAD G/ML",
+                  "PPM AZUFRE", "PPM FOSFORO", "GLICERINA", "PRODUCTO"}
+_TK_EXTRA_MAP = {
+    "GLICEROL": ("glicerol", "Glicerol (%)"),
+    "CENIZAS": ("cenizas", "Cenizas (%)"),
+    "MONG": ("mong", "MONG (%)"),
+    "PH": ("ph", "pH"),
+    "GLICERINA EN CENTRIFUGADO": ("glicerina_centrifugado", "Glicerina en centrifugado (%)"),
+    "INDICE YODO": ("indice_yodo", "Índice de yodo"),
+    "INDICE DE YODO": ("indice_yodo", "Índice de yodo"),
+    "YODO": ("indice_yodo", "Índice de yodo"),
+    "MATERIA GRASA": ("grasa", "Materia grasa (%)"),
+    "GRASA": ("grasa", "Materia grasa (%)"),
+    "ALCALINIDAD": ("alcalinidad", "Alcalinidad"),
+    "HKF": ("hkf", "HKF (%)"),
+    "POLIGLICEROL": ("poliglicerol", "Poliglicerol (%)"),
+}
+_TK_CALIDAD_FAMILIA = {
+    "GLICERINA": ["A", "B", "C", "D", "FUERA DE ESPECIFICACION"],
+    "SEBO": ["A-1RA", "A-2DA", "B-1RA", "B-2DA", "C-2DA", "FUERA DE ESPECIFICACION"],
+    "AG": ["A", "B", "C", "D", "E", "FUERA DE ESPECIFICACION"],
+    "ARE": ["A", "B", "FUERA DE ESPECIFICACION"],
+    "AFE": ["S", "SG", "G", "P", "AL", "FUERA DE ESPECIFICACION"],
+    "BORRA": ["A", "B", "ANIMAL", "PES", "FUERA DE ESPECIFICACION"],
+}
+
+
+def _tk_norm_par(p):
+    import re as _re2
+    s = str(p or "").upper().strip().lstrip("%").strip()
+    return _re2.sub(r"\s+", " ", s)
+
+
+def _tk_slug(sv):
+    import re as _re2
+    return _re2.sub(r"[^a-z0-9]+", "_", str(sv).lower()).strip("_")
+
+
 def _form_param_tanque(cat, conectar, USR):
     if st.session_state.pop("param_tk_celebrar", False):
         st.toast("Parámetros del tanque cargados", icon="✅")
@@ -2034,7 +2072,7 @@ def _form_param_tanque(cat, conectar, USR):
     _lt = cat("SELECT t.id_tanque, t.codigo, t.nombre, t.sector, t.id_producto_principal, "
               "p.codigo_producto AS prod, pp.acidez_pct, pp.agua_pct, pp.sedimentos_pct, "
               "pp.densidad_g_ml, pp.ppm_azufre, pp.ppm_fosforo, pp.glicerina_pct, pp.producto_pct, "
-              "pp.corriente, pp.ultima_evaluacion_ts "
+              "pp.parametros_extra, pp.corriente, pp.ultima_evaluacion_ts "
               "FROM produccion.dim_tanque t "
               "LEFT JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
               "LEFT JOIN produccion.fact_param_tanque pp ON pp.id_tanque=t.id_tanque AND pp.id_producto=t.id_producto_principal "
@@ -2073,12 +2111,55 @@ def _form_param_tanque(cat, conectar, USR):
             lc7, lc8, _lc9 = st.columns(3)
             _gl = lc7.number_input("Glicerina %", min_value=0.0, value=_pv("glicerina_pct"), step=0.1, format="%.2f", key="lab_gl")
             _pr = lc8.number_input("Producto %", min_value=0.0, value=_pv("producto_pct"), step=0.1, format="%.2f", key="lab_pr")
+
+            # ---- parámetros específicos del producto (según el maestro) ----
+            _fam = str(_lr["prod"] or "").split("-")[0].upper()
+            _pe = _lr.get("parametros_extra")
+            if isinstance(_pe, str):
+                try: _pe = __import__("json").loads(_pe)
+                except Exception: _pe = {}
+            _pe = _pe or {}
+            _maes = cat("SELECT DISTINCT parametro FROM produccion.dim_maestro_parametro "
+                        "WHERE upper(split_part(producto,'-',1))=%s ORDER BY 1", (_fam,))
+            _extra_defs = []; _seen = set()
+            if _maes is not None and not _maes.empty:
+                for _mp2 in _maes["parametro"].tolist():
+                    _n = _tk_norm_par(_mp2)
+                    if _n in _TK_BASE_PARAM:
+                        continue
+                    _key, _lbl = _TK_EXTRA_MAP.get(_n, (_tk_slug(_n), str(_mp2).strip()))
+                    if _key in _seen:
+                        continue
+                    _seen.add(_key); _extra_defs.append((_key, _lbl))
+            _extra_vals = {}
+            if _extra_defs:
+                st.markdown(f"**Parámetros específicos de {_lr['prod']}**")
+                if _fam == "GLICERINA":
+                    st.caption("Calidad glicerina por glicerol %: **A** >80 · **B** 70–80 · **C** 60–80 y sed ≤10 · "
+                               "**D** 60–80 y sed >10 · **Fuera** ≤60.")
+                _xc = st.columns(3)
+                for _i, (_k, _l) in enumerate(_extra_defs):
+                    _dv = _pe.get(_k)
+                    try: _dv = float(_dv) if _dv is not None else None
+                    except (TypeError, ValueError): _dv = None
+                    _extra_vals[_k] = _xc[_i % 3].number_input(_l, value=_dv, step=0.1, format="%g", key=f"lab_x_{_lidt}_{_k}")
+            _cal_opts = _TK_CALIDAD_FAMILIA.get(_fam)
+            _calidad = None
+            if _cal_opts:
+                _cur_cal = str(_pe.get("calidad") or "")
+                _cal_list = [""] + _cal_opts
+                _calidad = st.selectbox("Calidad", _cal_list,
+                                        index=_cal_list.index(_cur_cal) if _cur_cal in _cal_list else 0, key=f"lab_cal_{_lidt}")
+
             _corr_opts = ["", "VEGETAL", "ANIMAL", "INSUMO", "MIXTA"]
             _corr_cur = str(_lr.get("corriente")).upper() if pd.notna(_lr.get("corriente")) else ""
             _co = st.selectbox("Corriente", _corr_opts,
                                index=_corr_opts.index(_corr_cur) if _corr_cur in _corr_opts else 0, key="lab_co")
             _cm = st.text_input("Comentario", max_chars=200, key="lab_cm")
             if st.button("💾 Guardar parámetros", type="primary", use_container_width=True, key="lab_save"):
+                _extra_save = {k: float(v) for k, v in _extra_vals.items() if v is not None}
+                if _calidad: _extra_save["calidad"] = _calidad
+                if _cm: _extra_save["comentario"] = _cm
                 try:
                     with conectar(USR["id_usuario"]) as (conn, audit):
                         with conn.cursor() as cur:
@@ -2099,7 +2180,7 @@ def _form_param_tanque(cat, conectar, USR):
                                 (_lidt, int(_lpid), (_co or None),
                                  float(_ac), float(_ag), float(_se), float(_de), float(_az), float(_fo),
                                  float(_gl), float(_pr),
-                                 __import__("json").dumps({"comentario": _cm} if _cm else {})))
+                                 __import__("json").dumps(_extra_save)))
                         audit.log("U", "fact_param_tanque", _lidt,
                                   {"acidez_pct": float(_ac), "ppm_azufre": float(_az), "ppm_fosforo": float(_fo)})
                     st.success(f"Parámetros guardados para {_lr['nombre']} · {_lr['prod']}.")
