@@ -773,6 +773,21 @@ def _dlg_reaccion(USR, cat, conectar, idb):
         _et_opts = ["Carga", "Reacción", "Reposo", "Decantación", "Acopio final"]
         _et_def = {"PLANIFICADO": "Carga", "REACCION": "Reacción", "REPOSO": "Reposo", "DECANTACION": "Decantación"}.get(str(b["estado"]), "Reacción")
         _et = st.selectbox("Etapa", _et_opts, index=_et_opts.index(_et_def) if _et_def in _et_opts else 1, key=f"dlg_et_{idb}")
+        _now_ev = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").tz_localize(None)
+        cF, cH = st.columns(2)
+        _ed = cF.date_input("Fecha de la evaluación", value=_now_ev.date(), key=f"dlg_evd_{idb}", format="DD/MM/YYYY")
+        _eh = cH.time_input("Hora de la evaluación", value=_now_ev.time().replace(second=0, microsecond=0), key=f"dlg_evh_{idb}", step=300)
+        _ops = cat("SELECT id_usuario, nombre FROM produccion.dim_usuario "
+                   "WHERE COALESCE(activo,true) AND rol IN ('OPERADOR','SUPERVISOR','ADMIN') ORDER BY nombre")
+        _opnames = _ops["nombre"].tolist() if (_ops is not None and not _ops.empty) else []
+        _defop = str(USR.get("nombre") or "")
+        if _opnames:
+            _oper = st.selectbox("Operario a cargo", _opnames,
+                                 index=(_opnames.index(_defop) if _defop in _opnames else 0), key=f"dlg_evop_{idb}")
+            _opid = int(_ops.iloc[_opnames.index(_oper)]["id_usuario"])
+        else:
+            _oper = st.text_input("Operario a cargo", value=_defop, key=f"dlg_evopt_{idb}")
+            _opid = None
         c1, c2 = st.columns(2)
         _ac = c1.number_input("Acidez (%)", value=None, step=0.1, format="%g", key=f"dlg_ac_{idb}")
         _tp_c = c2.number_input("Temperatura (°C)", value=None, step=1.0, format="%g", key=f"dlg_tmp_{idb}")
@@ -781,17 +796,20 @@ def _dlg_reaccion(USR, cat, conectar, idb):
             med = {}
             if _ac is not None: med["acidez"] = float(_ac)
             if _tp_c is not None: med["temperatura"] = float(_tp_c)
+            if _oper: med["operario"] = _oper
             if not med and not (_obs or "").strip():
                 st.warning("Cargá al menos una medición o una observación.")
             else:
                 try:
+                    _iso_ev = f"{_ed.isoformat()} {_eh.strftime('%H:%M:%S')}"
                     with conectar(int(USR["id_usuario"])) as (conn, audit):
                         with conn.cursor() as cur:
                             cur.execute("INSERT INTO produccion.fact_evaluacion_interna "
                                         "(id_batch, id_usuario, etapa, ts, mediciones, observaciones) "
-                                        "VALUES (%s,%s,%s, now(), %s::jsonb, %s)",
-                                        (int(idb), int(USR["id_usuario"]), _et, _json.dumps(med), (_obs or "").strip() or None))
-                            audit.log("I", "fact_evaluacion_interna", int(idb), {"etapa": _et, **med})
+                                        "VALUES (%s,%s,%s,(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires'),%s::jsonb,%s)",
+                                        (int(idb), int(_opid or USR["id_usuario"]), _et, _iso_ev,
+                                         _json.dumps(med), (_obs or "").strip() or None))
+                            audit.log("I", "fact_evaluacion_interna", int(idb), {"etapa": _et, "operario": _oper, **med})
                     st.success("Evaluación interna cargada."); cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
