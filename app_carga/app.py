@@ -2144,6 +2144,8 @@ def _form_param_tanque(cat, conectar, USR):
                     except (TypeError, ValueError): _dv = None
                     _extra_vals[_k] = _xc[_i % 3].number_input(_l, value=_dv, step=0.1, format="%g", key=f"lab_x_{_lidt}_{_k}")
             _cal_opts = _TK_CALIDAD_FAMILIA.get(_fam)
+            if "PES" in str(_lr["prod"] or "").upper():
+                _cal_opts = ["UNICA"]
             _calidad = None
             if _cal_opts:
                 _cur_cal = str(_pe.get("calidad") or "")

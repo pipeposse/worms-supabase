@@ -379,7 +379,8 @@ def _form_AG(pf, ctx, tok, get_conn, usuario):
         producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
         _pl0 = (producto_lab or (pf or {}).get("producto_lab") or "")
         _defc = "ANIMAL" if "PES" in _pl0.upper() else "VEGETAL"
-        cier = _cierre(p, pf, tok, CAL_AG, default_corriente=_defc)
+        _cal_ag = ["UNICA", FUERA] if "PES" in _pl0.upper() else CAL_AG
+        cier = _cierre(p, pf, tok, _cal_ag, default_corriente=_defc)
         enviar = st.form_submit_button("GUARDAR", use_container_width=True)
     if enviar:
         data = dict(tipo_formulario="AG", producto_lab=(producto_lab or "AG"),
@@ -510,10 +511,14 @@ def _form_BORRA(pf, ctx, tok, get_conn, usuario):
         with c2:
             prc_sedimentos = _n("Sedimentos (%)", "prc_sedimentos", pf, p, tok, "sed")
             prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
-        cier = _cierre(p, pf, tok, CAL_BORRA, default_corriente="VEGETAL")
+        producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
+        _plb = (producto_lab or (pf or {}).get("producto_lab") or "")
+        _cal_b = ["UNICA", FUERA] if "PES" in _plb.upper() else CAL_BORRA
+        _defcb = "ANIMAL" if "PES" in _plb.upper() else "VEGETAL"
+        cier = _cierre(p, pf, tok, _cal_b, default_corriente=_defcb)
         enviar = st.form_submit_button("GUARDAR", use_container_width=True)
     if enviar:
-        data = dict(tipo_formulario="BORRA", producto_lab="BORRA",
+        data = dict(tipo_formulario="BORRA", producto_lab=(producto_lab or "BORRA"),
                     borra_ph=borra_ph, borra_alcalinidad=borra_alc, borra_prc_grasa=borra_grasa,
                     prc_sedimentos=prc_sedimentos, prc_agua=prc_agua, **cab, **cier)
         if _persistir("BORRA", data, ctx, get_conn, usuario):
@@ -861,7 +866,8 @@ def ticket_produccion(ticket, get_conn=None):
 
 def tickets_porteria(producto_base=None, ticket=None, dias=30, limite=300, get_conn=None, cliente=None):
     """Tickets de porteria filtrados por producto_base / nro, con patentes."""
-    where = ["t.fecha_entrada >= current_date - %s"]
+    where = ["t.fecha_entrada >= current_date - %s",
+             "NOT EXISTS (SELECT 1 FROM produccion.dic_cliente_excluido e WHERE e.activo AND upper(COALESCE(t.cliente,'')) LIKE upper(e.patron))"]
     params = [dias]
     if producto_base:
         where.append("t.producto_base = ANY(%s)")
@@ -895,6 +901,7 @@ def resumen_evaluacion(get_conn=None, dias=(0, 1)):
            "where t.fecha_entrada::date = ANY(%s) and t.producto_base is not null"
            + """ and t.corriente in (select corriente from produccion.dic_corriente_config where evaluable)"""
            + """ and upper(t.producto_base) not in (select upper(producto_base) from produccion.dic_producto_base_config where not evaluable) """
+           + " and NOT EXISTS (SELECT 1 FROM produccion.dic_cliente_excluido e WHERE e.activo AND upper(COALESCE(t.cliente,'')) LIKE upper(e.patron))"
            + "group by 1")
     out = {}
     try:
@@ -912,6 +919,7 @@ def tickets_pendientes(dia, get_conn=None, producto_base=None, limite=400):
     """Tickets evaluables (no evaluados aun) de un dia puntual, para la bandeja de pendientes."""
     where = ["t.fecha_entrada::date = %s", "COALESCE(t.evaluado,'NO') <> 'SI'",
              "t.producto_base IS NOT NULL",
+             "NOT EXISTS (SELECT 1 FROM produccion.dic_cliente_excluido e WHERE e.activo AND upper(COALESCE(t.cliente,'')) LIKE upper(e.patron))",
              "t.corriente in (select corriente from produccion.dic_corriente_config where evaluable)",
              "upper(t.producto_base) not in (select upper(producto_base) from produccion.dic_producto_base_config where not evaluable)"]
     params = [dia]
