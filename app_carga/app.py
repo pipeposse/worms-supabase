@@ -1746,15 +1746,25 @@ def _render_estado_planta(cat, conectar=None, USR=None):
                             st.exception(e)
     with t1:
         st.caption("Cada reacción activa: en qué estado está y a quién está esperando.")
-        df = cat("SELECT identificador_unidad AS \"Reacción\", tipo_proceso AS \"Proceso\", estado AS \"Estado\", "
-                 "espera_a AS \"Espera a\", horas_activo AS \"Horas\", are_objetivo_kg AS \"ARE obj. kg\", "
-                 "tanque_destino AS \"Tanque destino\" FROM produccion.v_estado_planta ORDER BY horas_activo DESC NULLS LAST")
+        df = cat(
+            "SELECT v.identificador_unidad AS \"Reacción\", v.tipo_proceso AS \"Proceso\", v.estado AS \"Estado\", "
+            "v.espera_a AS \"Espera a\", "
+            "to_char(b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Inicio\", "
+            "to_char(b.fin_ts AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Fin\", "
+            "v.horas_activo AS \"Horas\", "
+            "round((COALESCE(b.kg_inicial,0)/1000.0)::numeric,2) AS \"MP (t)\", "
+            "round((COALESCE(b.kg_obtenido, v.are_objetivo_kg, 0)/1000.0)::numeric,2) AS \"Prod. final (t)\", "
+            "v.tanque_destino AS \"Tanque destino\" "
+            "FROM produccion.v_estado_planta v "
+            "JOIN produccion.fact_batch_proceso b ON b.id_batch=v.id_batch "
+            "ORDER BY v.horas_activo DESC NULLS LAST")
         if df is None or df.empty:
             st.info("No hay reacciones activas.")
         else:
             st.dataframe(df, hide_index=True, use_container_width=True,
                          column_config={"Horas": st.column_config.NumberColumn(format="%.1f"),
-                                        "ARE obj. kg": st.column_config.NumberColumn(format="%.0f")})
+                                        "MP (t)": st.column_config.NumberColumn(format="%.2f"),
+                                        "Prod. final (t)": st.column_config.NumberColumn(format="%.2f")})
     with t2:
         st.caption("Reacciones que esperan resultado del laboratorio. Cargalo en Laboratorio → Producciones en marcha.")
         df = cat("SELECT identificador_unidad AS \"Reacción\", estado AS \"Estado\", "
