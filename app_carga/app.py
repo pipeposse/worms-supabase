@@ -3503,6 +3503,13 @@ if st.session_state.section != "CARGAS":
                     _es_wedo = (_r2["fuente_medicion"] == "WeDo")
                     _cap = st.number_input("Capacidad (litros)", 0.0, 5_000_000.0, step=100.0,
                                            value=float(_r2["capacidad_litros"]) if pd.notna(_r2["capacidad_litros"]) else 0.0, key="tq_cap_e")
+                    _secs_e = sorted(_panel["sector"].dropna().unique().tolist())
+                    _cur_sec = _r2["sector"] if pd.notna(_r2.get("sector")) else None
+                    _opts_sec = _secs_e + ["➕ Otro (escribirlo abajo)"]
+                    _idx_sec = _opts_sec.index(_cur_sec) if _cur_sec in _secs_e else 0
+                    _cse1, _cse2 = st.columns([2, 2])
+                    _esec_sel = _cse1.selectbox("Sector", _opts_sec, index=_idx_sec, key="tq_sec_e")
+                    _esec_new = _cse2.text_input("Nuevo sector (solo si elegiste ➕ Otro)", value="", key="tq_sec_e_new")
                     if _es_wedo:
                         st.info("🛰️ Tanque **WeDo**: el **stock** lo maneja el sensor radar "
                                 "(se corrige en *Cargar medición → incluir WeDo*). Acá podés editar "
@@ -3523,15 +3530,18 @@ if st.session_state.section != "CARGAS":
                                     if _ppal_sel != "(sin asignar)":
                                         cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto=%s", (_ppal_sel,))
                                         _pidp = cur.fetchone()[0]
-                                    cur.execute("UPDATE produccion.dim_tanque SET id_producto_principal=%s, capacidad_litros=%s, activo=%s WHERE id_tanque=%s",
-                                                (_pidp, (float(_cap) if _cap else None), bool(_act), _idt2))
+                                    _sec_final_e = (_esec_new or "").strip() if str(_esec_sel).startswith("➕") else _esec_sel
+                                    if not _sec_final_e:
+                                        raise ValueError("Elegiste ➕ Otro: escribí el nombre del nuevo sector.")
+                                    cur.execute("UPDATE produccion.dim_tanque SET id_producto_principal=%s, capacidad_litros=%s, activo=%s, sector=%s WHERE id_tanque=%s",
+                                                (_pidp, (float(_cap) if _cap else None), bool(_act), _sec_final_e, _idt2))
                                     cur.execute("DELETE FROM produccion.dim_tanque_producto WHERE id_tanque=%s", (_idt2,))
                                     for c in _puede:
                                         cur.execute("INSERT INTO produccion.dim_tanque_producto (id_tanque,id_producto,es_principal) "
                                                     "SELECT %s, id_producto, %s FROM produccion.dim_producto WHERE codigo_producto=%s "
                                                     "ON CONFLICT (id_tanque,id_producto) DO NOTHING",
                                                     (_idt2, (c == _ppal_sel), c))
-                                audit.log("U", "dim_tanque", _idt2, {"principal": _ppal_sel, "puede": len(_puede)})
+                                audit.log("U", "dim_tanque", _idt2, {"principal": _ppal_sel, "puede": len(_puede), "sector": _sec_final_e})
                             st.success("Tanque actualizado.")
                             cat.clear(); st.rerun()
                         except Exception as e:

@@ -107,7 +107,7 @@ CAL_EFLU  = ["LIQUIDO"]
 CAL_BORRA = ["A", "B", "ANIMAL", "PES", FUERA]               # BORRA-A/B (V) + animal + pescado
 CAL_SEBO  = ["A-1RA", "A-2DA", "B-1RA", "B-2DA", "C-2DA", FUERA]  # sebo: grado + 1ra/2da (ya NO A/B/C solo)
 CAL_GEN   = ["UNICA", "A", "B", "C", "D", "E", FUERA]
-CAL_GLI   = ["A", "B", "C", "D", "F/E", FUERA]              # glicerina por glicerol%: A>80 B>70 C/D
+CAL_GLI   = ["A", "B", "C", "D", FUERA]                     # maestro: A glicerol>80 · B 70-80 · C 60-80 sed<=10 · D 60-80 sed>10
 CAL_INS   = ["UNICA", FUERA, "RECHAZADO"]
 
 _TABLE = "produccion.lab_evaluaciones"
@@ -587,10 +587,32 @@ def _form_para_producto(producto_lab):
     return _form_GENERICO
 
 
+def _cal_gli_sugerida(glicerol, sedimento):
+    """Calidad de glicerina segun maestro: por %glicerol y, para 60-80, por %sedimento."""
+    try:
+        g = float(glicerol)
+    except (TypeError, ValueError):
+        return None
+    if g > 80:
+        return "A"
+    if g > 70:
+        return "B"
+    if g > 60:
+        try:
+            sed = float(sedimento)
+        except (TypeError, ValueError):
+            sed = None
+        return "D" if (sed is not None and sed > 10) else "C"
+    return FUERA
+
+
 def _form_GLICERINA(pf, ctx, tok, get_conn, usuario):
     """Glicerina: parámetros de calidad (glicerol, cenizas, MONG, pH, etc.)."""
     p = "gli"
     st.subheader("🧴 Glicerina · calidad")
+    st.caption("Calidad por **glicerol %** (y sedimento para C/D): "
+               "**A** >80 · **B** 70–80 · **C** 60–80 y sedimento ≤10 · **D** 60–80 y sedimento >10 · "
+               "**Fuera** ≤60. Parámetros: Glicerol, Cenizas, MONG, pH, Agua, Sedimento, Densidad, Azufre, Fósforo.")
     with st.form(_k(p, tok, "form")):
         cab = _cab(p, pf, tok)
         st.markdown("**Parámetros de glicerina**")
@@ -598,11 +620,12 @@ def _form_GLICERINA(pf, ctx, tok, get_conn, usuario):
         with c1:
             gli_glicerol = _n("Glicerol (%)", "gli_glicerol", pf, p, tok, "glol")
             gli_ceniza = _n("Cenizas (%)", "gli_ceniza", pf, p, tok, "cen")
+            gli_sed = _n("Sedimento (%)", "prc_sedimentos", pf, p, tok, "sed")
         with c2:
             gli_mong = _n("MONG (%)", "gli_mong", pf, p, tok, "mong")
             gli_ph = _n("pH", "eflu_ph", pf, p, tok, "ph")
-        with c3:
             prc_gli = _n("Glicerina (%)", "prc_glicerina", pf, p, tok, "gli")
+        with c3:
             prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
             ppm_azufre = _n("Azufre (ppm)", "ppm_azufre", pf, p, tok, "az")
             ppm_fosforo = _n("Fosforo (ppm)", "ppm_fosforo", pf, p, tok, "fos")
@@ -611,9 +634,17 @@ def _form_GLICERINA(pf, ctx, tok, get_conn, usuario):
         cier = _cierre(p, pf, tok, CAL_GLI, default_corriente="VEGETAL")
         enviar = st.form_submit_button("GUARDAR", use_container_width=True)
     if enviar:
+        _sug = _cal_gli_sugerida(gli_glicerol, gli_sed)
+        _cal = cier.get("calidad_final_lab")
+        if not _cal and _sug:
+            cier["calidad_final_lab"] = _sug
+            st.info(f"Calidad asignada automáticamente por parámetros: **{_sug}**.")
+        elif _cal and _sug and _cal != _sug:
+            st.warning(f"Elegiste calidad **{_cal}** pero por glicerol/sedimento correspondería **{_sug}**. Se guarda **{_cal}**.")
+            cier["conclusion"] = ((cier.get("conclusion") or "") + f" | Calidad sugerida por parámetros: {_sug}").strip(" |")
         data = dict(tipo_formulario="GLICERINA", producto_lab=(producto_lab or "GLICERINA"),
                     gli_glicerol=gli_glicerol, gli_ceniza=gli_ceniza, gli_mong=gli_mong,
-                    eflu_ph=gli_ph, prc_glicerina=prc_gli, prc_agua=prc_agua,
+                    eflu_ph=gli_ph, prc_glicerina=prc_gli, prc_agua=prc_agua, prc_sedimentos=gli_sed,
                     ppm_azufre=ppm_azufre, ppm_fosforo=ppm_fosforo,
                     densidad__g_ml=densidad, **cab, **cier)
         if _persistir("GLICERINA", data, ctx, get_conn, usuario):
