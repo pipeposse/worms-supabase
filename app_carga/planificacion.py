@@ -1054,6 +1054,26 @@ def _dlg_reaccion(USR, cat, conectar, idb):
         st.caption("Para el flujo completo (arrancar, cargar muestras paso a paso, decantar) usá la pestaña "
                    "**Trabajar** del panel. Esta ficha es para ediciones rápidas.")
 
+    if str(USR.get("rol") or "") in ROLES_DIRECCION:
+        st.divider()
+        with st.expander("🗑️ Eliminar esta reacción"):
+            st.caption("Anula la reacción y sus movimientos de stock (soft-delete, reversible en base). "
+                       "Desaparece del tablero y deja de contar. No se puede deshacer desde acá.")
+            _delck = st.checkbox(f"Confirmo eliminar {b['ident']}", key=f"dlg_del_ck_{idb}")
+            if st.button("🗑️ Eliminar definitivamente", disabled=not _delck, key=f"dlg_del_go_{idb}", use_container_width=True):
+                try:
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE produccion.fact_batch_proceso SET anulado=true WHERE id_batch=%s", (int(idb),))
+                            cur.execute("UPDATE produccion.fact_movimiento_stock SET anulado=true WHERE id_batch=%s", (int(idb),))
+                            cur.execute("UPDATE produccion.fact_batch_ticket_final SET anulado=true WHERE id_batch=%s", (int(idb),))
+                            audit.log("D", "fact_batch_proceso", int(idb), {"eliminada": str(b["ident"])})
+                    st.success(f"Reacción {b['ident']} eliminada.")
+                    st.session_state.pop("gr_tab_df", None)
+                    cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
+
 
 def _panel_tablero(USR, cat, conectar):
     st.caption("Centro de mando: cada reacción con su **etiqueta**, MP → producto (t), próxima etapa, ETA y "
