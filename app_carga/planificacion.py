@@ -1909,6 +1909,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         just_carga = st.text_input("Justificación de carga baja (<80%) *", key="pl_just_carga", max_chars=250,
                                    placeholder="ej. no hay más MP disponible de esta calidad")
     obs = st.text_input("Observaciones", key="pl_obs", placeholder="opcional")
+    _nombre_manual = st.text_input("Nombre / N° de la reacción (opcional)", key="pl_nombre_manual",
+                                   placeholder="dejalo vacío para que salga automático (ej. RX-2026-0027)")
     _borrador_guardar(conectar, USR)
 
     st.divider()
@@ -1927,7 +1929,14 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             st.error("Elegí el **tanque de KOH** y el **tanque de fuel oil** (sección 4) para descontar stock.")
             return
         mp_id = int(mp_df[mp_df["codigo_producto"] == mp].iloc[0]["id_producto"])
-        ident = siguiente_identificador("REACTORES")
+        _nm = (_nombre_manual or "").strip()
+        if _nm:
+            _dup = cat("SELECT 1 FROM produccion.fact_batch_proceso "
+                       "WHERE identificador_unidad=%s AND COALESCE(anulado,false)=false LIMIT 1", (_nm,))
+            if _dup is not None and not _dup.empty:
+                st.error(f"Ya existe una reacción con el nombre **{_nm}**. Elegí otro o dejalo vacío para que salga automático.")
+                return
+        ident = _nm if _nm else siguiente_identificador("REACTORES")
         params = {
             "kg_objetivo": round(q_ag, 0), "temp_inicial_c": temp, "tiempo_horas": horas,
             "acidez_pct": round(acidez, 3), "glicerol_pct": glicerol_v, "catalizador": catal,
