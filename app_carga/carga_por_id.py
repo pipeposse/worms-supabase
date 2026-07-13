@@ -140,6 +140,13 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
         unsafe_allow_html=True)
     st.markdown(_stepper(estado), unsafe_allow_html=True)
     _banner_corriente(b["corriente"])
+    if str(b.get("tipo_proceso") or "") == "PRODUCCION_ARE":
+        try:
+            from planificacion import render_checklist_limpieza
+            with st.expander("🧽 Limpieza post-corte (cañerías, bomba y filtros)", expanded=False):
+                render_checklist_limpieza(USR, cat, conectar, int(b["id_batch"]), b.get("tipo_proceso"))
+        except Exception:
+            pass
     with st.expander("✏️ Editar N° de producción / reacción"):
         _nid = st.text_input("Nuevo N°", value=str(b["ident"] or ""), key=f"pp_editid_{id_batch}")
         if st.button("💾 Guardar N°", key=f"pp_editid_go_{id_batch}"):

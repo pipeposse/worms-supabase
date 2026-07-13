@@ -727,6 +727,60 @@ def _crono_dt(sval, now):
 _EST_KW = {"PLANIFICADO": "carga", "REACCION": "reacci", "REPOSO": "repos", "DECANTACION": "decant"}
 
 
+_LIMPIEZA_ITEMS = [
+    "Barrido con vapor de todas las cañerías realizado",
+    "Cañerías quedaron vacías (sin producto)",
+    "Bomba limpia y vacía",
+    "Filtros limpios / destapados",
+]
+
+
+def render_checklist_limpieza(USR, cat, conectar, idb, tipo_proceso=None):
+    """Checklist de limpieza post-corte de reacción (ARE). Visible/editable para operario y dirección."""
+    if tipo_proceso is not None and str(tipo_proceso) != "PRODUCCION_ARE":
+        st.caption("La limpieza post-corte aplica a **producción ARE**.")
+        return
+    _ac = cat("SELECT (NULLIF(mediciones->>'acidez',''))::float AS a "
+              "FROM produccion.fact_evaluacion_interna "
+              "WHERE id_batch=%s AND mediciones ? 'acidez' AND NOT COALESCE(anulado,false) "
+              "ORDER BY ts DESC LIMIT 1", (int(idb),))
+    _acv = float(_ac.iloc[0]["a"]) if (_ac is not None and not _ac.empty and pd.notna(_ac.iloc[0]["a"])) else None
+    _cut = (_acv is not None and _acv < 13)
+    _stt = cat("SELECT item, hecho FROM produccion.fact_limpieza_reactor WHERE id_batch=%s", (int(idb),))
+    _done = {r["item"]: bool(r["hecho"]) for _, r in _stt.iterrows()} if (_stt is not None and not _stt.empty) else {}
+    _ndone = sum(1 for it in _LIMPIEZA_ITEMS if _done.get(it))
+    _total = len(_LIMPIEZA_ITEMS)
+    if _cut:
+        st.warning(f"🧽 **Reacción cortada (acidez {_acv:g} < 13)** — hay que hacer la **limpieza post-corte**: "
+                   "barrido con vapor y que **cañerías, bomba y filtros** queden vacíos/limpios. Evita que se tape todo.")
+    elif _acv is not None:
+        st.caption(f"Última acidez cargada: {_acv:g} (el corte es < 13).")
+    _prog = "✅ completa" if (_ndone == _total and _total > 0) else f"{_ndone}/{_total}"
+    st.markdown(f"**🧽 Limpieza post-corte de reacción — {_prog}**")
+    _vals = {}
+    for i, it in enumerate(_LIMPIEZA_ITEMS):
+        _vals[it] = st.checkbox(it, value=_done.get(it, False), key=f"lmp_{idb}_{i}")
+    _obs = st.text_input("Observaciones de la limpieza", value="", key=f"lmp_obs_{idb}")
+    if st.button("💾 Guardar limpieza", type="primary", key=f"lmp_save_{idb}", use_container_width=True):
+        try:
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    for it, v in _vals.items():
+                        cur.execute("INSERT INTO produccion.fact_limpieza_reactor (id_batch,item,hecho,id_usuario,ts,obs) "
+                                    "VALUES (%s,%s,%s,%s,now(),%s) "
+                                    "ON CONFLICT (id_batch,item) DO UPDATE SET "
+                                    " hecho=EXCLUDED.hecho, id_usuario=EXCLUDED.id_usuario, ts=now(), obs=EXCLUDED.obs",
+                                    (int(idb), it, bool(v), int(USR["id_usuario"]), ((_obs or "").strip() or None)))
+                    audit.log("U", "fact_limpieza_reactor", int(idb), {"hechos": sum(1 for v in _vals.values() if v)})
+            if all(_vals.values()):
+                st.success("✅ Limpieza post-corte completa.")
+            else:
+                st.success("Limpieza guardada (falta completar algún ítem).")
+            cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+
+
 def _recompute_final(cur, idb):
     cur.execute("UPDATE produccion.fact_batch_proceso SET kg_obtenido=("
                 " SELECT COALESCE(sum(kg),0) FROM produccion.fact_batch_ticket_final "
@@ -847,7 +901,7 @@ def _dlg_reaccion(USR, cat, conectar, idb):
     _tp_lbl = {"PRODUCCION_ARE": "🧴 PRODUCCIÓN ARE", "DESGOMADO_ACUOSO": "🫧 DESGOMADO ACUOSO"}.get(_tp, _tp or "—")
     st.markdown(f"### {b['ident']}  \n{b['etiqueta'] or '—'}")
     st.caption(f"{_tp_lbl} · estado **{b['estado']}**")
-    t0, t1, t2, t3, tPF, t4 = st.tabs(["📄 Resumen", "📝 Nombre & inicio", "🧫 Evaluación interna", "🎯 Destino final", "🏁 Producto final (tickets)", "⏯️ Trabajar"])
+    t0, t1, t2, t3, tPF, tLM, t4 = st.tabs(["📄 Resumen", "📝 Nombre & inicio", "🧫 Evaluación interna", "🎯 Destino final", "🏁 Producto final (tickets)", "🧽 Limpieza post-corte", "⏯️ Trabajar"])
 
     with t0:
         _rp = b.get("parametros_proceso")
@@ -1049,6 +1103,9 @@ def _dlg_reaccion(USR, cat, conectar, idb):
 
     with tPF:
         _ficha_final_tickets(USR, cat, conectar, int(idb), b.get("producto_obj"))
+
+    with tLM:
+        render_checklist_limpieza(USR, cat, conectar, int(idb), b.get("tipo_proceso"))
 
     with t4:
         st.caption("Para el flujo completo (arrancar, cargar muestras paso a paso, decantar) usá la pestaña "
