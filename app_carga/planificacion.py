@@ -1275,6 +1275,157 @@ def _render_gantt(items, now):
     st.markdown("".join(html), unsafe_allow_html=True)
 
 
+def _terminadas_sugerencias(df, cat):
+    """Sugerencia de kg real por variación de tanque, prorrateada por fórmula entre reacciones que comparten tanque+día."""
+    sug = {}
+    _need = df[(df["tickets_kg"].fillna(0) <= 0) & df["id_tanque_destino"].notna() & df["cierre_ts"].notna()].copy()
+    if _need.empty:
+        return sug
+    _need["_d"] = _need["cierre_ts"].dt.date
+    _cache = {}
+    def _snaps(idt):
+        if idt not in _cache:
+            _cache[idt] = cat("SELECT medido_en, litros::float AS litros FROM produccion.fact_stock_tanque "
+                              "WHERE id_tanque=%s AND litros IS NOT NULL ORDER BY medido_en", (int(idt),))
+        return _cache[idt]
+    for (idt, _d), grp in _need.groupby(["id_tanque_destino", "_d"]):
+        _s = _snaps(idt)
+        if _s is None or _s.empty:
+            continue
+        _s = _s.copy(); _s["medido_en"] = pd.to_datetime(_s["medido_en"])
+        cmin = grp["cierre_ts"].min(); cmax = grp["cierre_ts"].max()
+        _bef = _s[_s["medido_en"] <= cmin]; _aft = _s[_s["medido_en"] >= cmax]
+        if _bef.empty or _aft.empty:
+            continue
+        net_l = float(_aft.iloc[0]["litros"]) - float(_bef.iloc[-1]["litros"])
+        dens = float(grp.iloc[0]["densidad"] or 0.91)
+        net_kg = net_l * dens
+        _w = grp["formula_kg"].fillna(grp["objetivo_kg"]).fillna(0).astype(float)
+        _wsum = float(_w.sum())
+        for i in range(len(grp)):
+            share = (float(_w.iloc[i]) / _wsum) if _wsum > 0 else (1.0 / len(grp))
+            sug[int(grp.iloc[i]["id_batch"])] = max(0.0, net_kg * share)
+    return sug
+
+
+def _reacciones_terminadas(USR, cat, conectar):
+    st.subheader("🏁 Reacciones terminadas — objetivo vs real")
+    st.caption("Máximo por reactor · objetivo/fórmula · real por tickets de pesada · real por variación de tanque. "
+               "Para ARE sin tickets, la variación del tanque se **sugiere** (prorrateada por fórmula si comparten tanque) y es **editable**. "
+               "El horario de **Acopio final** (cuando debería variar el tanque) se edita acá abajo o en *Etapas & horarios*.")
+    df = cat("SELECT * FROM produccion.v_reaccion_terminada ORDER BY cierre_ts DESC NULLS LAST, creado_en DESC")
+    if df is None or df.empty:
+        st.info("No hay reacciones terminadas todavía (finalizadas o con kilos finales cargados)."); return
+    df = df.copy(); df["cierre_ts"] = pd.to_datetime(df["cierre_ts"])
+    sug = _terminadas_sugerencias(df, cat)
+
+    def _real_row(r):
+        _idb = int(r["id_batch"]); _tk = float(r["tickets_kg"] or 0)
+        _as = r["real_asignado_kg"]
+        if pd.notna(_as) and float(_as) > 0:
+            return float(_as), (r["real_metodo"] or "manual")
+        if _tk > 0:
+            return _tk, "tickets"
+        _sg = sug.get(_idb)
+        return (float(_sg), "tanque") if _sg is not None else (None, None)
+
+    rows = []
+    for _, r in df.iterrows():
+        _real, _met = _real_row(r)
+        _obj = float(r["objetivo_kg"]) if pd.notna(r["objetivo_kg"]) else None
+        _desv = ((_real - _obj) / _obj * 100.0) if (_real is not None and _obj) else None
+        rows.append({
+            "N°": r["ident"], "Reacción": r["etiqueta"], "Reactor": r["reactor"], "Producto": r["producto"],
+            "Máx reactor (t)": (float(r["max_kg"]) / 1000 if pd.notna(r["max_kg"]) else None),
+            "Objetivo (t)": (_obj / 1000 if _obj else None),
+            "Fórmula (t)": (float(r["formula_kg"]) / 1000 if pd.notna(r["formula_kg"]) else None),
+            "Real tickets (t)": (float(r["tickets_kg"]) / 1000 if float(r["tickets_kg"] or 0) > 0 else None),
+            "Real tanque sug (t)": (sug.get(int(r["id_batch"])) / 1000 if sug.get(int(r["id_batch"])) is not None else None),
+            "Real (t)": (_real / 1000 if _real is not None else None),
+            "Método": _met or "—",
+            "Desvío %": (round(_desv, 1) if _desv is not None else None),
+        })
+    _disp = pd.DataFrame(rows)
+    _numcols = ["Máx reactor (t)", "Objetivo (t)", "Fórmula (t)", "Real tickets (t)", "Real tanque sug (t)", "Real (t)"]
+    st.dataframe(_disp, hide_index=True, use_container_width=True,
+                 column_config={**{c: st.column_config.NumberColumn(format="%.2f") for c in _numcols},
+                                "Desvío %": st.column_config.NumberColumn(format="%.1f%%")})
+
+    st.divider()
+    st.markdown("##### Editar una reacción terminada")
+    _opt = df.apply(lambda r: f"{r['ident']} · {r['etiqueta']}", axis=1).tolist()
+    _sel = st.selectbox("Reacción", _opt, key="term_sel")
+    r = df.iloc[_opt.index(_sel)]
+    idb = int(r["id_batch"])
+    _real0, _met0 = _real_row(r)
+    cA, cB, cC = st.columns(3)
+    cA.metric("Máx reactor (t)", f"{float(r['max_kg'])/1000:.2f}" if pd.notna(r["max_kg"]) else "—")
+    cB.metric("Objetivo (t)", f"{float(r['objetivo_kg'])/1000:.2f}" if pd.notna(r["objetivo_kg"]) else "—")
+    cC.metric("Real actual (t)", f"{_real0/1000:.2f}" if _real0 is not None else "—", _met0 or None)
+
+    # editar horario de Acopio final (cierre) -> mueve la ventana de variación de tanque
+    _cts = r["cierre_ts"]
+    _cts_ts = pd.to_datetime(_cts) if pd.notna(_cts) else None
+    st.markdown("**Horario de Acopio final** (cuando debería variar el tanque)")
+    e1, e2 = st.columns(2)
+    _cd = e1.date_input("Fecha acopio final", value=(_cts_ts.date() if _cts_ts is not None else None), key=f"term_cd_{idb}", format="DD/MM/YYYY")
+    _ch = e2.time_input("Hora acopio final", value=(_cts_ts.time() if _cts_ts is not None else None), key=f"term_ch_{idb}", step=300)
+    if st.button("💾 Guardar horario de acopio final", key=f"term_cs_{idb}"):
+        if _cd is None or _ch is None:
+            st.warning("Poné fecha y hora.")
+        else:
+            try:
+                _iso = f"{_cd.isoformat()} {_ch.strftime('%H:%M:%S')}"
+                with conectar(int(USR["id_usuario"])) as (conn, audit):
+                    with conn.cursor() as cur:
+                        _ex = None
+                        cur.execute("SELECT id_evento_etapa FROM produccion.fact_etapa_evento "
+                                    "WHERE id_batch=%s AND etapa ILIKE %s ORDER BY inicio_ts DESC NULLS LAST LIMIT 1",
+                                    (idb, "%acopio%"))
+                        _row = cur.fetchone(); _ex = _row[0] if _row else None
+                        if _ex:
+                            cur.execute("UPDATE produccion.fact_etapa_evento "
+                                        "SET inicio_ts=(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') WHERE id_evento_etapa=%s",
+                                        (_iso, int(_ex)))
+                        else:
+                            cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch, etapa, inicio_ts) "
+                                        "VALUES (%s,'ACOPIO FINAL',(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires'))",
+                                        (idb, _iso))
+                        audit.log("U", "fact_etapa_evento", idb, {"acopio_final": _iso})
+                st.success("Horario de acopio final guardado (recalcula la variación sugerida)."); cat.clear(); st.rerun()
+            except Exception as e:
+                st.exception(e)
+
+    # asignar / editar kg real
+    st.markdown("**Producción real de la reacción**")
+    _sg = sug.get(idb)
+    if float(r["tickets_kg"] or 0) > 0:
+        st.caption(f"Tiene tickets de pesada: real por tickets = **{float(r['tickets_kg'])/1000:.2f} t** (autoritativo).")
+    if _sg is not None:
+        st.caption(f"Sugerido por variación de tanque (prorrateado): **{_sg/1000:.2f} t**.")
+    _def_real_t = (_real0/1000.0) if _real0 is not None else 0.0
+    _real_t = st.number_input("Real (t) — editable", min_value=0.0, value=round(_def_real_t, 2), step=0.1, format="%.2f", key=f"term_real_{idb}")
+    _obs = st.text_input("Observaciones del cierre", value="", key=f"term_obs_{idb}")
+    if st.button("💾 Guardar producción real", type="primary", key=f"term_save_{idb}", use_container_width=True):
+        try:
+            _met = "manual"
+            if float(r["tickets_kg"] or 0) > 0 and abs(_real_t*1000 - float(r["tickets_kg"])) < 1:
+                _met = "tickets"
+            elif _sg is not None and abs(_real_t*1000 - _sg) < 1:
+                _met = "tanque"
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO produccion.fact_reaccion_cierre (id_batch, real_kg, metodo, obs, id_usuario, actualizado_en) "
+                                "VALUES (%s,%s,%s,%s,%s,now()) "
+                                "ON CONFLICT (id_batch) DO UPDATE SET real_kg=EXCLUDED.real_kg, metodo=EXCLUDED.metodo, "
+                                " obs=EXCLUDED.obs, id_usuario=EXCLUDED.id_usuario, actualizado_en=now()",
+                                (idb, float(_real_t*1000), _met, ((_obs or "").strip() or None), int(USR["id_usuario"])))
+                    audit.log("U", "fact_reaccion_cierre", idb, {"real_kg": float(_real_t*1000), "metodo": _met})
+            st.success(f"Producción real guardada: {_real_t:.2f} t ({_met})."); cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+
+
 def _gestion_reacciones(USR, cat, conectar):
     st.subheader("🛠️ Gestión de reacciones")
     _g0, _g1, _g2, _g3, _g4 = st.tabs(["🎛️ Tablero", "⏯️ Trabajar (arrancar / cargar muestras / decantar)",
@@ -1503,10 +1654,12 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     if _grupo.startswith("⚙️"):
         st.caption("Reacciones ya en marcha que esperan una decisión de dirección (reposo, destino, etc.).")
         _admin = st.radio("Proceso a administrar",
-                          ["🛠️ Gestión de reacciones", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"],
+                          ["🛠️ Gestión de reacciones", "🏁 Terminadas (objetivo vs real)", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"],
                           horizontal=True, key="pl_admin")
         if _admin.startswith("🛠️"):
             _gestion_reacciones(USR, cat, conectar)
+        elif _admin.startswith("🏁"):
+            _reacciones_terminadas(USR, cat, conectar)
         elif _admin.startswith("🧴"):
             import decantacion
             decantacion.destinos(USR, cat, conectar)
