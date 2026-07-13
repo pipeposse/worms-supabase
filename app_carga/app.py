@@ -3386,8 +3386,12 @@ if st.session_state.section != "CARGAS":
                         st.caption(_cap_txt)
                         cf, ch = st.columns(2)
                         _now_ar = _dtmod.now(_tzmod(_tdmod(hours=-3)))
-                        _fch = cf.date_input("Fecha medición", _now_ar.date(), key="tq_fch_c")
-                        _hr = ch.time_input("Hora medición", value=_now_ar.time().replace(microsecond=0), key="tq_hr_c")
+                        if "tq_fch_c" not in st.session_state:
+                            st.session_state["tq_fch_c"] = _now_ar.date()
+                        if "tq_hr_c" not in st.session_state:
+                            st.session_state["tq_hr_c"] = _now_ar.time().replace(second=0, microsecond=0)
+                        _fch = cf.date_input("Fecha medición", key="tq_fch_c")
+                        _hr = ch.time_input("Hora medición", key="tq_hr_c", step=60)
                         from datetime import datetime as _dtq
                         _medido = _dtq.combine(_fch, _hr)
                         _obs = st.text_input("Observaciones", max_chars=200, key="tq_obs_c")
