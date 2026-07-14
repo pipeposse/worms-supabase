@@ -1406,7 +1406,8 @@ def _reacciones_terminadas(USR, cat, conectar):
     st.dataframe(_disp, hide_index=True, use_container_width=True,
                  column_config={**{c: st.column_config.NumberColumn(format="%.2f") for c in _numcols},
                                 **{c: st.column_config.NumberColumn(format="%.1f%%") for c in _pctcols}})
-    st.caption("**Máx reactor** = producción con el reactor lleno (capacidad × densidad). "
+    st.caption("**Máx reactor** = producción que saldría **por fórmula** si se cargara el reactor al máximo "
+               "(objetivo escalado por capacidad ÷ litros de MP cargados). "
                "**Propuesto vs máx** = cuánto por debajo del máximo se planificó · **Real vs máx** = cuánto se produjo vs el máximo posible · "
                "**Real vs objetivo** = desvío del final (tickets o tanque) respecto a lo propuesto.")
 
