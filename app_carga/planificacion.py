@@ -995,8 +995,8 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                 with conectar(uid) as (conn, audit):
                     with conn.cursor() as cur:
                         cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL", (int(idb),))
-                        cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,id_usuario) VALUES (%s,'REACCIONANDO',now(),%s)", (int(idb), uid))
-                        cur.execute("UPDATE produccion.fact_batch_proceso SET estado='REACCION', etapa_actual='REACCIONANDO', "
+                        cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,id_usuario) VALUES (%s,'REACCION',now(),%s)", (int(idb), uid))
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET estado='REACCION', etapa_actual='REACCION', "
                                     "inicio_ts=COALESCE(inicio_ts,now()), id_usuario_estado=%s, motivo_estado='Arrancada desde ficha' WHERE id_batch=%s", (uid, int(idb)))
                     audit.log("U", "fact_batch_proceso", int(idb), {"estado": "REACCION"})
                 st.success("Reacción arrancada."); cat.clear(); st.rerun()
