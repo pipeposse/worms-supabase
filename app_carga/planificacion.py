@@ -1796,22 +1796,28 @@ def _reacciones_terminadas(USR, cat, conectar):
             st.exception(e)
 
     st.divider()
-    st.markdown("**🔎 Chequear si fue real — variaciones de tanque parecidas a lo teórico**")
-    _teo = float(r["objetivo_kg"]) if pd.notna(r["objetivo_kg"]) else (float(r["formula_kg"]) if pd.notna(r["formula_kg"]) else None)
+    st.markdown("**🔎 Validar acopio a tanque — ¿la producción realmente entró?**")
+    _teo = float(r["tickets_kg"]) if float(r["tickets_kg"] or 0) > 0 else (
+           float(r["formula_kg"]) if pd.notna(r["formula_kg"]) else (float(r["objetivo_kg"]) if pd.notna(r["objetivo_kg"]) else None))
     _finref = pd.to_datetime(r["fin_local"]) if pd.notna(r["fin_local"]) else (pd.to_datetime(r["cierre_ts"]).tz_localize(None) if pd.notna(r["cierre_ts"]) else None)
     if _finref is None:
-        st.caption("Cargá el **fin** (o el acopio final) para poder buscar la variación en tanques.")
+        st.caption("Cargá el **fin** (o el acopio final) para validar el acopio en tanques.")
     elif not pd.notna(r["id_producto"]):
-        st.caption("La reacción no tiene producto asignado para buscar tanques.")
+        st.caption("La reacción no tiene producto asignado.")
     else:
         _teo_txt = f"{_teo/1000:.2f} t" if _teo else "—"
-        st.caption(f"Busca aumentos de **{r['producto']}** en los tanques alrededor del fin "
-                   f"({_finref.strftime('%d/%m %H:%M')}), cercanos a lo teórico ({_teo_txt}).")
-        _win = st.number_input("Ventana ± horas alrededor del fin", 1, 240, 24, step=1, key=f"term_win_{idb}")
-        if st.button("🔎 Buscar variaciones", key=f"term_scan_{idb}"):
+        st.caption(f"Busca en qué tanque de **{r['producto']}** entró la producción **después del cierre** "
+                   f"({_finref.strftime('%d/%m %H:%M')}). Se valida contra **{_teo_txt}** (tickets si hay, si no formulado) "
+                   "y se **restan ingresos de portería (externos)**. Estados: 🟢 confirmado · 🟡 probable/parcial · 🟠 pendiente de medición · 🔴 sin evidencia.")
+        _win = st.number_input("Ventana de búsqueda (horas alrededor del fin)", 2, 336, 48, step=2, key=f"term_win_{idb}")
+        if st.button("🔎 Validar", key=f"term_scan_{idb}"):
             _lo = (_finref - pd.Timedelta(hours=float(_win))).strftime("%Y-%m-%d %H:%M:%S")
             _hi = (_finref + pd.Timedelta(hours=float(_win))).strftime("%Y-%m-%d %H:%M:%S")
             _dens = float(r["densidad"] or 0.91)
+            _extq = cat("SELECT COALESCE(sum(GREATEST(peso_neto,0)),0) AS kg FROM produccion.v_transacciones_limpias "
+                        "WHERE upper(COALESCE(lab_producto,'')||'-'||COALESCE(lab_calidad,''))=upper(%s) "
+                        "AND fecha_entrada BETWEEN %s::date AND %s::date", (str(r["producto"]), _lo, _hi))
+            _ext_kg = float(_extq.iloc[0]["kg"]) if (_extq is not None and not _extq.empty) else 0.0
             _tks = cat("SELECT DISTINCT t.id_tanque, t.nombre, t.codigo FROM produccion.dim_tanque t "
                        "LEFT JOIN produccion.dim_tanque_producto tp ON tp.id_tanque=t.id_tanque "
                        "WHERE COALESCE(t.activo,true) AND (t.id_producto_principal=%s OR tp.id_producto=%s) "
@@ -1824,35 +1830,59 @@ def _reacciones_terminadas(USR, cat, conectar):
                              "AND medido_en BETWEEN (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') "
                              "AND (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') ORDER BY medido_en",
                              (int(_tk["id_tanque"]), _lo, _hi))
-                    if _m is None or len(_m) < 2:
+                    if _m is None or _m.empty:
                         continue
                     _m = _m.copy(); _m["medido_en"] = pd.to_datetime(_m["medido_en"])
-                    _net_l = float(_m.iloc[-1]["litros"]) - float(_m.iloc[0]["litros"])
-                    _best_l = float(_m["litros"].diff().fillna(0).max())
-                    _use_l = max(_net_l, _best_l)
-                    _dkg = _use_l * _dens
-                    if _dkg <= 0:
+                    _bef = _m[_m["medido_en"] <= _finref]; _aft = _m[_m["medido_en"] > _finref]
+                    _tank = f"{_tk['nombre']} · {_tk['codigo']}"; _idt = int(_tk["id_tanque"])
+                    _desde = (_bef.iloc[-1]["medido_en"].strftime("%d/%m %H:%M") if not _bef.empty else _m.iloc[0]["medido_en"].strftime("%d/%m %H:%M"))
+                    if _aft.empty:
+                        _res.append({"id_tanque": _idt, "tanque": _tank, "estado": "🟠 Pendiente medición",
+                                     "delta_kg": 0.0, "delta_t": 0.0, "net_t": 0.0, "desde": _desde, "hasta": "—",
+                                     "coinc": "—", "conf": None, "_score": (3, 0.0)})
                         continue
-                    _coinc = (max(0.0, (1 - abs(_dkg - _teo) / _teo)) * 100) if _teo else None
-                    _res.append({"id_tanque": int(_tk["id_tanque"]), "tanque": f"{_tk['nombre']} · {_tk['codigo']}",
-                                 "delta_kg": _dkg, "delta_t": _dkg / 1000.0,
-                                 "desde": _m.iloc[0]["medido_en"].strftime("%d/%m %H:%M"),
-                                 "hasta": _m.iloc[-1]["medido_en"].strftime("%d/%m %H:%M"),
-                                 "coinc": (f"{_coinc:.0f}%" if _coinc is not None else "—"),
-                                 "_abs": (abs(_dkg - _teo) if _teo else 0.0)})
-                _res = sorted(_res, key=lambda x: x["_abs"])
+                    _base = float(_bef.iloc[-1]["litros"]) if not _bef.empty else float(_m.iloc[0]["litros"])
+                    _after_l = float(_aft.iloc[0]["litros"])
+                    _net_l = _after_l - _base
+                    _best_l = float(_m["litros"].diff().fillna(0).max())
+                    _inc_l = max(_net_l, _best_l, 0.0)
+                    _attrib = _inc_l * _dens
+                    _net_kg = _net_l * _dens
+                    _conf = (max(0.0, 1 - abs(_attrib - _teo) / _teo)) if _teo else None
+                    if _teo and _attrib > 0 and abs(_attrib - _teo) <= max(200.0, _teo * 0.10):
+                        _est = "🟢 Confirmado"; _sc = (0, abs(_attrib - _teo))
+                    elif _teo and _attrib >= _teo * 0.4:
+                        _est = "🟡 Probable"; _sc = (1, abs(_attrib - _teo))
+                    elif _attrib <= 0:
+                        _est = "🔴 Sin evidencia"; _sc = (4, 0.0)
+                    else:
+                        _est = "🟡 Parcial"; _sc = (2, abs(_attrib - (_teo or _attrib)))
+                    _res.append({"id_tanque": _idt, "tanque": _tank, "estado": _est,
+                                 "delta_kg": _attrib, "delta_t": _attrib / 1000.0, "net_t": _net_kg / 1000.0,
+                                 "desde": _desde, "hasta": _aft.iloc[0]["medido_en"].strftime("%d/%m %H:%M"),
+                                 "coinc": (f"{_conf*100:.0f}%" if _conf is not None else "—"), "conf": _conf, "_score": _sc})
+                _res = sorted(_res, key=lambda x: x["_score"])
             st.session_state[f"term_scan_res_{idb}"] = _res
+            st.session_state[f"term_scan_ext_{idb}"] = _ext_kg
         _res = st.session_state.get(f"term_scan_res_{idb}")
+        _ext_kg = float(st.session_state.get(f"term_scan_ext_{idb}", 0.0))
         if _res is not None:
+            if _ext_kg > 0:
+                st.warning(f"⚠️ En la ventana hubo **{_ext_kg/1000:.2f} t** de {r['producto']} ingresadas por **portería (externos)** — "
+                           "si algún aumento de tanque coincide con eso, no es producción.")
             if not _res:
-                st.warning("No encontré variaciones de tanque de este producto en esa ventana. Ampliá las horas, revisá el fin, o cargá el real manual arriba.")
+                st.warning("No hay tanques de este producto con mediciones en la ventana. Ampliá las horas o cargá el real manual arriba.")
             else:
-                st.dataframe(pd.DataFrame([{"Tanque": x["tanque"], "Δ (t)": x["delta_t"], "Desde": x["desde"],
-                                           "Hasta": x["hasta"], "Coincide": x["coinc"]} for x in _res]),
+                _best = _res[0]
+                st.markdown(f"**Resultado:** {_best['estado']} — mejor candidato **{_best['tanque']}** "
+                            f"(entró ≈ {_best['delta_t']:.2f} t · coincidencia {_best['coinc']}).")
+                st.dataframe(pd.DataFrame([{"Estado": x["estado"], "Tanque": x["tanque"], "Entró (t)": x["delta_t"],
+                                           "Δ neto (t)": x["net_t"], "Coincide": x["coinc"], "Desde": x["desde"], "Hasta": x["hasta"]} for x in _res]),
                              hide_index=True, use_container_width=True,
-                             column_config={"Δ (t)": st.column_config.NumberColumn(format="%.2f")})
-                _ropt = [f"{x['tanque']} · Δ {x['delta_t']:.2f} t · {x['desde']}→{x['hasta']} · coincide {x['coinc']}" for x in _res]
-                _rsel = st.selectbox("Asociar esta variación", _ropt, key=f"term_scan_sel_{idb}")
+                             column_config={"Entró (t)": st.column_config.NumberColumn(format="%.2f"),
+                                            "Δ neto (t)": st.column_config.NumberColumn(format="%.2f")})
+                _ropt = [f"{x['estado']} · {x['tanque']} · entró {x['delta_t']:.2f} t · {x['coinc']}" for x in _res]
+                _rsel = st.selectbox("Asignar la más probable como producción real", _ropt, key=f"term_scan_sel_{idb}")
                 _rx = _res[_ropt.index(_rsel)]
                 _setdest = st.checkbox("También fijar este tanque como **destino final** de la reacción",
                                        value=True, key=f"term_setdest_{idb}")
