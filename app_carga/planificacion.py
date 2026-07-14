@@ -1214,9 +1214,11 @@ def _dlg_reaccion(USR, cat, conectar, idb):
                 st.error("No se pudo guardar (¿N° repetido?)."); st.exception(e)
 
     with t2:
-        _et_opts = ["Carga", "Reacción", "Reposo", "Decantación", "Acopio final"]
-        _et_def = {"PLANIFICADO": "Carga", "REACCION": "Reacción", "REPOSO": "Reposo", "DECANTACION": "Decantación"}.get(str(b["estado"]), "Reacción")
-        _et = st.selectbox("Etapa", _et_opts, index=_et_opts.index(_et_def) if _et_def in _et_opts else 1, key=f"dlg_et_{idb}")
+        _et_codes = ["CARGA", "REACCION", "REPOSANDO", "DECANTACION", "EN_TANQUE"]
+        _et_lbl = {"CARGA": "Carga", "REACCION": "Reacción", "REPOSANDO": "Reposo", "DECANTACION": "Decantación", "EN_TANQUE": "Acopio final"}
+        _et_def = {"PLANIFICADO": "CARGA", "REACCION": "REACCION", "REPOSO": "REPOSANDO", "DECANTACION": "DECANTACION"}.get(str(b["estado"]), "REACCION")
+        _et = st.selectbox("Etapa", _et_codes, index=(_et_codes.index(_et_def) if _et_def in _et_codes else 1),
+                           format_func=lambda c: _et_lbl.get(c, c), key=f"dlg_et_{idb}")
         _now_ev = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").tz_localize(None)
         cF, cH = st.columns(2)
         _ed = cF.date_input("Fecha de la evaluación", value=_now_ev.date(), key=f"dlg_evd_{idb}", format="DD/MM/YYYY")
