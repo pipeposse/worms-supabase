@@ -882,6 +882,57 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
         st.caption(f"⚖️ **Kilos finales de la reacción = {_tot_kg:,.0f} kg ({_tot_kg/1000:.2f} t)** — suma de los tickets asignados.")
 
 
+def _ficha_mp_tickets(USR, cat, conectar, idb):
+    _mp = cat("SELECT id_mov_stock, COALESCE(producto, codigo_insumo, '—') AS producto, "
+              " COALESCE(ticket_porteria,'') AS tickets, round(abs(COALESCE(kg,0))::numeric,0) AS kg "
+              "FROM produccion.fact_movimiento_stock "
+              "WHERE id_batch=%s AND rol='MP' AND COALESCE(anulado,false)=false ORDER BY id_mov_stock", (int(idb),))
+    if _mp is None or _mp.empty:
+        return
+    with st.expander("🚛 Tickets de portería de la materia prima (definir · chequear · editar)"):
+        st.caption("Editá los N° de ticket de balanza asociados a cada MP (separados por coma). "
+                   "El chequeo compara la suma de pesos de portería contra los kg cargados.")
+        _view = _mp.drop(columns=["id_mov_stock"]).rename(
+            columns={"producto": "Producto", "tickets": "Tickets portería", "kg": "Kg cargados"})
+        ed = st.data_editor(_view, hide_index=True, use_container_width=True,
+                            disabled=["Producto", "Kg cargados"], key=f"mpk_ed_{idb}",
+                            column_config={"Kg cargados": st.column_config.NumberColumn(format="%g")})
+        cc1, cc2 = st.columns(2)
+        if cc1.button("💾 Guardar tickets", type="primary", key=f"mpk_save_{idb}", use_container_width=True):
+            try:
+                with conectar(int(USR["id_usuario"])) as (conn, audit):
+                    with conn.cursor() as cur:
+                        for i in range(len(ed)):
+                            _tk = (str(ed.iloc[i]["Tickets portería"]).strip() or None)
+                            cur.execute("UPDATE produccion.fact_movimiento_stock SET ticket_porteria=%s WHERE id_mov_stock=%s",
+                                        (_tk, int(_mp.iloc[i]["id_mov_stock"])))
+                        audit.log("U", "fact_movimiento_stock", int(idb), {"mp_tickets": "editado"})
+                st.success("Tickets de MP actualizados."); cat.clear(); st.rerun()
+            except Exception as e:
+                st.exception(e)
+        if cc2.button("🔎 Chequear contra portería", key=f"mpk_chk_{idb}", use_container_width=True):
+            for i in range(len(ed)):
+                _prod = _mp.iloc[i]["producto"]
+                _tks = [t.strip() for t in str(ed.iloc[i]["Tickets portería"]).replace(";", ",").split(",") if t.strip()]
+                if not _tks:
+                    st.caption(f"{_prod}: sin tickets cargados."); continue
+                q = cat("SELECT transaccion::text AS t, round(abs(COALESCE(peso_neto,0))::numeric,0) AS kg "
+                        "FROM produccion.v_transacciones_limpias WHERE transaccion::text = ANY(%s)", (_tks,))
+                _found = {str(r["t"]): float(r["kg"]) for _, r in q.iterrows()} if (q is not None and not q.empty) else {}
+                _suma = sum(_found.values())
+                _falt = [t for t in _tks if t not in _found]
+                _kgc = float(_mp.iloc[i]["kg"] or 0)
+                _dif = _suma - _kgc
+                _txt = (f"**{_prod}** · tickets {', '.join(_tks)} → portería **{_suma:,.0f} kg** vs cargado "
+                        f"**{_kgc:,.0f} kg** (dif {_dif:+,.0f})")
+                if _falt:
+                    _txt += f" · ⚠️ no encontrados: {', '.join(_falt)}"
+                if (not _falt) and abs(_dif) <= max(50.0, _kgc * 0.02):
+                    st.success("✅ " + _txt)
+                else:
+                    st.warning("⚠️ " + _txt)
+
+
 def _destinos_are_ficha(USR, cat, conectar, idb, b):
     st.markdown("##### 🎯 Destinos para el cierre (ARE)")
     _taf = cat("SELECT id_tanque, nombre, codigo FROM produccion.dim_tanque WHERE COALESCE(activo,true) ORDER BY nombre")
@@ -1091,6 +1142,7 @@ def _dlg_reaccion(USR, cat, conectar, idb):
                 st.markdown("**Insumos y catalizador — de dónde vinieron**")
                 _tin = _ins[["item", "origen", "Cantidad"]].rename(columns={"item": "Insumo", "origen": "De dónde vino"})
                 st.dataframe(_tin, hide_index=True, use_container_width=True)
+        _ficha_mp_tickets(USR, cat, conectar, int(idb))
         st.caption("Editá nombre/inicio, evaluación interna y destino en las otras solapas.")
 
     with tAV:
