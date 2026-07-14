@@ -1921,7 +1921,12 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     productos = H.get("productos")
     bienes = H.get("bienes_uso_full")
 
-    st.title("🗓️ Centro de Planificación")
+    st.markdown(
+        "<div style='background:linear-gradient(120deg,#4338ca,#7c3aed);border-radius:16px;"
+        "padding:18px 22px;margin:0 0 12px'>"
+        "<div style='color:#fff;font-size:1.55rem;font-weight:900;letter-spacing:.3px'>🗓️ Centro de Planificación</div>"
+        "<div style='color:#e7e9ff;font-size:.9rem;margin-top:3px'>Planificá reacciones, seguí las que están en marcha, "
+        "revisá las terminadas y la variación de tanques.</div></div>", unsafe_allow_html=True)
     if USR.get("rol") not in ROLES_DIRECCION and "PLANIFICACION" not in (USR.get("secciones_app") or []):
         st.warning("Sección exclusiva de dirección (SUPERVISOR / ADMIN), salvo acceso otorgado por el administrador.")
         return
@@ -1934,16 +1939,25 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
 
-    _grupo = st.radio("¿Qué querés hacer?",
-                      ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas", "📊 Variación semanal"],
-                      horizontal=True, key="pl_grupo")
+    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas", "📊 Variación semanal"]
+    try:
+        _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
+                                      key="pl_grupo_sc", label_visibility="collapsed")
+    except Exception:
+        _grupo = st.radio("¿Qué querés hacer?", _grupo_opts, horizontal=True, key="pl_grupo")
+    _grupo = _grupo or _grupo_opts[0]
+    st.write("")
 
     # ----- Administrar procesos en curso (no es carga: se decide sobre reacciones ya arrancadas) -----
     if _grupo.startswith("⚙️"):
-        st.caption("Reacciones ya en marcha que esperan una decisión de dirección (reposo, destino, etc.).")
-        _admin = st.radio("Proceso a administrar",
-                          ["🛠️ Gestión de reacciones", "🏁 Terminadas (objetivo vs real)", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"],
-                          horizontal=True, key="pl_admin")
+        _admin_opts = ["🛠️ Gestión de reacciones", "🏁 Terminadas (objetivo vs real)", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"]
+        try:
+            _admin = st.segmented_control("Administrar", _admin_opts, default=_admin_opts[0],
+                                          key="pl_admin_sc", label_visibility="collapsed")
+        except Exception:
+            _admin = st.radio("Proceso a administrar", _admin_opts, horizontal=True, key="pl_admin")
+        _admin = _admin or _admin_opts[0]
+        st.write("")
         if _admin.startswith("🛠️"):
             _gestion_reacciones(USR, cat, conectar)
         elif _admin.startswith("🏁"):
@@ -1967,7 +1981,13 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         return
 
     # ----- Cargar nueva reacción: reactores o bachas -----
-    modo = st.radio("Tipo de carga", ["🏭 Reactores", "🛁 Bachas"], horizontal=True, key="pl_modo")
+    _modo_opts = ["🏭 Reactores", "🛁 Bachas"]
+    try:
+        modo = st.segmented_control("Tipo de carga", _modo_opts, default=_modo_opts[0],
+                                    key="pl_modo_sc", label_visibility="collapsed")
+    except Exception:
+        modo = st.radio("Tipo de carga", _modo_opts, horizontal=True, key="pl_modo")
+    modo = modo or _modo_opts[0]
     if modo.startswith("🛁"):
         _render_bachas(USR, cat, conectar, siguiente_identificador, H)
         return
