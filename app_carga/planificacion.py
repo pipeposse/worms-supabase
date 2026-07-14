@@ -1095,7 +1095,7 @@ def _dlg_reaccion(USR, cat, conectar, idb):
     _tp_lbl = {"PRODUCCION_ARE": "🧴 PRODUCCIÓN ARE", "DESGOMADO_ACUOSO": "🫧 DESGOMADO ACUOSO"}.get(_tp, _tp or "—")
     st.markdown(f"### {b['ident']}  \n{b['etiqueta'] or '—'}")
     st.caption(f"{_tp_lbl} · estado **{b['estado']}**")
-    t0, tAV, t1, t2, t3, tPF, tLM, t4 = st.tabs(["📄 Resumen", "⏭️ Avanzar", "📝 Nombre & inicio", "🧫 Evaluación interna", "🎯 Destino final", "🏁 Producto final (tickets)", "🧽 Limpieza post-corte", "⏯️ Trabajar"])
+    t0, tAV, tPF, t3, t2, t1, tLM, t4 = st.tabs(["📄 Resumen", "⏭️ Avanzar", "🏁 Tickets finales", "🎯 Destino", "🧫 Evaluación", "📝 Nombre & hora", "🧽 Limpieza", "⏯️ Trabajar"])
 
     with t0:
         _rp = b.get("parametros_proceso")
