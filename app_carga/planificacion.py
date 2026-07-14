@@ -604,6 +604,7 @@ def _panel_en_marcha(USR, cat, conectar):
              " COALESCE(mp.mp,'—') AS \"Materia prima\", COALESCE(mp.mp_tn,0) AS \"MP (t)\", "
              " COALESCE(dp.codigo_producto,'—') AS \"Producto\", "
              " round((COALESCE(NULLIF(b.parametros_proceso->>'are_objetivo_kg','')::numeric, "
+             "         NULLIF(b.parametros_proceso->>'afe_objetivo_kg','')::numeric, "
              "         NULLIF(b.parametros_proceso->>'kg_objetivo','')::numeric, b.kg_obtenido, 0)/1000.0)::numeric,2) AS \"Obj. (t)\", "
              " to_char(b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Inicio\", "
              " to_char(b.fin_ts AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS \"Fin\" "
@@ -1188,7 +1189,7 @@ def _dlg_reaccion(USR, cat, conectar, idb):
             try: _rp = _json.loads(_rp)
             except Exception: _rp = {}
         _rp = _rp or {}
-        _obj_kg = _rp.get("are_objetivo_kg") or _rp.get("kg_objetivo")
+        _obj_kg = _rp.get("are_objetivo_kg") or _rp.get("afe_objetivo_kg") or _rp.get("kg_objetivo")
         try: _obj_tn = float(_obj_kg) / 1000.0 if _obj_kg else None
         except (TypeError, ValueError): _obj_tn = None
         _mov = cat("SELECT m.rol, COALESCE(m.producto, m.codigo_insumo, '—') AS item, "
@@ -1443,6 +1444,7 @@ def _panel_tablero(USR, cat, conectar):
              " COALESCE(mp.mp,'—') AS mp, COALESCE(mp.mp_tn,0) AS mp_tn, "
              " COALESCE(dp.codigo_producto,'—') AS producto, "
              " round((COALESCE(NULLIF(b.parametros_proceso->>'are_objetivo_kg','')::numeric, "
+             "         NULLIF(b.parametros_proceso->>'afe_objetivo_kg','')::numeric, "
              "         NULLIF(b.parametros_proceso->>'kg_objetivo','')::numeric, b.kg_obtenido, 0)/1000.0)::numeric,2) AS obj_tn, "
              " b.parametros_proceso "
              "FROM produccion.fact_batch_proceso b "
@@ -2362,8 +2364,9 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             if not _ff.empty:
                 fin = _ff
     else:
+        _dcod_fin = 'AFE-G' if str(mp).upper().startswith('AFE-G') else 'AFE-S'
         fin = cat("SELECT id_producto, codigo_producto, nombre_producto FROM produccion.dim_producto "
-                  "WHERE activo AND codigo_producto='AFE-S'")
+                  "WHERE activo AND codigo_producto=%s", (_dcod_fin,))
     if fin.empty:
         fin = cat("SELECT id_producto, codigo_producto, nombre_producto FROM produccion.dim_producto "
                   "WHERE activo AND tipo_producto='FINAL' ORDER BY codigo_producto")
@@ -2474,7 +2477,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     gli_mov = None
     gli_recup_kg = None
     dens_gli = float(K("densidad_glicerina", 1.25) or 1.25)
-    glol_cargado = glol_req = are_kg = agua_kg = 0.0
+    glol_cargado = glol_req = are_kg = agua_kg = afe_s = 0.0
     agua_frac = 0.0
     est_pot = 0.0
     _fuel_l = 0.0
@@ -2609,34 +2612,60 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             ajustes["% goma"] = {"formula": _goma_def, "ajustado": pct_goma}
         if _tok and _goma_def == 0.0:
             st.caption("ℹ️ Los tickets elegidos no tienen % goma cargado en laboratorio (o está en 0).")
-        agua_kg = round(kg_used * pct_agua / 100.0, 1)          # agua de proceso = 5% del peso de la MP
-        fuel_kg = round(kg_used / 1000.0 * fuel_rate, 1)
-        afe_s = round(kg_used * (1 - merma / 100.0), 0)         # AFE-S esperado (merma 5%)
+        _es_afeg = str(mp).upper().startswith('AFE-G')
         d_fuel = DENS_INSUMO["FUEL_OIL"]
+        fuel_kg = round(kg_used / 1000.0 * fuel_rate, 1)
+        _prod_code = 'AFE-G' if _es_afeg else 'AFE-S'
+        if _es_afeg:
+            # AFE-G: desgomado térmico (calentamiento). NO usa agua de proceso.
+            # Rinde por reducción de sólido+agua: sale = MP × (1 − (%inicial − %final)/100).
+            agua_kg = 0.0
+            sc1, sc2 = st.columns(2)
+            _sol_ini = sc1.number_input("Sólido+agua inicial (%)", 0.0, 60.0,
+                                        value=float(K("afeg_solido_agua_inicial", 15.0) or 15.0),
+                                        step=0.5, key="pl_afeg_ini",
+                                        help="Contenido de sólido+agua de la MP al arrancar (AFE-G típico ~15%).")
+            _sol_fin = sc2.number_input("Sólido+agua final (%)", 0.0, 60.0,
+                                        value=float(K("afeg_solido_agua_final", 2.0) or 2.0),
+                                        step=0.5, key="pl_afeg_fin",
+                                        help="Contenido de sólido+agua al terminar por calentamiento (~2%).")
+            _fac = max(0.0, 1.0 - (_sol_ini - _sol_fin) / 100.0)
+            afe_s = round(kg_used * _fac, 0)
+        else:
+            _sol_ini = _sol_fin = None
+            agua_kg = round(kg_used * pct_agua / 100.0, 1)      # agua de proceso = 5% del peso de la MP
+            afe_s = round(kg_used * (1 - merma / 100.0), 0)     # AFE-S esperado (merma 5%)
         _agua_form, _fuel_form = agua_kg, fuel_kg
         with st.expander("✏️ Ajustar estimados a mano (si la fórmula no te cierra)", expanded=False):
             aj1, aj2 = st.columns(2)
             _agua_l = aj1.number_input("Agua de proceso (L)", 0.0, 1_000_000.0,
-                                       value=float(round(agua_kg, 0)), step=50.0, key="pl_aj_agua")
+                                       value=float(round(agua_kg, 0)), step=50.0, key="pl_aj_agua",
+                                       disabled=_es_afeg,
+                                       help=("AFE-G no usa agua (proceso térmico)." if _es_afeg else None))
             _fuel_l2 = aj2.number_input("Fuel oil (L)", 0.0, 1_000_000.0,
                                         value=float(round(fuel_kg / d_fuel, 0)), step=25.0, key="pl_aj_fuel2")
             st.caption(f"Fórmula: agua {agua_kg:,.0f} L · fuel {fuel_kg/d_fuel:,.0f} L ({fuel_kg:,.0f} kg)")
             if st.button("🔄 Volver a los valores de fórmula", key="pl_aj_rst2"):
                 st.session_state.pop("pl_aj_agua", None); st.session_state.pop("pl_aj_fuel2", None)
                 st.rerun()
-        agua_kg = round(_agua_l * 1.0, 1)
+        agua_kg = 0.0 if _es_afeg else round(_agua_l * 1.0, 1)
         fuel_kg = round(_fuel_l2 * d_fuel, 1)
         if abs(agua_kg - _agua_form) > 1:
             ajustes["agua (L)"] = {"formula": round(_agua_form), "ajustado": round(agua_kg)}
         if abs(fuel_kg - _fuel_form) > 1:
             ajustes["fuel (L)"] = {"formula": round(_fuel_form / d_fuel), "ajustado": round(fuel_kg / d_fuel)}
-        _dens_afe = float(densidad_de("AFE-S") or 0.92) if callable(densidad_de) else 0.92
+        _dens_afe = float(densidad_de(_prod_code) or 0.92) if callable(densidad_de) else 0.92
         d1, d2, d3, d4 = st.columns(4)
-        d1.metric("% Goma", f"{pct_goma:.2f}%")
-        d2.metric("Agua proceso", f"{_agua_l:,.0f} L", f"{agua_kg:,.0f} kg")
+        d1.metric("% Goma", "—" if _es_afeg else f"{pct_goma:.2f}%")
+        d2.metric("Agua proceso", f"{agua_kg:,.0f} kg",
+                  ("AFE-G: térmico, sin agua" if _es_afeg else None))
         d3.metric("Fuel", f"{fuel_kg/d_fuel:,.0f} L", f"{fuel_kg:,.0f} kg")
-        d4.metric("AFE-S esperado", f"{afe_s/_dens_afe:,.0f} L", f"{afe_s:,.0f} kg")
-        insumos_calc.append(("AGUA", "INSUMO", agua_kg))
+        d4.metric(f"{_prod_code} esperado", f"{afe_s/_dens_afe:,.0f} L", f"{afe_s:,.0f} kg")
+        if _es_afeg:
+            st.caption(f"AFE-G térmico: rinde = MP {kg_used:,.0f} kg × (1 − ({_sol_ini:.1f}% − {_sol_fin:.1f}%)) "
+                       f"= {afe_s:,.0f} kg. Sin agua de proceso (solo calentamiento + fuel).")
+        if not _es_afeg:
+            insumos_calc.append(("AGUA", "INSUMO", agua_kg))
         insumos_calc.append(("FUEL_OIL", "INSUMO", fuel_kg))
 
     # ---------- Resumen de parámetros de laboratorio (de la fuente) ----------
@@ -2800,6 +2829,9 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             "koh_kg": round(est_pot, 2) if proc == "PRODUCCION_ARE" else None,
             "fuel_l": round(_fuel_l, 0) if proc == "PRODUCCION_ARE" else None,
             "are_objetivo_kg": round(are_kg, 0) if proc == "PRODUCCION_ARE" else None,
+            "afe_objetivo_kg": round(afe_s, 0) if proc != "PRODUCCION_ARE" else None,
+            "afeg_solido_agua_inicial": (_sol_ini if proc != "PRODUCCION_ARE" else None),
+            "afeg_solido_agua_final": (_sol_fin if proc != "PRODUCCION_ARE" else None),
             "agua_agc_pct": round(agua_frac * 100, 2) if proc == "PRODUCCION_ARE" else None,
             "aporte_glicerina_pct": _aporte if proc == "PRODUCCION_ARE" else None,
             "litros_glicerina_total": round(litros_gli_tot, 1) if proc == "PRODUCCION_ARE" else None,
