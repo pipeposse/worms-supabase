@@ -1378,23 +1378,37 @@ def _reacciones_terminadas(USR, cat, conectar):
     for _, r in df.iterrows():
         _real, _met = _real_row(r)
         _obj = float(r["objetivo_kg"]) if pd.notna(r["objetivo_kg"]) else None
-        _desv = ((_real - _obj) / _obj * 100.0) if (_real is not None and _obj) else None
+        _maxv = float(r["max_kg"]) if pd.notna(r["max_kg"]) else None
+        _fref = r["inicio_local"] if pd.notna(r["inicio_local"]) else (r["cierre_ts"] if pd.notna(r["cierre_ts"]) else r["creado_en"])
+        _fref = pd.to_datetime(_fref) if (_fref is not None and pd.notna(_fref)) else None
+        _dprop = ((_obj - _maxv) / _maxv * 100.0) if (_obj and _maxv) else None
+        _drealmax = ((_real - _maxv) / _maxv * 100.0) if (_real is not None and _maxv) else None
+        _dobj = ((_real - _obj) / _obj * 100.0) if (_real is not None and _obj) else None
         rows.append({
-            "N°": r["ident"], "Reacción": r["etiqueta"], "Reactor": r["reactor"], "Producto": r["producto"],
-            "Máx reactor (t)": (float(r["max_kg"]) / 1000 if pd.notna(r["max_kg"]) else None),
+            "N°": r["ident"],
+            "Fecha": (_fref.strftime("%d/%m/%Y") if _fref is not None else "—"),
+            "Sem": (_fref.strftime("S%V") if _fref is not None else "—"),
+            "Reacción": r["etiqueta"], "Reactor": r["reactor"], "Producto": r["producto"],
+            "Máx reactor (t)": (_maxv / 1000 if _maxv else None),
             "Objetivo (t)": (_obj / 1000 if _obj else None),
             "Fórmula (t)": (float(r["formula_kg"]) / 1000 if pd.notna(r["formula_kg"]) else None),
             "Real tickets (t)": (float(r["tickets_kg"]) / 1000 if float(r["tickets_kg"] or 0) > 0 else None),
             "Real tanque sug (t)": (sug.get(int(r["id_batch"])) / 1000 if sug.get(int(r["id_batch"])) is not None else None),
             "Real (t)": (_real / 1000 if _real is not None else None),
             "Método": _met or "—",
-            "Desvío %": (round(_desv, 1) if _desv is not None else None),
+            "Propuesto vs máx %": (round(_dprop, 1) if _dprop is not None else None),
+            "Real vs máx %": (round(_drealmax, 1) if _drealmax is not None else None),
+            "Real vs objetivo %": (round(_dobj, 1) if _dobj is not None else None),
         })
     _disp = pd.DataFrame(rows)
     _numcols = ["Máx reactor (t)", "Objetivo (t)", "Fórmula (t)", "Real tickets (t)", "Real tanque sug (t)", "Real (t)"]
+    _pctcols = ["Propuesto vs máx %", "Real vs máx %", "Real vs objetivo %"]
     st.dataframe(_disp, hide_index=True, use_container_width=True,
                  column_config={**{c: st.column_config.NumberColumn(format="%.2f") for c in _numcols},
-                                "Desvío %": st.column_config.NumberColumn(format="%.1f%%")})
+                                **{c: st.column_config.NumberColumn(format="%.1f%%") for c in _pctcols}})
+    st.caption("**Máx reactor** = producción con el reactor lleno (capacidad × densidad). "
+               "**Propuesto vs máx** = cuánto por debajo del máximo se planificó · **Real vs máx** = cuánto se produjo vs el máximo posible · "
+               "**Real vs objetivo** = desvío del final (tickets o tanque) respecto a lo propuesto.")
 
     st.divider()
     st.markdown("##### Editar una reacción terminada")
