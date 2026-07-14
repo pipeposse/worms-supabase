@@ -435,7 +435,7 @@ def _mov(cur, b, uid, rol, id_prod, prod_txt, id_tanque, litros, dens):
         "INSERT INTO produccion.fact_movimiento_stock "
         "(momento,id_batch,identificador_prod,tipo_movimiento,rol,sentido,id_producto,producto,"
         " fuente,id_tanque,cantidad,unidad,kg,litros,id_usuario,origen,estado_mov) "
-        "VALUES (now(),%s,%s,'ENTRADA',%s,1,%s,%s,'TANQUE',%s,%s,'LT',%s,%s,%s,'desgomado','EJECUTADO')",
+        "VALUES (now(),%s,%s,'ENTRADA',%s,1,%s,%s,'TANQUE',%s,%s,'LT',%s,%s,%s,'decantacion','EJECUTADO')",
         (int(b["id_batch"]), b["ident"], rol, id_prod, prod_txt, int(id_tanque),
          float(litros), float(litros) * float(dens), float(litros), uid))
 
