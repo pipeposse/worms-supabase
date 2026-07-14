@@ -1650,36 +1650,35 @@ def _reacciones_terminadas(USR, cat, conectar):
         _maxv = float(r["max_kg"]) if pd.notna(r["max_kg"]) else None
         _fref = r["inicio_local"] if pd.notna(r["inicio_local"]) else (r["cierre_ts"] if pd.notna(r["cierre_ts"]) else r["creado_en"])
         _fref = pd.to_datetime(_fref) if (_fref is not None and pd.notna(_fref)) else None
-        _dprop = ((_obj - _maxv) / _maxv * 100.0) if (_obj and _maxv) else None
+        _fkg = float(r["formula_kg"]) if pd.notna(r["formula_kg"]) else None
+        _dprop = ((_fkg - _maxv) / _maxv * 100.0) if (_fkg and _maxv) else None
         _drealmax = ((_real - _maxv) / _maxv * 100.0) if (_real is not None and _maxv) else None
-        _dobj = ((_real - _obj) / _obj * 100.0) if (_real is not None and _obj) else None
+        _dform = ((_real - _fkg) / _fkg * 100.0) if (_real is not None and _fkg) else None
         rows.append({
             "N°": r["ident"],
             "Fecha": (_fref.strftime("%d/%m/%Y") if _fref is not None else "—"),
             "Sem": (_fref.strftime("S%V") if _fref is not None else "—"),
             "Reacción": r["etiqueta"], "Reactor": r["reactor"], "Producto": r["producto"],
             "Máx reactor (t)": (_maxv / 1000 if _maxv else None),
-            "Objetivo (t)": (_obj / 1000 if _obj else None),
-            "Fórmula (t)": (float(r["formula_kg"]) / 1000 if pd.notna(r["formula_kg"]) else None),
+            "Formulado (t)": (_fkg / 1000 if _fkg else None),
             "Real tickets (t)": (float(r["tickets_kg"]) / 1000 if float(r["tickets_kg"] or 0) > 0 else None),
             "Real tanque sug (t)": (sug.get(int(r["id_batch"])) / 1000 if sug.get(int(r["id_batch"])) is not None else None),
             "Real (t)": (_real / 1000 if _real is not None else None),
             "Método": _met or "—",
-            "Propuesto vs máx %": (round(_dprop, 1) if _dprop is not None else None),
+            "Formulado vs máx %": (round(_dprop, 1) if _dprop is not None else None),
             "Real vs máx %": (round(_drealmax, 1) if _drealmax is not None else None),
-            "Real vs objetivo %": (round(_dobj, 1) if _dobj is not None else None),
+            "Real vs formulado %": (round(_dform, 1) if _dform is not None else None),
         })
     _disp = pd.DataFrame(rows)
-    _numcols = ["Máx reactor (t)", "Objetivo (t)", "Fórmula (t)", "Real tickets (t)", "Real tanque sug (t)", "Real (t)"]
-    _pctcols = ["Propuesto vs máx %", "Real vs máx %", "Real vs objetivo %"]
+    _numcols = ["Máx reactor (t)", "Formulado (t)", "Real tickets (t)", "Real tanque sug (t)", "Real (t)"]
+    _pctcols = ["Formulado vs máx %", "Real vs máx %", "Real vs formulado %"]
     st.dataframe(_disp, hide_index=True, use_container_width=True,
                  column_config={**{c: st.column_config.NumberColumn(format="%.2f") for c in _numcols},
                                 **{c: st.column_config.NumberColumn(format="%.1f%%") for c in _pctcols}})
-    st.caption("**Máx reactor** = producción que saldría **por fórmula** si se cargara el reactor al máximo "
-               "(objetivo escalado por capacidad ÷ litros de MP cargados). "
-               "**Propuesto vs máx** = cuánto por debajo del máximo se planificó · **Real vs máx** = cuánto se produjo vs el máximo posible · "
-               "**Real vs objetivo** = desvío del final (tickets o tanque) respecto a lo propuesto. "
-               "En **desgomado** (purificación) la Fórmula ≈ la MP cargada y el Máx = reactor lleno de producto.")
+    st.caption("**Formulado** = producción teórica según la fórmula para lo realmente cargado (en desgomado ≈ la MP cargada). "
+               "**Máx reactor** = lo que saldría por fórmula si se cargara el reactor al máximo. "
+               "**Formulado vs máx** = cuánto por debajo del máximo se formuló · **Real vs máx** = real vs máximo posible · "
+               "**Real vs formulado** = desvío del final (tickets o tanque) respecto a lo formulado.")
 
     st.divider()
     st.markdown("##### Editar una reacción terminada")
@@ -1690,7 +1689,7 @@ def _reacciones_terminadas(USR, cat, conectar):
     _real0, _met0 = _real_row(r)
     cA, cB, cC = st.columns(3)
     cA.metric("Máx reactor (t)", f"{float(r['max_kg'])/1000:.2f}" if pd.notna(r["max_kg"]) else "—")
-    cB.metric("Objetivo (t)", f"{float(r['objetivo_kg'])/1000:.2f}" if pd.notna(r["objetivo_kg"]) else "—")
+    cB.metric("Formulado (t)", f"{float(r['formula_kg'])/1000:.2f}" if pd.notna(r["formula_kg"]) else "—")
     cC.metric("Real actual (t)", f"{_real0/1000:.2f}" if _real0 is not None else "—", _met0 or None)
 
     # editar inicio y fin de la reacción
@@ -1838,6 +1837,8 @@ def _reacciones_terminadas(USR, cat, conectar):
                 _ropt = [f"{x['tanque']} · Δ {x['delta_t']:.2f} t · {x['desde']}→{x['hasta']} · coincide {x['coinc']}" for x in _res]
                 _rsel = st.selectbox("Asociar esta variación", _ropt, key=f"term_scan_sel_{idb}")
                 _rx = _res[_ropt.index(_rsel)]
+                _setdest = st.checkbox("También fijar este tanque como **destino final** de la reacción",
+                                       value=True, key=f"term_setdest_{idb}")
                 if st.button("✅ Asociar como producción real", type="primary", key=f"term_assoc_{idb}", use_container_width=True):
                     try:
                         _ob = f"Asociado tanque {_rx['tanque']} ({_rx['desde']}→{_rx['hasta']}, coincide {_rx['coinc']})"
@@ -1848,8 +1849,19 @@ def _reacciones_terminadas(USR, cat, conectar):
                                             "ON CONFLICT (id_batch) DO UPDATE SET real_kg=EXCLUDED.real_kg, metodo='tanque', "
                                             " obs=EXCLUDED.obs, id_usuario=EXCLUDED.id_usuario, actualizado_en=now()",
                                             (idb, float(_rx["delta_kg"]), _ob, int(USR["id_usuario"])))
-                                audit.log("U", "fact_reaccion_cierre", idb, {"real_kg": float(_rx["delta_kg"]), "metodo": "tanque_asociado", "tanque": _rx["tanque"]})
-                        st.success(f"Asociado: {_rx['delta_t']:.2f} t desde {_rx['tanque']}."); cat.clear(); st.rerun()
+                                if _setdest:
+                                    cur.execute("UPDATE produccion.fact_batch_proceso SET tanque_destino=%s WHERE id_batch=%s",
+                                                (str(_rx["tanque"]), idb))
+                                    _tpb = str(r["tipo_proceso"] or "")
+                                    if _tpb == "DESGOMADO_ACUOSO":
+                                        cur.execute("UPDATE produccion.fact_batch_proceso SET desg_id_tanque_destino=%s WHERE id_batch=%s",
+                                                    (int(_rx["id_tanque"]), idb))
+                                    elif _tpb == "PRODUCCION_ARE":
+                                        cur.execute("UPDATE produccion.fact_batch_proceso SET id_tanque_are_final=%s WHERE id_batch=%s",
+                                                    (int(_rx["id_tanque"]), idb))
+                                audit.log("U", "fact_reaccion_cierre", idb, {"real_kg": float(_rx["delta_kg"]), "metodo": "tanque_asociado", "tanque": _rx["tanque"], "destino": bool(_setdest)})
+                        st.success(f"Asociado: {_rx['delta_t']:.2f} t desde {_rx['tanque']}"
+                                   + (" (fijado como destino)." if _setdest else ".")); cat.clear(); st.rerun()
                     except Exception as e:
                         st.exception(e)
 
