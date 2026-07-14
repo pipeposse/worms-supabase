@@ -991,14 +991,30 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
 
     if est == "PLANIFICADO":
         if st.button("🔥 Arrancar (pasar a Reacción)", type="primary", key=f"av_start_{idb}", use_container_width=True):
+            _mpq = cat("SELECT id_producto, sum(abs(COALESCE(kg,0))) AS kg FROM produccion.fact_movimiento_stock "
+                       "WHERE id_batch=%s AND rol='MP' AND NOT COALESCE(anulado,false) GROUP BY id_producto ORDER BY 2 DESC LIMIT 1", (int(idb),))
+            _idp = None; _kgi = 0.0
+            if _mpq is not None and not _mpq.empty:
+                _idp = int(_mpq.iloc[0]["id_producto"]) if pd.notna(_mpq.iloc[0]["id_producto"]) else None
+                _kgi = float(_mpq.iloc[0]["kg"] or 0)
+            if _idp is None and pd.notna(b["id_producto_buscado"]):
+                _idp = int(b["id_producto_buscado"])
+            if not _idp or _kgi <= 0:
+                st.error("Esta reacción no tiene **materia prima cargada** (kg). Cargá la MP antes de arrancar "
+                         "(desde ⏯️ Trabajar / Producción en planta o Cargar nueva reacción).")
+                return
             try:
                 with conectar(uid) as (conn, audit):
                     with conn.cursor() as cur:
                         cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL", (int(idb),))
                         cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,id_usuario) VALUES (%s,'REACCION',now(),%s)", (int(idb), uid))
                         cur.execute("UPDATE produccion.fact_batch_proceso SET estado='REACCION', etapa_actual='REACCION', "
-                                    "inicio_ts=COALESCE(inicio_ts,now()), id_usuario_estado=%s, motivo_estado='Arrancada desde ficha' WHERE id_batch=%s", (uid, int(idb)))
-                    audit.log("U", "fact_batch_proceso", int(idb), {"estado": "REACCION"})
+                                    "inicio_ts=COALESCE(inicio_ts,now()), "
+                                    "id_producto_inicial=COALESCE(id_producto_inicial,%s), "
+                                    "kg_inicial=COALESCE(NULLIF(kg_inicial,0),%s), "
+                                    "id_usuario_estado=%s, motivo_estado='Arrancada desde ficha' WHERE id_batch=%s",
+                                    (_idp, _kgi, uid, int(idb)))
+                    audit.log("U", "fact_batch_proceso", int(idb), {"estado": "REACCION", "kg_inicial": _kgi})
                 st.success("Reacción arrancada."); cat.clear(); st.rerun()
             except Exception as e:
                 st.exception(e)
