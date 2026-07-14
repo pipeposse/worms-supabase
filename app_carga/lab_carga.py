@@ -192,6 +192,24 @@ def actualizar_evaluacion(le_id, data, get_conn=None):
         conn.commit()
 
 
+def anular_evaluacion(source_id, id_access, usuario=None, get_conn=None):
+    """Borra un registro de laboratorio desde la lista.
+    - APP (app_lab_streamlit): DELETE de lab_evaluaciones (el trigger limpia procesos_lab).
+    - Access/otro origen: soft-delete (anulado=true) en procesos_lab; el sync no lo reactiva."""
+    with _conn_cm(get_conn) as conn:
+        with conn.cursor() as cur:
+            if source_id == APP_SOURCE:
+                cur.execute("DELETE FROM produccion.lab_evaluaciones WHERE id=%s", (int(id_access),))
+            else:
+                cur.execute(
+                    "UPDATE produccion.procesos_lab "
+                    "SET anulado=true, anulado_en=now(), anulado_por=%s "
+                    "WHERE source_id=%s AND id_access=%s",
+                    (usuario or "app", source_id, str(id_access)))
+        conn.commit()
+    return True
+
+
 def guardar_edicion(ctx, data, get_conn=None):
     """
     ctx = {'source_id':..., 'id_access':..., 'full':<dict fila original completa>}
@@ -1092,13 +1110,31 @@ def render_laboratorio(get_conn=None, usr=None):
                 opciones = {(_lbl(r)): r for r in res}
                 elegido = st.selectbox(f"{len(res)} resultado(s)", list(opciones.keys()),
                                        key="lab_sel")
-                if st.button("Cargar para editar", type="primary"):
+                _be1, _be2 = st.columns(2)
+                if _be1.button("Cargar para editar", type="primary", use_container_width=True):
                     r = opciones[elegido]
                     full = cargar_registro(r["source_id"], r["id_access"], get_conn=get_conn)
                     ss["lab_edit_ctx"] = {"source_id": r["source_id"],
                                           "id_access": r["id_access"], "full": full}
                     ss["lab_tok"] = uuid.uuid4().hex[:8]
                     st.rerun()
+                _r = opciones[elegido]
+                _ok_del = _be2.checkbox("Confirmar borrado", key="lab_del_ok",
+                                        help="Marca esto y toca Borrar para eliminar el registro seleccionado.")
+                if _be2.button("🗑️ Borrar registro", use_container_width=True,
+                               disabled=not _ok_del, key="lab_del_btn"):
+                    try:
+                        anular_evaluacion(_r["source_id"], _r["id_access"],
+                                          usuario=usuario, get_conn=get_conn)
+                        ss["lab_busqueda"] = [x for x in res
+                                              if not (x["source_id"] == _r["source_id"]
+                                                      and x["id_access"] == _r["id_access"])]
+                        ss.pop("lab_del_ok", None)
+                        st.success(f"Registro borrado (tk {_r.get('ticket') or '-'} - "
+                                   f"cal {_r.get('calidad_final_lab') or '-'}).")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"No pude borrar: {e}")
             elif buscar:
                 st.info("Sin resultados.")
 
