@@ -1322,7 +1322,7 @@ def _variacion_semanal(USR, cat, conectar):
     _col = {"Neto": "neto_t", "Subió (entradas)": "subio_t", "Bajó (salidas)": "bajo_t"}[_metrica]
     df = df.copy()
     df["semana_d"] = pd.to_datetime(df["semana"])
-    df["semana_lbl"] = df["semana_d"].dt.strftime("%d/%m")
+    df["semana_lbl"] = df["semana_d"].dt.strftime("S%V")
     _tot = df.groupby("producto")[_col].apply(lambda x: x.abs().sum()).sort_values(ascending=False)
     _prods_all = _tot.index.tolist()
     _psel = c3.multiselect("Productos", _prods_all, default=_prods_all[:8], key="vs_prods")
