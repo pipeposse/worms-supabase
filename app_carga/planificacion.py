@@ -1838,7 +1838,8 @@ def _reacciones_terminadas(USR, cat, conectar):
                     with conn.cursor() as cur:
                         _ex = None
                         cur.execute("SELECT id_evento_etapa FROM produccion.fact_etapa_evento "
-                                    "WHERE id_batch=%s AND etapa ILIKE %s ORDER BY inicio_ts DESC NULLS LAST LIMIT 1",
+                                    "WHERE id_batch=%s AND (etapa ILIKE %s OR etapa='EN_TANQUE') "
+                                    "ORDER BY inicio_ts DESC NULLS LAST LIMIT 1",
                                     (idb, "%acopio%"))
                         _row = cur.fetchone(); _ex = _row[0] if _row else None
                         if _ex:
@@ -1846,9 +1847,9 @@ def _reacciones_terminadas(USR, cat, conectar):
                                         "SET inicio_ts=(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') WHERE id_evento_etapa=%s",
                                         (_iso, int(_ex)))
                         else:
-                            cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch, etapa, inicio_ts) "
-                                        "VALUES (%s,'ACOPIO FINAL',(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires'))",
-                                        (idb, _iso))
+                            cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch, etapa, inicio_ts, id_usuario) "
+                                        "VALUES (%s,'EN_TANQUE',(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires'),%s)",
+                                        (idb, _iso, int(USR["id_usuario"])))
                         audit.log("U", "fact_etapa_evento", idb, {"acopio_final": _iso})
                 st.success("Horario de acopio final guardado (recalcula la variación sugerida)."); cat.clear(); st.rerun()
             except Exception as e:
