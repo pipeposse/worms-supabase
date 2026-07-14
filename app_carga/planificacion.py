@@ -1685,6 +1685,47 @@ def _reacciones_terminadas(USR, cat, conectar):
         _sg = sug.get(_idb)
         return (float(_sg), "tanque") if _sg is not None else (None, None)
 
+    # fecha/semana de referencia por reacción
+    _frefs = []
+    for _, r in df.iterrows():
+        _v = r["inicio_local"] if pd.notna(r["inicio_local"]) else (r["cierre_ts"] if pd.notna(r["cierre_ts"]) else r["creado_en"])
+        _frefs.append(pd.to_datetime(_v) if (_v is not None and pd.notna(_v)) else pd.NaT)
+    df["_fref"] = _frefs
+    df["_sem"] = [(x.strftime("S%V") if pd.notna(x) else "—") for x in df["_fref"]]
+
+    fc1, fc2, fc3 = st.columns([1.3, 1, 1.7])
+    _sems = sorted([x for x in df["_sem"].unique().tolist() if x != "—"])
+    _selsem = fc1.multiselect("Semana", _sems, default=_sems, key="term_f_sem")
+    _tipos = ["Todos"] + sorted(df["tipo"].dropna().unique().tolist())
+    _seltipo = fc2.selectbox("Tipo de reacción", _tipos, key="term_f_tipo")
+    _prods = sorted(df["producto"].dropna().unique().tolist())
+    _selprod = fc3.multiselect("Producto final", _prods, default=_prods, key="term_f_prod")
+    if _selsem:
+        df = df[df["_sem"].isin(_selsem)]
+    if _seltipo != "Todos":
+        df = df[df["tipo"] == _seltipo]
+    if _selprod:
+        df = df[df["producto"].isin(_selprod)]
+    df = df.reset_index(drop=True)
+    if df.empty:
+        st.info("No hay reacciones con esos filtros."); return
+
+    # cards: producido total (t) por producto — real (tickets/tanque) o formulado
+    _prodtot = {}
+    for _, r in df.iterrows():
+        _rl, _ = _real_row(r)
+        if _rl is None:
+            _rl = float(r["formula_kg"]) if pd.notna(r["formula_kg"]) else None
+        if _rl is None:
+            continue
+        _prodtot[r["producto"]] = _prodtot.get(r["producto"], 0.0) + _rl
+    if _prodtot:
+        st.markdown("**Producido (t) por producto** — real por tickets/tanque, o formulado si no hay")
+        _items = sorted(_prodtot.items(), key=lambda x: -x[1])
+        _kc = st.columns(min(4, len(_items)))
+        for _i, (_pr, _kg) in enumerate(_items):
+            _kc[_i % len(_kc)].metric(_pr, f"{_kg/1000:.2f} t")
+
     rows = []
     for _, r in df.iterrows():
         _real, _met = _real_row(r)
@@ -1707,6 +1748,11 @@ def _reacciones_terminadas(USR, cat, conectar):
             "Real tanque sug (t)": (sug.get(int(r["id_batch"])) / 1000 if sug.get(int(r["id_batch"])) is not None else None),
             "Real (t)": (_real / 1000 if _real is not None else None),
             "Método": _met or "—",
+            "Validación": ("🟢 tanque asignado" if (pd.notna(r["real_asignado_kg"]) and float(r["real_asignado_kg"] or 0) > 0 and str(r["real_metodo"]) == "tanque")
+                           else "✍️ manual" if (pd.notna(r["real_asignado_kg"]) and float(r["real_asignado_kg"] or 0) > 0)
+                           else "🎫 tickets" if float(r["tickets_kg"] or 0) > 0
+                           else "🟡 sugerido (validar)" if sug.get(int(r["id_batch"])) is not None
+                           else "🔴 sin validar"),
             "Formulado vs máx %": (round(_dprop, 1) if _dprop is not None else None),
             "Real vs máx %": (round(_drealmax, 1) if _drealmax is not None else None),
             "Real vs formulado %": (round(_dform, 1) if _dform is not None else None),
