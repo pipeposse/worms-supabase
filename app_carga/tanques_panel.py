@@ -32,17 +32,25 @@ def _panel(cat):
     df["_cap"] = pd.to_numeric(df["capacidad_litros"], errors="coerce")
     df["_dens"] = pd.to_numeric(df["densidad"], errors="coerce").fillna(0.91)
     df["_tn"] = df["_litros"] * df["_dens"] / 1000.0
+    if "litros_estimado" in df.columns:
+        df["_estim"] = pd.to_numeric(df["litros_estimado"], errors="coerce")
+    if "movs_post_medicion" in df.columns:
+        df["_movs"] = pd.to_numeric(df["movs_post_medicion"], errors="coerce").fillna(0).astype(int)
     return df
 
 
 def vista_por_sector(cat):
     st.markdown("### 📊 Stock por sector")
-    st.caption("Panorama de cada sector: capacidad, stock, producto y parámetros de laboratorio. "
-               "El stock es el estimado más reciente (medición física + movimientos ejecutados).")
+    st.caption("El **Stock (L)** es la **última medición física cargada** (lo que registra el operario / sensor). "
+               "Si hay movimientos posteriores sin conciliar, se muestran aparte como *Estimado* — no pisan la medición.")
     df = _panel(cat)
     if df.empty:
         st.info("No hay tanques cargados.")
         return
+    _n_pend = int((df.get("_movs", pd.Series(dtype=int)) > 0).sum()) if "_movs" in df.columns else 0
+    if _n_pend:
+        st.warning(f"⚠️ {_n_pend} tanque(s) con movimientos posteriores a la última medición (posible doble conteo "
+                   "del ledger de movimientos). El **Stock (L)** sigue mostrando lo medido; revisá la columna *Estimado* en el detalle.")
 
     # KPIs globales
     g1, g2, g3, g4 = st.columns(4)
@@ -76,10 +84,11 @@ def vista_por_sector(cat):
 
     st.divider()
     # Detalle por sector (expanders), con lab y última actualización
-    _cols = ["nombre", "producto_principal", "_litros", "_cap", "nivel_pct_actual",
+    _cols = ["nombre", "producto_principal", "_litros", "_estim", "_movs", "_cap", "nivel_pct_actual",
              "condicion", "fuente_medicion", "confianza", "ultima_medicion",
              "acidez", "fosforo", "azufre", "agua_sedimento", "comentarios_lab", "observacion"]
-    _ren = {"nombre": "Tanque", "producto_principal": "Producto", "_litros": "Stock (L)",
+    _ren = {"nombre": "Tanque", "producto_principal": "Producto", "_litros": "Stock (L) medido",
+            "_estim": "Estimado c/movs (L)", "_movs": "Movs post-medición",
             "_cap": "Capacidad (L)", "nivel_pct_actual": "Nivel %", "condicion": "Condición",
             "fuente_medicion": "Medición", "confianza": "Confianza", "ultima_medicion": "Últ. actualización",
             "acidez": "Acidez", "fosforo": "Fósforo", "azufre": "Azufre",
@@ -94,7 +103,9 @@ def vista_por_sector(cat):
             show = _art_naive_col(show, "Últ. actualización")
             st.dataframe(show, use_container_width=True, hide_index=True,
                          column_config={
-                             "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
+                             "Stock (L) medido": st.column_config.NumberColumn(format="%.0f"),
+                             "Estimado c/movs (L)": st.column_config.NumberColumn(format="%.0f"),
+                             "Movs post-medición": st.column_config.NumberColumn(format="%d"),
                              "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
                              "Nivel %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
                              "Últ. actualización": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm"),
