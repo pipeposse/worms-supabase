@@ -882,6 +882,38 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
         st.caption(f"⚖️ **Kilos finales de la reacción = {_tot_kg:,.0f} kg ({_tot_kg/1000:.2f} t)** — suma de los tickets asignados.")
 
 
+def _ficha_insumos_edit(USR, cat, conectar, idb):
+    _in = cat("SELECT id_mov_stock, COALESCE(producto, codigo_insumo, '—') AS item, "
+              " round(abs(COALESCE(kg,0))::numeric,1) AS kg, round(abs(COALESCE(litros,0))::numeric,1) AS litros, "
+              " COALESCE(unidad,'') AS unidad "
+              "FROM produccion.fact_movimiento_stock "
+              "WHERE id_batch=%s AND rol IN ('INSUMO','CATALIZADOR') AND COALESCE(anulado,false)=false "
+              "ORDER BY id_mov_stock", (int(idb),))
+    if _in is None or _in.empty:
+        return
+    with st.expander("✏️ Editar insumos y catalizador (agua, fuel, potasio…)"):
+        st.caption("Ajustá a mano las cantidades cargadas de insumos/catalizador. Se guarda en kg (y litros si aplica).")
+        _view = _in.drop(columns=["id_mov_stock"]).rename(
+            columns={"item": "Insumo", "kg": "Kg", "litros": "Litros", "unidad": "Unidad"})
+        ed = st.data_editor(_view, hide_index=True, use_container_width=True, disabled=["Insumo", "Unidad"], key=f"insed_{idb}",
+                            column_config={"Kg": st.column_config.NumberColumn(format="%g"),
+                                           "Litros": st.column_config.NumberColumn(format="%g")})
+        if st.button("💾 Guardar insumos", type="primary", key=f"insed_save_{idb}", use_container_width=True):
+            try:
+                with conectar(int(USR["id_usuario"])) as (conn, audit):
+                    with conn.cursor() as cur:
+                        for i in range(len(ed)):
+                            _kg = float(ed.iloc[i]["Kg"] or 0)
+                            _lt = float(ed.iloc[i]["Litros"] or 0)
+                            cur.execute("UPDATE produccion.fact_movimiento_stock "
+                                        "SET kg=%s, litros=%s, cantidad=%s WHERE id_mov_stock=%s",
+                                        (_kg, (_lt if _lt > 0 else None), (_lt if _lt > 0 else _kg), int(_in.iloc[i]["id_mov_stock"])))
+                        audit.log("U", "fact_movimiento_stock", int(idb), {"insumos_editados": len(ed)})
+                st.success("Insumos actualizados."); cat.clear(); st.rerun()
+            except Exception as e:
+                st.exception(e)
+
+
 def _ficha_mp_tickets(USR, cat, conectar, idb):
     _mp = cat("SELECT id_mov_stock, COALESCE(producto, codigo_insumo, '—') AS producto, "
               " COALESCE(ticket_porteria,'') AS tickets, round(abs(COALESCE(kg,0))::numeric,0) AS kg "
@@ -1212,6 +1244,7 @@ def _dlg_reaccion(USR, cat, conectar, idb):
                 _tin = _ins[["item", "origen", "Cantidad"]].rename(columns={"item": "Insumo", "origen": "De dónde vino"})
                 st.dataframe(_tin, hide_index=True, use_container_width=True)
         _ficha_mp_tickets(USR, cat, conectar, int(idb))
+        _ficha_insumos_edit(USR, cat, conectar, int(idb))
         st.caption("Editá nombre/inicio, evaluación interna y destino en las otras solapas.")
 
     with tAV:
