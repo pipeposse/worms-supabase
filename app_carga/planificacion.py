@@ -1363,6 +1363,30 @@ def _reacciones_terminadas(USR, cat, conectar):
     cB.metric("Objetivo (t)", f"{float(r['objetivo_kg'])/1000:.2f}" if pd.notna(r["objetivo_kg"]) else "—")
     cC.metric("Real actual (t)", f"{_real0/1000:.2f}" if _real0 is not None else "—", _met0 or None)
 
+    # editar inicio y fin de la reacción
+    _il = pd.to_datetime(r["inicio_local"]) if pd.notna(r["inicio_local"]) else None
+    _fl = pd.to_datetime(r["fin_local"]) if pd.notna(r["fin_local"]) else None
+    st.markdown("**Inicio y fin de la reacción** (editable)")
+    i1, i2, i3, i4 = st.columns(4)
+    _id2 = i1.date_input("Fecha inicio", value=(_il.date() if _il is not None else None), key=f"term_id_{idb}", format="DD/MM/YYYY")
+    _ih2 = i2.time_input("Hora inicio", value=(_il.time() if _il is not None else None), key=f"term_ih_{idb}", step=300)
+    _fd2 = i3.date_input("Fecha fin", value=(_fl.date() if _fl is not None else None), key=f"term_fd_{idb}", format="DD/MM/YYYY")
+    _fh2 = i4.time_input("Hora fin", value=(_fl.time() if _fl is not None else None), key=f"term_fh_{idb}", step=300)
+    if st.button("💾 Guardar inicio/fin", key=f"term_if_{idb}"):
+        try:
+            _isoi = (f"{_id2.isoformat()} {_ih2.strftime('%H:%M:%S')}" if (_id2 and _ih2) else None)
+            _isof = (f"{_fd2.isoformat()} {_fh2.strftime('%H:%M:%S')}" if (_fd2 and _fh2) else None)
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE produccion.fact_batch_proceso SET "
+                                " inicio_ts = CASE WHEN %s IS NULL THEN inicio_ts ELSE (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') END, "
+                                " fin_ts = CASE WHEN %s IS NULL THEN fin_ts ELSE (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') END "
+                                "WHERE id_batch=%s", (_isoi, _isoi, _isof, _isof, idb))
+                    audit.log("U", "fact_batch_proceso", idb, {"inicio": _isoi, "fin": _isof})
+            st.success("Inicio/fin actualizados."); cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+
     # editar horario de Acopio final (cierre) -> mueve la ventana de variación de tanque
     _cts = r["cierre_ts"]
     _cts_ts = pd.to_datetime(_cts) if pd.notna(_cts) else None
@@ -1424,6 +1448,80 @@ def _reacciones_terminadas(USR, cat, conectar):
             st.success(f"Producción real guardada: {_real_t:.2f} t ({_met})."); cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
+
+    st.divider()
+    st.markdown("**🔎 Chequear si fue real — variaciones de tanque parecidas a lo teórico**")
+    _teo = float(r["objetivo_kg"]) if pd.notna(r["objetivo_kg"]) else (float(r["formula_kg"]) if pd.notna(r["formula_kg"]) else None)
+    _finref = pd.to_datetime(r["fin_local"]) if pd.notna(r["fin_local"]) else (pd.to_datetime(r["cierre_ts"]).tz_localize(None) if pd.notna(r["cierre_ts"]) else None)
+    if _finref is None:
+        st.caption("Cargá el **fin** (o el acopio final) para poder buscar la variación en tanques.")
+    elif not pd.notna(r["id_producto"]):
+        st.caption("La reacción no tiene producto asignado para buscar tanques.")
+    else:
+        _teo_txt = f"{_teo/1000:.2f} t" if _teo else "—"
+        st.caption(f"Busca aumentos de **{r['producto']}** en los tanques alrededor del fin "
+                   f"({_finref.strftime('%d/%m %H:%M')}), cercanos a lo teórico ({_teo_txt}).")
+        _win = st.number_input("Ventana ± horas alrededor del fin", 1, 240, 24, step=1, key=f"term_win_{idb}")
+        if st.button("🔎 Buscar variaciones", key=f"term_scan_{idb}"):
+            _lo = (_finref - pd.Timedelta(hours=float(_win))).strftime("%Y-%m-%d %H:%M:%S")
+            _hi = (_finref + pd.Timedelta(hours=float(_win))).strftime("%Y-%m-%d %H:%M:%S")
+            _dens = float(r["densidad"] or 0.91)
+            _tks = cat("SELECT DISTINCT t.id_tanque, t.nombre, t.codigo FROM produccion.dim_tanque t "
+                       "LEFT JOIN produccion.dim_tanque_producto tp ON tp.id_tanque=t.id_tanque "
+                       "WHERE COALESCE(t.activo,true) AND (t.id_producto_principal=%s OR tp.id_producto=%s) "
+                       "ORDER BY t.nombre", (int(r["id_producto"]), int(r["id_producto"])))
+            _res = []
+            if _tks is not None and not _tks.empty:
+                for _, _tk in _tks.iterrows():
+                    _m = cat("SELECT medido_en, litros::float AS litros FROM produccion.fact_stock_tanque "
+                             "WHERE id_tanque=%s AND litros IS NOT NULL "
+                             "AND medido_en BETWEEN (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') "
+                             "AND (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') ORDER BY medido_en",
+                             (int(_tk["id_tanque"]), _lo, _hi))
+                    if _m is None or len(_m) < 2:
+                        continue
+                    _m = _m.copy(); _m["medido_en"] = pd.to_datetime(_m["medido_en"])
+                    _net_l = float(_m.iloc[-1]["litros"]) - float(_m.iloc[0]["litros"])
+                    _best_l = float(_m["litros"].diff().fillna(0).max())
+                    _use_l = max(_net_l, _best_l)
+                    _dkg = _use_l * _dens
+                    if _dkg <= 0:
+                        continue
+                    _coinc = (max(0.0, (1 - abs(_dkg - _teo) / _teo)) * 100) if _teo else None
+                    _res.append({"id_tanque": int(_tk["id_tanque"]), "tanque": f"{_tk['nombre']} · {_tk['codigo']}",
+                                 "delta_kg": _dkg, "delta_t": _dkg / 1000.0,
+                                 "desde": _m.iloc[0]["medido_en"].strftime("%d/%m %H:%M"),
+                                 "hasta": _m.iloc[-1]["medido_en"].strftime("%d/%m %H:%M"),
+                                 "coinc": (f"{_coinc:.0f}%" if _coinc is not None else "—"),
+                                 "_abs": (abs(_dkg - _teo) if _teo else 0.0)})
+                _res = sorted(_res, key=lambda x: x["_abs"])
+            st.session_state[f"term_scan_res_{idb}"] = _res
+        _res = st.session_state.get(f"term_scan_res_{idb}")
+        if _res is not None:
+            if not _res:
+                st.warning("No encontré variaciones de tanque de este producto en esa ventana. Ampliá las horas, revisá el fin, o cargá el real manual arriba.")
+            else:
+                st.dataframe(pd.DataFrame([{"Tanque": x["tanque"], "Δ (t)": x["delta_t"], "Desde": x["desde"],
+                                           "Hasta": x["hasta"], "Coincide": x["coinc"]} for x in _res]),
+                             hide_index=True, use_container_width=True,
+                             column_config={"Δ (t)": st.column_config.NumberColumn(format="%.2f")})
+                _ropt = [f"{x['tanque']} · Δ {x['delta_t']:.2f} t · {x['desde']}→{x['hasta']} · coincide {x['coinc']}" for x in _res]
+                _rsel = st.selectbox("Asociar esta variación", _ropt, key=f"term_scan_sel_{idb}")
+                _rx = _res[_ropt.index(_rsel)]
+                if st.button("✅ Asociar como producción real", type="primary", key=f"term_assoc_{idb}", use_container_width=True):
+                    try:
+                        _ob = f"Asociado tanque {_rx['tanque']} ({_rx['desde']}→{_rx['hasta']}, coincide {_rx['coinc']})"
+                        with conectar(int(USR["id_usuario"])) as (conn, audit):
+                            with conn.cursor() as cur:
+                                cur.execute("INSERT INTO produccion.fact_reaccion_cierre (id_batch, real_kg, metodo, obs, id_usuario, actualizado_en) "
+                                            "VALUES (%s,%s,'tanque',%s,%s,now()) "
+                                            "ON CONFLICT (id_batch) DO UPDATE SET real_kg=EXCLUDED.real_kg, metodo='tanque', "
+                                            " obs=EXCLUDED.obs, id_usuario=EXCLUDED.id_usuario, actualizado_en=now()",
+                                            (idb, float(_rx["delta_kg"]), _ob, int(USR["id_usuario"])))
+                                audit.log("U", "fact_reaccion_cierre", idb, {"real_kg": float(_rx["delta_kg"]), "metodo": "tanque_asociado", "tanque": _rx["tanque"]})
+                        st.success(f"Asociado: {_rx['delta_t']:.2f} t desde {_rx['tanque']}."); cat.clear(); st.rerun()
+                    except Exception as e:
+                        st.exception(e)
 
 
 def _gestion_reacciones(USR, cat, conectar):
