@@ -1058,6 +1058,59 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
         return
 
     if est == "DECANTACION":
+        with st.expander("🔬 Cargar lab de decantación (rápido)", expanded=False):
+            st.caption("Cargá acá el resultado que define el corte, para agilizar sin ir a Laboratorio. "
+                       "(Acidez/temperatura y demás evaluaciones internas van en la solapa 🧫 Evaluación.)")
+            if _es_desg:
+                import desgomado as _dg
+                _ays_max = _dg._cond(cat, "DESGOM_AGUA_SED_MAX_PCT", 1.5)
+                la1, la2, la3 = st.columns(3)
+                _agua = la1.number_input("Agua (%)", 0.0, 100.0, value=None, step=0.05, key=f"avlab_agua_{idb}")
+                _sed = la2.number_input("Sedimentos (%)", 0.0, 100.0, value=None, step=0.05, key=f"avlab_sed_{idb}")
+                _suma = float(_agua or 0) + float(_sed or 0)
+                la3.metric("Agua+sed", f"{_suma:.2f}%", ("OK ✅" if _suma < _ays_max else f"≥ {_ays_max:g}%"))
+                _obsd = st.text_input("Observación", key=f"avlab_obsd_{idb}")
+                if st.button("💾 Guardar agua+sedimentos", type="primary", key=f"avlab_savedg_{idb}", use_container_width=True):
+                    if _agua is None and _sed is None:
+                        st.warning("Cargá agua y/o sedimentos.")
+                    else:
+                        _ok = _suma < _ays_max
+                        try:
+                            with conectar(uid) as (conn, audit):
+                                with conn.cursor() as cur:
+                                    cur.execute("INSERT INTO produccion.fact_desg_decant (id_batch,agua_pct,sedimentos_pct,suma_pct,ok,observacion,id_usuario) "
+                                                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                                                (int(idb), float(_agua or 0), float(_sed or 0), float(_suma), bool(_ok), (_obsd or None), uid))
+                                    cur.execute("UPDATE produccion.fact_batch_proceso SET desg_agua_sed_pct=%s, desg_lab_ok=%s WHERE id_batch=%s",
+                                                (float(_suma), bool(_ok), int(idb)))
+                                audit.log("I", "fact_desg_decant", int(idb), {"suma": _suma, "ok": _ok})
+                            st.success(f"Agua+sed {_suma:.2f}% → " + ("✅ apto" if _ok else "🔴 seguir decantando")); cat.clear(); st.rerun()
+                        except Exception as e:
+                            st.exception(e)
+            elif _es_are:
+                import decantacion as _dc
+                try:
+                    _corte = _dc._purga_corte(cat)
+                except Exception:
+                    _corte = 2.0
+                _gp = st.number_input(f"% glicerina del purgado (corta ≤ {_corte:g}%)", 0.0, 100.0, value=None, step=0.1, key=f"avlab_gli_{idb}")
+                _obsp = st.text_input("Observación", key=f"avlab_obsp_{idb}")
+                if st.button("💾 Guardar % glicerina (purga)", type="primary", key=f"avlab_savear_{idb}", use_container_width=True):
+                    if _gp is None:
+                        st.warning("Cargá el % de glicerina.")
+                    else:
+                        _ok = float(_gp) <= _corte
+                        try:
+                            with conectar(uid) as (conn, audit):
+                                with conn.cursor() as cur:
+                                    cur.execute("INSERT INTO produccion.fact_decant_purga (id_batch,glicerina_pct,purga_ok,observacion,id_usuario) "
+                                                "VALUES (%s,%s,%s,%s,%s)", (int(idb), float(_gp), bool(_ok), (_obsp or None), uid))
+                                    cur.execute("UPDATE produccion.fact_batch_proceso SET purga_glicerina_pct=%s, purga_ok=%s, purga_lab_ts=now() WHERE id_batch=%s",
+                                                (float(_gp), bool(_ok), int(idb)))
+                                audit.log("I", "fact_decant_purga", int(idb), {"purga_pct": _gp, "ok": _ok})
+                            st.success(f"Glicerina {float(_gp):.1f}% → " + ("✅ purga OK" if _ok else "🔴 seguir decantando")); cat.clear(); st.rerun()
+                        except Exception as e:
+                            st.exception(e)
         if _es_are:
             _destinos_are_ficha(USR, cat, conectar, idb, b)
             st.divider()
