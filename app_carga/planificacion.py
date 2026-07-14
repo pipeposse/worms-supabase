@@ -1277,7 +1277,23 @@ def _dlg_reaccion(USR, cat, conectar, idb):
                     st.exception(e)
 
     with t3:
-        _tks = cat("SELECT id_tanque, codigo, nombre FROM produccion.dim_tanque WHERE COALESCE(activo,true) ORDER BY nombre")
+        _pobj = str(b.get("producto_obj") or "").strip()
+        _verall = st.checkbox("Ver todos los tanques (no solo los del producto)", value=False, key=f"dlg_dall_{idb}")
+        if _pobj and not _verall:
+            _tks = cat("SELECT DISTINCT t.id_tanque, t.codigo, t.nombre FROM produccion.dim_tanque t "
+                       "WHERE COALESCE(t.activo,true) AND ("
+                       "  t.id_producto_principal=(SELECT id_producto FROM produccion.dim_producto WHERE upper(codigo_producto)=upper(%s)) "
+                       "  OR EXISTS (SELECT 1 FROM produccion.dim_tanque_producto tp JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
+                       "             WHERE tp.id_tanque=t.id_tanque AND upper(p.codigo_producto)=upper(%s))) "
+                       "ORDER BY t.nombre", (_pobj, _pobj))
+            if _tks is None or _tks.empty:
+                st.warning(f"No hay tanques configurados para **{_pobj}**; se muestran todos. "
+                           "(Podés asignar el producto al tanque en Tanques → Editar tanque.)")
+                _tks = cat("SELECT id_tanque, codigo, nombre FROM produccion.dim_tanque WHERE COALESCE(activo,true) ORDER BY nombre")
+            else:
+                st.caption(f"Solo tanques habilitados para **{_pobj}**.")
+        else:
+            _tks = cat("SELECT id_tanque, codigo, nombre FROM produccion.dim_tanque WHERE COALESCE(activo,true) ORDER BY nombre")
         if _tks is None or _tks.empty:
             st.info("No hay tanques.")
         else:
