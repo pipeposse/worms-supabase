@@ -882,6 +882,133 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
         st.caption(f"⚖️ **Kilos finales de la reacción = {_tot_kg:,.0f} kg ({_tot_kg/1000:.2f} t)** — suma de los tickets asignados.")
 
 
+def _destinos_are_ficha(USR, cat, conectar, idb, b):
+    st.markdown("##### 🎯 Destinos para el cierre (ARE)")
+    _taf = cat("SELECT id_tanque, nombre, codigo FROM produccion.dim_tanque WHERE COALESCE(activo,true) ORDER BY nombre")
+    if _taf is None or _taf.empty:
+        st.caption("No hay tanques."); return
+    _opt = _taf.apply(lambda x: f"{x['nombre']} · {x['codigo']}", axis=1).tolist()
+    def _idx(cur_id):
+        if cur_id is None or pd.isna(cur_id):
+            return None
+        for i in range(len(_taf)):
+            if int(_taf.iloc[i]["id_tanque"]) == int(cur_id):
+                return i
+        return None
+    _ifin = _idx(b["id_tanque_are_final"]); _igli = _idx(b["id_tanque_gli_recup"])
+    c1, c2 = st.columns(2)
+    _fin = c1.selectbox("Destino final del producto (ARE)", _opt, index=(_ifin if _ifin is not None else 0), key=f"av_dfin_{idb}")
+    _gopts = ["(sin / no aplica)"] + _opt
+    _gli = c2.selectbox("Destino glicerina recuperada", _gopts,
+                        index=(_igli + 1 if _igli is not None else 0), key=f"av_dgli_{idb}")
+    if st.button("💾 Guardar destinos", key=f"av_dsave_{idb}"):
+        try:
+            _idfin = int(_taf.iloc[_opt.index(_fin)]["id_tanque"])
+            _idgli = None if _gli.startswith("(sin") else int(_taf.iloc[_opt.index(_gli)]["id_tanque"])
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE produccion.fact_batch_proceso "
+                                "SET id_tanque_are_final=%s, id_tanque_gli_recup=%s WHERE id_batch=%s",
+                                (_idfin, _idgli, int(idb)))
+                    audit.log("U", "fact_batch_proceso", int(idb), {"are_final": _idfin, "gli_recup": _idgli})
+            st.success("Destinos guardados."); cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+
+
+def render_avanzar_ficha(USR, cat, conectar, idb):
+    info = cat("SELECT id_batch, identificador_unidad AS ident, tipo_proceso, estado, etapa_actual, "
+               " id_producto_buscado, ticket_producto_final, id_tanque_are_final, id_tanque_gli_recup, "
+               " desg_id_tanque_destino "
+               "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(idb),))
+    if info is None or info.empty:
+        st.error("No se encontró la reacción."); return
+    b = info.iloc[0]
+    est = str(b["estado"]); tp = str(b["tipo_proceso"] or "")
+    _es_are = tp == "PRODUCCION_ARE"; _es_desg = tp == "DESGOMADO_ACUOSO"
+    _pasos = ["PLANIFICADO", "REACCION", "REPOSO", "DECANTACION", "FINALIZADO"]
+    _emj = {"PLANIFICADO": "🅿️", "REACCION": "🔥", "REPOSO": "🧊", "DECANTACION": "🧴", "FINALIZADO": "✅"}
+    _cur = _pasos.index(est) if est in _pasos else 0
+    st.markdown(" → ".join((f"**{_emj[p]} {p}**" if i == _cur else f"<span style='color:#94a3b8'>{_emj[p]} {p}</span>")
+                           for i, p in enumerate(_pasos)), unsafe_allow_html=True)
+    st.caption("Avanzá la reacción fase por fase, con los datos que pide cada paso. En ARE, el cierre respeta el esquema "
+               "(laboratorio confirma el corte de purga; destino y glicerina recuperada se definen acá).")
+    uid = int(USR["id_usuario"])
+
+    if est == "FINALIZADO":
+        st.success("✅ Reacción finalizada (en tanque)."); return
+
+    if est == "PLANIFICADO":
+        if st.button("🔥 Arrancar (pasar a Reacción)", type="primary", key=f"av_start_{idb}", use_container_width=True):
+            try:
+                with conectar(uid) as (conn, audit):
+                    with conn.cursor() as cur:
+                        cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL", (int(idb),))
+                        cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,id_usuario) VALUES (%s,'REACCIONANDO',now(),%s)", (int(idb), uid))
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET estado='REACCION', etapa_actual='REACCIONANDO', "
+                                    "inicio_ts=COALESCE(inicio_ts,now()), id_usuario_estado=%s, motivo_estado='Arrancada desde ficha' WHERE id_batch=%s", (uid, int(idb)))
+                    audit.log("U", "fact_batch_proceso", int(idb), {"estado": "REACCION"})
+                st.success("Reacción arrancada."); cat.clear(); st.rerun()
+            except Exception as e:
+                st.exception(e)
+        return
+
+    if est in ("REACCION", "REPOSO"):
+        _next = {"REACCION": "REPOSO", "REPOSO": "DECANTACION"}[est]
+        _etapa = {"REPOSO": "REPOSANDO", "DECANTACION": "DECANTACION"}[_next]
+        st.markdown(f"##### Pasar de **{est}** a **{_next}**")
+        motivo = st.text_input("Motivo", key=f"av_mot_{idb}", placeholder="ej. reacción lista / acortar reposo")
+        if st.button(f"⏭️ Pasar a {_next}", type="primary", key=f"av_go_{idb}", use_container_width=True):
+            if not (motivo or "").strip():
+                st.error("Poné el motivo."); return
+            try:
+                _mot = "Avance desde ficha: " + motivo.strip()
+                with conectar(uid) as (conn, audit):
+                    with conn.cursor() as cur:
+                        cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL", (int(idb),))
+                        cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,id_usuario) VALUES (%s,%s,now(),%s)", (int(idb), _etapa, uid))
+                        if est == "REACCION" and _es_are and not b["ticket_producto_final"]:
+                            cur.execute("SELECT ticket_lab FROM produccion.fact_ticket_lab WHERE id_batch=%s AND rol='MP' ORDER BY id_ticket LIMIT 1", (int(idb),))
+                            _mp = cur.fetchone(); _mp = _mp[0] if _mp else None
+                            cur.execute("SELECT produccion.fn_ticket_lab('FINAL')"); _tf = cur.fetchone()[0]
+                            cur.execute("INSERT INTO produccion.fact_ticket_lab (ticket_lab,id_batch,rol,id_producto,fuente,estado) VALUES (%s,%s,'FINAL',%s,'PROCESO','PENDIENTE')",
+                                        (_tf, int(idb), (int(b["id_producto_buscado"]) if pd.notna(b["id_producto_buscado"]) else None)))
+                            cur.execute("UPDATE produccion.fact_batch_proceso SET estado='REPOSO', etapa_actual='REPOSANDO', "
+                                        "esperando_validacion_lab=true, ticket_validacion_lab=%s, ticket_producto_final=%s, "
+                                        "id_usuario_estado=%s, motivo_estado=%s WHERE id_batch=%s", (_mp, _tf, uid, _mot, int(idb)))
+                        elif est == "REACCION" and _es_desg:
+                            cur.execute("UPDATE produccion.fact_batch_proceso SET estado='REPOSO', etapa_actual='REPOSANDO', "
+                                        "desg_reposo_ini_ts=COALESCE(desg_reposo_ini_ts,now()), id_usuario_estado=%s, motivo_estado=%s WHERE id_batch=%s", (uid, _mot, int(idb)))
+                        else:
+                            cur.execute("UPDATE produccion.fact_batch_proceso SET estado=%s, etapa_actual=%s, id_usuario_estado=%s, motivo_estado=%s WHERE id_batch=%s",
+                                        (_next, _etapa, uid, _mot, int(idb)))
+                    audit.log("U", "fact_batch_proceso", int(idb), {"avance": _next})
+                st.success(f"Pasada a {_next}."); cat.clear(); st.rerun()
+            except Exception as e:
+                st.exception(e)
+        if _es_are:
+            st.divider(); _destinos_are_ficha(USR, cat, conectar, idb, b)
+        return
+
+    if est == "DECANTACION":
+        if _es_are:
+            _destinos_are_ficha(USR, cat, conectar, idb, b)
+            st.divider()
+            try:
+                import decantacion
+                decantacion.produccion(USR, cat, conectar, id_batch=int(idb))
+            except Exception as e:
+                st.error("No se pudo cargar la decantación."); st.exception(e)
+        elif _es_desg:
+            try:
+                import desgomado
+                desgomado.produccion(USR, cat, conectar, int(idb))
+            except Exception as e:
+                st.error("No se pudo cargar el desgomado."); st.exception(e)
+        else:
+            st.info("Sin flujo de cierre para este tipo de proceso.")
+
+
 @st.dialog("🗂️ Ficha de reacción", width="large")
 def _dlg_reaccion(USR, cat, conectar, idb):
     info = cat("SELECT identificador_unidad AS ident, estado, tipo_proceso, "
@@ -901,7 +1028,7 @@ def _dlg_reaccion(USR, cat, conectar, idb):
     _tp_lbl = {"PRODUCCION_ARE": "🧴 PRODUCCIÓN ARE", "DESGOMADO_ACUOSO": "🫧 DESGOMADO ACUOSO"}.get(_tp, _tp or "—")
     st.markdown(f"### {b['ident']}  \n{b['etiqueta'] or '—'}")
     st.caption(f"{_tp_lbl} · estado **{b['estado']}**")
-    t0, t1, t2, t3, tPF, tLM, t4 = st.tabs(["📄 Resumen", "📝 Nombre & inicio", "🧫 Evaluación interna", "🎯 Destino final", "🏁 Producto final (tickets)", "🧽 Limpieza post-corte", "⏯️ Trabajar"])
+    t0, tAV, t1, t2, t3, tPF, tLM, t4 = st.tabs(["📄 Resumen", "⏭️ Avanzar", "📝 Nombre & inicio", "🧫 Evaluación interna", "🎯 Destino final", "🏁 Producto final (tickets)", "🧽 Limpieza post-corte", "⏯️ Trabajar"])
 
     with t0:
         _rp = b.get("parametros_proceso")
@@ -965,6 +1092,9 @@ def _dlg_reaccion(USR, cat, conectar, idb):
                 _tin = _ins[["item", "origen", "Cantidad"]].rename(columns={"item": "Insumo", "origen": "De dónde vino"})
                 st.dataframe(_tin, hide_index=True, use_container_width=True)
         st.caption("Editá nombre/inicio, evaluación interna y destino en las otras solapas.")
+
+    with tAV:
+        render_avanzar_ficha(USR, cat, conectar, int(idb))
 
     with t1:
         _nid = st.text_input("N° / nombre de la reacción", value=str(b["ident"] or ""), key=f"dlg_nid_{idb}")
