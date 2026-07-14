@@ -1809,8 +1809,8 @@ def _reacciones_terminadas(USR, cat, conectar):
                 st.exception(e)
 
     # asignar tickets de pesada final (mismo flujo que la ficha) — la suma define kg_obtenido
-    with st.expander("🏁 Tickets de pesada final (asignar / editar)"):
-        _ficha_final_tickets(USR, cat, conectar, int(idb), r["producto"])
+    st.markdown("**🏁 Tickets de pesada final (asignar / editar)**")
+    _ficha_final_tickets(USR, cat, conectar, int(idb), r["producto"])
 
     # asignar / editar kg real
     st.markdown("**Producción real de la reacción**")
