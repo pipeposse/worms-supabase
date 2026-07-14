@@ -1672,10 +1672,27 @@ def _reacciones_terminadas(USR, cat, conectar):
     _disp = pd.DataFrame(rows)
     _numcols = ["Máx reactor (t)", "Formulado (t)", "Real tickets (t)", "Real tanque sug (t)", "Real (t)"]
     _pctcols = ["Formulado vs máx %", "Real vs máx %", "Real vs formulado %"]
-    st.dataframe(_disp, hide_index=True, use_container_width=True,
-                 column_config={**{c: st.column_config.NumberColumn(format="%.2f") for c in _numcols},
-                                **{c: st.column_config.NumberColumn(format="%.1f%%") for c in _pctcols}})
-    st.caption("**Formulado** = producción teórica según la fórmula para lo realmente cargado (en desgomado ≈ la MP cargada). "
+    def _cdesv(v):
+        if pd.isna(v):
+            return ""
+        if v < 0:
+            return "color:#dc2626;font-weight:700"   # rojo: por debajo
+        if v > 0:
+            return "color:#16a34a;font-weight:700"   # verde: por encima
+        return "color:#6b7280"
+    try:
+        _fmt = {c: "{:.2f}" for c in _numcols}
+        _fmt.update({c: "{:+.1f}%" for c in _pctcols})
+        _sty = (_disp.style
+                .map(_cdesv, subset=[c for c in _pctcols if c in _disp.columns])
+                .format(_fmt, na_rep="—"))
+        st.dataframe(_sty, hide_index=True, use_container_width=True)
+    except Exception:
+        st.dataframe(_disp, hide_index=True, use_container_width=True,
+                     column_config={**{c: st.column_config.NumberColumn(format="%.2f") for c in _numcols},
+                                    **{c: st.column_config.NumberColumn(format="%.1f%%") for c in _pctcols}})
+    st.caption("Desvíos en **🟢 verde** (por encima) / **🔴 rojo** (por debajo). "
+               "**Formulado** = producción teórica según la fórmula para lo realmente cargado (en desgomado ≈ la MP cargada). "
                "**Máx reactor** = lo que saldría por fórmula si se cargara el reactor al máximo. "
                "**Formulado vs máx** = cuánto por debajo del máximo se formuló · **Real vs máx** = real vs máximo posible · "
                "**Real vs formulado** = desvío del final (tickets o tanque) respecto a lo formulado.")
