@@ -1308,6 +1308,51 @@ def _terminadas_sugerencias(df, cat):
     return sug
 
 
+def _variacion_semanal(USR, cat, conectar):
+    st.subheader("📊 Variación semanal por producto (tanques)")
+    st.caption("Cuánto varió cada producto en los tanques por semana (entradas − salidas), a partir de las mediciones de tanque.")
+    c1, c2, c3 = st.columns([1, 1.4, 2])
+    _sem = c1.number_input("Semanas atrás", 2, 52, 8, step=1, key="vs_sem")
+    _metrica = c2.radio("Métrica", ["Neto", "Subió (entradas)", "Bajó (salidas)"], key="vs_met")
+    df = cat("SELECT semana, producto, neto_t, subio_t, bajo_t FROM produccion.v_variacion_semanal_producto "
+             "WHERE semana >= (date_trunc('week', now())::date - (%s || ' weeks')::interval) "
+             "ORDER BY semana, producto", (int(_sem),))
+    if df is None or df.empty:
+        st.info("No hay mediciones de tanque para calcular la variación."); return
+    _col = {"Neto": "neto_t", "Subió (entradas)": "subio_t", "Bajó (salidas)": "bajo_t"}[_metrica]
+    df = df.copy()
+    df["semana_d"] = pd.to_datetime(df["semana"])
+    df["semana_lbl"] = df["semana_d"].dt.strftime("%d/%m")
+    _tot = df.groupby("producto")[_col].apply(lambda x: x.abs().sum()).sort_values(ascending=False)
+    _prods_all = _tot.index.tolist()
+    _psel = c3.multiselect("Productos", _prods_all, default=_prods_all[:8], key="vs_prods")
+    dff = df[df["producto"].isin(_psel)].copy() if _psel else df.copy()
+    if dff.empty:
+        st.info("Elegí al menos un producto."); return
+    _orden = dff.sort_values("semana_d")["semana_lbl"].drop_duplicates().tolist()
+    try:
+        import altair as alt
+        ch = (alt.Chart(dff).mark_bar().encode(
+                x=alt.X("semana_lbl:O", title="Semana", sort=_orden),
+                xOffset=alt.XOffset("producto:N"),
+                y=alt.Y(f"{_col}:Q", title="Variación (t)"),
+                color=alt.Color("producto:N", title="Producto"),
+                tooltip=["semana_lbl:O", "producto:N", alt.Tooltip(f"{_col}:Q", title="t", format=".2f")])
+              .properties(height=420))
+        st.altair_chart(ch, use_container_width=True)
+    except Exception:
+        _pv = dff.pivot_table(index="semana_lbl", columns="producto", values=_col, aggfunc="sum").reindex(_orden).fillna(0)
+        st.bar_chart(_pv, use_container_width=True)
+    st.markdown("**Tabla (t) — producto × semana**")
+    _piv = dff.pivot_table(index="producto", columns="semana_lbl", values=_col, aggfunc="sum").reindex(columns=_orden).fillna(0)
+    _piv["Total"] = _piv.sum(axis=1)
+    _piv = _piv.sort_values("Total", key=lambda x: x.abs(), ascending=False)
+    try:
+        st.dataframe(_piv.style.background_gradient(cmap="RdYlGn", axis=None).format("{:.2f}"), use_container_width=True)
+    except Exception:
+        st.dataframe(_piv.round(2), use_container_width=True)
+
+
 def _reacciones_terminadas(USR, cat, conectar):
     st.subheader("🏁 Reacciones terminadas — objetivo vs real")
     st.caption("Máximo por reactor · objetivo/fórmula · real por tickets de pesada · real por variación de tanque. "
@@ -1745,7 +1790,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     _render_aprobaciones(USR, cat, conectar)
 
     _grupo = st.radio("¿Qué querés hacer?",
-                      ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas"],
+                      ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas", "📊 Variación semanal"],
                       horizontal=True, key="pl_grupo")
 
     # ----- Administrar procesos en curso (no es carga: se decide sobre reacciones ya arrancadas) -----
@@ -1770,6 +1815,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     if _grupo.startswith("📅"):
         _render_cronogramas(USR, cat, conectar)
+        return
+
+    if _grupo.startswith("📊"):
+        _variacion_semanal(USR, cat, conectar)
         return
 
     # ----- Cargar nueva reacción: reactores o bachas -----
