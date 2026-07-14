@@ -1577,6 +1577,48 @@ def _terminadas_sugerencias(df, cat):
     return sug
 
 
+def _reconciliacion_semanal(USR, cat, conectar):
+    st.subheader("🧮 Reconciliación semanal — ¿la producción se ve en tanques?")
+    st.caption("Por **familia** y semana. **Cuadre = ΔTanque − (Producción + Ext. entra − Ext. sale − Interno)**; cerca de 0 = consistente. "
+               "Portería separa lo **externo** (proveedores/despacho) de lo **interno** (MOVIMIENTO INTERNO, ej. AG que se consume para AG-E).")
+    c1, c2 = st.columns([1, 2])
+    _sem = c1.number_input("Semanas atrás", 2, 52, 8, step=1, key="rec_sem")
+    df = cat("SELECT semana, familia, dtank_t, prod_t, ext_in_t, ext_out_t, interno_t, cuadre_t "
+             "FROM produccion.v_reconciliacion_semanal "
+             "WHERE semana >= (date_trunc('week', now())::date - (%s || ' weeks')::interval) "
+             "ORDER BY semana DESC, familia", (int(_sem),))
+    if df is None or df.empty:
+        st.info("Sin datos de reconciliación."); return
+    _fams = sorted(df["familia"].dropna().unique().tolist())
+    _def = [x for x in ["AG", "AFE", "ARE", "SEBO", "GLICERINA"] if x in _fams] or _fams
+    _fsel = c2.multiselect("Familias", _fams, default=_def, key="rec_fam")
+    dff = (df[df["familia"].isin(_fsel)] if _fsel else df).copy()
+    dff["Semana"] = pd.to_datetime(dff["semana"]).dt.strftime("S%V")
+    _disp = dff.rename(columns={"familia": "Familia", "dtank_t": "Δ Tanque (t)", "prod_t": "Producción (t)",
+                                "ext_in_t": "Ext. entra (t)", "ext_out_t": "Ext. sale (t)",
+                                "interno_t": "Interno (t)", "cuadre_t": "Cuadre (t)"})
+    _disp = _disp[["Semana", "Familia", "Δ Tanque (t)", "Producción (t)", "Ext. entra (t)", "Ext. sale (t)", "Interno (t)", "Cuadre (t)"]]
+    def _cc(v):
+        if pd.isna(v):
+            return ""
+        a = abs(v)
+        if a < 5:
+            return "color:#16a34a;font-weight:700"
+        if a < 20:
+            return "color:#b45309;font-weight:700"
+        return "color:#dc2626;font-weight:700"
+    _num = [c for c in _disp.columns if c not in ("Semana", "Familia")]
+    try:
+        _sty = _disp.style.map(_cc, subset=["Cuadre (t)"]).format({c: "{:.2f}" for c in _num}, na_rep="—")
+        st.dataframe(_sty, hide_index=True, use_container_width=True)
+    except Exception:
+        st.dataframe(_disp, hide_index=True, use_container_width=True)
+    st.caption("**Cuadre**: 🟢 <5 t consistente · 🟡 5–20 t · 🔴 >20 t revisar. Un cuadre grande suele indicar "
+               "**mediciones de tanque poco frecuentes** (no capturan el movimiento real) o **etiquetas de portería a revisar** "
+               "(AG externo para AG-E, movimientos internos mal clasificados, despachos). "
+               "Excluye a los clientes de la lista de excluidos (Calzim, etc.).")
+
+
 def _variacion_semanal(USR, cat, conectar):
     st.subheader("📊 Variación semanal por producto (tanques)")
     st.caption("Cuánto varió cada producto en los tanques por semana (entradas − salidas), a partir de las mediciones de tanque.")
@@ -2138,7 +2180,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
 
-    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas", "📊 Variación semanal"]
+    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas", "📊 Variación semanal", "🧮 Reconciliación"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -2177,6 +2219,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     if _grupo.startswith("📊"):
         _variacion_semanal(USR, cat, conectar)
+        return
+
+    if _grupo.startswith("🧮"):
+        _reconciliacion_semanal(USR, cat, conectar)
         return
 
     # ----- Cargar nueva reacción: reactores o bachas -----
