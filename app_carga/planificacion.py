@@ -1539,7 +1539,8 @@ def _reacciones_terminadas(USR, cat, conectar):
     st.caption("**Máx reactor** = producción que saldría **por fórmula** si se cargara el reactor al máximo "
                "(objetivo escalado por capacidad ÷ litros de MP cargados). "
                "**Propuesto vs máx** = cuánto por debajo del máximo se planificó · **Real vs máx** = cuánto se produjo vs el máximo posible · "
-               "**Real vs objetivo** = desvío del final (tickets o tanque) respecto a lo propuesto.")
+               "**Real vs objetivo** = desvío del final (tickets o tanque) respecto a lo propuesto. "
+               "En **desgomado** (purificación) la Fórmula ≈ la MP cargada y el Máx = reactor lleno de producto.")
 
     st.divider()
     st.markdown("##### Editar una reacción terminada")
