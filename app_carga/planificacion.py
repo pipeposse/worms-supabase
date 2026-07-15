@@ -1000,6 +1000,121 @@ def _destinos_are_ficha(USR, cat, conectar, idb, b):
             st.exception(e)
 
 
+def _control_rendimiento(USR, cat, conectar, idb):
+    """Control de rendimiento por reacción: mediciones de los tanques destino ANTES del inicio y
+    DESPUÉS del fin/acopio, Δ neto y pico de ingreso, contra el rendimiento teórico (AG − agua + glicerina)."""
+    b = cat("SELECT identificador_unidad AS ident, tipo_proceso, inicio_ts, fin_ts, "
+            " id_tanque_are_final, id_tanque_gli_recup, desg_id_tanque_destino, id_producto_buscado, parametros_proceso "
+            "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(idb),))
+    if b is None or b.empty:
+        return
+    b = b.iloc[0]
+    _p = b["parametros_proceso"]
+    if isinstance(_p, str):
+        try:
+            _p = _json.loads(_p)
+        except Exception:
+            _p = {}
+    _p = _p or {}
+    _es_are = str(b["tipo_proceso"] or "") == "PRODUCCION_ARE"
+    _ini = b["inicio_ts"]; _fin = b["fin_ts"]
+    if _fin is None or (hasattr(pd, "isna") and pd.isna(_fin)):
+        _fq = cat("SELECT COALESCE(inicio_ts,fin_ts) AS ts FROM produccion.fact_etapa_evento "
+                  "WHERE id_batch=%s AND (etapa ILIKE '%%acopio%%' OR etapa='EN_TANQUE') "
+                  "ORDER BY inicio_ts DESC NULLS LAST LIMIT 1", (int(idb),))
+        _fin = _fq.iloc[0]["ts"] if (_fq is not None and not _fq.empty) else None
+    if _ini is None or pd.isna(_ini):
+        _iq = cat("SELECT min(COALESCE(inicio_ts,fin_ts)) AS ts FROM produccion.fact_etapa_evento WHERE id_batch=%s", (int(idb),))
+        _ini = _iq.iloc[0]["ts"] if (_iq is not None and not _iq.empty) else None
+    st.markdown("##### 📏 Control de rendimiento — tanques antes/después de la reacción")
+    if _ini is None or _fin is None or pd.isna(_ini) or pd.isna(_fin):
+        st.caption("Falta el **inicio** o el **fin/acopio** de la reacción para comparar mediciones de tanque "
+                   "(cargalos en la ficha, pestaña Nombre & inicio / horario de acopio final).")
+        return
+    _ini = pd.to_datetime(_ini); _fin = pd.to_datetime(_fin)
+    _inip = _ini.to_pydatetime(); _finp = _fin.to_pydatetime()
+
+    _mpq = cat("SELECT round(sum(abs(kg))::numeric,0) AS kg FROM produccion.fact_movimiento_stock "
+               "WHERE id_batch=%s AND rol='MP' AND NOT COALESCE(anulado,false)", (int(idb),))
+    _mpkg = float(_mpq.iloc[0]["kg"]) if (_mpq is not None and not _mpq.empty and _mpq.iloc[0]["kg"] is not None) else 0.0
+    _pf = cat("SELECT codigo_producto, COALESCE(densidad_g_ml,0.88)::float AS dens FROM produccion.dim_producto WHERE id_producto=%s",
+              (int(b["id_producto_buscado"]),)) if pd.notna(b["id_producto_buscado"]) else None
+    _pfcode = str(_pf.iloc[0]["codigo_producto"]) if (_pf is not None and not _pf.empty) else "Producto"
+    _pfdens = float(_pf.iloc[0]["dens"]) if (_pf is not None and not _pf.empty) else 0.88
+
+    if _es_are:
+        _aguapct = float(_p.get("agua_agc_pct") or 0.0)
+        _glil = float(_p.get("litros_glicerina_total") or 0.0)
+        _aporte = float(_p.get("aporte_glicerina_pct") or 10.0)
+        _aguakg = _mpkg * _aguapct / 100.0
+        _apk = _aporte / 100.0 * _glil
+        _rend = float(_p.get("are_objetivo_kg") or 0.0) or (_mpkg - _aguakg + _apk)
+        st.caption(f"**Rendimiento teórico** = AG {_mpkg:,.0f} − agua/evaporación {_aguakg:,.0f} ({_aguapct:.1f}%) "
+                   f"+ glicerina {_apk:,.0f} ({_aporte:.0f}% de {_glil:,.0f} L) = **{_rend:,.0f} kg** "
+                   f"(≈ {_rend/_pfdens:,.0f} L de {_pfcode}).")
+        _glirec_l = (1.0 - _aporte / 100.0) * _glil
+        _tanks = [(b["id_tanque_are_final"], _pfcode, _rend, _pfdens)]
+        if pd.notna(b["id_tanque_gli_recup"]):
+            _tanks.append((b["id_tanque_gli_recup"], "Glicerina recuperada", _glirec_l * 1.05, 1.05))
+    else:
+        _rend = float(_p.get("afe_objetivo_kg") or 0.0)
+        st.caption(f"**Rendimiento teórico** ({_pfcode}) = **{_rend:,.0f} kg** (≈ {_rend/_pfdens:,.0f} L).")
+        _dt = b["id_tanque_are_final"] if pd.notna(b["id_tanque_are_final"]) else b["desg_id_tanque_destino"]
+        _tanks = [(_dt, _pfcode, _rend, _pfdens)]
+
+    _rows = []
+    for _tid, _lbl, _expkg, _dens in _tanks:
+        if _tid is None or pd.isna(_tid):
+            _rows.append({"Tanque": "(sin asignar)", "Corriente": _lbl, "Antes (L)": None, "Después (L)": None,
+                          "Δ neto (L)": None, "Δ neto (kg)": None, "Pico ingreso (L)": None,
+                          "Esperado (kg)": round(_expkg), "Estado": "⚠️ sin tanque destino"})
+            continue
+        _tn = cat("SELECT nombre FROM produccion.dim_tanque WHERE id_tanque=%s", (int(_tid),))
+        _tname = str(_tn.iloc[0]["nombre"]) if (_tn is not None and not _tn.empty) else f"Tanque {int(_tid)}"
+        _an = cat("SELECT litros::float AS l, medido_en FROM produccion.fact_stock_tanque WHERE id_tanque=%s AND litros IS NOT NULL "
+                  "AND medido_en <= %s ORDER BY medido_en DESC LIMIT 1", (int(_tid), _inip))
+        _af = cat("SELECT litros::float AS l, medido_en FROM produccion.fact_stock_tanque WHERE id_tanque=%s AND litros IS NOT NULL "
+                  "AND medido_en >= %s ORDER BY medido_en LIMIT 8", (int(_tid), _finp))
+        _antes = float(_an.iloc[0]["l"]) if (_an is not None and not _an.empty) else None
+        _desp = float(_af.iloc[0]["l"]) if (_af is not None and not _af.empty) else None
+        _net = (_desp - _antes) if (_antes is not None and _desp is not None) else None
+        _pico = None
+        if _antes is not None and _af is not None and not _af.empty:
+            _seq = [_antes] + [float(x) for x in _af["l"].tolist()]
+            _difs = [_seq[i + 1] - _seq[i] for i in range(len(_seq) - 1)]
+            _pico = max([_net if _net is not None else 0.0] + _difs + [0.0])
+        _estado = "—"
+        if _net is not None:
+            _ing = max(_net, _pico if _pico is not None else _net, 0.0)
+            _r = (_ing * _dens) / _expkg if _expkg else None
+            if _net < 0:
+                _estado = "🔻 se vació (despacho tapó el ingreso)"
+            elif _r is not None and _r >= 0.85:
+                _estado = "🟢 cuadra"
+            elif _r is not None and _r >= 0.5:
+                _estado = "🟡 parcial"
+            else:
+                _estado = "🔴 no se ve"
+        elif _desp is None:
+            _estado = "🟠 falta medición después"
+        elif _antes is None:
+            _estado = "🟠 falta medición antes"
+        _rows.append({"Tanque": _tname, "Corriente": _lbl,
+                      "Antes (L)": (round(_antes) if _antes is not None else None),
+                      "Después (L)": (round(_desp) if _desp is not None else None),
+                      "Δ neto (L)": (round(_net) if _net is not None else None),
+                      "Δ neto (kg)": (round(_net * _dens) if _net is not None else None),
+                      "Pico ingreso (L)": (round(_pico) if _pico is not None else None),
+                      "Esperado (kg)": round(_expkg), "Estado": _estado})
+    st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
+                 column_config={c: st.column_config.NumberColumn(format="%.0f") for c in
+                                ["Antes (L)", "Después (L)", "Δ neto (L)", "Δ neto (kg)", "Pico ingreso (L)", "Esperado (kg)"]})
+    st.caption(f"Ventana: inicio **{_ini.strftime('%d/%m %H:%M')}** → fin/acopio **{_fin.strftime('%d/%m %H:%M')}**. "
+               "**Antes** = última medición antes del inicio · **Después** = primera medición tras el fin. "
+               "Si el tanque se **vació** después (despacho), el ingreso no se ve como aumento neto → mirá el **Pico ingreso** "
+               "(mejor salto entre mediciones). Para control fino, medí el tanque **justo después del acopio y antes de despachar**.")
+
+
 def _registrar_destino_cierre(USR, cat, conectar, idb):
     """Asigna el tanque destino del producto final y derivados (glicerina recuperada / agua) y
     REGISTRA el movimiento de stock (entrada al tanque, rol PRODUCTO_FINAL / SUBPRODUCTO, EJECUTADO).
@@ -1515,6 +1630,8 @@ def _dlg_reaccion(USR, cat, conectar, idb):
                     st.success("Destino final guardado."); cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
+        st.divider()
+        _control_rendimiento(USR, cat, conectar, int(idb))
         st.divider()
         _registrar_destino_cierre(USR, cat, conectar, int(idb))
 
@@ -2230,6 +2347,8 @@ def _reacciones_terminadas(USR, cat, conectar):
         except Exception as e:
             st.exception(e)
 
+    st.divider()
+    _control_rendimiento(USR, cat, conectar, idb)
     st.divider()
     _registrar_destino_cierre(USR, cat, conectar, idb)
 
