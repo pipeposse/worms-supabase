@@ -2157,6 +2157,27 @@ def _reacciones_terminadas(USR, cat, conectar):
                     except Exception as e:
                         st.exception(e)
 
+    if str(USR.get("rol") or "") in ROLES_DIRECCION:
+        st.divider()
+        with st.expander("🗑️ Borrar esta reacción terminada (cargada mal)"):
+            st.caption("Anula la reacción, sus movimientos de stock, tickets finales y el cierre real "
+                       "(soft-delete reversible en base). Desaparece de Terminadas y deja de contar.")
+            _tdck = st.checkbox(f"Confirmo borrar {r['ident']}", key=f"term_del_ck_{idb}")
+            if st.button("🗑️ Borrar definitivamente", disabled=not _tdck, key=f"term_del_go_{idb}", use_container_width=True):
+                try:
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE produccion.fact_batch_proceso SET anulado=true WHERE id_batch=%s", (int(idb),))
+                            cur.execute("UPDATE produccion.fact_movimiento_stock SET anulado=true WHERE id_batch=%s", (int(idb),))
+                            cur.execute("UPDATE produccion.fact_batch_ticket_final SET anulado=true WHERE id_batch=%s", (int(idb),))
+                            cur.execute("DELETE FROM produccion.fact_reaccion_cierre WHERE id_batch=%s", (int(idb),))
+                            audit.log("D", "fact_batch_proceso", int(idb), {"terminada_borrada": str(r["ident"])})
+                    st.success(f"Reacción {r['ident']} borrada de Terminadas.")
+                    st.session_state.pop("gr_tab_df", None)
+                    cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
+
 
 def _gestion_reacciones(USR, cat, conectar):
     st.subheader("🛠️ Gestión de reacciones")
