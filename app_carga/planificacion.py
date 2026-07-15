@@ -1726,10 +1726,192 @@ def _terminadas_sugerencias(df, cat):
     return sug
 
 
+def _prob_label(conf):
+    if conf is None:
+        return "🟠 Pendiente medición"
+    if conf >= 0.80:
+        return "🟢 Alta"
+    if conf >= 0.50:
+        return "🟡 Media"
+    return "🔴 Baja"
+
+
+def _scan_tanque_match(cat, id_producto, finref, win_h, dens, teo_kg):
+    """Candidatos de tanque cuya variación (después del cierre) matchea la producción teórica.
+    Cada uno: tanque, id_tanque, inc_kg (ingreso atribuible), net_kg, conf (0..1), desde, hasta."""
+    _lo = (finref - pd.Timedelta(hours=float(win_h))).strftime("%Y-%m-%d %H:%M:%S")
+    _hi = (finref + pd.Timedelta(hours=float(win_h))).strftime("%Y-%m-%d %H:%M:%S")
+    _tks = cat("SELECT DISTINCT t.id_tanque, t.nombre, t.codigo FROM produccion.dim_tanque t "
+               "LEFT JOIN produccion.dim_tanque_producto tp ON tp.id_tanque=t.id_tanque "
+               "WHERE COALESCE(t.activo,true) AND (t.id_producto_principal=%s OR tp.id_producto=%s) ORDER BY t.nombre",
+               (int(id_producto), int(id_producto)))
+    out = []
+    if _tks is None or _tks.empty:
+        return out
+    for _, _tk in _tks.iterrows():
+        _m = cat("SELECT medido_en, litros::float AS litros FROM produccion.fact_stock_tanque "
+                 "WHERE id_tanque=%s AND litros IS NOT NULL AND medido_en BETWEEN "
+                 "(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') AND "
+                 "(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') ORDER BY medido_en",
+                 (int(_tk["id_tanque"]), _lo, _hi))
+        _tank = f"{_tk['nombre']} · {_tk['codigo']}"
+        if _m is None or _m.empty:
+            continue
+        _m = _m.copy(); _m["medido_en"] = pd.to_datetime(_m["medido_en"])
+        _bef = _m[_m["medido_en"] <= finref]; _aft = _m[_m["medido_en"] > finref]
+        if _aft.empty:
+            out.append({"tanque": _tank, "id_tanque": int(_tk["id_tanque"]), "inc_kg": 0.0, "net_kg": 0.0,
+                        "conf": None,
+                        "desde": (_bef.iloc[-1]["medido_en"].strftime("%d/%m %H:%M") if not _bef.empty else "—"),
+                        "hasta": "—"})
+            continue
+        _base = float(_bef.iloc[-1]["litros"]) if not _bef.empty else float(_m.iloc[0]["litros"])
+        _net_l = float(_aft.iloc[0]["litros"]) - _base
+        _best_l = float(_m["litros"].diff().fillna(0).max())
+        _inc = max(_net_l, _best_l, 0.0) * dens
+        _net_kg = _net_l * dens
+        _conf = (max(0.0, 1 - abs(_inc - teo_kg) / teo_kg)) if teo_kg else None
+        out.append({"tanque": _tank, "id_tanque": int(_tk["id_tanque"]), "inc_kg": _inc, "net_kg": _net_kg,
+                    "conf": _conf,
+                    "desde": (_bef.iloc[-1]["medido_en"].strftime("%d/%m %H:%M") if not _bef.empty else _m.iloc[0]["medido_en"].strftime("%d/%m %H:%M")),
+                    "hasta": _aft.iloc[0]["medido_en"].strftime("%d/%m %H:%M")})
+    out.sort(key=lambda x: (-(x["conf"] if x["conf"] is not None else -1)))
+    return out
+
+
+def _reconciliacion_profunda(USR, cat, conectar):
+    st.markdown("### 🔬 Análisis profundo — tanque por tanque")
+    st.caption("Para cada reacción terminada buscamos en qué tanque se ve el ingreso después del cierre y con qué "
+               "**probabilidad** coincide con lo producido: 🟢 Alta (≥80%) · 🟡 Media (50–80%) · 🔴 Baja (<50%) · 🟠 sin medición.")
+    _t = cat("SELECT id_batch, ident, etiqueta, tipo, producto, id_producto, "
+             " COALESCE(densidad,0.91)::float AS densidad, COALESCE(tickets_kg,0)::float AS tickets_kg, "
+             " formula_kg::float AS formula_kg, objetivo_kg::float AS objetivo_kg, "
+             " inicio_local, fin_local, cierre_ts, creado_en "
+             "FROM produccion.v_reaccion_terminada")
+    if _t is None or _t.empty:
+        st.info("No hay reacciones terminadas para analizar."); return
+    _t = _t.copy()
+
+    def _ref(row):
+        for _k in ("fin_local", "cierre_ts", "inicio_local", "creado_en"):
+            if pd.notna(row[_k]):
+                return pd.to_datetime(row[_k])
+        return pd.NaT
+    _t["_ref"] = _t.apply(_ref, axis=1)
+    _t["_semkey"] = _t["_ref"].apply(lambda x: (int(x.isocalendar()[1]) if pd.notna(x) else -1))
+    _t["_sem"] = _t["_ref"].apply(lambda x: (x.strftime("S%V · sem del %d/%m") if pd.notna(x) else "—"))
+    _sems = _t[_t["_semkey"] > 0].drop_duplicates("_semkey").sort_values("_ref", ascending=False)
+    if _sems.empty:
+        st.info("Sin fechas de cierre para agrupar."); return
+    c1, c2, c3 = st.columns([1.4, 1.4, 1])
+    _selsem = c1.selectbox("Semana", _sems["_sem"].tolist(), key="recp_sem")
+    _semk = int(_sems[_sems["_sem"] == _selsem].iloc[0]["_semkey"])
+    _tw = _t[_t["_semkey"] == _semk].copy()
+    _prodops = ["(todos)"] + sorted(_tw["producto"].dropna().unique().tolist())
+    _selprod = c2.selectbox("Producto (calidad)", _prodops, key="recp_prod")
+    if _selprod != "(todos)":
+        _tw = _tw[_tw["producto"] == _selprod]
+    _win = c3.number_input("Ventana (h)", 6, 336, 48, step=6, key="recp_win")
+
+    # --- desglose por producto/calidad: producción vs Δtanque ---
+    _var = cat("SELECT producto, neto_t::float AS neto_t FROM produccion.v_variacion_semanal_producto "
+               "WHERE EXTRACT(week FROM semana)::int=%s", (_semk,))
+    _vmap = {r["producto"]: float(r["neto_t"]) for _, r in _var.iterrows()} if (_var is not None and not _var.empty) else {}
+    _prodkg = {}
+    for _, rr in _tw.iterrows():
+        _kk = float(rr["tickets_kg"] or 0) or float(rr["formula_kg"] or 0) or 0.0
+        _prodkg[rr["producto"]] = _prodkg.get(rr["producto"], 0.0) + _kk
+    _allp = set(_prodkg) | set(_vmap)
+    _rows = [{"Producto": _p, "Producción (t)": round(_prodkg.get(_p, 0.0) / 1000.0, 2),
+              "Δ Tanque (t)": round(_vmap.get(_p, 0.0), 2),
+              "Dif Δtanque−prod (t)": round(_vmap.get(_p, 0.0) - _prodkg.get(_p, 0.0) / 1000.0, 2)} for _p in sorted(_allp)]
+    if _rows:
+        st.markdown("**Desglose por producto/calidad** — producción vs variación de tanque (misma semana)")
+        st.caption("Portería etiqueta por familia (no por calidad), por eso este desglose compara sólo **producción vs Δtanque** por producto.")
+        _dfp = pd.DataFrame(_rows)
+
+        def _ccp(v):
+            if pd.isna(v):
+                return ""
+            a = abs(v)
+            return "color:#16a34a;font-weight:700" if a < 2 else ("color:#b45309;font-weight:700" if a < 10 else "color:#dc2626;font-weight:700")
+        try:
+            st.dataframe(_dfp.style.map(_ccp, subset=["Dif Δtanque−prod (t)"]).format(
+                {c: "{:.2f}" for c in ["Producción (t)", "Δ Tanque (t)", "Dif Δtanque−prod (t)"]}),
+                hide_index=True, use_container_width=True)
+        except Exception:
+            st.dataframe(_dfp, hide_index=True, use_container_width=True)
+
+    # --- reacción → tanque + probabilidad ---
+    st.markdown("**Reacción → tanque (¿se ve el ingreso?)**")
+    if _tw.empty:
+        st.info("No hay reacciones en esa semana/producto."); return
+    _cards = []
+    for _, rr in _tw.iterrows():
+        if not pd.notna(rr["id_producto"]):
+            continue
+        _finref = _ref(rr)
+        if pd.isna(_finref):
+            continue
+        _teo = float(rr["tickets_kg"] or 0) or float(rr["formula_kg"] or 0) or float(rr["objetivo_kg"] or 0)
+        _cand = _scan_tanque_match(cat, int(rr["id_producto"]), _finref, _win, float(rr["densidad"] or 0.91), _teo)
+        _cards.append((rr, _teo, (_cand[0] if _cand else None), _cand))
+    _rr_rows = []
+    for rr, _teo, _best, _cand in _cards:
+        _rr_rows.append({"Reacción": rr["ident"], "Producto": rr["producto"],
+                         "Teórico (t)": round(_teo / 1000.0, 2),
+                         "Mejor tanque": (_best["tanque"] if _best else "—"),
+                         "Entró (t)": (round(_best["inc_kg"] / 1000.0, 2) if _best else None),
+                         "Coincidencia": (f"{_best['conf']*100:.0f}%" if (_best and _best['conf'] is not None) else "—"),
+                         "Probabilidad": _prob_label(_best["conf"] if _best else None)})
+    if _rr_rows:
+        _na = sum(1 for r in _rr_rows if "🟢" in r["Probabilidad"])
+        _nm = sum(1 for r in _rr_rows if "🟡" in r["Probabilidad"])
+        _nb = sum(1 for r in _rr_rows if "🔴" in r["Probabilidad"])
+        _npd = sum(1 for r in _rr_rows if "🟠" in r["Probabilidad"])
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("🟢 Alta", _na); k2.metric("🟡 Media", _nm); k3.metric("🔴 Baja", _nb); k4.metric("🟠 Pendiente", _npd)
+        st.dataframe(pd.DataFrame(_rr_rows), hide_index=True, use_container_width=True,
+                     column_config={"Teórico (t)": st.column_config.NumberColumn(format="%.2f"),
+                                    "Entró (t)": st.column_config.NumberColumn(format="%.2f")})
+
+    if _cards:
+        _opt = [f"{rr['ident']} · {rr['producto']} · teo {(_teo/1000.0):.2f} t" for rr, _teo, _b, _c in _cards]
+        _sel = st.selectbox("Ver todos los candidatos de una reacción", _opt, key="recp_rsel")
+        rr, _teo, _best, _cand = _cards[_opt.index(_sel)]
+        if not _cand:
+            st.caption("No hay tanques de este producto con mediciones en la ventana. Ampliá las horas o cargá mediciones.")
+        else:
+            _det = pd.DataFrame([{"Tanque": x["tanque"], "Entró (t)": round(x["inc_kg"] / 1000.0, 2),
+                                  "Δ neto (t)": round(x["net_kg"] / 1000.0, 2),
+                                  "Coincidencia": (f"{x['conf']*100:.0f}%" if x["conf"] is not None else "—"),
+                                  "Probabilidad": _prob_label(x["conf"]),
+                                  "Desde": x["desde"], "Hasta": x["hasta"]} for x in _cand])
+            st.dataframe(_det, hide_index=True, use_container_width=True,
+                         column_config={"Entró (t)": st.column_config.NumberColumn(format="%.2f"),
+                                        "Δ neto (t)": st.column_config.NumberColumn(format="%.2f")})
+            st.caption("**Entró** = ingreso atribuible (máximo entre el neto y el mejor salto, capta el ingreso aunque el "
+                       "tanque también se drene). **Coincidencia** = cuán cerca está ese ingreso del teórico de la reacción.")
+
+
 def _reconciliacion_semanal(USR, cat, conectar):
-    st.subheader("🧮 Reconciliación semanal — ¿la producción se ve en tanques?")
-    st.caption("Por **familia** y semana. **Cuadre = ΔTanque − (Producción + Ext. entra − Ext. sale − Interno)**; cerca de 0 = consistente. "
-               "Portería separa lo **externo** (proveedores/despacho) de lo **interno** (MOVIMIENTO INTERNO, ej. AG que se consume para AG-E).")
+    st.subheader("🧮 Reconciliación semanal — ¿la producción se ve en los tanques?")
+    with st.expander("ℹ️ Cómo leer esta sección (qué significa cada columna)"):
+        st.markdown(
+            "**Balance de masa por familia y semana.** Lo que entró/salió de los tanques debería explicarse por "
+            "lo que produjimos + lo que movió portería.\n\n"
+            "- **Familia**: grupo del producto (ARE, AG, AFE, SEBO, GLICERINA). *No es el producto con calidad* "
+            "(ARE-B, AG-C…): portería suele etiquetar sólo la familia, por eso el balance se hace a este nivel.\n"
+            "- **Δ Tanque (t)**: cambio del stock físico en los tanques de esa familia (mediciones de la semana).\n"
+            "- **Producción (t)**: lo producido por reacciones terminadas (tickets de pesada, o formulado si no hay).\n"
+            "- **Ext. entra (t)**: ingresos externos por portería (proveedores; sin 'MOVIMIENTO INTERNO' ni excluidos).\n"
+            "- **Ext. sale (t)**: despachos/salidas por portería.\n"
+            "- **Interno (t)**: 'MOVIMIENTO INTERNO' (ej. AG consumido para fabricar AG-E).\n"
+            "- **ΔTanque esperado (t)** = Producción + Ext.entra − Ext.sale − Interno.\n"
+            "- **Cuadre (t)** = Δ Tanque real − ΔTanque esperado (🟢 <5 · 🟡 5–20 · 🔴 >20).\n"
+            "- **Cuadre %** = |cuadre| sobre el mayor componente de la fila (qué tan grande es en proporción).\n\n"
+            "**Si no cuadra:** mediciones de tanque espaciadas, etiquetas de portería a revisar, o producción no acopiada aún. "
+            "Usá el **análisis profundo** de abajo para ir tanque por tanque.")
     c1, c2 = st.columns([1, 2])
     _sem = c1.number_input("Semanas atrás", 2, 52, 8, step=1, key="rec_sem")
     df = cat("SELECT semana, familia, dtank_t, prod_t, ext_in_t, ext_out_t, interno_t, cuadre_t "
@@ -1742,11 +1924,20 @@ def _reconciliacion_semanal(USR, cat, conectar):
     _def = [x for x in ["AG", "AFE", "ARE", "SEBO", "GLICERINA"] if x in _fams] or _fams
     _fsel = c2.multiselect("Familias", _fams, default=_def, key="rec_fam")
     dff = (df[df["familia"].isin(_fsel)] if _fsel else df).copy()
+    for _c in ["dtank_t", "prod_t", "ext_in_t", "ext_out_t", "interno_t", "cuadre_t"]:
+        dff[_c] = pd.to_numeric(dff[_c], errors="coerce")
     dff["Semana"] = pd.to_datetime(dff["semana"]).dt.strftime("S%V")
+    dff["esperado_t"] = (dff["prod_t"] + dff["ext_in_t"] - dff["ext_out_t"] - dff["interno_t"]).round(2)
+    _mag = dff[["dtank_t", "prod_t", "ext_in_t", "ext_out_t", "interno_t"]].abs().max(axis=1)
+    dff["cuadre_pct"] = [(abs(c) / m * 100 if (pd.notna(c) and m and m > 0) else None) for c, m in zip(dff["cuadre_t"], _mag)]
+    dff["Estado"] = [("🟢" if (pd.notna(c) and abs(c) < 5) else ("🟡" if (pd.notna(c) and abs(c) < 20) else "🔴")) for c in dff["cuadre_t"]]
     _disp = dff.rename(columns={"familia": "Familia", "dtank_t": "Δ Tanque (t)", "prod_t": "Producción (t)",
                                 "ext_in_t": "Ext. entra (t)", "ext_out_t": "Ext. sale (t)",
-                                "interno_t": "Interno (t)", "cuadre_t": "Cuadre (t)"})
-    _disp = _disp[["Semana", "Familia", "Δ Tanque (t)", "Producción (t)", "Ext. entra (t)", "Ext. sale (t)", "Interno (t)", "Cuadre (t)"]]
+                                "interno_t": "Interno (t)", "esperado_t": "ΔTanque esperado (t)",
+                                "cuadre_t": "Cuadre (t)", "cuadre_pct": "Cuadre %"})
+    _disp = _disp[["Estado", "Semana", "Familia", "Δ Tanque (t)", "Producción (t)", "Ext. entra (t)", "Ext. sale (t)",
+                   "Interno (t)", "ΔTanque esperado (t)", "Cuadre (t)", "Cuadre %"]]
+
     def _cc(v):
         if pd.isna(v):
             return ""
@@ -1756,16 +1947,18 @@ def _reconciliacion_semanal(USR, cat, conectar):
         if a < 20:
             return "color:#b45309;font-weight:700"
         return "color:#dc2626;font-weight:700"
-    _num = [c for c in _disp.columns if c not in ("Semana", "Familia")]
+    _numfmt = {c: "{:.2f}" for c in ["Δ Tanque (t)", "Producción (t)", "Ext. entra (t)", "Ext. sale (t)",
+                                     "Interno (t)", "ΔTanque esperado (t)", "Cuadre (t)"]}
+    _numfmt["Cuadre %"] = "{:.0f}%"
     try:
-        _sty = _disp.style.map(_cc, subset=["Cuadre (t)"]).format({c: "{:.2f}" for c in _num}, na_rep="—")
+        _sty = _disp.style.map(_cc, subset=["Cuadre (t)"]).format(_numfmt, na_rep="—")
         st.dataframe(_sty, hide_index=True, use_container_width=True)
     except Exception:
         st.dataframe(_disp, hide_index=True, use_container_width=True)
-    st.caption("**Cuadre**: 🟢 <5 t consistente · 🟡 5–20 t · 🔴 >20 t revisar. Un cuadre grande suele indicar "
-               "**mediciones de tanque poco frecuentes** (no capturan el movimiento real) o **etiquetas de portería a revisar** "
-               "(AG externo para AG-E, movimientos internos mal clasificados, despachos). "
-               "Excluye a los clientes de la lista de excluidos (Calzim, etc.).")
+    st.caption("**Cuadre**: 🟢 <5 t · 🟡 5–20 t · 🔴 >20 t. Grande = mediciones espaciadas, etiquetas de portería a revisar, "
+               "o producción sin acopiar. Excluye clientes de la lista de excluidos (Calzim, etc.).")
+    st.divider()
+    _reconciliacion_profunda(USR, cat, conectar)
 
 
 def _variacion_semanal(USR, cat, conectar):
