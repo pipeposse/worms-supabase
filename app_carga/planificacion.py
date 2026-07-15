@@ -1000,6 +1000,118 @@ def _destinos_are_ficha(USR, cat, conectar, idb, b):
             st.exception(e)
 
 
+def _registrar_destino_cierre(USR, cat, conectar, idb):
+    """Asigna el tanque destino del producto final y derivados (glicerina recuperada / agua) y
+    REGISTRA el movimiento de stock (entrada al tanque, rol PRODUCTO_FINAL / SUBPRODUCTO, EJECUTADO).
+    Reemplaza los movimientos de cierre previos del batch para no duplicar."""
+    _b = cat("SELECT id_batch, identificador_unidad AS ident, tipo_proceso, estado, id_producto_buscado, "
+             " id_tanque_are_final, id_tanque_gli_recup, desg_id_tanque_destino, parametros_proceso "
+             "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(idb),))
+    if _b is None or _b.empty:
+        st.caption("No se encontró la reacción."); return
+    _b = _b.iloc[0]
+    _es_are = str(_b["tipo_proceso"] or "") == "PRODUCCION_ARE"
+    _p = _b["parametros_proceso"]
+    if isinstance(_p, str):
+        try:
+            _p = _json.loads(_p)
+        except Exception:
+            _p = {}
+    _p = _p or {}
+    _pf = cat("SELECT codigo_producto, COALESCE(densidad_g_ml,0.9)::float AS dens FROM produccion.dim_producto WHERE id_producto=%s",
+              (int(_b["id_producto_buscado"]),)) if pd.notna(_b["id_producto_buscado"]) else None
+    _pf_code = str(_pf.iloc[0]["codigo_producto"]) if (_pf is not None and not _pf.empty) else "Producto final"
+    _pf_dens = float(_pf.iloc[0]["dens"]) if (_pf is not None and not _pf.empty) else 0.9
+    _id_pf = int(_b["id_producto_buscado"]) if pd.notna(_b["id_producto_buscado"]) else None
+
+    _taf = cat("SELECT id_tanque, nombre, codigo FROM produccion.dim_tanque WHERE COALESCE(activo,true) ORDER BY nombre")
+    if _taf is None or _taf.empty:
+        st.caption("No hay tanques."); return
+    _opt = _taf.apply(lambda x: f"{x['nombre']} · {x['codigo']}", axis=1).tolist()
+
+    def _sel(label, cur_id, key, opcional=False):
+        _base = (["(sin / no aplica)"] + _opt) if opcional else _opt
+        _i = 0
+        if cur_id is not None and pd.notna(cur_id):
+            for _j in range(len(_taf)):
+                if int(_taf.iloc[_j]["id_tanque"]) == int(cur_id):
+                    _i = (_j + 1) if opcional else _j
+                    break
+        _v = st.selectbox(label, _base, index=_i, key=key)
+        if opcional and _v.startswith("(sin"):
+            return None
+        return int(_taf.iloc[_opt.index(_v)]["id_tanque"])
+
+    st.markdown("##### 🚚 Destino del cierre — registra el movimiento en stock")
+    st.caption("Elegí a qué tanque fue cada corriente y **Registrar**: genera la entrada al tanque en el libro de "
+               "movimientos (rol PRODUCTO_FINAL / SUBPRODUCTO). Si ya había movimientos de cierre para esta reacción, se reemplazan.")
+    _streams = []
+    _pf_kg = float(_p.get("are_objetivo_kg") or _p.get("afe_objetivo_kg") or 0.0)
+    _t_pf = _sel(f"Tanque destino · {_pf_code}",
+                 (_b["id_tanque_are_final"] if _es_are else _b["desg_id_tanque_destino"]), f"rd_pf_{idb}")
+    cpf1, cpf2 = st.columns(2)
+    _l_pf = cpf1.number_input(f"{_pf_code} · litros", 0.0, 1e7,
+                              value=float(round(_pf_kg / _pf_dens if _pf_dens else 0.0, 0)), step=50.0, key=f"rd_pfl_{idb}")
+    _kg_pf = cpf2.number_input(f"{_pf_code} · kg", 0.0, 1e7, value=float(round(_pf_kg, 0)), step=50.0, key=f"rd_pfkg_{idb}")
+    _streams.append(("PRODUCTO_FINAL", _id_pf, _pf_code, _t_pf, _l_pf, _kg_pf))
+
+    if _es_are:
+        _aporte = float(_p.get("aporte_glicerina_pct") or 10.0)
+        _lgt = float(_p.get("litros_glicerina_total") or 0.0)
+        _lgli = (1.0 - _aporte / 100.0) * _lgt
+        _idg = cat("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto='GLICERINA-RECUP'")
+        _id_gli = int(_idg.iloc[0]["id_producto"]) if (_idg is not None and not _idg.empty) else None
+        _t_gli = _sel("Tanque · glicerina recuperada", _b["id_tanque_gli_recup"], f"rd_gli_{idb}", opcional=True)
+        cg1, cg2 = st.columns(2)
+        _l_gli = cg1.number_input("Glicerina recuperada · litros", 0.0, 1e7, value=float(round(_lgli, 0)), step=25.0, key=f"rd_glil_{idb}")
+        _kg_gli = cg2.number_input("Glicerina recuperada · kg", 0.0, 1e7, value=float(round(_lgli * 1.05, 0)), step=25.0, key=f"rd_glikg_{idb}")
+        _streams.append(("SUBPRODUCTO", _id_gli, "Glicerina recuperada", _t_gli, _l_gli, _kg_gli))
+
+    if _es_are:
+        _mpq = cat("SELECT COALESCE(mp_tn,0)::float AS t FROM produccion.v_reaccion_mp WHERE id_batch=%s", (int(idb),))
+        _mpkg = (float(_mpq.iloc[0]["t"]) * 1000.0) if (_mpq is not None and not _mpq.empty) else 0.0
+        _agua_def = _mpkg * float(_p.get("agua_agc_pct") or 0.0) / 100.0
+    else:
+        _agua_def = float((_p.get("insumos_estimados") or {}).get("AGUA") or 0.0)
+    _t_ag = _sel("Tanque · agua (opcional)", None, f"rd_ag_{idb}", opcional=True)
+    ca1, ca2 = st.columns(2)
+    _l_ag = ca1.number_input("Agua · litros", 0.0, 1e7, value=float(round(_agua_def, 0)), step=25.0, key=f"rd_agl_{idb}")
+    _kg_ag = ca2.number_input("Agua · kg", 0.0, 1e7, value=float(round(_agua_def, 0)), step=25.0, key=f"rd_agkg_{idb}")
+    _streams.append(("SUBPRODUCTO", None, "Agua", _t_ag, _l_ag, _kg_ag))
+
+    if st.button("💾 Registrar destino y movimientos", type="primary", key=f"rd_save_{idb}", use_container_width=True):
+        _uid = int(USR["id_usuario"])
+        try:
+            _n = 0
+            with conectar(_uid) as (conn, audit):
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE produccion.fact_movimiento_stock SET anulado=true, estado_mov='ANULADO' "
+                                "WHERE id_batch=%s AND sentido=1 AND rol IN ('PRODUCTO_FINAL','SUBPRODUCTO') "
+                                "AND NOT COALESCE(anulado,false)", (int(idb),))
+                    for _rol, _idp, _txt, _tid, _lit, _kg in _streams:
+                        if not _tid or (float(_lit or 0) <= 0 and float(_kg or 0) <= 0):
+                            continue
+                        cur.execute(
+                            "INSERT INTO produccion.fact_movimiento_stock "
+                            "(momento,id_batch,identificador_prod,tipo_movimiento,rol,sentido,id_producto,producto,"
+                            " fuente,id_tanque,cantidad,unidad,kg,litros,id_usuario,origen,estado_mov) "
+                            "VALUES (now(),%s,%s,'ENTRADA',%s,1,%s,%s,'TANQUE',%s,%s,'LT',%s,%s,%s,'ajuste_manual','EJECUTADO')",
+                            (int(idb), _b["ident"], _rol, _idp, _txt, int(_tid),
+                             float(_lit or 0), float(_kg or 0), float(_lit or 0), _uid))
+                        _n += 1
+                    if _es_are:
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET id_tanque_are_final=%s, id_tanque_gli_recup=%s WHERE id_batch=%s",
+                                    (_streams[0][3], (_streams[1][3] if len(_streams) > 1 else None), int(idb)))
+                    else:
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET desg_id_tanque_destino=%s WHERE id_batch=%s",
+                                    (_streams[0][3], int(idb)))
+                audit.log("I", "fact_movimiento_stock", int(idb), {"destino_cierre": True, "movs": _n})
+            st.success(f"Destino registrado · {_n} movimiento(s) de stock generado(s).")
+            cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+
+
 def render_avanzar_ficha(USR, cat, conectar, idb):
     info = cat("SELECT id_batch, identificador_unidad AS ident, tipo_proceso, estado, etapa_actual, "
                " id_producto_buscado, ticket_producto_final, id_tanque_are_final, id_tanque_gli_recup, "
@@ -1403,6 +1515,8 @@ def _dlg_reaccion(USR, cat, conectar, idb):
                     st.success("Destino final guardado."); cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
+        st.divider()
+        _registrar_destino_cierre(USR, cat, conectar, int(idb))
 
     with tPF:
         _ficha_final_tickets(USR, cat, conectar, int(idb), b.get("producto_obj"))
@@ -1922,6 +2036,9 @@ def _reacciones_terminadas(USR, cat, conectar):
             st.success(f"Producción real guardada: {_real_t:.2f} t ({_met})."); cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
+
+    st.divider()
+    _registrar_destino_cierre(USR, cat, conectar, idb)
 
     st.divider()
     st.markdown("**🔎 Validar acopio a tanque — ¿la producción realmente entró?**")
