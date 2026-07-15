@@ -328,7 +328,26 @@ def produccion(USR, cat, conectar, id_batch=None):
                f"{l_are:,.0f} L", f"{_are_kg:,.0f} kg (fórmula)")
     st.caption("Calculado por la fórmula: ARE = AG-C − agua(AG-C, lab) + aporte%·L glicerina · "
                "glicerina recuperada = (100−aporte)%·L glicerina cargada.")
-    if st.button("🚚 Confirmar y generar movimientos de stock", type="primary", use_container_width=True, key="dec_confirm"):
+
+    # --- Checklist de cierre: medición del tanque destino + ticket de pesada final ---
+    st.markdown("**📋 Checklist de cierre (para poder verificar el rendimiento)**")
+    _tkf = b["ticket_producto_final"] if ("ticket_producto_final" in b.index and pd.notna(b["ticket_producto_final"])) else None
+    _nref = cat("SELECT max(medido_en) AS m FROM produccion.fact_stock_tanque WHERE id_tanque=%s", (int(df_),))
+    _ultmed = _nref.iloc[0]["m"] if (_nref is not None and not _nref.empty) else None
+    st.caption("🛢️ Última medición del tanque de ARE " + str(_nm.get(int(df_)) or df_) + ": "
+               + (pd.to_datetime(_ultmed).strftime("%d/%m %H:%M") if _ultmed is not None else "— sin mediciones"))
+    if _tkf:
+        st.caption("🎫 Ticket de pesada final cargado: **" + str(_tkf) + "**.")
+    else:
+        st.caption("🎫 **Sin ticket de pesada final.** Cargalo en la ficha (🏁 Producto final) — es la evidencia más "
+                   "confiable del rendimiento.")
+    _medido = st.checkbox("☑️ Medí el tanque de ARE destino **después del acopio** (antes de despachar) — obligatorio",
+                          key="dec_medido_gate")
+    if not _medido:
+        st.info("Medí el tanque destino y marcá la casilla: sin medición post-acopio no se puede verificar el rendimiento "
+                "real (si se despacha antes de medir, el ingreso queda tapado).")
+    if st.button("🚚 Confirmar y generar movimientos de stock", type="primary", use_container_width=True,
+                 key="dec_confirm", disabled=not _medido):
         try:
             with conectar(uid) as (conn, audit):
                 with conn.cursor() as cur:
