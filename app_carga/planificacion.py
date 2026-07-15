@@ -1001,8 +1001,9 @@ def _destinos_are_ficha(USR, cat, conectar, idb, b):
 
 
 def _control_rendimiento(USR, cat, conectar, idb):
-    """Control de rendimiento por reacción: mediciones de los tanques destino ANTES del inicio y
-    DESPUÉS del fin/acopio, Δ neto y pico de ingreso, contra el rendimiento teórico (AG − agua + glicerina)."""
+    """Rendimiento por reacción con múltiples evidencias: teórico (AG − agua + glicerina) vs
+    tickets de pesada, variación de tanque destino (antes/después + pico) y movimiento registrado.
+    Da un rendimiento real estimado, % vs teórico y un veredicto."""
     b = cat("SELECT identificador_unidad AS ident, tipo_proceso, inicio_ts, fin_ts, "
             " id_tanque_are_final, id_tanque_gli_recup, desg_id_tanque_destino, id_producto_buscado, parametros_proceso "
             "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(idb),))
@@ -1018,7 +1019,7 @@ def _control_rendimiento(USR, cat, conectar, idb):
     _p = _p or {}
     _es_are = str(b["tipo_proceso"] or "") == "PRODUCCION_ARE"
     _ini = b["inicio_ts"]; _fin = b["fin_ts"]
-    if _fin is None or (hasattr(pd, "isna") and pd.isna(_fin)):
+    if _fin is None or pd.isna(_fin):
         _fq = cat("SELECT COALESCE(inicio_ts,fin_ts) AS ts FROM produccion.fact_etapa_evento "
                   "WHERE id_batch=%s AND (etapa ILIKE '%%acopio%%' OR etapa='EN_TANQUE') "
                   "ORDER BY inicio_ts DESC NULLS LAST LIMIT 1", (int(idb),))
@@ -1026,14 +1027,8 @@ def _control_rendimiento(USR, cat, conectar, idb):
     if _ini is None or pd.isna(_ini):
         _iq = cat("SELECT min(COALESCE(inicio_ts,fin_ts)) AS ts FROM produccion.fact_etapa_evento WHERE id_batch=%s", (int(idb),))
         _ini = _iq.iloc[0]["ts"] if (_iq is not None and not _iq.empty) else None
-    st.markdown("##### 📏 Control de rendimiento — tanques antes/después de la reacción")
-    if _ini is None or _fin is None or pd.isna(_ini) or pd.isna(_fin):
-        st.caption("Falta el **inicio** o el **fin/acopio** de la reacción para comparar mediciones de tanque "
-                   "(cargalos en la ficha, pestaña Nombre & inicio / horario de acopio final).")
-        return
-    _ini = pd.to_datetime(_ini); _fin = pd.to_datetime(_fin)
-    _inip = _ini.to_pydatetime(); _finp = _fin.to_pydatetime()
 
+    # rendimiento teórico
     _mpq = cat("SELECT round(sum(abs(kg))::numeric,0) AS kg FROM produccion.fact_movimiento_stock "
                "WHERE id_batch=%s AND rol='MP' AND NOT COALESCE(anulado,false)", (int(idb),))
     _mpkg = float(_mpq.iloc[0]["kg"]) if (_mpq is not None and not _mpq.empty and _mpq.iloc[0]["kg"] is not None) else 0.0
@@ -1041,7 +1036,6 @@ def _control_rendimiento(USR, cat, conectar, idb):
               (int(b["id_producto_buscado"]),)) if pd.notna(b["id_producto_buscado"]) else None
     _pfcode = str(_pf.iloc[0]["codigo_producto"]) if (_pf is not None and not _pf.empty) else "Producto"
     _pfdens = float(_pf.iloc[0]["dens"]) if (_pf is not None and not _pf.empty) else 0.88
-
     if _es_are:
         _aguapct = float(_p.get("agua_agc_pct") or 0.0)
         _glil = float(_p.get("litros_glicerina_total") or 0.0)
@@ -1049,70 +1043,129 @@ def _control_rendimiento(USR, cat, conectar, idb):
         _aguakg = _mpkg * _aguapct / 100.0
         _apk = _aporte / 100.0 * _glil
         _rend = float(_p.get("are_objetivo_kg") or 0.0) or (_mpkg - _aguakg + _apk)
-        st.caption(f"**Rendimiento teórico** = AG {_mpkg:,.0f} − agua/evaporación {_aguakg:,.0f} ({_aguapct:.1f}%) "
-                   f"+ glicerina {_apk:,.0f} ({_aporte:.0f}% de {_glil:,.0f} L) = **{_rend:,.0f} kg** "
-                   f"(≈ {_rend/_pfdens:,.0f} L de {_pfcode}).")
         _glirec_l = (1.0 - _aporte / 100.0) * _glil
         _tanks = [(b["id_tanque_are_final"], _pfcode, _rend, _pfdens)]
         if pd.notna(b["id_tanque_gli_recup"]):
             _tanks.append((b["id_tanque_gli_recup"], "Glicerina recuperada", _glirec_l * 1.05, 1.05))
     else:
         _rend = float(_p.get("afe_objetivo_kg") or 0.0)
-        st.caption(f"**Rendimiento teórico** ({_pfcode}) = **{_rend:,.0f} kg** (≈ {_rend/_pfdens:,.0f} L).")
         _dt = b["id_tanque_are_final"] if pd.notna(b["id_tanque_are_final"]) else b["desg_id_tanque_destino"]
         _tanks = [(_dt, _pfcode, _rend, _pfdens)]
 
-    _rows = []
-    for _tid, _lbl, _expkg, _dens in _tanks:
-        if _tid is None or pd.isna(_tid):
-            _rows.append({"Tanque": "(sin asignar)", "Corriente": _lbl, "Antes (L)": None, "Después (L)": None,
-                          "Δ neto (L)": None, "Δ neto (kg)": None, "Pico ingreso (L)": None,
-                          "Esperado (kg)": round(_expkg), "Estado": "⚠️ sin tanque destino"})
-            continue
-        _tn = cat("SELECT nombre FROM produccion.dim_tanque WHERE id_tanque=%s", (int(_tid),))
-        _tname = str(_tn.iloc[0]["nombre"]) if (_tn is not None and not _tn.empty) else f"Tanque {int(_tid)}"
-        _an = cat("SELECT litros::float AS l, medido_en FROM produccion.fact_stock_tanque WHERE id_tanque=%s AND litros IS NOT NULL "
-                  "AND medido_en <= %s ORDER BY medido_en DESC LIMIT 1", (int(_tid), _inip))
-        _af = cat("SELECT litros::float AS l, medido_en FROM produccion.fact_stock_tanque WHERE id_tanque=%s AND litros IS NOT NULL "
-                  "AND medido_en >= %s ORDER BY medido_en LIMIT 8", (int(_tid), _finp))
-        _antes = float(_an.iloc[0]["l"]) if (_an is not None and not _an.empty) else None
-        _desp = float(_af.iloc[0]["l"]) if (_af is not None and not _af.empty) else None
-        _net = (_desp - _antes) if (_antes is not None and _desp is not None) else None
-        _pico = None
-        if _antes is not None and _af is not None and not _af.empty:
-            _seq = [_antes] + [float(x) for x in _af["l"].tolist()]
-            _difs = [_seq[i + 1] - _seq[i] for i in range(len(_seq) - 1)]
-            _pico = max([_net if _net is not None else 0.0] + _difs + [0.0])
-        _estado = "—"
-        if _net is not None:
-            _ing = max(_net, _pico if _pico is not None else _net, 0.0)
-            _r = (_ing * _dens) / _expkg if _expkg else None
-            if _net < 0:
-                _estado = "🔻 se vació (despacho tapó el ingreso)"
-            elif _r is not None and _r >= 0.85:
-                _estado = "🟢 cuadra"
-            elif _r is not None and _r >= 0.5:
-                _estado = "🟡 parcial"
-            else:
-                _estado = "🔴 no se ve"
-        elif _desp is None:
-            _estado = "🟠 falta medición después"
-        elif _antes is None:
-            _estado = "🟠 falta medición antes"
-        _rows.append({"Tanque": _tname, "Corriente": _lbl,
-                      "Antes (L)": (round(_antes) if _antes is not None else None),
-                      "Después (L)": (round(_desp) if _desp is not None else None),
-                      "Δ neto (L)": (round(_net) if _net is not None else None),
-                      "Δ neto (kg)": (round(_net * _dens) if _net is not None else None),
-                      "Pico ingreso (L)": (round(_pico) if _pico is not None else None),
-                      "Esperado (kg)": round(_expkg), "Estado": _estado})
-    st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
-                 column_config={c: st.column_config.NumberColumn(format="%.0f") for c in
-                                ["Antes (L)", "Después (L)", "Δ neto (L)", "Δ neto (kg)", "Pico ingreso (L)", "Esperado (kg)"]})
-    st.caption(f"Ventana: inicio **{_ini.strftime('%d/%m %H:%M')}** → fin/acopio **{_fin.strftime('%d/%m %H:%M')}**. "
-               "**Antes** = última medición antes del inicio · **Después** = primera medición tras el fin. "
-               "Si el tanque se **vació** después (despacho), el ingreso no se ve como aumento neto → mirá el **Pico ingreso** "
-               "(mejor salto entre mediciones). Para control fino, medí el tanque **justo después del acopio y antes de despachar**.")
+    st.markdown("##### 📏 Rendimiento de la reacción — teórico vs real")
+    if _es_are:
+        st.caption(f"**Teórico** = AG {_mpkg:,.0f} − agua/evaporación {_aguakg:,.0f} ({_aguapct:.1f}%) "
+                   f"+ glicerina {_apk:,.0f} ({_aporte:.0f}% de {_glil:,.0f} L) = **{_rend:,.0f} kg** "
+                   f"(≈ {(_rend/_pfdens if _pfdens else 0):,.0f} L de {_pfcode}).")
+    else:
+        st.caption(f"**Teórico** ({_pfcode}) = **{_rend:,.0f} kg** (≈ {(_rend/_pfdens if _pfdens else 0):,.0f} L).")
+
+    _hay_ventana = not (_ini is None or _fin is None or pd.isna(_ini) or pd.isna(_fin))
+    _pf_ing_kg = None; _pf_net_kg = None
+    if _hay_ventana:
+        _ini = pd.to_datetime(_ini); _fin = pd.to_datetime(_fin)
+        if _ini.tzinfo is not None:
+            _ini = _ini.tz_convert("America/Argentina/Buenos_Aires").tz_localize(None)
+        if _fin.tzinfo is not None:
+            _fin = _fin.tz_convert("America/Argentina/Buenos_Aires").tz_localize(None)
+        _inip = _ini.strftime("%Y-%m-%d %H:%M:%S"); _finp = _fin.strftime("%Y-%m-%d %H:%M:%S")
+        _rows = []
+        for _i, (_tid, _lbl, _expkg, _dens) in enumerate(_tanks):
+            if _tid is None or pd.isna(_tid):
+                _rows.append({"Tanque": "(sin asignar)", "Corriente": _lbl, "Antes (L)": None, "Después (L)": None,
+                              "Δ neto (L)": None, "Δ neto (kg)": None, "Pico ingreso (L)": None,
+                              "Esperado (kg)": round(_expkg), "Estado": "⚠️ sin tanque destino"})
+                continue
+            _tn = cat("SELECT nombre FROM produccion.dim_tanque WHERE id_tanque=%s", (int(_tid),))
+            _tname = str(_tn.iloc[0]["nombre"]) if (_tn is not None and not _tn.empty) else f"Tanque {int(_tid)}"
+            _an = cat("SELECT litros::float AS l FROM produccion.fact_stock_tanque WHERE id_tanque=%s AND litros IS NOT NULL "
+                      "AND medido_en <= (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') ORDER BY medido_en DESC LIMIT 1",
+                      (int(_tid), _inip))
+            _af = cat("SELECT litros::float AS l FROM produccion.fact_stock_tanque WHERE id_tanque=%s AND litros IS NOT NULL "
+                      "AND medido_en >= (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') ORDER BY medido_en LIMIT 8",
+                      (int(_tid), _finp))
+            _antes = float(_an.iloc[0]["l"]) if (_an is not None and not _an.empty) else None
+            _desp = float(_af.iloc[0]["l"]) if (_af is not None and not _af.empty) else None
+            _net = (_desp - _antes) if (_antes is not None and _desp is not None) else None
+            _pico = None
+            if _antes is not None and _af is not None and not _af.empty:
+                _seq = [_antes] + [float(x) for x in _af["l"].tolist()]
+                _difs = [_seq[j + 1] - _seq[j] for j in range(len(_seq) - 1)]
+                _pico = max([_net if _net is not None else 0.0] + _difs + [0.0])
+            _estado = "—"
+            if _net is not None:
+                _ing = max(_net, _pico if _pico is not None else _net, 0.0)
+                _r = (_ing * _dens) / _expkg if _expkg else None
+                if _net < 0:
+                    _estado = "🔻 se vació (despacho tapó el ingreso)"
+                elif _r is not None and _r >= 0.85:
+                    _estado = "🟢 cuadra"
+                elif _r is not None and _r >= 0.5:
+                    _estado = "🟡 parcial"
+                else:
+                    _estado = "🔴 no se ve"
+            elif _desp is None:
+                _estado = "🟠 falta medición después"
+            elif _antes is None:
+                _estado = "🟠 falta medición antes"
+            if _i == 0:
+                _pf_net_kg = (_net * _dens) if _net is not None else None
+                _pf_ing_kg = (max(_net, _pico if _pico is not None else _net, 0.0) * _dens) if _net is not None else None
+            _rows.append({"Tanque": _tname, "Corriente": _lbl,
+                          "Antes (L)": (round(_antes) if _antes is not None else None),
+                          "Después (L)": (round(_desp) if _desp is not None else None),
+                          "Δ neto (L)": (round(_net) if _net is not None else None),
+                          "Δ neto (kg)": (round(_net * _dens) if _net is not None else None),
+                          "Pico ingreso (L)": (round(_pico) if _pico is not None else None),
+                          "Esperado (kg)": round(_expkg), "Estado": _estado})
+        st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
+                     column_config={c: st.column_config.NumberColumn(format="%.0f") for c in
+                                    ["Antes (L)", "Después (L)", "Δ neto (L)", "Δ neto (kg)", "Pico ingreso (L)", "Esperado (kg)"]})
+        st.caption(f"Ventana: inicio **{_ini.strftime('%d/%m %H:%M')}** → fin/acopio **{_fin.strftime('%d/%m %H:%M')}**. "
+                   "**Antes** = última medición antes del inicio · **Después** = primera tras el fin. Si el tanque se vació "
+                   "(despacho), mirá el **Pico ingreso** (mejor salto entre mediciones).")
+    else:
+        st.caption("⚠️ Falta inicio o fin/acopio de la reacción: no puedo comparar mediciones de tanque. "
+                   "Cargalos en la ficha (Nombre & inicio / horario de acopio final).")
+
+    # ---- Veredicto de rendimiento del PRODUCTO FINAL (múltiples evidencias) ----
+    _tk = cat("SELECT round(sum(kg)::numeric,0) AS kg FROM produccion.fact_batch_ticket_final "
+              "WHERE id_batch=%s AND NOT COALESCE(anulado,false)", (int(idb),))
+    _tickets_kg = float(_tk.iloc[0]["kg"]) if (_tk is not None and not _tk.empty and _tk.iloc[0]["kg"] is not None) else 0.0
+    _mv = cat("SELECT round(sum(COALESCE(kg,0))::numeric,0) AS kg FROM produccion.fact_movimiento_stock "
+              "WHERE id_batch=%s AND rol='PRODUCTO_FINAL' AND sentido=1 AND NOT COALESCE(anulado,false)", (int(idb),))
+    _mov_kg = float(_mv.iloc[0]["kg"]) if (_mv is not None and not _mv.empty and _mv.iloc[0]["kg"] is not None) else 0.0
+
+    _real = None; _fuente = "—"
+    if _tickets_kg > 0:
+        _real, _fuente = _tickets_kg, "tickets de pesada"
+    elif _pf_ing_kg is not None and _rend and _pf_ing_kg >= 0.4 * _rend:
+        _real, _fuente = _pf_ing_kg, "variación de tanque (pico)"
+    elif _mov_kg > 0:
+        _real, _fuente = _mov_kg, "movimiento registrado"
+    _pct = (_real / _rend * 100.0) if (_real is not None and _rend) else None
+    if _pct is None:
+        _ver = "🟠 sin evidencia suficiente"
+    elif abs(_pct - 100) <= 10:
+        _ver = "🟢 confirmado (real ≈ teórico)"
+    elif abs(_pct - 100) <= 25:
+        _ver = "🟡 aproximado"
+    else:
+        _ver = "🔴 desvío grande / revisar"
+
+    st.markdown("**🎯 Veredicto de rendimiento (producto final)**")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Teórico (t)", f"{_rend/1000:,.2f}")
+    m2.metric("Tickets (t)", f"{_tickets_kg/1000:,.2f}" if _tickets_kg > 0 else "—")
+    m3.metric("Δ tanque pico (t)", f"{_pf_ing_kg/1000:,.2f}" if _pf_ing_kg is not None else "—",
+              (f"neto {_pf_net_kg/1000:,.2f} t" if _pf_net_kg is not None else None))
+    m4.metric("Movimiento (t)", f"{_mov_kg/1000:,.2f}" if _mov_kg > 0 else "—")
+    m5.metric("Real estimado (t)", f"{_real/1000:,.2f}" if _real is not None else "—",
+              (f"{_pct:.0f}% del teórico" if _pct is not None else None))
+    st.caption(f"**{_ver}** · fuente del real: {_fuente}. Prioridad de evidencia: tickets de pesada > variación de tanque (pico) "
+               "> movimiento registrado. El **pico** capta el ingreso aunque el tanque se drene; para el control más limpio, "
+               "medí el tanque destino **justo después del acopio y antes de despachar**.")
+
 
 
 def _registrar_destino_cierre(USR, cat, conectar, idb):
@@ -1856,6 +1909,9 @@ def _prob_label(conf):
 def _scan_tanque_match(cat, id_producto, finref, win_h, dens, teo_kg):
     """Candidatos de tanque cuya variación (después del cierre) matchea la producción teórica.
     Cada uno: tanque, id_tanque, inc_kg (ingreso atribuible), net_kg, conf (0..1), desde, hasta."""
+    finref = pd.to_datetime(finref)
+    if finref.tzinfo is not None:
+        finref = finref.tz_convert("America/Argentina/Buenos_Aires").tz_localize(None)
     _lo = (finref - pd.Timedelta(hours=float(win_h))).strftime("%Y-%m-%d %H:%M:%S")
     _hi = (finref + pd.Timedelta(hours=float(win_h))).strftime("%Y-%m-%d %H:%M:%S")
     _tks = cat("SELECT DISTINCT t.id_tanque, t.nombre, t.codigo FROM produccion.dim_tanque t "
@@ -1874,7 +1930,9 @@ def _scan_tanque_match(cat, id_producto, finref, win_h, dens, teo_kg):
         _tank = f"{_tk['nombre']} · {_tk['codigo']}"
         if _m is None or _m.empty:
             continue
-        _m = _m.copy(); _m["medido_en"] = pd.to_datetime(_m["medido_en"])
+        _m = _m.copy()
+        _mm = pd.to_datetime(_m["medido_en"], utc=True)
+        _m["medido_en"] = _mm.dt.tz_convert("America/Argentina/Buenos_Aires").dt.tz_localize(None)
         _bef = _m[_m["medido_en"] <= finref]; _aft = _m[_m["medido_en"] > finref]
         if _aft.empty:
             out.append({"tanque": _tank, "id_tanque": int(_tk["id_tanque"]), "inc_kg": 0.0, "net_kg": 0.0,
@@ -1912,7 +1970,10 @@ def _reconciliacion_profunda(USR, cat, conectar):
     def _ref(row):
         for _k in ("fin_local", "cierre_ts", "inicio_local", "creado_en"):
             if pd.notna(row[_k]):
-                return pd.to_datetime(row[_k])
+                _v = pd.to_datetime(row[_k])
+                if _v.tzinfo is not None:
+                    _v = _v.tz_convert("America/Argentina/Buenos_Aires").tz_localize(None)
+                return _v
         return pd.NaT
     _t["_ref"] = _t.apply(_ref, axis=1)
     _t["_semkey"] = _t["_ref"].apply(lambda x: (int(x.isocalendar()[1]) if pd.notna(x) else -1))
