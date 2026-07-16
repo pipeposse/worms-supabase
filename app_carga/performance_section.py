@@ -11,8 +11,13 @@ y por defecto se excluyen del análisis de tiempos (no del de capacidad, que sí
 
 render(USR, cat, conectar)
 """
+import json as _json_mod
 import pandas as pd
 import streamlit as st
+
+
+def _json_dumps(d):
+    return _json_mod.dumps(d)
 
 _NUMS = ["espera_arranque_h", "reaccion_h", "reposo_h", "decantacion_h", "ciclo_proceso_h",
          "ciclo_total_h", "prog_reaccion_h", "prog_reposo_h", "prog_decantacion_h",
@@ -123,9 +128,10 @@ def render(USR, cat, conectar):
                    "(etapas de < 5 min en el log): sus **tiempos** no reflejan la planta y se excluyen "
                    "del análisis de tiempos. La **capacidad** sí se analiza para todas.")
 
-    t_cap, t_tie, t_rin, t_rit, t_edit = st.tabs(["🏭 Capacidad de carga", "⏱️ Tiempos y desvíos",
-                                                  "🎯 Rendimiento", "📆 Ritmo de planta",
-                                                  "✏️ Inicio/Fin (editar)"])
+    t_cap, t_tie, t_rin, t_rit, t_edit, t_retro = st.tabs(["🏭 Capacidad de carga", "⏱️ Tiempos y desvíos",
+                                                           "🎯 Rendimiento", "📆 Ritmo de planta",
+                                                           "✏️ Inicio/Fin (editar)",
+                                                           "⏮️ Retro (crear terminada)"])
 
     # ---------- capacidad ----------
     with t_cap:
@@ -283,6 +289,10 @@ def render(USR, cat, conectar):
     # ---------- editor masivo inicio/fin ----------
     with t_edit:
         _editor_inicio_fin(USR, cat, conectar, ids=[int(x) for x in df["id_batch"].tolist()])
+
+    # ---------- carga retroactiva ----------
+    with t_retro:
+        _carga_retroactiva(USR, cat, conectar)
 
     with st.expander("🔭 Qué más podríamos medir mejorando el registro", expanded=False):
         st.markdown(
@@ -514,5 +524,150 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
             st.success(f"Guardado: {len(cambios)} reacción(es) actualizadas.")
             cat.clear()
             st.rerun()
+        except Exception as e:
+            st.exception(e)
+
+
+def _carga_retroactiva(USR, cat, conectar):
+    """Crea una reacción que ya pasó y quedó FINALIZADA en el acto, con inicio y fin reales,
+    sin pasar por las etapas. Para reacciones que se olvidaron de planificar/seguir."""
+    st.caption("Registrá una reacción que **ya pasó y no se cargó a tiempo**: se crea y queda **FINALIZADA "
+               "en el acto** con su inicio y fin reales, sin avanzar etapas. ⚠️ Es solo registro para "
+               "Performance/Terminadas: **no** genera movimientos de stock, tickets ni evaluaciones.")
+    _mps = cat("SELECT id_producto, codigo_producto, COALESCE(densidad_g_ml,0.91)::float AS dens "
+               "FROM produccion.dim_producto "
+               "WHERE codigo_producto ~ '^(AG-|SEBO)' OR codigo_producto IN ('AFE-SG','AFE-G') "
+               "ORDER BY codigo_producto")
+    _rx = cat("SELECT id_bien_uso, nombre_ui, COALESCE(capacidad_max_l,0)::float AS cap "
+              "FROM produccion.dim_bien_uso WHERE COALESCE(activo,true) AND nombre_ui ILIKE '%%REACTOR%%' "
+              "ORDER BY nombre_ui")
+    _ares = cat("SELECT id_producto, codigo_producto FROM produccion.dim_producto "
+                "WHERE codigo_producto LIKE 'ARE-%%' ORDER BY codigo_producto")
+    if _mps is None or _mps.empty or _rx is None or _rx.empty:
+        st.warning("No pude cargar el catálogo de MP o de reactores.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    _rx_ops = _rx["nombre_ui"].tolist()
+    _rx_sel = c1.selectbox("Reactor", _rx_ops, key="retro_rx")
+    _rx_row = _rx[_rx["nombre_ui"] == _rx_sel].iloc[0]
+    _mp_ops = _mps["codigo_producto"].tolist()
+    _mp_sel = c2.selectbox("Materia prima", _mp_ops, key="retro_mp",
+                           help="El tipo de reacción se deriva de la MP (AFE → desgomado, AG/SEBO → ARE).")
+    _mp_row = _mps[_mps["codigo_producto"] == _mp_sel].iloc[0]
+    _kg_mp = c3.number_input("MP cargada (kg)", min_value=0.0, max_value=200_000.0, step=100.0, key="retro_kg")
+
+    _es_desg = str(_mp_sel).upper().startswith("AFE")
+    _tipo = "DESGOMADO_ACUOSO" if _es_desg else "PRODUCCION_ARE"
+    c4, c5 = st.columns(2)
+    if _es_desg:
+        _pf_code = "AFE-G" if str(_mp_sel).upper() == "AFE-G" else "AFE-S"
+        c4.text_input("Producto final", value=f"{_pf_code} (derivado de la MP)", disabled=True, key="retro_pf_fix")
+        _pf_row = cat("SELECT id_producto, codigo_producto FROM produccion.dim_producto "
+                      "WHERE codigo_producto=%s", (_pf_code,))
+        _pf_id = int(_pf_row.iloc[0]["id_producto"]) if (_pf_row is not None and not _pf_row.empty) else None
+        _formulado = float(_kg_mp)
+    else:
+        if _ares is None or _ares.empty:
+            st.warning("No hay productos ARE en el maestro.")
+            return
+        _pf_code = c4.selectbox("Producto final", _ares["codigo_producto"].tolist(), key="retro_pf")
+        _pf_id = int(_ares[_ares["codigo_producto"] == _pf_code].iloc[0]["id_producto"])
+        _formulado = c5.number_input("Formulado / objetivo (kg)", min_value=0.0, max_value=200_000.0,
+                                     value=float(_kg_mp), step=100.0, key="retro_obj",
+                                     help="ARE objetivo por fórmula. Si no lo sabés, dejá los kg de MP.")
+
+    st.markdown("**Inicio y fin reales**")
+    d1, h1, d2, h2 = st.columns(4)
+    _now = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").tz_localize(None)
+    _f_ini = d1.date_input("Fecha inicio", value=(_now - pd.Timedelta(hours=8)).date(), key="retro_f1")
+    _h_ini = h1.time_input("Hora inicio", value=(_now - pd.Timedelta(hours=8)).time(), key="retro_h1", step=300)
+    _f_fin = d2.date_input("Fecha fin", value=_now.date(), key="retro_f2")
+    _h_fin = h2.time_input("Hora fin", value=_now.time(), key="retro_h2", step=300)
+    _ini = pd.Timestamp.combine(_f_ini, _h_ini)
+    _fin = pd.Timestamp.combine(_f_fin, _h_fin)
+
+    c6, c7 = st.columns(2)
+    _kg_obt = c6.number_input("Producto final obtenido (kg, opcional)", min_value=0.0, max_value=200_000.0,
+                              step=100.0, key="retro_kgobt", help="0 = sin dato; lo podés cerrar después en Terminadas.")
+    _tk = cat("SELECT t.id_tanque, COALESCE(NULLIF(t.nombre,''), t.codigo) AS nombre, t.codigo "
+              "FROM produccion.dim_tanque_producto tp "
+              "JOIN produccion.dim_tanque t ON t.id_tanque=tp.id_tanque AND COALESCE(t.activo,true) "
+              "WHERE tp.id_producto=%s ORDER BY t.nombre", (_pf_id,)) if _pf_id else None
+    _tk_ops = ["(sin definir)"] + (_tk["nombre"].tolist() if (_tk is not None and not _tk.empty) else [])
+    _tk_sel = c7.selectbox("Tanque de acopio final (opcional)", _tk_ops, key="retro_tk")
+    _obs = st.text_input("Observaciones", max_chars=200, key="retro_obs")
+
+    if _fin <= _ini:
+        st.error("El fin tiene que ser posterior al inicio.")
+    _dur = (_fin - _ini).total_seconds() / 3600.0
+    st.caption(f"Duración: **{_dur:.1f} h** · tipo **{_tipo}** · {_mp_sel} → {_pf_code}"
+               + (f" · {_kg_mp/1000:,.2f} TN MP" if _kg_mp else ""))
+
+    if st.button("⏮️ Crear reacción TERMINADA", type="primary", key="retro_save",
+                 disabled=(_fin <= _ini or not _kg_mp or _pf_id is None)):
+        try:
+            _uid = int(USR["id_usuario"])
+            _dens = float(_mp_row["dens"]) or 0.91
+            _params = ({"afe_objetivo_kg": float(_formulado)} if _es_desg
+                       else {"are_objetivo_kg": float(_formulado)})
+            _tk_id = None
+            _tk_txt = None
+            if _tk_sel != "(sin definir)" and _tk is not None and not _tk.empty:
+                _tr = _tk[_tk["nombre"] == _tk_sel].iloc[0]
+                _tk_id = int(_tr["id_tanque"])
+                _tk_txt = (f"{_tr['nombre']} · {_tr['codigo']}" if _tr["codigo"] else str(_tr["nombre"]))
+            with conectar(_uid) as (conn, audit):
+                with conn.cursor() as cur:
+                    # identificador RX-AAAA-NNNN (misma convención que Cargas)
+                    cur.execute("SELECT identificador_unidad FROM produccion.fact_batch_proceso "
+                                "WHERE identificador_unidad LIKE %s "
+                                "ORDER BY identificador_unidad DESC LIMIT 1", (f"RX-{_ini.year}-%",))
+                    _row = cur.fetchone()
+                    try:
+                        _n = int(str(_row[0]).split("-")[-1]) + 1 if _row and _row[0] else 1
+                    except Exception:
+                        _n = 1
+                    _ident = f"RX-{_ini.year}-{_n:04d}"
+                    cur.execute(
+                        "INSERT INTO produccion.fact_batch_proceso "
+                        "(fecha, sector, id_usuario_carga, identificador_unidad, tipo_proceso, "
+                        " id_bien_uso, id_producto_inicial, kg_inicial, litros_inicial, "
+                        " id_producto_buscado, kg_obtenido, "
+                        " inicio_ts, fin_ts, estado, etapa_actual, parametros_proceso, "
+                        " id_tanque_are_final, desg_id_tanque_destino, tanque_destino, observaciones) "
+                        "VALUES (%s,'REACTORES',%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+                        " (%s::timestamp AT TIME ZONE %s),(%s::timestamp AT TIME ZONE %s),"
+                        " 'FINALIZADO','EN_TANQUE',%s::jsonb,%s,%s,%s,%s) RETURNING id_batch",
+                        (_ini.date(), _uid, _ident, _tipo,
+                         int(_rx_row["id_bien_uso"]), int(_mp_row["id_producto"]),
+                         float(_kg_mp), round(float(_kg_mp) / _dens, 0),
+                         _pf_id, (float(_kg_obt) if _kg_obt > 0 else None),
+                         str(_ini), _TZ, str(_fin), _TZ,
+                         _json_dumps(_params),
+                         (_tk_id if not _es_desg else None), (_tk_id if _es_desg else None), _tk_txt,
+                         ("RETROACTIVA" + (f" · {_obs}" if _obs else ""))))
+                    idb = int(cur.fetchone()[0])
+                    # el trigger loguea FINALIZADO con now() y genera evals: se reemplaza por la línea real
+                    cur.execute("DELETE FROM produccion.fact_batch_estado_log WHERE id_batch=%s", (idb,))
+                    for _ea, _en, _ts in ((None, "PLANIFICADO", _ini), ("PLANIFICADO", "REACCION", _ini),
+                                          ("REACCION", "FINALIZADO", _fin)):
+                        cur.execute("INSERT INTO produccion.fact_batch_estado_log "
+                                    "(id_batch, estado_anterior, estado_nuevo, ts, id_usuario, motivo) "
+                                    "VALUES (%s,%s,%s,(%s::timestamp AT TIME ZONE %s),%s,'carga retroactiva')",
+                                    (idb, _ea, _en, str(_ts), _TZ, _uid))
+                    cur.execute("DELETE FROM produccion.fact_eval_programada WHERE id_batch=%s", (idb,))
+                    cur.execute("INSERT INTO produccion.fact_etapa_evento "
+                                "(id_batch, etapa, inicio_ts, fin_ts, id_usuario, observaciones) "
+                                "VALUES (%s,'EN_TANQUE',(%s::timestamp AT TIME ZONE %s),"
+                                "(%s::timestamp AT TIME ZONE %s),%s,'carga retroactiva')",
+                                (idb, str(_fin), _TZ, str(_fin), _TZ, _uid))
+                audit.log("I", "fact_batch_proceso", idb,
+                          {"retroactiva": True, "ident": _ident, "mp": _mp_sel, "kg": float(_kg_mp),
+                           "pf": _pf_code, "inicio": str(_ini), "fin": str(_fin)})
+            cat.clear()
+            st.success(f"✅ Reacción **{_ident}** creada y FINALIZADA ({_mp_sel} → {_pf_code}, "
+                       f"{_dur:.1f} h). Ya aparece en Performance y Terminadas; el real lo podés "
+                       "cerrar en **Terminadas** cuando quieras.")
         except Exception as e:
             st.exception(e)
