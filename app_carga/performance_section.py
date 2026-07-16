@@ -98,16 +98,25 @@ def render(USR, cat, conectar):
     _for_t = df["formula_kg"].sum(skipna=True) / 1000.0
     _util = (100.0 * _for_t / _max_t) if _max_t else None
     _perd_t = df["capacidad_perdida_kg"].sum(skipna=True) / 1000.0
-    k1, k2, k3, k4, k5 = st.columns(5)
+    _pf_mask = df["real_kg"].fillna(0) > 0
+    _pf_t = df.loc[_pf_mask, "real_kg"].sum() / 1000.0
+    _n_pf = int(_pf_mask.sum())
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("Reacciones", len(df))
-    k2.metric("MP procesada (TN)", f"{df['mp_kg'].sum(skipna=True)/1000.0:,.2f}")
-    k3.metric("Utilización de reactores", (f"{_util:.0f}%" if _util is not None else "—"),
+    k2.metric("MP procesada (TN)", f"{df['mp_kg'].sum(skipna=True)/1000.0:,.2f}",
+              help="Σ materia prima cargada a los reactores en las reacciones del filtro.")
+    k3.metric("Producto final (TN)", f"{_pf_t:,.2f}",
+              (f"{_n_pf}/{len(df)} con dato real" if _n_pf < len(df) else None), delta_color="off",
+              help="Σ real obtenido (cierre asignado → tickets de pesada → kg_obtenido). "
+                   "Solo suma las reacciones que tienen el real registrado; cerralas en Terminadas "
+                   "para que este número sea completo.")
+    k4.metric("Utilización de reactores", (f"{_util:.0f}%" if _util is not None else "—"),
               help="Σ formulado / Σ máximo a reactor lleno. 100% = siempre se cargó al máximo.")
-    k4.metric("Capacidad no usada (TN)", f"{_perd_t:,.2f}",
+    k5.metric("Capacidad no usada (TN)", f"{_perd_t:,.2f}",
               help="TN de producto que se dejaron de formular por no cargar los reactores al máximo. "
                    "Es producción 'perdida' del período.")
     _cm = dfc["ciclo_proceso_h"].median() if not dfc.empty else None
-    k5.metric("Ciclo mediano (h)", (f"{_cm:.1f}" if _cm is not None else "—"),
+    k6.metric("Ciclo mediano (h)", (f"{_cm:.1f}" if _cm is not None else "—"),
               help="Mediana de inicio de reacción → finalizada (solo reacciones con tiempos confiables).")
     if n_flash:
         st.warning(f"⚠️ **{n_flash} de {len(df)}** reacciones tienen etapas avanzadas 'a los clicks' "
