@@ -137,17 +137,31 @@ def _hist_lab(cat, id_batch):
         st.dataframe(_h, use_container_width=True, hide_index=True)
 
 
+def _pf_code(cat, b):
+    """Código del producto final del batch (AFE-S para AFE-SG, AFE-G para AFE-G). Fallback AFE-S."""
+    try:
+        _idp = b.get("id_producto_buscado")
+        if _idp is not None and pd.notna(_idp):
+            r = cat("SELECT codigo_producto FROM produccion.dim_producto WHERE id_producto=%s", (int(_idp),))
+            if r is not None and not r.empty:
+                return str(r.iloc[0]["codigo_producto"])
+    except Exception:
+        pass
+    return "AFE-S"
+
+
 # ============================================================ PLANIFICACIÓN
 def planificacion(USR, cat, conectar):
     st.subheader("🫗 Desgomado acuoso — decisiones (dirección)")
     st.caption("La reacción cortó al llegar a 85 °C y pasó a **reposo**. Decidí el reposo "
                "(transferir a **Cónico 60** o dejarlo en el **reactor**) y, cuando laboratorio "
-               "confirme agua+sedimentos < 1,5 %, el **destino final** del AFE-S.")
+               "confirme agua+sedimentos < 1,5 %, el **destino final** del producto.")
     b, _ = _sel_batch(cat, "desg_plan_sel")
     if b is None:
         return
     _cabecera(cat, b)
     uid = int(USR["id_usuario"])
+    _pf = _pf_code(cat, b)   # AFE-S (de AFE-SG) o AFE-G (de AFE-G): el desgomado de AFE-G termina en AFE-G
     ays_max = _cond(cat, "DESGOM_AGUA_SED_MAX_PCT", AYS_MAX_DEF)
     reposo_hs = _cond(cat, "DESGOM_REPOSO_HORAS", REPOSO_HS_DEF)
 
@@ -202,28 +216,34 @@ def planificacion(USR, cat, conectar):
         st.warning(f"🔴 Agua+sedimentos **{float(_ays):.2f}% (≥ {ays_max:g}%)** → seguir decantando.")
 
     # ---- 3) Destino final (solo con lab OK) ----
-    st.markdown("##### 3 · Destino final del AFE-S")
+    st.markdown(f"##### 3 · Destino final del {_pf}")
     if not bool(b["desg_lab_ok"]):
         st.info("Disponible cuando laboratorio confirme agua+sedimentos < 1,5 %.")
         return
-    ft = cat(
-        "SELECT t.id_tanque, t.nombre, t.codigo, t.sector, "
-        "       COALESCE(s.litros_actual,0) lt, COALESCE(t.capacidad_litros,0) cap "
-        "FROM produccion.dim_tanque t "
-        "LEFT JOIN produccion.dim_tanque_producto_permitido pp ON pp.id_tanque=t.id_tanque "
-        "LEFT JOIN produccion.dim_producto p ON p.id_producto=pp.id_producto "
-        "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
-        "WHERE COALESCE(t.activo,true) AND p.codigo_producto IN ('AFE-S','AFE-SG') "
-        "GROUP BY t.id_tanque, t.nombre, t.codigo, t.sector, s.litros_actual, t.capacidad_litros "
-        "ORDER BY t.nombre")
+    _codes = ["AFE-S", "AFE-SG"] if _pf == "AFE-S" else [_pf]
+    _sql_ft = ("SELECT t.id_tanque, t.nombre, t.codigo, t.sector, "
+               "       COALESCE(s.litros_actual,0) lt, COALESCE(t.capacidad_litros,0) cap "
+               "FROM produccion.dim_tanque t "
+               "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
+               "WHERE COALESCE(t.activo,true) AND t.id_tanque IN ({}) "
+               "ORDER BY t.nombre")
+    ft = cat(_sql_ft.format(
+        "SELECT pp.id_tanque FROM produccion.dim_tanque_producto_permitido pp "
+        "JOIN produccion.dim_producto p ON p.id_producto=pp.id_producto "
+        "WHERE p.codigo_producto = ANY(%s)"), (_codes,))
+    if ft is None or ft.empty:   # sin 'permitido' cargado: cae a los tanques habilitados del maestro
+        ft = cat(_sql_ft.format(
+            "SELECT tp.id_tanque FROM produccion.dim_tanque_producto tp "
+            "JOIN produccion.dim_producto p2 ON p2.id_producto=tp.id_producto "
+            "WHERE p2.codigo_producto = ANY(%s)"), (_codes,))
     if ft is None or ft.empty:
-        st.warning("No hay tanques que admitan AFE-S. Cargá el producto permitido en el tanque o elegí manualmente en Tanques.")
+        st.warning(f"No hay tanques que admitan {_pf}. Cargá el producto permitido en el tanque o elegí manualmente en Tanques.")
         return
     fop = ft.apply(lambda r: f"{r['nombre']} · {r['sector'] or ''} · {float(r['lt']):,.0f}/{float(r['cap']):,.0f} L", axis=1).tolist()
     _curf = b["desg_id_tanque_destino"]
     _ixf = next((i for i, (_, r) in enumerate(ft.iterrows())
                  if int(r["id_tanque"]) == (int(_curf) if pd.notna(_curf) else -1)), 0)
-    fsel = st.selectbox("Tanque destino del AFE-S", fop, index=_ixf, key="desg_dest_tk")
+    fsel = st.selectbox(f"Tanque destino del {_pf}", fop, index=_ixf, key="desg_dest_tk")
     dest_fin = int(ft.iloc[fop.index(fsel)]["id_tanque"])
     if st.button("💾 Guardar destino final", type="primary", use_container_width=True, key="desg_save_dest"):
         try:
@@ -252,6 +272,7 @@ def produccion(USR, cat, conectar, id_batch=None):
             return
     _cabecera(cat, b)
     uid = int(USR["id_usuario"])
+    _pf = _pf_code(cat, b)   # producto final real del batch (AFE-S o AFE-G)
     ays_max = _cond(cat, "DESGOM_AGUA_SED_MAX_PCT", AYS_MAX_DEF)
 
     # -------- REPOSO: esperar decisión + fin de reposo, luego arrancar decantación --------
@@ -340,7 +361,7 @@ def produccion(USR, cat, conectar, id_batch=None):
     st.caption(f"Estimado a sacar en este pase: **{_lit_def:,.0f} L**. Cargá lo que **realmente vaciaste** a destino "
                "y **cuánto quedó** en el tanque.")
     c1, c2, c3 = st.columns(3)
-    l_afe = c1.number_input(f"AFE-S vaciado a {dest_nm} (L)", min_value=0.0, max_value=1_000_000.0,
+    l_afe = c1.number_input(f"{_pf} vaciado a {dest_nm} (L)", min_value=0.0, max_value=1_000_000.0,
                             value=float(round(_lit_def, 0)), step=10.0, key="desg_l_afe")
     l_rem = c2.number_input("¿Cuánto quedó en el tanque? (L)", min_value=0.0, max_value=1_000_000.0,
                             value=0.0, step=10.0, key="desg_l_rem",
@@ -365,7 +386,7 @@ def produccion(USR, cat, conectar, id_batch=None):
 
     def _envio(cur, vacio, es_err, l_rem_, motivo_):
         id_afe = int(b["id_producto_buscado"]) if pd.notna(b["id_producto_buscado"]) else AFE_S_ID
-        _mov(cur, b, uid, "PRODUCTO_FINAL", id_afe, "AFE-S", int(dest), l_afe, DENS_AFE)
+        _mov(cur, b, uid, "PRODUCTO_FINAL", id_afe, _pf, int(dest), l_afe, DENS_AFE)
         if l_fondo and l_fondo > 0:
             _mov(cur, b, uid, "SUBPRODUCTO", FONDO_TK_ID, "Fondo de tanque", int(dest), l_fondo, 1.0)
         cur.execute("INSERT INTO produccion.fact_desg_envio "
