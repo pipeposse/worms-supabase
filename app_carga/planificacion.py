@@ -676,6 +676,96 @@ def _panel_etapas(USR, cat, conectar):
             st.success("Horarios de etapas actualizados."); cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
+    _desvio_cronograma(cat, idb)
+
+
+def _desvio_cronograma(cat, idb):
+    """Compara el cronograma programado (parametros_proceso->cronograma) con los tiempos reales
+    (fact_etapa_evento) y muestra el desvío por etapa + resumen."""
+    b = cat("SELECT parametros_proceso FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(idb),))
+    if b is None or b.empty:
+        return
+    _p = b.iloc[0]["parametros_proceso"]
+    if isinstance(_p, str):
+        try:
+            _p = _json.loads(_p)
+        except Exception:
+            _p = {}
+    _p = _p or {}
+    _cr = _p.get("cronograma") or []
+    st.divider()
+    st.markdown("**⏱️ Desvío del cronograma — programado vs real**")
+    if not _cr:
+        st.caption("Esta reacción no tiene **cronograma programado** (se planificó sin horarios estimados).")
+        return
+    _ev = cat("SELECT etapa, (inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS ini, "
+              "(fin_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS fin FROM produccion.fact_etapa_evento "
+              "WHERE id_batch=%s ORDER BY inicio_ts NULLS LAST", (int(idb),))
+    _real = {}
+    if _ev is not None and not _ev.empty:
+        for _, e in _ev.iterrows():
+            _real.setdefault(str(e["etapa"]).upper(), []).append(
+                (pd.to_datetime(e["ini"]) if pd.notna(e["ini"]) else None,
+                 pd.to_datetime(e["fin"]) if pd.notna(e["fin"]) else None))
+    _map = [("carga", ["CARGA"]), ("reacc", ["REACCION"]), ("repos", ["REPOSANDO", "REPOSO"]),
+            ("decant", ["DECANTACION"]), ("acopio", ["EN_TANQUE", "ACOPIO"])]
+
+    def _match(nm):
+        low = nm.lower()
+        for kw, codes in _map:
+            if kw in low:
+                for c in codes:
+                    if c in _real and _real[c]:
+                        return _real[c][0]
+        return (None, None)
+
+    def _parse(sv):
+        try:
+            d, t = str(sv).strip().split()
+            dd, mm = [int(x) for x in d.split("/")]
+            hh, mi = [int(x) for x in t.split(":")]
+            return pd.Timestamp(pd.Timestamp.now().year, mm, dd, hh, mi)
+        except Exception:
+            return None
+
+    rows = []
+    for _s in _cr:
+        nm = str(_s.get("Etapa", ""))
+        pini = _parse(_s.get("Inicio")); pfin = _parse(_s.get("Fin"))
+        pdur = float(_s.get("Duración (h)") or 0)
+        rini, rfin = _match(nm)
+        di = ((rini - pini).total_seconds() / 3600.0) if (rini is not None and pini is not None) else None
+        rdur = ((rfin - rini).total_seconds() / 3600.0) if (rini is not None and rfin is not None) else None
+        ddur = (rdur - pdur) if rdur is not None else None
+        rows.append({"Etapa": nm.split(" · ")[0],
+                     "Prog. inicio": (pini.strftime("%d/%m %H:%M") if pini is not None else "—"),
+                     "Real inicio": (rini.strftime("%d/%m %H:%M") if rini is not None else "—"),
+                     "Δ inicio (h)": (round(di, 1) if di is not None else None),
+                     "Prog. dur (h)": round(pdur, 1),
+                     "Real dur (h)": (round(rdur, 1) if rdur is not None else None),
+                     "Δ dur (h)": (round(ddur, 1) if ddur is not None else None)})
+    _df = pd.DataFrame(rows)
+
+    def _cch(v):
+        if pd.isna(v):
+            return ""
+        return "color:#dc2626;font-weight:700" if v > 0.5 else ("color:#16a34a;font-weight:700" if v < -0.5 else "color:#64748b")
+    _numc = ["Δ inicio (h)", "Prog. dur (h)", "Real dur (h)", "Δ dur (h)"]
+    try:
+        st.dataframe(_df.style.map(_cch, subset=["Δ inicio (h)", "Δ dur (h)"]).format(
+            {c: "{:.1f}" for c in _numc}, na_rep="—"), hide_index=True, use_container_width=True)
+    except Exception:
+        st.dataframe(_df, hide_index=True, use_container_width=True)
+    _first_di = next((r["Δ inicio (h)"] for r in rows if r["Δ inicio (h)"] is not None), None)
+    _rtot = sum([r["Real dur (h)"] for r in rows if r["Real dur (h)"] is not None])
+    _ptot = sum([r["Prog. dur (h)"] for r in rows])
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Δ arranque (h)", (f"{_first_di:+.1f}" if _first_di is not None else "—"),
+              help="Cuánto se atrasó (+) o adelantó (−) el arranque respecto de lo programado.")
+    k2.metric("Duración real total (h)", f"{_rtot:.1f}", (f"{_rtot-_ptot:+.1f} vs prog" if _ptot else None))
+    k3.metric("Programado total (h)", f"{_ptot:.1f}")
+    st.caption("🔴 más lento que lo programado · 🟢 más rápido · gris ≈ en tiempo. El desvío al arranque suele arrastrar "
+               "todo el cronograma; el desvío de **duración** por etapa es el que indica si el proceso en sí tardó más.")
 
 
 def _panel_evals(USR, cat, conectar):
