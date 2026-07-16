@@ -2274,6 +2274,155 @@ def _variacion_semanal(USR, cat, conectar):
         st.dataframe(_piv.round(2), use_container_width=True)
 
 
+def _analisis_reaccion(USR, cat, conectar):
+    st.subheader("🔬 Análisis por reacción")
+    st.caption("Curva de acidez en el tiempo · balance de masa (¿dónde fue cada kg?) · evaluación final de laboratorio.")
+    r = _sel_reaccion_mp(cat, "anr_sel", estados=("PLANIFICADO", "REACCION", "REPOSO", "DECANTACION", "FINALIZADO"))
+    if r is None:
+        return
+    idb = int(r["id_batch"])
+    b = cat("SELECT identificador_unidad AS ident, tipo_proceso, estado, id_producto_buscado, ticket_producto_final, "
+            " inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires' AS inicio, parametros_proceso "
+            "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (idb,))
+    if b is None or b.empty:
+        return
+    b = b.iloc[0]
+    _p = b["parametros_proceso"]
+    if isinstance(_p, str):
+        try:
+            _p = _json.loads(_p)
+        except Exception:
+            _p = {}
+    _p = _p or {}
+    _es_are = str(b["tipo_proceso"] or "") == "PRODUCCION_ARE"
+    _pf = cat("SELECT codigo_producto, COALESCE(densidad_g_ml,0.88)::float AS dens FROM produccion.dim_producto WHERE id_producto=%s",
+              (int(b["id_producto_buscado"]),)) if pd.notna(b["id_producto_buscado"]) else None
+    _pfcode = str(_pf.iloc[0]["codigo_producto"]) if (_pf is not None and not _pf.empty) else "Producto"
+    _pfdens = float(_pf.iloc[0]["dens"]) if (_pf is not None and not _pf.empty) else 0.88
+    _ini = pd.to_datetime(b["inicio"]) if pd.notna(b["inicio"]) else None
+
+    st.markdown(f"### {b['ident']} · {_pfcode} · {b['estado']}")
+
+    # ---------- 1) Curva de acidez ----------
+    st.markdown("#### 📉 Curva de acidez (evaluaciones internas)")
+    _ev = cat("SELECT (ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS ts, "
+              " NULLIF(mediciones->>'acidez','')::float AS acidez, "
+              " NULLIF(mediciones->>'temperatura','')::float AS temp "
+              "FROM produccion.fact_evaluacion_interna "
+              "WHERE id_batch=%s AND NOT COALESCE(anulado,false) AND mediciones ? 'acidez' "
+              "ORDER BY ts", (idb,))
+    if _ev is None or _ev.empty:
+        st.caption("Esta reacción no tiene evaluaciones internas de acidez cargadas.")
+    else:
+        _ev = _ev.copy(); _ev["ts"] = pd.to_datetime(_ev["ts"])
+        _base = _ini if _ini is not None else _ev["ts"].iloc[0]
+        _ev["Horas"] = (_ev["ts"] - _base).dt.total_seconds() / 3600.0
+        _ev["Corte (13)"] = 13.0
+        _cut_row = _ev[_ev["acidez"] <= 13]
+        _t_cut = float(_cut_row["Horas"].iloc[0]) if not _cut_row.empty else None
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Acidez inicial", f"{_ev['acidez'].iloc[0]:.1f}" if pd.notna(_ev['acidez'].iloc[0]) else "—")
+        c2.metric("Acidez final", f"{_ev['acidez'].iloc[-1]:.1f}" if pd.notna(_ev['acidez'].iloc[-1]) else "—")
+        c3.metric("Horas hasta corte (<13)", (f"{_t_cut:.1f} h" if _t_cut is not None else "no cortó aún"))
+        try:
+            import altair as alt
+            _long = _ev.melt(id_vars=["Horas"], value_vars=["acidez", "Corte (13)"], var_name="serie", value_name="valor")
+            ch = (alt.Chart(_long).mark_line(point=True).encode(
+                    x=alt.X("Horas:Q", title="Horas desde el inicio"),
+                    y=alt.Y("valor:Q", title="Acidez (%)"),
+                    color=alt.Color("serie:N", title=None,
+                                    scale=alt.Scale(domain=["acidez", "Corte (13)"], range=["#2563eb", "#dc2626"])),
+                    strokeDash=alt.condition(alt.datum.serie == "Corte (13)", alt.value([6, 4]), alt.value([0])))
+                  .properties(height=320))
+            st.altair_chart(ch, use_container_width=True)
+        except Exception:
+            st.line_chart(_ev.set_index("Horas")[["acidez", "Corte (13)"]], use_container_width=True)
+        st.caption("La acidez baja a medida que avanza la reacción; el **corte** es a ≤13. La pendiente muestra la "
+                   "velocidad de reacción — MP más lenta = curva más plana.")
+
+    # ---------- 2) Balance de masa ----------
+    st.markdown("#### ⚖️ Balance de masa — ¿dónde fue cada kg?")
+    _mpq = cat("SELECT round(sum(abs(kg))::numeric,0) AS kg FROM produccion.fact_movimiento_stock "
+               "WHERE id_batch=%s AND rol='MP' AND NOT COALESCE(anulado,false)", (idb,))
+    _mpkg = float(_mpq.iloc[0]["kg"]) if (_mpq is not None and not _mpq.empty and _mpq.iloc[0]["kg"] is not None) else 0.0
+    _rc = cat("SELECT real_kg::float AS kg FROM produccion.fact_reaccion_cierre WHERE id_batch=%s", (idb,))
+    _tk = cat("SELECT round(sum(kg)::numeric,0) AS kg FROM produccion.fact_batch_ticket_final WHERE id_batch=%s AND NOT COALESCE(anulado,false)", (idb,))
+    _real_pf = None; _fte = "—"
+    if _tk is not None and not _tk.empty and _tk.iloc[0]["kg"]:
+        _real_pf, _fte = float(_tk.iloc[0]["kg"]), "tickets"
+    elif _rc is not None and not _rc.empty and pd.notna(_rc.iloc[0]["kg"]):
+        _real_pf, _fte = float(_rc.iloc[0]["kg"]), "tanque"
+    _pf_kg = _real_pf if _real_pf is not None else float(_p.get("are_objetivo_kg") or _p.get("afe_objetivo_kg") or 0.0)
+    _gli_carg = float(_p.get("litros_glicerina_total") or 0.0) * float(K("densidad_glicerina", 1.25) or 1.25) if _es_are else 0.0
+    _koh = float(_p.get("koh_kg") or 0.0) if _es_are else 0.0
+    _aporte = float(_p.get("aporte_glicerina_pct") or 10.0)
+    _gli_rec = (1.0 - _aporte / 100.0) * float(_p.get("litros_glicerina_total") or 0.0) * 1.05 if _es_are else 0.0
+    _agua = _mpkg * float(_p.get("agua_agc_pct") or 0.0) / 100.0 if _es_are else 0.0
+    _entra = _mpkg + _gli_carg + _koh
+    _sale = _pf_kg + _gli_rec + _agua
+    _merma = _entra - _sale
+    _bal = [
+        {"Flujo": "Entra · MP (AG/AFE)", "kg": round(_mpkg)},
+        {"Flujo": "Entra · Glicerina cargada", "kg": round(_gli_carg)},
+        {"Flujo": "Entra · KOH", "kg": round(_koh)},
+        {"Flujo": f"Sale · Producto final ({_pfcode}, {_fte})", "kg": -round(_pf_kg)},
+        {"Flujo": "Sale · Glicerina recuperada", "kg": -round(_gli_rec)},
+        {"Flujo": "Sale · Agua", "kg": -round(_agua)},
+        {"Flujo": "= Merma / no explicado", "kg": round(_merma)},
+    ]
+    st.dataframe(pd.DataFrame(_bal), hide_index=True, use_container_width=True,
+                 column_config={"kg": st.column_config.NumberColumn(format="%.0f")})
+    _mp100 = (_merma / _entra * 100.0) if _entra else None
+    st.caption(f"Entra **{_entra:,.0f} kg** · Sale **{_sale:,.0f} kg** · Merma/no explicado **{_merma:,.0f} kg**"
+               + (f" ({_mp100:.1f}% de lo que entró)." if _mp100 is not None else ".")
+               + " Rendimiento del producto final = "
+               + (f"{_pf_kg/ (float(_p.get('are_objetivo_kg') or _p.get('afe_objetivo_kg') or 0) or 1)*100:.0f}% del teórico." if (_p.get('are_objetivo_kg') or _p.get('afe_objetivo_kg')) else "s/teórico."))
+    st.caption("Una merma muy alta suele ser producto que quedó en el corte de glicerina (recuperable) o falta de medición "
+               "del tanque destino. Glicerina cargada usa densidad 1,25; producto final 0,88.")
+
+    # ---------- 3) Evaluación final de laboratorio (id de lab = ticket final) ----------
+    st.markdown("#### 🧪 Evaluación final de laboratorio")
+    _cur_tk = b["ticket_producto_final"] if pd.notna(b["ticket_producto_final"]) else ""
+    cc1, cc2 = st.columns([2, 1])
+    _newtk = cc1.text_input("ID de laboratorio / ticket del producto final", value=str(_cur_tk), key=f"anr_tk_{idb}",
+                            help="Es el ticket con el que laboratorio evalúa el producto final (ej. F14). Une la reacción con su análisis.")
+    if cc2.button("💾 Asignar ID de lab", key=f"anr_tksave_{idb}", use_container_width=True):
+        try:
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE produccion.fact_batch_proceso SET ticket_producto_final=%s WHERE id_batch=%s",
+                                ((_newtk.strip() or None), idb))
+                audit.log("U", "fact_batch_proceso", idb, {"ticket_producto_final": _newtk.strip()})
+            st.success("ID de laboratorio asignado."); cat.clear(); st.rerun()
+        except Exception as e:
+            st.exception(e)
+    if _cur_tk:
+        _lab = cat("SELECT producto_lab, calidad_final_lab, rechazado, prc_acidez, prc_hkf, prc_sedimentos, prc_agua, "
+                   " densidad__g_ml, ppm_azufre, ppm_fosforo, to_char(fecha,'DD/MM/YYYY HH24:MI') AS fecha, conclusion "
+                   "FROM produccion.v_procesos_lab_efectivo WHERE ticket=%s ORDER BY fecha DESC", (str(_cur_tk),))
+        if _lab is None or _lab.empty:
+            st.info(f"Todavía no hay evaluación de laboratorio para el ticket **{_cur_tk}**. "
+                    "Cuando laboratorio lo cargue (con ese ticket) va a aparecer acá automáticamente.")
+        else:
+            _l = _lab.iloc[0]
+            _sp = None
+            try:
+                _sp = (float(_l["ppm_azufre"]) < 200 and float(_l["ppm_fosforo"]) < 200)
+            except Exception:
+                _sp = None
+            g1, g2, g3, g4 = st.columns(4)
+            g1.metric("Calidad", str(_l["calidad_final_lab"] or "—"))
+            g2.metric("Resultado", str(_l["rechazado"] or "—"))
+            g3.metric("Azufre / Fósforo (ppm)", f"{_l['ppm_azufre'] or '—'} / {_l['ppm_fosforo'] or '—'}",
+                      ("apto export" if _sp else ("no export" if _sp is False else None)))
+            g4.metric("Acidez / HKF", f"{_l['prc_acidez'] or '—'} / {_l['prc_hkf'] or '—'}")
+            st.dataframe(_lab, hide_index=True, use_container_width=True)
+            if _l["conclusion"]:
+                st.caption(f"📝 {_l['conclusion']}")
+    else:
+        st.caption("Asigná el ID de laboratorio (ticket del producto final) para linkear la evaluación.")
+
+
 def _reacciones_terminadas(USR, cat, conectar):
     st.subheader("🏁 Reacciones terminadas — objetivo vs real")
     st.caption("Máximo por reactor · objetivo/fórmula · real por tickets de pesada · real por variación de tanque. "
@@ -2867,7 +3016,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
 
-    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📈 Performance", "📅 Cronogramas", "📊 Variación semanal", "🧮 Reconciliación"]
+    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas", "📊 Variación semanal", "🧮 Reconciliación"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -2878,7 +3027,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     # ----- Administrar procesos en curso (no es carga: se decide sobre reacciones ya arrancadas) -----
     if _grupo.startswith("⚙️"):
-        _admin_opts = ["🛠️ Gestión de reacciones", "🏁 Terminadas (objetivo vs real)", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"]
+        _admin_opts = ["🛠️ Gestión de reacciones", "🏁 Terminadas (objetivo vs real)", "🔬 Análisis por reacción", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"]
         try:
             _admin = st.segmented_control("Administrar", _admin_opts, default=_admin_opts[0],
                                           key="pl_admin_sc", label_visibility="collapsed")
@@ -2890,6 +3039,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             _gestion_reacciones(USR, cat, conectar)
         elif _admin.startswith("🏁"):
             _reacciones_terminadas(USR, cat, conectar)
+        elif _admin.startswith("🔬"):
+            _analisis_reaccion(USR, cat, conectar)
         elif _admin.startswith("🧴"):
             import decantacion
             decantacion.destinos(USR, cat, conectar)
@@ -2898,14 +3049,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         else:
             import desgomado
             desgomado.planificacion(USR, cat, conectar)
-        return
-
-    if _grupo.startswith("📈"):
-        try:
-            import performance_section
-            performance_section.render(USR, cat, conectar)
-        except Exception as e:
-            st.error("No se pudo cargar Performance."); st.exception(e)
         return
 
     if _grupo.startswith("📅"):
@@ -3573,4 +3716,8 @@ def listar_movimientos_plan(cat, id_batch):
 
 def confirmar_movimientos_plan(cur, id_batch, uid):
     cur.execute(
-    
+        "UPDATE produccion.fact_movimiento_stock "
+        "SET estado_mov='EJECUTADO', id_usuario_ejecuta=%s, ejecutado_en=now(), momento=now() "
+        "WHERE id_batch=%s AND estado_mov='PLANIFICADO' AND anulado IS NOT TRUE",
+        (int(uid), int(id_batch)))
+    return cur.rowcount
