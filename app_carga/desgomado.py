@@ -332,7 +332,7 @@ def produccion(USR, cat, conectar, id_batch=None):
         return
     dest = b["desg_id_tanque_destino"]
     if pd.isna(dest) or dest is None:
-        st.warning("Falta que **Centro de Planificación** defina el tanque destino del AFE-S.")
+        st.warning(f"Falta que **Centro de Planificación** defina el tanque destino del {_pf}.")
         return
     nt = cat("SELECT nombre FROM produccion.dim_tanque WHERE id_tanque=%s", (int(dest),))
     dest_nm = nt.iloc[0]["nombre"] if (nt is not None and not nt.empty) else f"tanque {int(dest)}"
@@ -341,9 +341,9 @@ def produccion(USR, cat, conectar, id_batch=None):
     _tot = cat("SELECT COALESCE(SUM(litros_afe),0) t FROM produccion.fact_desg_envio WHERE id_batch=%s", (int(b["id_batch"]),))
     _enviado = float(_tot.iloc[0]["t"]) if (_tot is not None and not _tot.empty) else 0.0
     if _enviado > 0:
-        st.info(f"📦 Ya enviado a destino en pases anteriores: **{_enviado:,.0f} L** de AFE-S. "
+        st.info(f"📦 Ya enviado a destino en pases anteriores: **{_enviado:,.0f} L** de {_pf}. "
                 "Terminá de sacar el remanente y cerrá cuando el recipiente quede vacío.")
-        _eh = cat("SELECT to_char(ts,'DD/MM HH24:MI') AS \"Hora\", litros_afe AS \"AFE-S L\", "
+        _eh = cat(f"SELECT to_char(ts,'DD/MM HH24:MI') AS \"Hora\", litros_afe AS \"{_pf} L\", "
                   "litros_remanente AS \"Remanente L\", "
                   "CASE WHEN recipiente_vacio THEN 'cierre ✅' WHEN es_error THEN 'parcial ⚠️' ELSE 'parcial' END AS \"Tipo\", "
                   "COALESCE(motivo,'') AS \"Motivo\" "

@@ -29,13 +29,17 @@ def render(USR, cat, conectar, etapas_de_proceso, params_proceso):
         _flash = st.session_state.pop("m_flash", None)
         if _flash:
             try:
-                _bf = cat("SELECT estado, ticket_producto_final, ticket_validacion_lab "
-                          "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(_flash.get("batch")),))
+                _bf = cat("SELECT b.estado, b.ticket_producto_final, b.ticket_validacion_lab, "
+                          "(SELECT dp.codigo_producto FROM produccion.dim_producto dp "
+                          " WHERE dp.id_producto = b.id_producto_buscado) AS pf "
+                          "FROM produccion.fact_batch_proceso b WHERE b.id_batch=%s", (int(_flash.get("batch")),))
                 _ef = _bf.iloc[0]["estado"] if not _bf.empty else None
+                _pfc = (_bf.iloc[0]["pf"] if not _bf.empty else None) or "AFE-S"
                 _tpf = _bf.iloc[0]["ticket_producto_final"] if not _bf.empty else None
                 _tvl = _bf.iloc[0]["ticket_validacion_lab"] if not _bf.empty else None
             except Exception:
                 _ef = _tpf = _tvl = None
+                _pfc = "AFE-S"
             st.success(f"✅ Evaluación interna #{_flash.get('id')} guardada. Podés cargar otra.")
             if _ef == "REPOSO" and _tpf:
                 st.warning(f"🟦 Acidez ≤ 10 → la reacción pasó a **REPOSO**. "
@@ -43,7 +47,7 @@ def render(USR, cat, conectar, etapas_de_proceso, params_proceso):
                            f"Validación con ticket MP **{_tvl or '—'}**.")
             elif _ef == "REPOSO":
                 st.warning("🟦 Temperatura ≥ 85 °C → el desgomado **cortó la reacción y pasó a REPOSO**. "
-                           "En decantación vas a separar **fondo de tanque** y **AFE-S**.")
+                           f"En decantación vas a separar **fondo de tanque** y **{_pfc}**.")
 
         # ---------- Cronograma de evaluación (definido al iniciar la carga) ----------
         id_prog_sel = None

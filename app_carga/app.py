@@ -4428,11 +4428,12 @@ with tab_objs[0]:
                 _merma_esp = K("desgomado_merma_pct_esperada", 5) or 5
                 _pa_des = K("desgomado_pct_agua", 5) or 5
                 _t_des = K("desgomado_temp_c", 85) or 85
-                st.markdown("**Desgomado acuoso** — se calcula sobre el AFE-SG cargado más abajo (en kg)")
+                _pf_des = "AFE-G" if str(mp_pre).upper().startswith("AFE-G") else "AFE-S"
+                st.markdown(f"**Desgomado acuoso** — se calcula sobre el {mp_pre} cargado más abajo (en kg)")
                 st.caption(
-                    f"Merma esperada ~{_merma_esp:g}% · agua de proceso {_pa_des:g}% del AFE-SG · "
+                    f"Merma esperada ~{_merma_esp:g}% · agua de proceso {_pa_des:g}% del {mp_pre} · "
                     f"calentar a ~{_t_des:g} C · el fuel oil es estimado por fórmula (no se carga). "
-                    "Las TN reales de AFE-S se confirman al cerrar (Acopio final)."
+                    f"Las TN reales de {_pf_des} se confirman al cerrar (Acopio final)."
                 )
 
             inicio_dt = _ahora_ar()
@@ -4463,11 +4464,11 @@ with tab_objs[0]:
             st.markdown('<div class="section-title">🎯 Producto buscado</div>', unsafe_allow_html=True)
             opt_obj = productos_obt["codigo_producto"].tolist()
             if tipo_proceso_sel == "DESGOMADO_ACUOSO":
-                # Flujo fijo AFE-SG -> AFE-S. AFE es calidad ÚNICA (no A/B/C).
-                p_buscado = "AFE-S"
+                # El producto final sigue a la MP: AFE-SG -> AFE-S · AFE-G -> AFE-G (nunca AFE-S).
+                p_buscado = "AFE-G" if str(mp_pre).upper().startswith("AFE-G") else "AFE-S"
                 calidad_buscada = "UNICA"
-                st.text_input("Producto buscado *", value="AFE-S (calidad única)", disabled=True, key="b_pbusc_des")
-                st.caption("DESGOMADO_ACUOSO va siempre de AFE-SG -> AFE-S. El AFE es de calidad única.")
+                st.text_input("Producto buscado *", value=f"{p_buscado} (calidad única)", disabled=True, key="b_pbusc_des")
+                st.caption(f"DESGOMADO_ACUOSO de {mp_pre} -> {p_buscado}. El AFE es de calidad única.")
             elif tipo_proceso_sel == "PRODUCCION_ARE":
                 # Producto = ARE. La calidad la define el operario (A/B). El "animal" lo define la CORRIENTE.
                 cTG1, cTG2 = st.columns(2)
@@ -4872,18 +4873,19 @@ with tab_objs[0]:
                                    (consumos_proceso["codigo_insumo"] == "FUEL_OIL")]
             _rate_fuel = float(_rf.iloc[0]["consumo_por_tn"]) if not _rf.empty else 8.7
             est_fuel_kg = round((_kg_afesg / 1000.0) * _rate_fuel, 1)        # fuel estimado (L)
-            est_are_kg = _kg_afesg * (1 - _merma_esp / 100.0)               # AFE-S esperado (merma esperada)
+            _pf_des2 = "AFE-G" if str(mp_pre).upper().startswith("AFE-G") else "AFE-S"
+            est_are_kg = _kg_afesg * (1 - _merma_esp / 100.0)               # producto final esperado (merma esperada)
             q_ag_kg_ref = _kg_afesg
-            st.markdown(f"**Agua de proceso + estimados** _(agua = {_pct_agua:g}% sobre AFE-SG, automático)_")
+            st.markdown(f"**Agua de proceso + estimados** _(agua = {_pct_agua:g}% sobre {mp_pre}, automático)_")
             cAg1, cAg2, cAg3 = st.columns(3)
             cAg1.metric("Agua de proceso (L)", f"{agua_lts_v:,.0f}",
-                        f"{_pct_agua:g}% × {_kg_afesg/1000:,.2f} TN AFE-SG")
+                        f"{_pct_agua:g}% × {_kg_afesg/1000:,.2f} TN {mp_pre}")
             cAg2.metric("Fuel oil estimado (L)", f"{est_fuel_kg:,.1f}", "automático · no se carga")
-            cAg3.metric("AFE-S esperado", f"{est_are_kg/1000:,.2f} TN", f"merma esp. {_merma_esp:g}%")
+            cAg3.metric(f"{_pf_des2} esperado", f"{est_are_kg/1000:,.2f} TN", f"merma esp. {_merma_esp:g}%")
             temp_ini_v = st.number_input("Temperatura inicial (C)", 0.0, 300.0, step=1.0, value=float(_temp), key="b_tini_des")
             ticket_porteria_v = _tickets_entrada_des
             if ticket_porteria_v:
-                st.caption(f"Peso del AFE-SG calculado desde portería · tickets de entrada: {ticket_porteria_v}")
+                st.caption(f"Peso del {mp_pre} calculado desde portería · tickets de entrada: {ticket_porteria_v}")
 
         # Insumos — los típicos del proceso vienen precargados; se pueden agregar otros.
         st.markdown("**Insumos** — los típicos del proceso ya vienen cargados (ajustá la cantidad). Solo se usan en el **ARMADO**.")
