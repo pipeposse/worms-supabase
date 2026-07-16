@@ -418,13 +418,17 @@ def _gli_tanques(cat, codigo):
     """Tanques activos de un producto de glicerina, con stock y parámetros de lab del tanque."""
     return cat(
         "SELECT t.id_tanque, t.nombre, t.codigo, COALESCE(s.litros_actual,0) lt, COALESCE(s.kg_actual,0) kg, "
-        "       f.densidad_g_ml, f.agua_pct, "
-        "       (f.parametros_extra->>'glicerol_pct')::numeric AS glicerol, "
+        "       f.densidad_g_ml, f.agua_pct, f.ultima_evaluacion_ts AS lab_ts, "
+        "       COALESCE((f.parametros_extra->>'glicerol_pct')::numeric, "
+        "                CASE WHEN (f.parametros_extra->>'gli_glicerol') IS NOT NULL THEN "
+        "                  CASE WHEN (f.parametros_extra->>'gli_glicerol')::numeric<=1 "
+        "                       THEN (f.parametros_extra->>'gli_glicerol')::numeric*100 "
+        "                       ELSE (f.parametros_extra->>'gli_glicerol')::numeric END END) AS glicerol, "
         "       (f.parametros_extra->>'glicerina_pct')::numeric AS glicerina "
         "FROM produccion.dim_tanque t "
         "JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
         "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
-        "LEFT JOIN LATERAL (SELECT densidad_g_ml, agua_pct, parametros_extra FROM produccion.fact_param_tanque fp "
+        "LEFT JOIN LATERAL (SELECT densidad_g_ml, agua_pct, parametros_extra, ultima_evaluacion_ts FROM produccion.fact_param_tanque fp "
         "                   WHERE fp.id_tanque=t.id_tanque AND fp.id_producto=t.id_producto_principal "
         "                   ORDER BY actualizado_en DESC NULLS LAST LIMIT 1) f ON true "
         "WHERE t.activo AND p.codigo_producto=%s ORDER BY t.nombre", (codigo,))
@@ -451,7 +455,10 @@ def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
         npct = float(r["glicerina"]) if pd.notna(r["glicerina"]) else None
         dens = float(r["densidad_g_ml"]) if pd.notna(r["densidad_g_ml"]) else \
             (float(densidad_de(codigo)) if (callable(densidad_de) and densidad_de(codigo)) else 1.1)
-        l = st.number_input(f"Litros · {r['nombre']}", 0.0, 1_000_000.0, value=float(_per), step=50.0,
+        _labdt = (pd.to_datetime(r["lab_ts"]).strftime("%d/%m") if ("lab_ts" in r.index and pd.notna(r["lab_ts"])) else None)
+        _glcap = (f"glicerol {gpct:.0f}% (lab {_labdt})" if (gpct is not None and _labdt) else
+                  (f"glicerol {gpct:.0f}% (sin fecha de lab)" if gpct is not None else "sin glicerol de lab"))
+        l = st.number_input(f"Litros · {r['nombre']} — {_glcap}", 0.0, 1_000_000.0, value=float(_per), step=50.0,
                             key=f"{key}_l_{i}")
         kg = float(l) * dens
         picks.append({"idt": int(r["id_tanque"]), "nombre": r["nombre"], "l": float(l), "dens": dens,
