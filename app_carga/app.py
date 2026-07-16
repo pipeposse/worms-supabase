@@ -2326,11 +2326,12 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                     s += " · ✅ parámetros" if r.get('tiene_param') else " · ⚠️ SIN parámetros"
                     return s
                 opts = df.apply(_tlab, axis=1).tolist()
-                sels = st.multiselect(f"Tanques con {cod} (hasta 2)", opts, key=f"{key_prefix}_tksel",
-                                      help="Combiná hasta 2 tanques. El producto del tanque se ve al inicio de cada opción.")
-                if len(sels) > 2:
-                    st.warning("Máximo 2 tanques: se toman los primeros 2.")
-                    sels = sels[:2]
+                sels = st.multiselect(f"Tanques con {cod} (hasta 5)", opts, key=f"{key_prefix}_tksel",
+                                      max_selections=5,
+                                      help="Combiná hasta 5 tanques. El producto del tanque se ve al inicio de cada opción.")
+                if len(sels) > 5:
+                    st.warning("Máximo 5 tanques: se toman los primeros 5.")
+                    sels = sels[:5]
                 for _i, _s in enumerate(sels):
                     row = df.iloc[opts.index(_s)]
                     _stock = float(row["kg"] or 0)

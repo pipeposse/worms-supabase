@@ -128,10 +128,11 @@ def render(USR, cat, conectar):
                    "(etapas de < 5 min en el log): sus **tiempos** no reflejan la planta y se excluyen "
                    "del análisis de tiempos. La **capacidad** sí se analiza para todas.")
 
-    t_cap, t_tie, t_rin, t_rit, t_edit, t_retro = st.tabs(["🏭 Capacidad de carga", "⏱️ Tiempos y desvíos",
-                                                           "🎯 Rendimiento", "📆 Ritmo de planta",
-                                                           "✏️ Inicio/Fin (editar)",
-                                                           "⏮️ Retro (crear terminada)"])
+    t_cap, t_tie, t_rin, t_rit, t_edit, t_retro, t_fast = st.tabs(["🏭 Capacidad de carga", "⏱️ Tiempos y desvíos",
+                                                                   "🎯 Rendimiento", "📆 Ritmo de planta",
+                                                                   "✏️ Inicio/Fin (editar)",
+                                                                   "⏮️ Retro (crear terminada)",
+                                                                   "⏩ Finalizar de una"])
 
     # ---------- capacidad ----------
     with t_cap:
@@ -293,6 +294,10 @@ def render(USR, cat, conectar):
     # ---------- carga retroactiva ----------
     with t_retro:
         _carga_retroactiva(USR, cat, conectar)
+
+    # ---------- avance directo a acopio ----------
+    with t_fast:
+        _finalizar_directo(USR, cat, conectar)
 
     with st.expander("🔭 Qué más podríamos medir mejorando el registro", expanded=False):
         st.markdown(
@@ -669,5 +674,157 @@ def _carga_retroactiva(USR, cat, conectar):
             st.success(f"✅ Reacción **{_ident}** creada y FINALIZADA ({_mp_sel} → {_pf_code}, "
                        f"{_dur:.1f} h). Ya aparece en Performance y Terminadas; el real lo podés "
                        "cerrar en **Terminadas** cuando quieras.")
+        except Exception as e:
+            st.exception(e)
+
+
+def _finalizar_directo(USR, cat, conectar):
+    """Toma una reacción YA CREADA (planificada o en curso) y la lleva directo a acopio/FINALIZADA
+    en un solo paso, cargando los datos necesarios, sin avanzar etapa por etapa."""
+    st.caption("Elegí una reacción **planificada o en curso** y llevala **directo a FINALIZADA** con sus "
+               "horas reales, sin pasar por Reacción→Reposo→Decantación una por una. Ideal para las que "
+               "quedaron colgadas o se siguieron por afuera. ⚠️ No genera movimientos de stock ni tickets "
+               "nuevos (los que ya tenía la reacción quedan como están); el real se cierra en Terminadas.")
+    _act = cat("SELECT b.id_batch, b.identificador_unidad AS ident, et.etiqueta, b.estado, b.tipo_proceso, "
+               "bu.nombre_ui AS reactor, b.id_producto_buscado, dp.codigo_producto AS producto, "
+               "(SELECT min(l.ts) FROM produccion.fact_batch_estado_log l "
+               "  WHERE l.id_batch=b.id_batch AND l.estado_nuevo='REACCION') "
+               "  AT TIME ZONE 'America/Argentina/Buenos_Aires' AS ini_reaccion, "
+               "(b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS ini_batch "
+               "FROM produccion.fact_batch_proceso b "
+               "LEFT JOIN produccion.v_reaccion_etiqueta et ON et.id_batch=b.id_batch "
+               "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+               "LEFT JOIN produccion.dim_producto dp ON dp.id_producto=b.id_producto_buscado "
+               "WHERE b.sector='REACTORES' AND b.estado IN ('PLANIFICADO','REACCION','REPOSO','DECANTACION') "
+               "AND COALESCE(b.anulado,false)=false ORDER BY b.id_batch DESC")
+    if _act is None or _act.empty:
+        st.info("No hay reacciones planificadas o en curso para finalizar.")
+        return
+    _ops = _act.apply(lambda r: f"{r['ident']} · {r['etiqueta'] or r['producto'] or '—'} · {r['estado']}", axis=1).tolist()
+    _sel = st.selectbox("Reacción a finalizar", _ops, key="fd_sel")
+    b = _act.iloc[_ops.index(_sel)]
+    idb = int(b["id_batch"])
+
+    _now = pd.Timestamp.now(tz="America/Argentina/Buenos_Aires").tz_localize(None)
+    _def_ini = pd.to_datetime(b["ini_reaccion"]) if pd.notna(b["ini_reaccion"]) else (
+        pd.to_datetime(b["ini_batch"]) if pd.notna(b["ini_batch"]) else _now - pd.Timedelta(hours=8))
+    st.markdown("**Inicio y fin reales de la reacción**")
+    d1, h1, d2, h2 = st.columns(4)
+    _f_ini = d1.date_input("Fecha inicio", value=_def_ini.date(), key=f"fd_f1_{idb}")
+    _h_ini = h1.time_input("Hora inicio", value=_def_ini.time(), key=f"fd_h1_{idb}", step=300)
+    _f_fin = d2.date_input("Fecha fin (acopio)", value=_now.date(), key=f"fd_f2_{idb}")
+    _h_fin = h2.time_input("Hora fin (acopio)", value=_now.time(), key=f"fd_h2_{idb}", step=300)
+    _ini = pd.Timestamp.combine(_f_ini, _h_ini)
+    _fin = pd.Timestamp.combine(_f_fin, _h_fin)
+
+    _usar_et = st.checkbox("Cargar también fin de reacción y fin de reposo (para que el análisis por etapa sirva)",
+                           key=f"fd_et_{idb}")
+    _t_repo = _t_dec = None
+    if _usar_et:
+        e1, e2, e3, e4 = st.columns(4)
+        _fr = e1.date_input("Fecha fin reacción", value=_ini.date(), key=f"fd_fr_{idb}")
+        _hr = e2.time_input("Hora fin reacción", value=(_ini + pd.Timedelta(hours=2)).time(), key=f"fd_hr_{idb}", step=300)
+        _fd = e3.date_input("Fecha fin reposo", value=_fin.date(), key=f"fd_fd_{idb}")
+        _hd = e4.time_input("Hora fin reposo", value=(_fin - pd.Timedelta(hours=1)).time(), key=f"fd_hd_{idb}", step=300)
+        _t_repo = pd.Timestamp.combine(_fr, _hr)   # pasa a REPOSO
+        _t_dec = pd.Timestamp.combine(_fd, _hd)    # pasa a DECANTACION
+
+    c6, c7 = st.columns(2)
+    _kg_obt = c6.number_input("Producto final obtenido (kg, opcional)", min_value=0.0, max_value=200_000.0,
+                              step=100.0, key=f"fd_kg_{idb}", help="0 = sin dato; se puede cerrar después en Terminadas.")
+    _pf_id = int(b["id_producto_buscado"]) if pd.notna(b["id_producto_buscado"]) else None
+    _tk = cat("SELECT t.id_tanque, COALESCE(NULLIF(t.nombre,''), t.codigo) AS nombre, t.codigo "
+              "FROM produccion.dim_tanque_producto tp "
+              "JOIN produccion.dim_tanque t ON t.id_tanque=tp.id_tanque AND COALESCE(t.activo,true) "
+              "WHERE tp.id_producto=%s ORDER BY t.nombre", (_pf_id,)) if _pf_id else None
+    _tk_ops = ["(sin definir)"] + (_tk["nombre"].tolist() if (_tk is not None and not _tk.empty) else [])
+    _tk_sel = c7.selectbox(f"Tanque de acopio final ({b['producto'] or '—'}, opcional)", _tk_ops, key=f"fd_tk_{idb}")
+    _obs = st.text_input("Motivo / observaciones", max_chars=200, key=f"fd_obs_{idb}",
+                         placeholder="ej. se siguió en papel y no se cargó en la app")
+
+    _errs = []
+    if _fin <= _ini:
+        _errs.append("el fin tiene que ser posterior al inicio")
+    if _usar_et:
+        if not (_ini < _t_repo < _fin):
+            _errs.append("el fin de reacción tiene que estar entre inicio y fin")
+        if not (_t_repo < _t_dec < _fin):
+            _errs.append("el fin de reposo tiene que estar entre fin de reacción y fin")
+    if _errs:
+        st.error(" · ".join(_errs).capitalize() + ".")
+    _dur = (_fin - _ini).total_seconds() / 3600.0
+    st.caption(f"Va a quedar: **{b['ident']}** FINALIZADA · {_dur:.1f} h de inicio a acopio"
+               + (f" · etapas: reacción {(_t_repo-_ini).total_seconds()/3600:.1f} h / "
+                  f"reposo {(_t_dec-_t_repo).total_seconds()/3600:.1f} h / "
+                  f"decantación {(_fin-_t_dec).total_seconds()/3600:.1f} h" if (_usar_et and not _errs) else ""))
+
+    if st.button(f"⏩ Finalizar {b['ident']} de una", type="primary", key=f"fd_save_{idb}",
+                 disabled=bool(_errs)):
+        try:
+            _uid = int(USR["id_usuario"])
+            _tk_id = None
+            _tk_txt = None
+            if _tk_sel != "(sin definir)" and _tk is not None and not _tk.empty:
+                _tr = _tk[_tk["nombre"] == _tk_sel].iloc[0]
+                _tk_id = int(_tr["id_tanque"])
+                _tk_txt = (f"{_tr['nombre']} · {_tr['codigo']}" if _tr["codigo"] else str(_tr["nombre"]))
+            _es_desg = str(b["tipo_proceso"] or "") == "DESGOMADO_ACUOSO"
+            with conectar(_uid) as (conn, audit):
+                with conn.cursor() as cur:
+                    # 1) batch → FINALIZADO (el trigger loguea el cambio; después se pisa el ts con el real)
+                    cur.execute("UPDATE produccion.fact_batch_proceso SET "
+                                "estado='FINALIZADO', etapa_actual='EN_TANQUE', "
+                                "inicio_ts=(%s::timestamp AT TIME ZONE %s), "
+                                "fin_ts=(%s::timestamp AT TIME ZONE %s), "
+                                "kg_obtenido=COALESCE(%s, kg_obtenido), "
+                                "id_tanque_are_final=COALESCE(%s, id_tanque_are_final), "
+                                "desg_id_tanque_destino=COALESCE(%s, desg_id_tanque_destino), "
+                                "tanque_destino=COALESCE(%s, tanque_destino), "
+                                "esperando_validacion_lab=false, "
+                                "motivo_estado=%s "
+                                "WHERE id_batch=%s",
+                                (str(_ini), _TZ, str(_fin), _TZ,
+                                 (float(_kg_obt) if _kg_obt > 0 else None),
+                                 (_tk_id if (_tk_id and not _es_desg) else None),
+                                 (_tk_id if (_tk_id and _es_desg) else None),
+                                 _tk_txt,
+                                 ("avance directo a acopio" + (f" · {_obs}" if _obs else "")),
+                                 idb))
+
+                    def _upsert_log(estado_ant, estado_nvo, ts):
+                        cur.execute("UPDATE produccion.fact_batch_estado_log "
+                                    "SET ts=(%s::timestamp AT TIME ZONE %s) "
+                                    "WHERE id_batch=%s AND estado_nuevo=%s", (str(ts), _TZ, idb, estado_nvo))
+                        if cur.rowcount == 0:
+                            cur.execute("INSERT INTO produccion.fact_batch_estado_log "
+                                        "(id_batch, estado_anterior, estado_nuevo, ts, id_usuario, motivo) "
+                                        "VALUES (%s,%s,%s,(%s::timestamp AT TIME ZONE %s),%s,'avance directo')",
+                                        (idb, estado_ant, estado_nvo, str(ts), _TZ, _uid))
+
+                    _upsert_log("PLANIFICADO", "REACCION", _ini)
+                    if _usar_et:
+                        _upsert_log("REACCION", "REPOSO", _t_repo)
+                        _upsert_log("REPOSO", "DECANTACION", _t_dec)
+                    _upsert_log(("DECANTACION" if _usar_et else "REACCION"), "FINALIZADO", _fin)
+
+                    # evaluaciones programadas que quedaron colgadas → OMITIDA
+                    cur.execute("UPDATE produccion.fact_eval_programada SET estado='OMITIDA' "
+                                "WHERE id_batch=%s AND estado='PENDIENTE'", (idb,))
+                    # evento de acopio para cierre_ts (si no existe)
+                    cur.execute("SELECT 1 FROM produccion.fact_etapa_evento "
+                                "WHERE id_batch=%s AND etapa='EN_TANQUE' LIMIT 1", (idb,))
+                    if cur.fetchone() is None:
+                        cur.execute("INSERT INTO produccion.fact_etapa_evento "
+                                    "(id_batch, etapa, inicio_ts, fin_ts, id_usuario, observaciones) "
+                                    "VALUES (%s,'EN_TANQUE',(%s::timestamp AT TIME ZONE %s),"
+                                    "(%s::timestamp AT TIME ZONE %s),%s,'avance directo a acopio')",
+                                    (idb, str(_fin), _TZ, str(_fin), _TZ, _uid))
+                audit.log("U", "fact_batch_proceso", idb,
+                          {"avance_directo": True, "inicio": str(_ini), "fin": str(_fin),
+                           "etapas": bool(_usar_et), "tanque_final": _tk_id,
+                           "kg_obtenido": (float(_kg_obt) if _kg_obt > 0 else None)})
+            cat.clear()
+            st.success(f"✅ **{b['ident']}** quedó FINALIZADA ({_dur:.1f} h de inicio a acopio). "
+                       "Ya aparece en Performance y Terminadas; el rendimiento real se cierra en **Terminadas**.")
         except Exception as e:
             st.exception(e)
