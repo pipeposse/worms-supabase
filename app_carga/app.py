@@ -315,16 +315,12 @@ def _landing_kpis():
         (SELECT count(*) FROM fact_batch_proceso WHERE fecha=CURRENT_DATE AND NOT anulado) AS hoy
     """
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        try:
+        with _lab_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
                 cur.execute(sql)
                 row = cur.fetchone()
                 cols = ["tanques","stock_tn","en_proceso","en_reaccion","en_reposo","tickets_pend","esp_valid","hoy"]
                 return dict(zip(cols, row))
-        finally:
-            conn.close()
     except Exception:
         return None
 
@@ -334,16 +330,12 @@ def _home_df(sql, params=None):
     if not DATABASE_URL:
         return None
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        try:
+        with _lab_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
                 cur.execute(sql, params)
                 cols = [d[0] for d in cur.description]
                 rows = cur.fetchall()
             return pd.DataFrame(rows, columns=cols)
-        finally:
-            conn.close()
     except Exception:
         return None
 
@@ -556,13 +548,9 @@ if st.session_state.get("show_chg_pin"):
 
 @st.cache_data(ttl=300)
 def cat(query, params=None):
-    conn = psycopg2.connect(DATABASE_URL)
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
+    # Pool compartido: evita un handshake SSL (~0,5 s) por CADA cache-miss.
+    with _lab_conn() as conn:
         return pd.read_sql_query(query, conn, params=params)
-    finally:
-        conn.close()
 
 
 # ---- Tickets de portería (NUMÉRICOS) → peso neto desde transacciones ----
@@ -959,13 +947,11 @@ def _load_prefs():
     """Lee las prefs del usuario una vez por sesión y las cachea en session_state."""
     if "_prefs" not in st.session_state:
         try:
-            conn = psycopg2.connect(DATABASE_URL)
-            with conn.cursor() as cur:
-                cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
-                cur.execute("SELECT COALESCE(prefs,'{}'::jsonb) FROM dim_usuario WHERE id_usuario=%s",
-                            (USR["id_usuario"],))
-                row = cur.fetchone()
-            conn.close()
+            with _lab_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COALESCE(prefs,'{}'::jsonb) FROM dim_usuario WHERE id_usuario=%s",
+                                (USR["id_usuario"],))
+                    row = cur.fetchone()
             st.session_state["_prefs"] = (row[0] if row and row[0] else {}) or {}
         except Exception:
             st.session_state["_prefs"] = {}
@@ -982,12 +968,11 @@ def set_pref(key, value):
     prefs[key] = value
     st.session_state["_prefs"] = prefs
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        with conn.cursor() as cur:
-            cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
-            cur.execute("UPDATE dim_usuario SET prefs = COALESCE(prefs,'{}'::jsonb) || %s::jsonb WHERE id_usuario=%s",
-                        (json.dumps({key: value}), USR["id_usuario"]))
-        conn.commit(); conn.close()
+        with _lab_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE dim_usuario SET prefs = COALESCE(prefs,'{}'::jsonb) || %s::jsonb WHERE id_usuario=%s",
+                            (json.dumps({key: value}), USR["id_usuario"]))
+            conn.commit()
     except Exception:
         pass
 
@@ -2483,10 +2468,8 @@ def siguiente_identificador(sector):
     anio = date.today().year
     n = 1
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        try:
+        with _lab_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
                 cur.execute(
                     "SELECT identificador_unidad FROM fact_batch_proceso "
                     "WHERE identificador_unidad LIKE %s ORDER BY identificador_unidad DESC LIMIT 1",
@@ -2497,8 +2480,6 @@ def siguiente_identificador(sector):
                         n = int(str(row[0]).split("-")[-1]) + 1
                     except Exception:
                         n = 1
-        finally:
-            conn.close()
     except Exception:
         n = 1
     return f"{pref}-{anio}-{n:04d}"

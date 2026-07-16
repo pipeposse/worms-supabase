@@ -521,6 +521,13 @@ def _borrador_guardar(conectar, USR):
         _js = _json.dumps(snap, sort_keys=True, default=str)
         if st.session_state.get("_plan_borr_last") == _js:
             return
+        # Throttle: sin esto, CADA cambio de input abría una conexión nueva + INSERT (≈1 s por tecla).
+        # Se guarda como mucho cada 12 s; lo pendiente se guarda solo en un rerun posterior.
+        import time as _time
+        _now_s = _time.time()
+        if _now_s - float(st.session_state.get("_plan_borr_ts") or 0) < 12:
+            return
+        st.session_state["_plan_borr_ts"] = _now_s
         st.session_state["_plan_borr_last"] = _js
         with conectar(int(USR["id_usuario"])) as (conn, audit):
             with conn.cursor() as cur:
