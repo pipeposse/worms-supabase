@@ -55,13 +55,15 @@ def render(USR, cat, conectar):
     df["tiempos_confiables"] = df["tiempos_confiables"].fillna(False).astype(bool)
 
     # ---------- filtros ----------
-    c1, c2, c3 = st.columns([1.2, 1, 1])
+    c1, c2, c3, c4 = st.columns([1.2, 1, 1, 1])
     _rango = c1.selectbox("Período", ["Todo", "Por semana", "Últimos 30 días", "Últimos 60 días",
                                       "Últimos 90 días"], index=0, key="perf_rango")
     _tipos = ["Todos"] + sorted(df["tipo"].dropna().unique().tolist())
-    _tipo = c2.selectbox("Proceso", _tipos, key="perf_tipo")
+    _tipo = c2.selectbox("Tipo de reacción", _tipos, key="perf_tipo")
     _reactores = ["Todos"] + sorted(df["reactor"].dropna().unique().tolist())
     _reactor = c3.selectbox("Reactor", _reactores, key="perf_reactor")
+    _prods_f = ["Todos"] + sorted(df["producto"].dropna().unique().tolist())
+    _producto = c4.selectbox("Producto final", _prods_f, key="perf_producto")
 
     if _rango == "Por semana":
         _sem = df["fecha"].dt.to_period("W").dt.start_time    # lunes de cada semana
@@ -82,6 +84,8 @@ def render(USR, cat, conectar):
         df = df[df["tipo"] == _tipo]
     if _reactor != "Todos":
         df = df[df["reactor"] == _reactor]
+    if _producto != "Todos":
+        df = df[df["producto"] == _producto]
     if df.empty:
         st.info("No hay reacciones finalizadas con esos filtros.")
         return
