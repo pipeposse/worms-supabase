@@ -817,7 +817,7 @@ def tickets_lab_disponibles_por_codigo(codigo_producto, dias=180, limit=30, solo
         return pd.DataFrame()
 
 
-def _ui_multiselect_tickets(codigo_producto, key_prefix, dias=180, limit=30, max_tickets=3):
+def _ui_multiselect_tickets(codigo_producto, key_prefix, dias=180, limit=30, max_tickets=5):
     """Renderiza multiselect de tickets disponibles + cuadro de tickets manuales
     extra. Devuelve string compuesto de todos los tickets separados por coma.
     Aplica un tope de `max_tickets` (default 3) entre seleccionados + manuales."""
@@ -2279,8 +2279,7 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
     with cP:
         up = st.checkbox("🎟️ Portería (tickets)", value=True, key=f"{key_prefix}_up")
         if up:
-            _maxtk = 5 if str(cod or "").upper().startswith("AFE") else 3
-            tkstr = _ui_multiselect_tickets(cod, key_prefix=f"{key_prefix}_ms", dias=365, limit=20, max_tickets=_maxtk)
+            tkstr = _ui_multiselect_tickets(cod, key_prefix=f"{key_prefix}_ms", dias=365, limit=20, max_tickets=5)
             _det, _avg, _ml, _mp, _mapp = params_de_tickets_lab(tkstr, cod)
             kg_port = float(pd.to_numeric(_det["kg"], errors="coerce").sum()) if (not _det.empty and "kg" in _det.columns) else 0.0
             if kg_port > 0:
