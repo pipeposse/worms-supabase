@@ -98,8 +98,9 @@ def render(USR, cat, conectar):
                    "(etapas de < 5 min en el log): sus **tiempos** no reflejan la planta y se excluyen "
                    "del análisis de tiempos. La **capacidad** sí se analiza para todas.")
 
-    t_cap, t_tie, t_rin, t_rit = st.tabs(["🏭 Capacidad de carga", "⏱️ Tiempos y desvíos",
-                                          "🎯 Rendimiento", "📆 Ritmo de planta"])
+    t_cap, t_tie, t_rin, t_rit, t_edit = st.tabs(["🏭 Capacidad de carga", "⏱️ Tiempos y desvíos",
+                                                  "🎯 Rendimiento", "📆 Ritmo de planta",
+                                                  "✏️ Inicio/Fin (editar)"])
 
     # ---------- capacidad ----------
     with t_cap:
@@ -254,6 +255,10 @@ def render(USR, cat, conectar):
             st.markdown("**TN formuladas por semana**")
             st.bar_chart(_sm)
 
+    # ---------- editor masivo inicio/fin ----------
+    with t_edit:
+        _editor_inicio_fin(USR, cat, conectar)
+
     with st.expander("🔭 Qué más podríamos medir mejorando el registro", expanded=False):
         st.markdown(
             "- **Tiempos reales de verdad**: hoy la mayoría de las etapas se avanzan a posteriori "
@@ -269,3 +274,135 @@ def render(USR, cat, conectar):
             "el rendimiento global sea representativo.\n"
             "- **Paradas y esperas**: registrar por qué un reactor quedó vacío (limpieza, falta de MP, lab) "
             "convertiría el 'hueco entre reacciones' en un pareto accionable.")
+
+
+_TZ = "America/Argentina/Buenos_Aires"
+
+
+def _editor_inicio_fin(USR, cat, conectar):
+    """Edición masiva del inicio y fin REAL de todas las reacciones finalizadas, en una sola tabla."""
+    st.caption("Corregí **inicio y fin reales de todas las reacciones finalizadas** en una sola tabla "
+               "(para cuando las etapas se avanzaron a los clicks y el log no refleja la planta). "
+               "Guarda en el log de estados (REACCION/FINALIZADO), en inicio_ts/fin_ts y en los eventos "
+               "de etapa vinculados; Performance y Terminadas se recalculan solos.")
+    df = cat("SELECT id_batch, ident, etiqueta, reactor, tipo, inicio_local AS inicio, "
+             "fin_local AS fin, prog_proceso_h "
+             "FROM produccion.v_perf_reaccion ORDER BY fecha DESC NULLS LAST, id_batch DESC")
+    if df is None or df.empty:
+        st.info("No hay reacciones finalizadas para editar.")
+        return
+    df["inicio"] = pd.to_datetime(df["inicio"], errors="coerce")
+    df["fin"] = pd.to_datetime(df["fin"], errors="coerce")
+    df["prog_proceso_h"] = pd.to_numeric(df["prog_proceso_h"], errors="coerce")
+    base = df.reset_index(drop=True)
+
+    view = pd.DataFrame({
+        "ID": base["ident"],
+        "Reacción": base["etiqueta"],
+        "Reactor": base["reactor"],
+        "Inicio real": base["inicio"],
+        "Fin real": base["fin"],
+        "Programado (h)": base["prog_proceso_h"],
+        "Real (h)": ((base["fin"] - base["inicio"]).dt.total_seconds() / 3600.0).round(1),
+    })
+    view["Δ (h)"] = (view["Real (h)"] - view["Programado (h)"]).round(1)
+    ed = st.data_editor(
+        view, hide_index=True, use_container_width=True, key="perf_edit_if",
+        disabled=["ID", "Reacción", "Reactor", "Programado (h)", "Real (h)", "Δ (h)"],
+        column_config={
+            "Inicio real": st.column_config.DatetimeColumn("Inicio real", format="DD/MM/YYYY HH:mm", step=60),
+            "Fin real": st.column_config.DatetimeColumn("Fin real", format="DD/MM/YYYY HH:mm", step=60),
+            "Programado (h)": st.column_config.NumberColumn(format="%.1f",
+                                                            help="Horas programadas de inicio a fin "
+                                                                 "(reacción+reposo+decantación del cronograma)."),
+            "Real (h)": st.column_config.NumberColumn(format="%.1f", help="Fin real − inicio real (guardados)."),
+            "Δ (h)": st.column_config.NumberColumn(format="%.1f", help="Real − programado. + = tardó más."),
+        })
+
+    # cambios pendientes (vs lo guardado)
+    cambios, invalidas = [], []
+    for i in range(len(base)):
+        idb = int(base.iloc[i]["id_batch"])
+        old_i, old_f = base.iloc[i]["inicio"], base.iloc[i]["fin"]
+        new_i = pd.to_datetime(ed.iloc[i]["Inicio real"]) if pd.notna(ed.iloc[i]["Inicio real"]) else pd.NaT
+        new_f = pd.to_datetime(ed.iloc[i]["Fin real"]) if pd.notna(ed.iloc[i]["Fin real"]) else pd.NaT
+        chg_i = pd.notna(new_i) and (pd.isna(old_i) or new_i != old_i)
+        chg_f = pd.notna(new_f) and (pd.isna(old_f) or new_f != old_f)
+        if not (chg_i or chg_f):
+            continue
+        eff_i = new_i if pd.notna(new_i) else old_i
+        eff_f = new_f if pd.notna(new_f) else old_f
+        if pd.notna(eff_i) and pd.notna(eff_f) and eff_f <= eff_i:
+            invalidas.append(str(base.iloc[i]["ident"]))
+            continue
+        cambios.append({"idb": idb, "ident": str(base.iloc[i]["ident"]),
+                        "old_i": old_i, "old_f": old_f,
+                        "new_i": (new_i if chg_i else None), "new_f": (new_f if chg_f else None),
+                        "eff_i": eff_i, "eff_f": eff_f,
+                        "prog": base.iloc[i]["prog_proceso_h"]})
+    if invalidas:
+        st.error("Fin ≤ inicio en: " + ", ".join(invalidas) + " — esas filas no se van a guardar.")
+    if cambios:
+        _prev = pd.DataFrame([{
+            "ID": c["ident"],
+            "Nuevo inicio": (c["eff_i"].strftime("%d/%m %H:%M") if pd.notna(c["eff_i"]) else "—"),
+            "Nuevo fin": (c["eff_f"].strftime("%d/%m %H:%M") if pd.notna(c["eff_f"]) else "—"),
+            "Real (h)": (round((c["eff_f"] - c["eff_i"]).total_seconds() / 3600.0, 1)
+                         if pd.notna(c["eff_i"]) and pd.notna(c["eff_f"]) else None),
+            "Prog. (h)": (round(float(c["prog"]), 1) if pd.notna(c["prog"]) else None),
+        } for c in cambios])
+        _prev["Δ (h)"] = (_prev["Real (h)"] - _prev["Prog. (h)"]).round(1)
+        st.markdown(f"**{len(cambios)} reacción(es) con cambios:**")
+        st.dataframe(_prev, hide_index=True, use_container_width=True)
+    else:
+        st.caption("Sin cambios pendientes: editá Inicio real / Fin real en la tabla y apretá Guardar.")
+
+    if st.button("💾 Guardar inicios y fines", type="primary", key="perf_edit_save",
+                 disabled=(not cambios)):
+        try:
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    for c in cambios:
+                        idb = c["idb"]
+                        if c["new_i"] is not None:
+                            _v = str(c["new_i"])
+                            cur.execute("UPDATE produccion.fact_batch_estado_log "
+                                        "SET ts=(%s::timestamp AT TIME ZONE %s) "
+                                        "WHERE id_batch=%s AND estado_nuevo='REACCION'", (_v, _TZ, idb))
+                            cur.execute("UPDATE produccion.fact_batch_proceso "
+                                        "SET inicio_ts=(%s::timestamp AT TIME ZONE %s) "
+                                        "WHERE id_batch=%s", (_v, _TZ, idb))
+                            if pd.notna(c["old_i"]):
+                                cur.execute("UPDATE produccion.fact_etapa_evento "
+                                            "SET inicio_ts=(%s::timestamp AT TIME ZONE %s) "
+                                            "WHERE id_batch=%s AND etapa='REACCION' "
+                                            "AND inicio_ts=(%s::timestamp AT TIME ZONE %s)",
+                                            (_v, _TZ, idb, str(c["old_i"]), _TZ))
+                        if c["new_f"] is not None:
+                            _v = str(c["new_f"])
+                            cur.execute("UPDATE produccion.fact_batch_estado_log "
+                                        "SET ts=(%s::timestamp AT TIME ZONE %s) "
+                                        "WHERE id_batch=%s AND estado_nuevo='FINALIZADO'", (_v, _TZ, idb))
+                            cur.execute("UPDATE produccion.fact_batch_proceso "
+                                        "SET fin_ts=(%s::timestamp AT TIME ZONE %s) "
+                                        "WHERE id_batch=%s", (_v, _TZ, idb))
+                            if pd.notna(c["old_f"]):
+                                # cierra la última etapa y corre el arranque de EN_TANQUE si apuntaban al fin viejo
+                                cur.execute("UPDATE produccion.fact_etapa_evento "
+                                            "SET fin_ts=(%s::timestamp AT TIME ZONE %s) "
+                                            "WHERE id_batch=%s AND fin_ts=(%s::timestamp AT TIME ZONE %s)",
+                                            (_v, _TZ, idb, str(c["old_f"]), _TZ))
+                                cur.execute("UPDATE produccion.fact_etapa_evento "
+                                            "SET inicio_ts=(%s::timestamp AT TIME ZONE %s) "
+                                            "WHERE id_batch=%s AND etapa='EN_TANQUE' "
+                                            "AND inicio_ts=(%s::timestamp AT TIME ZONE %s)",
+                                            (_v, _TZ, idb, str(c["old_f"]), _TZ))
+                        audit.log("U", "fact_batch_estado_log", idb,
+                                  {"inicio": (str(c["new_i"]) if c["new_i"] is not None else None),
+                                   "fin": (str(c["new_f"]) if c["new_f"] is not None else None),
+                                   "via": "performance_editor_masivo"})
+            st.success(f"Guardado: {len(cambios)} reacción(es) actualizadas.")
+            cat.clear()
+            st.rerun()
+        except Exception as e:
+            st.exception(e)
