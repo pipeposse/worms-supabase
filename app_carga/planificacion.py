@@ -419,16 +419,17 @@ def _gli_tanques(cat, codigo):
     return cat(
         "SELECT t.id_tanque, t.nombre, t.codigo, COALESCE(s.litros_actual,0) lt, COALESCE(s.kg_actual,0) kg, "
         "       f.densidad_g_ml, f.agua_pct, f.ultima_evaluacion_ts AS lab_ts, "
-        "       COALESCE((f.parametros_extra->>'glicerol_pct')::numeric, "
+        "       COALESCE(NULLIF(f.glicerina_pct,0), "
+        "                (f.parametros_extra->>'glicerol_pct')::numeric, "
         "                CASE WHEN (f.parametros_extra->>'gli_glicerol') IS NOT NULL THEN "
         "                  CASE WHEN (f.parametros_extra->>'gli_glicerol')::numeric<=1 "
         "                       THEN (f.parametros_extra->>'gli_glicerol')::numeric*100 "
         "                       ELSE (f.parametros_extra->>'gli_glicerol')::numeric END END) AS glicerol, "
-        "       (f.parametros_extra->>'glicerina_pct')::numeric AS glicerina "
+        "       COALESCE((f.parametros_extra->>'glicerina_pct')::numeric, 100) AS glicerina "
         "FROM produccion.dim_tanque t "
         "JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
         "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
-        "LEFT JOIN LATERAL (SELECT densidad_g_ml, agua_pct, parametros_extra, ultima_evaluacion_ts FROM produccion.fact_param_tanque fp "
+        "LEFT JOIN LATERAL (SELECT densidad_g_ml, agua_pct, glicerina_pct, parametros_extra, ultima_evaluacion_ts FROM produccion.fact_param_tanque fp "
         "                   WHERE fp.id_tanque=t.id_tanque AND fp.id_producto=t.id_producto_principal "
         "                   ORDER BY actualizado_en DESC NULLS LAST LIMIT 1) f ON true "
         "WHERE t.activo AND p.codigo_producto=%s ORDER BY t.nombre", (codigo,))
@@ -465,7 +466,7 @@ def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
                       "glicerina_pct": npct, "glicerol_pct": gpct,
                       "agua_pct": (float(r["agua_pct"]) if pd.notna(r["agua_pct"]) else None),
                       "kg": kg,
-                      "glicerol_kg": kg * ((npct or 0) / 100.0) * ((gpct or 0) / 100.0)})
+                      "glicerol_kg": kg * ((gpct or 0) / 100.0)})
     tot_l = sum(p["l"] for p in picks)
     _wl = tot_l or 1.0
     agg.update({
