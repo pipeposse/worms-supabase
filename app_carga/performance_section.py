@@ -280,14 +280,17 @@ _TZ = "America/Argentina/Buenos_Aires"
 
 
 def _editor_inicio_fin(USR, cat, conectar):
-    """Edición masiva del inicio y fin REAL de todas las reacciones finalizadas, en una sola tabla."""
-    st.caption("Corregí **inicio y fin reales de todas las reacciones finalizadas** en una sola tabla "
-               "(para cuando las etapas se avanzaron a los clicks y el log no refleja la planta). "
-               "Guarda en el log de estados (REACCION/FINALIZADO), en inicio_ts/fin_ts y en los eventos "
-               "de etapa vinculados; Performance y Terminadas se recalculan solos.")
-    df = cat("SELECT id_batch, ident, etiqueta, reactor, tipo, inicio_local AS inicio, "
-             "fin_local AS fin, prog_proceso_h "
-             "FROM produccion.v_perf_reaccion ORDER BY fecha DESC NULLS LAST, id_batch DESC")
+    """Edición masiva de inicio/fin reales y tanque de acopio final de todas las reacciones finalizadas."""
+    st.caption("Corregí **inicio, fin y tanque de acopio final de todas las reacciones finalizadas** en una "
+               "sola tabla (para cuando las etapas se avanzaron a los clicks o el destino quedó mal cargado). "
+               "Guarda en el log de estados (REACCION/FINALIZADO), inicio_ts/fin_ts, los eventos de etapa "
+               "vinculados y el tanque destino del batch; Performance y Terminadas se recalculan solos.")
+    df = cat("SELECT p.id_batch, p.ident, p.etiqueta, p.reactor, p.tipo, p.tipo_proceso, "
+             "p.inicio_local AS inicio, p.fin_local AS fin, p.prog_proceso_h, "
+             "vt.id_producto, vt.producto, vt.id_tanque_destino "
+             "FROM produccion.v_perf_reaccion p "
+             "LEFT JOIN produccion.v_reaccion_terminada vt ON vt.id_batch = p.id_batch "
+             "ORDER BY p.fecha DESC NULLS LAST, p.id_batch DESC")
     if df is None or df.empty:
         st.info("No hay reacciones finalizadas para editar.")
         return
@@ -296,19 +299,56 @@ def _editor_inicio_fin(USR, cat, conectar):
     df["prog_proceso_h"] = pd.to_numeric(df["prog_proceso_h"], errors="coerce")
     base = df.reset_index(drop=True)
 
+    # --- tanques pertinentes: solo los habilitados (dim_tanque_producto) para los productos finales presentes ---
+    _prods = sorted({int(x) for x in base["id_producto"].dropna().tolist()})
+    _tk = cat("SELECT tp.id_producto, dp.codigo_producto, t.id_tanque, "
+              "COALESCE(NULLIF(t.nombre,''), t.codigo) AS tanque, t.codigo "
+              "FROM produccion.dim_tanque_producto tp "
+              "JOIN produccion.dim_tanque t ON t.id_tanque = tp.id_tanque AND COALESCE(t.activo, TRUE) "
+              "JOIN produccion.dim_producto dp ON dp.id_producto = tp.id_producto "
+              "WHERE tp.id_producto = ANY(%s) ORDER BY dp.codigo_producto, t.nombre", (_prods,))         if _prods else None
+    lbl2tk = {}      # etiqueta visible -> (id_tanque, id_producto, nombre, codigo)
+    tk2lbl = {}      # (id_producto, id_tanque) -> etiqueta
+    if _tk is not None and not _tk.empty:
+        for _, t in _tk.iterrows():
+            _l = f"{t['codigo_producto']} · {t['tanque']}"
+            lbl2tk[_l] = (int(t["id_tanque"]), int(t["id_producto"]), str(t["tanque"]), str(t["codigo"] or ""))
+            tk2lbl[(int(t["id_producto"]), int(t["id_tanque"]))] = _l
+
+    def _lbl_actual(r):
+        if pd.isna(r["id_tanque_destino"]):
+            return None
+        _idp = int(r["id_producto"]) if pd.notna(r["id_producto"]) else None
+        _l = tk2lbl.get((_idp, int(r["id_tanque_destino"]))) if _idp is not None else None
+        if _l is None:  # tanque asignado que hoy no figura habilitado para el producto: mostrarlo igual
+            _n = cat("SELECT COALESCE(NULLIF(nombre,''), codigo) AS n, codigo FROM produccion.dim_tanque "
+                     "WHERE id_tanque=%s", (int(r["id_tanque_destino"]),))
+            if _n is not None and not _n.empty:
+                _l = f"⚠️ {r['producto'] or '?'} · {_n.iloc[0]['n']} (no habilitado)"
+                lbl2tk.setdefault(_l, (int(r["id_tanque_destino"]),
+                                       (_idp if _idp is not None else -1),
+                                       str(_n.iloc[0]["n"]), str(_n.iloc[0]["codigo"] or "")))
+        return _l
+
+    base["tk_lbl"] = base.apply(_lbl_actual, axis=1)
+    _opciones = sorted(lbl2tk.keys())
+
     view = pd.DataFrame({
         "ID": base["ident"],
         "Reacción": base["etiqueta"],
-        "Reactor": base["reactor"],
+        "Producto": base["producto"],
         "Inicio real": base["inicio"],
         "Fin real": base["fin"],
         "Programado (h)": base["prog_proceso_h"],
         "Real (h)": ((base["fin"] - base["inicio"]).dt.total_seconds() / 3600.0).round(1),
+        "Tanque final": base["tk_lbl"],
     })
     view["Δ (h)"] = (view["Real (h)"] - view["Programado (h)"]).round(1)
+    view = view[["ID", "Reacción", "Producto", "Inicio real", "Fin real",
+                 "Programado (h)", "Real (h)", "Δ (h)", "Tanque final"]]
     ed = st.data_editor(
         view, hide_index=True, use_container_width=True, key="perf_edit_if",
-        disabled=["ID", "Reacción", "Reactor", "Programado (h)", "Real (h)", "Δ (h)"],
+        disabled=["ID", "Reacción", "Producto", "Programado (h)", "Real (h)", "Δ (h)"],
         column_config={
             "Inicio real": st.column_config.DatetimeColumn("Inicio real", format="DD/MM/YYYY HH:mm", step=60),
             "Fin real": st.column_config.DatetimeColumn("Fin real", format="DD/MM/YYYY HH:mm", step=60),
@@ -317,31 +357,51 @@ def _editor_inicio_fin(USR, cat, conectar):
                                                                  "(reacción+reposo+decantación del cronograma)."),
             "Real (h)": st.column_config.NumberColumn(format="%.1f", help="Fin real − inicio real (guardados)."),
             "Δ (h)": st.column_config.NumberColumn(format="%.1f", help="Real − programado. + = tardó más."),
+            "Tanque final": st.column_config.SelectboxColumn(
+                "Tanque final", options=_opciones, required=False,
+                help="Tanque de acopio del producto final. Las opciones vienen de dim_tanque_producto "
+                     "(tanques habilitados); elegí uno del MISMO producto que la reacción — si no coincide, "
+                     "no se guarda."),
         })
 
-    # cambios pendientes (vs lo guardado)
+    # --- detectar cambios (vs lo guardado) ---
     cambios, invalidas = [], []
     for i in range(len(base)):
         idb = int(base.iloc[i]["id_batch"])
         old_i, old_f = base.iloc[i]["inicio"], base.iloc[i]["fin"]
+        old_t = base.iloc[i]["tk_lbl"]
         new_i = pd.to_datetime(ed.iloc[i]["Inicio real"]) if pd.notna(ed.iloc[i]["Inicio real"]) else pd.NaT
         new_f = pd.to_datetime(ed.iloc[i]["Fin real"]) if pd.notna(ed.iloc[i]["Fin real"]) else pd.NaT
+        new_t = ed.iloc[i]["Tanque final"] if pd.notna(ed.iloc[i]["Tanque final"]) else None
         chg_i = pd.notna(new_i) and (pd.isna(old_i) or new_i != old_i)
         chg_f = pd.notna(new_f) and (pd.isna(old_f) or new_f != old_f)
-        if not (chg_i or chg_f):
+        chg_t = (new_t is not None) and (new_t != old_t)
+        if not (chg_i or chg_f or chg_t):
             continue
+        _ident = str(base.iloc[i]["ident"])
         eff_i = new_i if pd.notna(new_i) else old_i
         eff_f = new_f if pd.notna(new_f) else old_f
-        if pd.notna(eff_i) and pd.notna(eff_f) and eff_f <= eff_i:
-            invalidas.append(str(base.iloc[i]["ident"]))
+        if (chg_i or chg_f) and pd.notna(eff_i) and pd.notna(eff_f) and eff_f <= eff_i:
+            invalidas.append(f"{_ident}: fin ≤ inicio")
             continue
-        cambios.append({"idb": idb, "ident": str(base.iloc[i]["ident"]),
+        tk_new = None
+        if chg_t:
+            _info = lbl2tk.get(new_t)
+            _idp = int(base.iloc[i]["id_producto"]) if pd.notna(base.iloc[i]["id_producto"]) else None
+            if _info is None or _idp is None or _info[1] != _idp:
+                invalidas.append(f"{_ident}: el tanque elegido no es del producto "
+                                 f"{base.iloc[i]['producto'] or '?'}")
+                continue
+            tk_new = _info
+        cambios.append({"idb": idb, "ident": _ident,
+                        "tipo_proceso": str(base.iloc[i]["tipo_proceso"] or ""),
                         "old_i": old_i, "old_f": old_f,
                         "new_i": (new_i if chg_i else None), "new_f": (new_f if chg_f else None),
                         "eff_i": eff_i, "eff_f": eff_f,
+                        "tk": tk_new, "tk_lbl": (new_t if chg_t else None),
                         "prog": base.iloc[i]["prog_proceso_h"]})
     if invalidas:
-        st.error("Fin ≤ inicio en: " + ", ".join(invalidas) + " — esas filas no se van a guardar.")
+        st.error("No se van a guardar: " + " · ".join(invalidas))
     if cambios:
         _prev = pd.DataFrame([{
             "ID": c["ident"],
@@ -350,14 +410,15 @@ def _editor_inicio_fin(USR, cat, conectar):
             "Real (h)": (round((c["eff_f"] - c["eff_i"]).total_seconds() / 3600.0, 1)
                          if pd.notna(c["eff_i"]) and pd.notna(c["eff_f"]) else None),
             "Prog. (h)": (round(float(c["prog"]), 1) if pd.notna(c["prog"]) else None),
+            "Nuevo tanque": (c["tk_lbl"] or "(sin cambio)"),
         } for c in cambios])
         _prev["Δ (h)"] = (_prev["Real (h)"] - _prev["Prog. (h)"]).round(1)
         st.markdown(f"**{len(cambios)} reacción(es) con cambios:**")
         st.dataframe(_prev, hide_index=True, use_container_width=True)
     else:
-        st.caption("Sin cambios pendientes: editá Inicio real / Fin real en la tabla y apretá Guardar.")
+        st.caption("Sin cambios pendientes: editá Inicio real / Fin real / Tanque final y apretá Guardar.")
 
-    if st.button("💾 Guardar inicios y fines", type="primary", key="perf_edit_save",
+    if st.button("💾 Guardar cambios", type="primary", key="perf_edit_save",
                  disabled=(not cambios)):
         try:
             with conectar(int(USR["id_usuario"])) as (conn, audit):
@@ -397,9 +458,21 @@ def _editor_inicio_fin(USR, cat, conectar):
                                             "WHERE id_batch=%s AND etapa='EN_TANQUE' "
                                             "AND inicio_ts=(%s::timestamp AT TIME ZONE %s)",
                                             (_v, _TZ, idb, str(c["old_f"]), _TZ))
-                        audit.log("U", "fact_batch_estado_log", idb,
+                        if c["tk"] is not None:
+                            _idt, _, _nom, _cod = c["tk"]
+                            _txt = (f"{_nom} · {_cod}" if _cod else _nom)
+                            if c["tipo_proceso"] == "DESGOMADO_ACUOSO":
+                                cur.execute("UPDATE produccion.fact_batch_proceso "
+                                            "SET desg_id_tanque_destino=%s, tanque_destino=%s "
+                                            "WHERE id_batch=%s", (_idt, _txt, idb))
+                            else:
+                                cur.execute("UPDATE produccion.fact_batch_proceso "
+                                            "SET id_tanque_are_final=%s, tanque_destino=%s "
+                                            "WHERE id_batch=%s", (_idt, _txt, idb))
+                        audit.log("U", "fact_batch_proceso", idb,
                                   {"inicio": (str(c["new_i"]) if c["new_i"] is not None else None),
                                    "fin": (str(c["new_f"]) if c["new_f"] is not None else None),
+                                   "tanque_final": (c["tk"][0] if c["tk"] is not None else None),
                                    "via": "performance_editor_masivo"})
             st.success(f"Guardado: {len(cambios)} reacción(es) actualizadas.")
             cat.clear()
