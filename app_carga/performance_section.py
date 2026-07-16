@@ -312,7 +312,7 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
                "Guarda en el log de estados (REACCION/FINALIZADO), inicio_ts/fin_ts, los eventos de etapa "
                "vinculados y el tanque destino del batch; Performance y Terminadas se recalculan solos.")
     df = cat("SELECT p.id_batch, p.ident, p.etiqueta, p.reactor, p.tipo, p.tipo_proceso, "
-             "p.inicio_local AS inicio, p.fin_local AS fin, p.prog_proceso_h, "
+             "p.inicio_local AS inicio, p.fin_local AS fin, p.prog_proceso_h, p.mp_kg, p.real_kg, "
              "vt.id_producto, vt.producto, vt.id_tanque_destino "
              "FROM produccion.v_perf_reaccion p "
              "LEFT JOIN produccion.v_reaccion_terminada vt ON vt.id_batch = p.id_batch "
@@ -324,7 +324,8 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
         return
     df["inicio"] = pd.to_datetime(df["inicio"], errors="coerce")
     df["fin"] = pd.to_datetime(df["fin"], errors="coerce")
-    df["prog_proceso_h"] = pd.to_numeric(df["prog_proceso_h"], errors="coerce")
+    for _c in ("prog_proceso_h", "mp_kg", "real_kg"):
+        df[_c] = pd.to_numeric(df[_c], errors="coerce")
     base = df.reset_index(drop=True)
 
     # --- tanques pertinentes: solo los habilitados (dim_tanque_producto) para los productos finales presentes ---
@@ -365,6 +366,8 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
         "ID": base["ident"],
         "Reacción": base["etiqueta"],
         "Producto": base["producto"],
+        "MP (TN)": (base["mp_kg"] / 1000.0).round(2),
+        "Final (TN)": (base["real_kg"] / 1000.0).round(2),
         "Inicio real": base["inicio"],
         "Fin real": base["fin"],
         "Programado (h)": base["prog_proceso_h"],
@@ -372,12 +375,18 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
         "Tanque final": base["tk_lbl"],
     })
     view["Δ (h)"] = (view["Real (h)"] - view["Programado (h)"]).round(1)
-    view = view[["ID", "Reacción", "Producto", "Inicio real", "Fin real",
+    view = view[["ID", "Reacción", "Producto", "MP (TN)", "Final (TN)", "Inicio real", "Fin real",
                  "Programado (h)", "Real (h)", "Δ (h)", "Tanque final"]]
     ed = st.data_editor(
         view, hide_index=True, use_container_width=True, key="perf_edit_if",
-        disabled=["ID", "Reacción", "Producto", "Programado (h)", "Real (h)", "Δ (h)"],
+        disabled=["ID", "Reacción", "Producto", "MP (TN)", "Final (TN)",
+                  "Programado (h)", "Real (h)", "Δ (h)"],
         column_config={
+            "MP (TN)": st.column_config.NumberColumn(format="%.2f",
+                                                     help="Materia prima cargada al reactor."),
+            "Final (TN)": st.column_config.NumberColumn(format="%.2f",
+                                                        help="Producto final real (cierre → tickets → "
+                                                             "kg_obtenido). Vacío = sin real registrado."),
             "Inicio real": st.column_config.DatetimeColumn("Inicio real", format="DD/MM/YYYY HH:mm", step=60),
             "Fin real": st.column_config.DatetimeColumn("Fin real", format="DD/MM/YYYY HH:mm", step=60),
             "Programado (h)": st.column_config.NumberColumn(format="%.1f",
