@@ -56,14 +56,26 @@ def render(USR, cat, conectar):
 
     # ---------- filtros ----------
     c1, c2, c3 = st.columns([1.2, 1, 1])
-    _rango = c1.selectbox("Período", ["Últimos 30 días", "Últimos 60 días", "Últimos 90 días", "Todo"],
-                          index=3, key="perf_rango")
+    _rango = c1.selectbox("Período", ["Todo", "Por semana", "Últimos 30 días", "Últimos 60 días",
+                                      "Últimos 90 días"], index=0, key="perf_rango")
     _tipos = ["Todos"] + sorted(df["tipo"].dropna().unique().tolist())
     _tipo = c2.selectbox("Proceso", _tipos, key="perf_tipo")
     _reactores = ["Todos"] + sorted(df["reactor"].dropna().unique().tolist())
     _reactor = c3.selectbox("Reactor", _reactores, key="perf_reactor")
 
-    if _rango != "Todo":
+    if _rango == "Por semana":
+        _sem = df["fecha"].dt.to_period("W").dt.start_time    # lunes de cada semana
+        _ops = sorted(pd.Series(_sem.dropna().unique()), reverse=True)
+        if not _ops:
+            st.info("No hay fechas para armar semanas.")
+            return
+        _lbl = {s: (f"Semana {pd.Timestamp(s).isocalendar()[1]} · "
+                    f"{pd.Timestamp(s):%d/%m} – {(pd.Timestamp(s) + pd.Timedelta(days=6)):%d/%m/%Y}")
+                for s in _ops}
+        _sel = st.selectbox("Semana (lunes a domingo)", [_lbl[s] for s in _ops], key="perf_semana")
+        _ini = next(s for s in _ops if _lbl[s] == _sel)
+        df = df[_sem == _ini]
+    elif _rango != "Todo":
         _dias = int(_rango.split()[1])
         df = df[df["fecha"] >= (pd.Timestamp.now() - pd.Timedelta(days=_dias))]
     if _tipo != "Todos":
@@ -257,7 +269,7 @@ def render(USR, cat, conectar):
 
     # ---------- editor masivo inicio/fin ----------
     with t_edit:
-        _editor_inicio_fin(USR, cat, conectar)
+        _editor_inicio_fin(USR, cat, conectar, ids=[int(x) for x in df["id_batch"].tolist()])
 
     with st.expander("🔭 Qué más podríamos medir mejorando el registro", expanded=False):
         st.markdown(
@@ -279,8 +291,9 @@ def render(USR, cat, conectar):
 _TZ = "America/Argentina/Buenos_Aires"
 
 
-def _editor_inicio_fin(USR, cat, conectar):
-    """Edición masiva de inicio/fin reales y tanque de acopio final de todas las reacciones finalizadas."""
+def _editor_inicio_fin(USR, cat, conectar, ids=None):
+    """Edición masiva de inicio/fin reales y tanque de acopio final de las reacciones finalizadas
+    (respeta los filtros de período/semana/proceso/reactor elegidos arriba)."""
     st.caption("Corregí **inicio, fin y tanque de acopio final de todas las reacciones finalizadas** en una "
                "sola tabla (para cuando las etapas se avanzaron a los clicks o el destino quedó mal cargado). "
                "Guarda en el log de estados (REACCION/FINALIZADO), inicio_ts/fin_ts, los eventos de etapa "
@@ -291,8 +304,10 @@ def _editor_inicio_fin(USR, cat, conectar):
              "FROM produccion.v_perf_reaccion p "
              "LEFT JOIN produccion.v_reaccion_terminada vt ON vt.id_batch = p.id_batch "
              "ORDER BY p.fecha DESC NULLS LAST, p.id_batch DESC")
+    if df is not None and not df.empty and ids is not None:
+        df = df[df["id_batch"].isin(ids)]
     if df is None or df.empty:
-        st.info("No hay reacciones finalizadas para editar.")
+        st.info("No hay reacciones finalizadas para editar (con los filtros de arriba).")
         return
     df["inicio"] = pd.to_datetime(df["inicio"], errors="coerce")
     df["fin"] = pd.to_datetime(df["fin"], errors="coerce")
