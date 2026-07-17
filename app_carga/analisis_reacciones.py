@@ -21,15 +21,16 @@ C_AMB = "#d97706"
 C_MUT = "#94a3b8"
 
 _NUMS = ["espera_arranque_h", "reaccion_h", "reposo_h", "decantacion_h", "ciclo_proceso_h",
-         "prog_proceso_h", "desvio_proceso_h", "max_kg", "formula_kg", "mp_kg", "real_kg",
-         "utilizacion_pct", "capacidad_perdida_kg", "rendimiento_pct",
-         "acidez_pct", "agua_pct", "azufre_ppm", "densidad"]
+         "prog_proceso_h", "desvio_proceso_h", "prog_reaccion_h", "desvio_h", "max_kg",
+         "formula_kg", "mp_kg", "real_kg", "utilizacion_pct", "capacidad_perdida_kg",
+         "rendimiento_pct", "acidez_pct", "agua_pct", "azufre_ppm", "densidad"]
 
 
 def _cargar(cat):
     df = cat("SELECT p.id_batch, p.ident, p.etiqueta, p.tipo, p.tipo_proceso, p.reactor, p.producto, "
              "p.fecha, p.inicio_local, p.fin_local, p.espera_arranque_h, p.reaccion_h, p.reposo_h, "
              "p.decantacion_h, p.ciclo_proceso_h, p.prog_proceso_h, p.desvio_proceso_h, "
+             "p.prog_reaccion_h, p.desvio_h, p.reaccion_confiable, "
              "p.max_kg, p.formula_kg, p.mp_kg, p.real_kg, p.utilizacion_pct, p.capacidad_perdida_kg, "
              "p.rendimiento_pct, p.tiempos_confiables, "
              "l.fuente_lab, l.id_procesos_lab, l.acidez_pct, l.agua_pct, l.azufre_ppm, l.densidad "
@@ -43,6 +44,7 @@ def _cargar(cat):
             df[c] = pd.to_numeric(df[c], errors="coerce")
     df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
     df["tiempos_confiables"] = df["tiempos_confiables"].fillna(False).astype(bool)
+    df["reaccion_confiable"] = df["reaccion_confiable"].fillna(False).astype(bool)
     df["semana"] = df["fecha"].dt.to_period("W").dt.start_time
     df["sem_lbl"] = df["semana"].map(
         lambda s: f"S{pd.Timestamp(s).isocalendar()[1]} · {pd.Timestamp(s):%d/%m}" if pd.notna(s) else "—")
@@ -93,7 +95,7 @@ def render(USR, cat, conectar):
         if d is None or d.empty:
             return {}
         _pf = d[d["real_kg"].fillna(0) > 0]
-        _cf = d[d["tiempos_confiables"]]
+        _cf = d[d["reaccion_confiable"] & d["desvio_h"].notna()]
         _lab = d[d["fuente_lab"].notna()]
         return {
             "n": len(d),
@@ -104,7 +106,7 @@ def render(USR, cat, conectar):
             "util": (100.0 * d["formula_kg"].sum(skipna=True) / d["max_kg"].sum(skipna=True)
                      if d["max_kg"].sum(skipna=True) else None),
             "perd": d["capacidad_perdida_kg"].sum(skipna=True) / 1000.0,
-            "dsv": (_cf["desvio_proceso_h"].median() if not _cf.empty else None),
+            "dsv": (_cf["desvio_h"].median() if not _cf.empty else None),
             "aci": (_lab["acidez_pct"].mean() if not _lab.empty else None),
             "lab_n": len(_lab),
         }
@@ -129,7 +131,9 @@ def render(USR, cat, conectar):
          help_="TN que se dejaron de formular por no cargar al máximo.")
     _kpi(k[2], "Desvío vs plan (h, mediana)", (f"{a['dsv']:+.1f}" if a["dsv"] is not None else "—"),
          _fmt_delta(a["dsv"], p.get("dsv") if p else None, " h"), inverso=True,
-         help_="Duración real − programada en el cronograma (solo tiempos confiables). + = más lento.")
+         help_="Reacción real (inicio → fin de reacción) − duración Reacción del cronograma. "
+               "El reposo y la decantación NO cuentan; el fin real de acopio se agregará más adelante. "
+               "+ = más lento.")
     _kpi(k[3], "Con lab del producto final", f"{a['lab_n']}/{a['n']}",
          help_="Desgomados: tickets finales analizados. ARE: evaluación asignada (abajo).")
 
@@ -173,24 +177,26 @@ def render(USR, cat, conectar):
 
     # ---------- gráfico 3: desvío por reacción de la semana ----------
     g3, g4 = st.columns(2)
-    _dw = dfw[dfw["tiempos_confiables"] & dfw["desvio_proceso_h"].notna()].copy()
+    _dw = dfw[dfw["reaccion_confiable"] & dfw["desvio_h"].notna()].copy()
     with g3:
-        st.markdown("**Desvío vs tiempo estimado** — por reacción de la semana (h)")
+        st.markdown("**Desvío vs tiempo estimado** — reacción real vs programada, por reacción (h)")
+        st.caption("📐 Se mide **hasta el fin de reacción** (pase a reposo); reposo/decantación no cuentan. "
+                   "El fin real de acopio se sumará más adelante.")
         if _dw.empty:
-            st.caption("Sin reacciones con tiempos confiables esta semana (etapas avanzadas a los clicks). "
-                       "Corregí inicio/fin en Performance → ✏️ para que este gráfico se llene.")
+            st.caption("Sin reacciones con tiempo de reacción confiable esta semana (etapa avanzada a los "
+                       "clicks). Corregí inicio/fin de reacción en Performance → ✏️ para que se llene.")
         else:
-            _dw["color"] = _dw["desvio_proceso_h"].map(lambda v: "Más lento" if v > 0 else "Más rápido")
+            _dw["color"] = _dw["desvio_h"].map(lambda v: "Más lento" if v > 0 else "Más rápido")
             st.altair_chart(
                 alt.Chart(_dw).mark_bar(cornerRadius=3).encode(
                     y=alt.Y("ident:N", sort="-x", title=None),
-                    x=alt.X("desvio_proceso_h:Q", title="h vs cronograma"),
+                    x=alt.X("desvio_h:Q", title="h vs Reacción del cronograma"),
                     color=alt.Color("color:N", scale=alt.Scale(domain=["Más lento", "Más rápido"],
                                                                range=[C_BAD, C_OK]), legend=None),
                     tooltip=["ident", "etiqueta",
-                             alt.Tooltip("ciclo_proceso_h:Q", title="Real (h)", format=".1f"),
-                             alt.Tooltip("prog_proceso_h:Q", title="Prog. (h)", format=".1f"),
-                             alt.Tooltip("desvio_proceso_h:Q", title="Desvío (h)", format="+.1f")],
+                             alt.Tooltip("reaccion_h:Q", title="Reacción real (h)", format=".1f"),
+                             alt.Tooltip("prog_reaccion_h:Q", title="Reacción prog. (h)", format=".1f"),
+                             alt.Tooltip("desvio_h:Q", title="Desvío (h)", format="+.1f")],
                 ).properties(height=max(180, 34 * len(_dw))), use_container_width=True)
 
     # ---------- gráfico 4: mapa de eficiencia ----------
@@ -300,16 +306,16 @@ def render(USR, cat, conectar):
     # ---------- detalle de la semana ----------
     with st.expander("📋 Detalle de las reacciones de la semana", expanded=False):
         _d = dfw[["ident", "etiqueta", "tipo", "reactor", "producto", "mp_kg", "real_kg",
-                  "utilizacion_pct", "rendimiento_pct", "ciclo_proceso_h", "prog_proceso_h",
-                  "desvio_proceso_h", "acidez_pct"]].copy()
+                  "utilizacion_pct", "rendimiento_pct", "reaccion_h", "prog_reaccion_h",
+                  "desvio_h", "acidez_pct"]].copy()
         for c in ("mp_kg", "real_kg"):
             _d[c] = _d[c] / 1000.0
         _d = _d.rename(columns={"ident": "ID", "etiqueta": "Reacción", "tipo": "Tipo", "reactor": "Reactor",
                                 "producto": "Producto", "mp_kg": "MP (TN)", "real_kg": "Final (TN)",
                                 "utilizacion_pct": "Utilización %", "rendimiento_pct": "Rendimiento %",
-                                "ciclo_proceso_h": "Real (h)", "prog_proceso_h": "Prog. (h)",
-                                "desvio_proceso_h": "Δ (h)", "acidez_pct": "Acidez %"})
+                                "reaccion_h": "Reacción real (h)", "prog_reaccion_h": "Reacción prog. (h)",
+                                "desvio_h": "Δ (h)", "acidez_pct": "Acidez %"})
         st.dataframe(_d, hide_index=True, use_container_width=True,
                      column_config={c: st.column_config.NumberColumn(format="%.1f")
                                     for c in ("MP (TN)", "Final (TN)", "Utilización %", "Rendimiento %",
-                                              "Real (h)", "Prog. (h)", "Δ (h)", "Acidez %")})
+                                              "Reacción real (h)", "Reacción prog. (h)", "Δ (h)", "Acidez %")})

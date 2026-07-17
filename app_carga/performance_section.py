@@ -21,7 +21,7 @@ def _json_dumps(d):
 
 _NUMS = ["espera_arranque_h", "reaccion_h", "reposo_h", "decantacion_h", "ciclo_proceso_h",
          "ciclo_total_h", "prog_reaccion_h", "prog_reposo_h", "prog_decantacion_h",
-         "prog_total_h", "prog_proceso_h", "desvio_proceso_h", "max_kg", "formula_kg",
+         "prog_total_h", "prog_proceso_h", "desvio_proceso_h", "desvio_h", "max_kg", "formula_kg",
          "mp_kg", "tickets_kg", "real_kg", "utilizacion_pct", "capacidad_perdida_kg",
          "rendimiento_pct", "etapas_flash"]
 
@@ -167,9 +167,15 @@ def render(USR, cat, conectar):
 
     # ---------- tiempos ----------
     with t_tie:
-        _solo_conf = st.toggle("Solo reacciones con tiempos confiables", value=True, key="perf_conf",
-                               help="Excluye reacciones con etapas avanzadas a los clicks (< 5 min en el log).")
-        _dft = dfc if _solo_conf else df
+        st.info("📐 **Definición vigente del desvío:** reacción real (inicio → fin de reacción, o sea el "
+                "pase a reposo) vs la duración **Reacción** del cronograma. El reposo y la decantación "
+                "**no cuentan**. Más adelante se sumará el fin real de acopio; hoy ese dato no existe.")
+        df["reaccion_confiable"] = df.get("reaccion_confiable", False)
+        df["reaccion_confiable"] = df["reaccion_confiable"].fillna(False).astype(bool)
+        _solo_conf = st.toggle("Solo reacciones con tiempo de reacción confiable", value=True, key="perf_conf",
+                               help="Excluye reacciones cuya etapa de reacción duró < 5 min en el log "
+                                    "(avanzada a los clicks, no en tiempo real).")
+        _dft = df[df["reaccion_confiable"]] if _solo_conf else df
         if _dft.empty:
             st.info("No hay reacciones con tiempos confiables en el período. "
                     "Cuando las etapas se avancen en el momento (y no a posteriori), este análisis se llena solo.")
@@ -182,9 +188,10 @@ def render(USR, cat, conectar):
             _esp = _dft["espera_arranque_h"].median()
             a1.metric("Espera para arrancar (h, mediana)", (f"{_esp:.1f}" if pd.notna(_esp) else "—"),
                       help="Planificada → arrancó la reacción. Espera alta = cuello antes del reactor.")
-            _dsv = _dft["desvio_proceso_h"].median()
+            _dsv = _dft["desvio_h"].median()
             a2.metric("Desvío vs cronograma (h, mediana)", (f"{_dsv:+.1f}" if pd.notna(_dsv) else "—"),
-                      help="Duración real del proceso − programada en el cronograma. + = más lento.")
+                      help="Reacción real (inicio → fin de reacción) − duración Reacción del cronograma. "
+                           "+ = más lento. Reposo/decantación no cuentan.")
             if not _et.empty:
                 _val = _et[_et["estado_rango"].isin(["EN_RANGO", "EXCEDIDA", "MUY_CORTA"])]
                 _pct = (100.0 * (_val["estado_rango"] == "EN_RANGO").sum() / len(_val)) if len(_val) else None
@@ -217,21 +224,18 @@ def render(USR, cat, conectar):
                                  column_config={"Fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
                                                 **{c: st.column_config.NumberColumn(format="%.1f")
                                                    for c in ("Real (h)", "Prog. (h)", "Δ vs prog (h)")}})
-            _lentas = _dft.nlargest(5, "desvio_proceso_h")[["ident", "etiqueta", "reactor",
-                                                            "ciclo_proceso_h", "prog_proceso_h",
-                                                            "desvio_proceso_h"]]
-            _lentas = _lentas[_lentas["desvio_proceso_h"] > 0]
+            _lentas = _dft[_dft["desvio_h"].notna()].nlargest(5, "desvio_h")[
+                ["ident", "etiqueta", "reactor", "reaccion_h", "prog_reaccion_h", "desvio_h"]]
+            _lentas = _lentas[_lentas["desvio_h"] > 0]
             if not _lentas.empty:
-                st.markdown("**Mayores desvíos** (proceso completo, real − programado)")
+                st.markdown("**Mayores desvíos** (reacción real − reacción programada)")
                 st.dataframe(_lentas.rename(columns={"ident": "ID", "etiqueta": "Reacción",
-                                                     "reactor": "Reactor", "ciclo_proceso_h": "Real (h)",
-                                                     "prog_proceso_h": "Prog. (h)",
-                                                     "desvio_proceso_h": "Desvío (h)"}),
+                                                     "reactor": "Reactor", "reaccion_h": "Reacción real (h)",
+                                                     "prog_reaccion_h": "Reacción prog. (h)",
+                                                     "desvio_h": "Desvío (h)"}),
                              hide_index=True, use_container_width=True,
                              column_config={c: st.column_config.NumberColumn(format="%.1f")
-                                            for c in ("Real (h)", "Prog. (h)", "Desvío (h)")})
-                st.caption("Una **decantación** de días suele ser espera de validación de lab o de tanque "
-                           "destino, no proceso: el desvío marca dónde está el cuello, no quién trabajó lento.")
+                                            for c in ("Reacción real (h)", "Reacción prog. (h)", "Desvío (h)")})
 
     # ---------- rendimiento ----------
     with t_rin:
@@ -322,12 +326,13 @@ _TZ = "America/Argentina/Buenos_Aires"
 def _editor_inicio_fin(USR, cat, conectar, ids=None):
     """Edición masiva de inicio/fin reales y tanque de acopio final de las reacciones finalizadas
     (respeta los filtros de período/semana/proceso/reactor elegidos arriba)."""
-    st.caption("Corregí **inicio, fin y tanque de acopio final de todas las reacciones finalizadas** en una "
-               "sola tabla (para cuando las etapas se avanzaron a los clicks o el destino quedó mal cargado). "
-               "Guarda en el log de estados (REACCION/FINALIZADO), inicio_ts/fin_ts, los eventos de etapa "
-               "vinculados y el tanque destino del batch; Performance y Terminadas se recalculan solos.")
+    st.caption("Corregí **inicio de reacción, FIN DE REACCIÓN (pase a reposo) y tanque de acopio final** "
+               "de todas las finalizadas en una sola tabla. 📐 El fin que se edita acá es el **fin de "
+               "reacción** — es el que usa el desvío vs cronograma; el fin real de acopio se sumará más "
+               "adelante. Guarda en el log de estados (REACCION/REPOSO) y el tanque destino del batch.")
     df = cat("SELECT p.id_batch, p.ident, p.etiqueta, p.reactor, p.tipo, p.tipo_proceso, "
-             "p.inicio_local AS inicio, p.fin_local AS fin, p.prog_proceso_h, p.mp_kg, p.real_kg, "
+             "p.inicio_local AS inicio, p.fin_reaccion_local AS fin, p.prog_reaccion_h AS prog_h, "
+             "p.mp_kg, p.real_kg, "
              "vt.id_producto, vt.producto, vt.id_tanque_destino "
              "FROM produccion.v_perf_reaccion p "
              "LEFT JOIN produccion.v_reaccion_terminada vt ON vt.id_batch = p.id_batch "
@@ -339,7 +344,7 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
         return
     df["inicio"] = pd.to_datetime(df["inicio"], errors="coerce")
     df["fin"] = pd.to_datetime(df["fin"], errors="coerce")
-    for _c in ("prog_proceso_h", "mp_kg", "real_kg"):
+    for _c in ("prog_h", "mp_kg", "real_kg"):
         df[_c] = pd.to_numeric(df[_c], errors="coerce")
     base = df.reset_index(drop=True)
 
@@ -384,13 +389,13 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
         "MP (TN)": (base["mp_kg"] / 1000.0).round(2),
         "Final (TN)": (base["real_kg"] / 1000.0).round(2),
         "Inicio real": base["inicio"],
-        "Fin real": base["fin"],
-        "Programado (h)": base["prog_proceso_h"],
+        "Fin reacción real": base["fin"],
+        "Programado (h)": base["prog_h"],
         "Real (h)": ((base["fin"] - base["inicio"]).dt.total_seconds() / 3600.0).round(1),
         "Tanque final": base["tk_lbl"],
     })
     view["Δ (h)"] = (view["Real (h)"] - view["Programado (h)"]).round(1)
-    view = view[["ID", "Reacción", "Producto", "MP (TN)", "Final (TN)", "Inicio real", "Fin real",
+    view = view[["ID", "Reacción", "Producto", "MP (TN)", "Final (TN)", "Inicio real", "Fin reacción real",
                  "Programado (h)", "Real (h)", "Δ (h)", "Tanque final"]]
     ed = st.data_editor(
         view, hide_index=True, use_container_width=True, key="perf_edit_if",
@@ -403,12 +408,15 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
                                                         help="Producto final real (cierre → tickets → "
                                                              "kg_obtenido). Vacío = sin real registrado."),
             "Inicio real": st.column_config.DatetimeColumn("Inicio real", format="DD/MM/YYYY HH:mm", step=60),
-            "Fin real": st.column_config.DatetimeColumn("Fin real", format="DD/MM/YYYY HH:mm", step=60),
+            "Fin reacción real": st.column_config.DatetimeColumn("Fin reacción real", format="DD/MM/YYYY HH:mm",
+                                                                 step=60),
             "Programado (h)": st.column_config.NumberColumn(format="%.1f",
-                                                            help="Horas programadas de inicio a fin "
-                                                                 "(reacción+reposo+decantación del cronograma)."),
-            "Real (h)": st.column_config.NumberColumn(format="%.1f", help="Fin real − inicio real (guardados)."),
-            "Δ (h)": st.column_config.NumberColumn(format="%.1f", help="Real − programado. + = tardó más."),
+                                                            help="Duración Reacción del cronograma (sin "
+                                                                 "reposo ni decantación)."),
+            "Real (h)": st.column_config.NumberColumn(format="%.1f",
+                                                      help="Fin de reacción − inicio (guardados)."),
+            "Δ (h)": st.column_config.NumberColumn(format="%.1f",
+                                                   help="Reacción real − programada. + = tardó más."),
             "Tanque final": st.column_config.SelectboxColumn(
                 "Tanque final", options=_opciones, required=False,
                 help="Tanque de acopio del producto final. Las opciones vienen de dim_tanque_producto "
@@ -423,7 +431,7 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
         old_i, old_f = base.iloc[i]["inicio"], base.iloc[i]["fin"]
         old_t = base.iloc[i]["tk_lbl"]
         new_i = pd.to_datetime(ed.iloc[i]["Inicio real"]) if pd.notna(ed.iloc[i]["Inicio real"]) else pd.NaT
-        new_f = pd.to_datetime(ed.iloc[i]["Fin real"]) if pd.notna(ed.iloc[i]["Fin real"]) else pd.NaT
+        new_f = pd.to_datetime(ed.iloc[i]["Fin reacción real"]) if pd.notna(ed.iloc[i]["Fin reacción real"]) else pd.NaT
         new_t = ed.iloc[i]["Tanque final"] if pd.notna(ed.iloc[i]["Tanque final"]) else None
         chg_i = pd.notna(new_i) and (pd.isna(old_i) or new_i != old_i)
         chg_f = pd.notna(new_f) and (pd.isna(old_f) or new_f != old_f)
@@ -468,7 +476,7 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
         st.markdown(f"**{len(cambios)} reacción(es) con cambios:**")
         st.dataframe(_prev, hide_index=True, use_container_width=True)
     else:
-        st.caption("Sin cambios pendientes: editá Inicio real / Fin real / Tanque final y apretá Guardar.")
+        st.caption("Sin cambios pendientes: editá Inicio real / Fin reacción real / Tanque final y apretá Guardar.")
 
     if st.button("💾 Guardar cambios", type="primary", key="perf_edit_save",
                  disabled=(not cambios)):
@@ -492,24 +500,17 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
                                             "AND inicio_ts=(%s::timestamp AT TIME ZONE %s)",
                                             (_v, _TZ, idb, str(c["old_i"]), _TZ))
                         if c["new_f"] is not None:
+                            # fin de REACCIÓN = pase a REPOSO (el fin real de acopio se agregará más adelante)
                             _v = str(c["new_f"])
                             cur.execute("UPDATE produccion.fact_batch_estado_log "
                                         "SET ts=(%s::timestamp AT TIME ZONE %s) "
-                                        "WHERE id_batch=%s AND estado_nuevo='FINALIZADO'", (_v, _TZ, idb))
-                            cur.execute("UPDATE produccion.fact_batch_proceso "
-                                        "SET fin_ts=(%s::timestamp AT TIME ZONE %s) "
-                                        "WHERE id_batch=%s", (_v, _TZ, idb))
-                            if pd.notna(c["old_f"]):
-                                # cierra la última etapa y corre el arranque de EN_TANQUE si apuntaban al fin viejo
-                                cur.execute("UPDATE produccion.fact_etapa_evento "
-                                            "SET fin_ts=(%s::timestamp AT TIME ZONE %s) "
-                                            "WHERE id_batch=%s AND fin_ts=(%s::timestamp AT TIME ZONE %s)",
-                                            (_v, _TZ, idb, str(c["old_f"]), _TZ))
-                                cur.execute("UPDATE produccion.fact_etapa_evento "
-                                            "SET inicio_ts=(%s::timestamp AT TIME ZONE %s) "
-                                            "WHERE id_batch=%s AND etapa='EN_TANQUE' "
-                                            "AND inicio_ts=(%s::timestamp AT TIME ZONE %s)",
-                                            (_v, _TZ, idb, str(c["old_f"]), _TZ))
+                                        "WHERE id_batch=%s AND estado_nuevo='REPOSO'", (_v, _TZ, idb))
+                            if cur.rowcount == 0:
+                                cur.execute("INSERT INTO produccion.fact_batch_estado_log "
+                                            "(id_batch, estado_anterior, estado_nuevo, ts, id_usuario, motivo) "
+                                            "VALUES (%s,'REACCION','REPOSO',(%s::timestamp AT TIME ZONE %s),"
+                                            "%s,'editor fin de reacción')",
+                                            (idb, _v, _TZ, int(USR["id_usuario"])))
                         if c["tk"] is not None:
                             _idt, _, _nom, _cod = c["tk"]
                             _txt = (f"{_nom} · {_cod}" if _cod else _nom)
