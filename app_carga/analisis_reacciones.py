@@ -256,37 +256,77 @@ def render(USR, cat, conectar):
                                     for c in ("Acidez %", "Agua %")})
 
     # ---------- asignar evaluación de lab a ARE ----------
-    with st.expander("🧪 Asignar evaluación de laboratorio a una ARE (por id de muestra)", expanded=False):
-        st.caption("Los **desgomados** toman el lab automáticamente de los tickets finales de pesada. "
-                   "Las **ARE** no tienen ticket analizado: asignale acá el **id de la muestra** de "
-                   "`procesos_lab` que corresponde al producto final de esa reacción.")
-        _sin = cat("SELECT b.id_batch, b.identificador_unidad AS ident, et.etiqueta, l.fuente_lab, l.id_procesos_lab "
+    with st.expander("🧪 Asignar evaluación de laboratorio al producto final", expanded=False):
+        st.caption("Los **desgomados** toman el lab automáticamente de los tickets finales de pesada; "
+                   "las **ARE** (o un desgomado sin ticket analizado) se asignan acá. La lista solo "
+                   "muestra muestras de `procesos_lab` **del producto final de la reacción** "
+                   "(ARE → ARE · AFE-S/AFE-G → AFE), las de calidad exacta primero.")
+        _sin = cat("SELECT b.id_batch, b.identificador_unidad AS ident, et.etiqueta, b.tipo_proceso, "
+                   "dp.codigo_producto AS producto, dl.lab_producto, dl.lab_calidad, "
+                   "l.fuente_lab, l.id_procesos_lab "
                    "FROM produccion.fact_batch_proceso b "
                    "LEFT JOIN produccion.v_reaccion_lab_final l ON l.id_batch=b.id_batch "
                    "LEFT JOIN produccion.v_reaccion_etiqueta et ON et.id_batch=b.id_batch "
-                   "WHERE b.estado='FINALIZADO' AND b.tipo_proceso='PRODUCCION_ARE' "
-                   "AND COALESCE(b.anulado,false)=false ORDER BY b.id_batch DESC LIMIT 40")
+                   "LEFT JOIN produccion.dim_producto dp ON dp.id_producto=b.id_producto_buscado "
+                   "LEFT JOIN produccion.dic_producto_lab dl ON dl.id_producto=b.id_producto_buscado "
+                   "WHERE b.estado='FINALIZADO' AND b.sector='REACTORES' "
+                   "AND COALESCE(b.anulado,false)=false ORDER BY b.id_batch DESC LIMIT 60")
         if _sin is None or _sin.empty:
-            st.info("No hay reacciones ARE finalizadas.")
+            st.info("No hay reacciones finalizadas.")
         else:
-            _ops = _sin.apply(lambda r: f"{r['ident']} · {r['etiqueta'] or ''}"
-                                        + (" · 🧪 ya asignada" if pd.notna(r["id_procesos_lab"]) else " · ❌ sin lab"),
-                              axis=1).tolist()
-            _s = st.selectbox("Reacción ARE", _ops, key="anr_asig_sel")
+            def _estado_lab(r):
+                if pd.notna(r["id_procesos_lab"]):
+                    return f"🧪 muestra {int(r['id_procesos_lab'])}"
+                if r["fuente_lab"] == "TICKETS":
+                    return "🎫 tickets"
+                return "❌ sin lab"
+            _ops = _sin.apply(lambda r: f"{r['ident']} · {r['producto'] or '?'} · {_estado_lab(r)}", axis=1).tolist()
+            _s = st.selectbox("Reacción", _ops, key="anr_asig_sel")
             _rb = _sin.iloc[_ops.index(_s)]
-            _id_lab = st.number_input("Id de la muestra en procesos_lab", min_value=0, step=1,
-                                      value=int(_rb["id_procesos_lab"]) if pd.notna(_rb["id_procesos_lab"]) else 0,
-                                      key=f"anr_asig_id_{int(_rb['id_batch'])}")
-            if _id_lab > 0:
-                _m = cat("SELECT id, fecha, producto_lab, prc_acidez AS acidez_pct, prc_agua AS agua_pct, "
-                         "prc_sedimentos AS sedimentos_pct, ppm_azufre "
-                         "FROM produccion.procesos_lab WHERE id=%s", (int(_id_lab),))
-                if _m is None or _m.empty:
-                    st.error(f"No existe la muestra id {_id_lab} en procesos_lab.")
+            _lab_prod = _rb["lab_producto"] or (str(_rb["producto"] or "").split("-")[0] or None)
+            _lab_cal = _rb["lab_calidad"]
+            if not _lab_prod:
+                st.warning("Esta reacción no tiene producto final definido; no puedo filtrar muestras.")
+            else:
+                _mu = cat("SELECT id, fecha, producto_lab, calidad_final_lab AS calidad, "
+                          "prc_acidez, prc_agua, ppm_azufre "
+                          "FROM produccion.procesos_lab WHERE producto_lab=%s "
+                          "ORDER BY (CASE WHEN calidad_final_lab=%s THEN 0 ELSE 1 END), "
+                          "fecha DESC NULLS LAST, id DESC LIMIT 30",
+                          (str(_lab_prod), (str(_lab_cal) if _lab_cal else "")))
+                if _mu is None or _mu.empty:
+                    st.warning(f"No hay muestras de {_lab_prod} en procesos_lab.")
                 else:
-                    st.dataframe(_m, hide_index=True, use_container_width=True)
-                    if st.button("💾 Asignar esta muestra a la reacción", type="primary",
-                                 key=f"anr_asig_save_{int(_rb['id_batch'])}"):
+                    def _fmt_mu(r):
+                        try:
+                            _f = pd.to_datetime(r["fecha"]).strftime("%d/%m/%y")
+                        except Exception:
+                            _f = "—"
+                        _cal = f"-{r['calidad']}" if pd.notna(r["calidad"]) and str(r["calidad"]).strip() else ""
+                        _aci = f" · acidez {float(r['prc_acidez']):.2f}%" if pd.notna(r["prc_acidez"]) else ""
+                        _agu = f" · agua {float(r['prc_agua']):.2f}%" if pd.notna(r["prc_agua"]) else ""
+                        return f"#{int(r['id'])} · {_f} · {r['producto_lab']}{_cal}{_aci}{_agu}"
+                    _mops = _mu.apply(_fmt_mu, axis=1).tolist() + ["🔎 Otro id (manual)…"]
+                    _cur = int(_rb["id_procesos_lab"]) if pd.notna(_rb["id_procesos_lab"]) else None
+                    _ix = next((i for i, (_, r) in enumerate(_mu.iterrows()) if _cur and int(r["id"]) == _cur), 0)
+                    _ms = st.selectbox(f"Muestra de laboratorio ({_lab_prod}"
+                                       + (f", calidad {_lab_cal} primero)" if _lab_cal else ")"),
+                                       _mops, index=_ix, key=f"anr_asig_mu_{int(_rb['id_batch'])}")
+                    if _ms == "🔎 Otro id (manual)…":
+                        _id_lab = int(st.number_input("Id de la muestra", min_value=0, step=1,
+                                                      key=f"anr_asig_id_{int(_rb['id_batch'])}"))
+                        if _id_lab > 0:
+                            _chk = cat("SELECT id, fecha, producto_lab, calidad_final_lab AS calidad, "
+                                       "prc_acidez, prc_agua FROM produccion.procesos_lab WHERE id=%s",
+                                       (int(_id_lab),))
+                            if _chk is None or _chk.empty:
+                                st.error(f"No existe la muestra id {_id_lab}."); _id_lab = 0
+                            else:
+                                st.dataframe(_chk, hide_index=True, use_container_width=True)
+                    else:
+                        _id_lab = int(_mu.iloc[_mops.index(_ms)]["id"])
+                    if _id_lab and st.button(f"💾 Asignar muestra #{_id_lab} a {_rb['ident']}", type="primary",
+                                             key=f"anr_asig_save_{int(_rb['id_batch'])}"):
                         try:
                             with conectar(int(USR["id_usuario"])) as (conn, audit):
                                 with conn.cursor() as cur:
@@ -299,7 +339,7 @@ def render(USR, cat, conectar):
                                 audit.log("U", "fact_batch_lab_final", int(_rb["id_batch"]),
                                           {"id_procesos_lab": int(_id_lab)})
                             cat.clear()
-                            st.success(f"Muestra {_id_lab} asignada a {_rb['ident']}."); st.rerun()
+                            st.success(f"Muestra #{_id_lab} asignada a {_rb['ident']}."); st.rerun()
                         except Exception as e:
                             st.exception(e)
 
