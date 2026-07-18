@@ -256,6 +256,73 @@ def render(USR, cat, conectar):
                                     for c in ("Acidez %", "Agua %")})
 
     # ---------- asignar evaluación de lab a ARE ----------
+    with st.expander("🎫 Tickets finales por reacción — ¿se evaluaron?", expanded=False):
+        st.caption("La calidad de un desgomado sale de la **evaluación de sus tickets finales de pesada**. "
+                   "Acá ves cada ticket de la reacción y si laboratorio lo analizó. Si hay **más de un "
+                   "ticket evaluado, el resultado final pondera por kg** automáticamente. "
+                   "⚠️ pesado sin evaluación = pedile el análisis a laboratorio (ese fue el caso de RE-349, "
+                   "ticket 5690); ❌ sin tickets = falta cargar el ticket final (caso RE-348).")
+        _rx = cat("SELECT b.id_batch, b.identificador_unidad AS ident, et.etiqueta, "
+                  "dp.codigo_producto AS producto, l.fuente_lab, l.n_tickets, l.n_con_lab "
+                  "FROM produccion.fact_batch_proceso b "
+                  "LEFT JOIN produccion.v_reaccion_lab_final l ON l.id_batch=b.id_batch "
+                  "LEFT JOIN produccion.v_reaccion_etiqueta et ON et.id_batch=b.id_batch "
+                  "LEFT JOIN produccion.dim_producto dp ON dp.id_producto=b.id_producto_buscado "
+                  "WHERE b.estado='FINALIZADO' AND b.sector='REACTORES' "
+                  "AND COALESCE(b.anulado,false)=false ORDER BY b.id_batch DESC LIMIT 60")
+        if _rx is None or _rx.empty:
+            st.info("No hay reacciones finalizadas.")
+        else:
+            def _res_tk(r):
+                _n = int(r["n_tickets"]) if pd.notna(r["n_tickets"]) else 0
+                _e = int(r["n_con_lab"]) if pd.notna(r["n_con_lab"]) else 0
+                if _n == 0:
+                    return "❌ sin tickets finales"
+                if _e == 0:
+                    return f"⚠️ {_n} ticket(s), NINGUNO evaluado"
+                return f"✅ {_e}/{_n} evaluados"
+            _rops = _rx.apply(lambda r: f"{r['ident']} · {r['producto'] or '?'} · {_res_tk(r)}", axis=1).tolist()
+            _rs = st.selectbox("Reacción", _rops, key="anr_tk_sel")
+            _rr = _rx.iloc[_rops.index(_rs)]
+            _det = cat("SELECT t.ticket, t.kg, (vx.tx IS NOT NULL) AS en_balanza, vx.num_muestra, "
+                       "vx.acidez, vx.agua, vx.azufre "
+                       "FROM produccion.fact_batch_ticket_final t "
+                       "LEFT JOIN (SELECT transaccion::text AS tx, max(lab_num_muestra) AS num_muestra, "
+                       "  avg(lab_prc_acidez) AS acidez, avg(lab_prc_agua) AS agua, "
+                       "  avg(lab_ppm_azufre) AS azufre FROM produccion.v_transacciones_limpias "
+                       "  GROUP BY transaccion::text) vx ON vx.tx = t.ticket::text "
+                       "WHERE t.id_batch=%s AND NOT COALESCE(t.anulado,false) ORDER BY t.ticket",
+                       (int(_rr["id_batch"]),))
+            if _det is None or _det.empty:
+                st.error(f"**{_rr['ident']} no tiene tickets finales cargados.** Cargalos en la ficha de la "
+                         "reacción (🏁 Tickets finales) o el lab quedará vacío para siempre.")
+            else:
+                for c in ("kg", "acidez", "agua", "azufre"):
+                    _det[c] = pd.to_numeric(_det[c], errors="coerce")
+                def _est(r):
+                    if not bool(r["en_balanza"]):
+                        return "❌ no está en balanza"
+                    if pd.notna(r["num_muestra"]) or pd.notna(r["acidez"]) or pd.notna(r["agua"]):
+                        return "✅ evaluado"
+                    return "⚠️ pesado SIN evaluación"
+                _det["Estado"] = _det.apply(_est, axis=1)
+                st.dataframe(_det.rename(columns={"ticket": "Ticket", "kg": "Kg", "num_muestra": "Muestra",
+                                                  "acidez": "Acidez %", "agua": "Agua %",
+                                                  "azufre": "Azufre ppm"}).drop(columns=["en_balanza"]),
+                             hide_index=True, use_container_width=True,
+                             column_config={"Kg": st.column_config.NumberColumn(format="%.0f"),
+                                            **{c: st.column_config.NumberColumn(format="%.2f")
+                                               for c in ("Acidez %", "Agua %")}})
+                _ev = _det[_det["Estado"] == "✅ evaluado"]
+                if len(_ev) > 1:
+                    _w = _ev["kg"].fillna(0)
+                    _pa = (_ev["acidez"] * _w).sum() / _w[_ev["acidez"].notna()].sum()                         if _w[_ev["acidez"].notna()].sum() else None
+                    st.caption(f"Ponderado por kg sobre {len(_ev)} tickets evaluados"
+                               + (f" → acidez final **{_pa:.2f}%**." if _pa else "."))
+                elif _ev.empty:
+                    st.warning("Ningún ticket de esta reacción fue evaluado por laboratorio → por eso figura "
+                               "**sin lab**. Pedí el análisis o asignale una muestra a mano (expander de abajo).")
+
     with st.expander("🧪 Asignar evaluación de laboratorio al producto final", expanded=False):
         st.caption("Los **desgomados** toman el lab automáticamente de los tickets finales de pesada; "
                    "las **ARE** (o un desgomado sin ticket analizado) se asignan acá. La lista solo "
