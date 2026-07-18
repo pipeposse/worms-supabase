@@ -288,9 +288,10 @@ def render(USR, cat, conectar):
             if not _lab_prod:
                 st.warning("Esta reacción no tiene producto final definido; no puedo filtrar muestras.")
             else:
-                _mu = cat("SELECT id, fecha, producto_lab, calidad_final_lab AS calidad, "
-                          "prc_acidez, prc_agua, ppm_azufre "
+                _mu = cat("SELECT id, ticket, num_muestra, fecha, producto_lab, "
+                          "calidad_final_lab AS calidad, prc_acidez, prc_agua, ppm_azufre "
                           "FROM produccion.procesos_lab WHERE producto_lab=%s "
+                          "AND COALESCE(anulado,false)=false "
                           "ORDER BY (CASE WHEN calidad_final_lab=%s THEN 0 ELSE 1 END), "
                           "fecha DESC NULLS LAST, id DESC LIMIT 30",
                           (str(_lab_prod), (str(_lab_cal) if _lab_cal else "")))
@@ -302,10 +303,12 @@ def render(USR, cat, conectar):
                             _f = pd.to_datetime(r["fecha"]).strftime("%d/%m/%y")
                         except Exception:
                             _f = "—"
+                        _tk = (str(r["ticket"]).strip() if pd.notna(r["ticket"]) and str(r["ticket"]).strip()
+                               else (f"muestra {r['num_muestra']}" if pd.notna(r["num_muestra"]) else "sin ticket"))
                         _cal = f"-{r['calidad']}" if pd.notna(r["calidad"]) and str(r["calidad"]).strip() else ""
                         _aci = f" · acidez {float(r['prc_acidez']):.2f}%" if pd.notna(r["prc_acidez"]) else ""
                         _agu = f" · agua {float(r['prc_agua']):.2f}%" if pd.notna(r["prc_agua"]) else ""
-                        return f"#{int(r['id'])} · {_f} · {r['producto_lab']}{_cal}{_aci}{_agu}"
+                        return f"🎫 {_tk} · {_f} · {r['producto_lab']}{_cal}{_aci}{_agu} · #{int(r['id'])}"
                     _mops = _mu.apply(_fmt_mu, axis=1).tolist() + ["🔎 Otro id (manual)…"]
                     _cur = int(_rb["id_procesos_lab"]) if pd.notna(_rb["id_procesos_lab"]) else None
                     _ix = next((i for i, (_, r) in enumerate(_mu.iterrows()) if _cur and int(r["id"]) == _cur), 0)
@@ -316,9 +319,9 @@ def render(USR, cat, conectar):
                         _id_lab = int(st.number_input("Id de la muestra", min_value=0, step=1,
                                                       key=f"anr_asig_id_{int(_rb['id_batch'])}"))
                         if _id_lab > 0:
-                            _chk = cat("SELECT id, fecha, producto_lab, calidad_final_lab AS calidad, "
-                                       "prc_acidez, prc_agua FROM produccion.procesos_lab WHERE id=%s",
-                                       (int(_id_lab),))
+                            _chk = cat("SELECT id, ticket, num_muestra, fecha, producto_lab, "
+                                       "calidad_final_lab AS calidad, prc_acidez, prc_agua "
+                                       "FROM produccion.procesos_lab WHERE id=%s", (int(_id_lab),))
                             if _chk is None or _chk.empty:
                                 st.error(f"No existe la muestra id {_id_lab}."); _id_lab = 0
                             else:
