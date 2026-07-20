@@ -326,7 +326,7 @@ _TZ = "America/Argentina/Buenos_Aires"
 def _editor_inicio_fin(USR, cat, conectar, ids=None):
     """Edición masiva de inicio/fin reales y tanque de acopio final de las reacciones finalizadas
     (respeta los filtros de período/semana/proceso/reactor elegidos arriba)."""
-    st.caption("Corregí **inicio de reacción, FIN DE REACCIÓN (pase a reposo) y tanque de acopio final** "
+    st.caption("Corregí **inicio de reacción, FIN DE REACCIÓN (pase a reposo), Final (TN) real y tanque de acopio** "
                "de todas las finalizadas en una sola tabla. 📐 El fin que se edita acá es el **fin de "
                "reacción** — es el que usa el desvío vs cronograma; el fin real de acopio se sumará más "
                "adelante. Guarda en el log de estados (REACCION/REPOSO) y el tanque destino del batch.")
@@ -399,14 +399,15 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
                  "Programado (h)", "Real (h)", "Δ (h)", "Tanque final"]]
     ed = st.data_editor(
         view, hide_index=True, use_container_width=True, key="perf_edit_if",
-        disabled=["ID", "Reacción", "Producto", "MP (TN)", "Final (TN)",
+        disabled=["ID", "Reacción", "Producto", "MP (TN)",
                   "Programado (h)", "Real (h)", "Δ (h)"],
         column_config={
             "MP (TN)": st.column_config.NumberColumn(format="%.2f",
                                                      help="Materia prima cargada al reactor."),
-            "Final (TN)": st.column_config.NumberColumn(format="%.2f",
-                                                        help="Producto final real (cierre → tickets → "
-                                                             "kg_obtenido). Vacío = sin real registrado."),
+            "Final (TN)": st.column_config.NumberColumn(format="%.2f", min_value=0.0, step=0.01,
+                                                        help="Producto final real en TN — EDITABLE. "
+                                                             "Se guarda como cierre manual y pisa "
+                                                             "tickets/kg_obtenido. Vacío = sin real."),
             "Inicio real": st.column_config.DatetimeColumn("Inicio real", format="DD/MM/YYYY HH:mm", step=60),
             "Fin reacción real": st.column_config.DatetimeColumn("Fin reacción real", format="DD/MM/YYYY HH:mm",
                                                                  step=60),
@@ -433,10 +434,13 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
         new_i = pd.to_datetime(ed.iloc[i]["Inicio real"]) if pd.notna(ed.iloc[i]["Inicio real"]) else pd.NaT
         new_f = pd.to_datetime(ed.iloc[i]["Fin reacción real"]) if pd.notna(ed.iloc[i]["Fin reacción real"]) else pd.NaT
         new_t = ed.iloc[i]["Tanque final"] if pd.notna(ed.iloc[i]["Tanque final"]) else None
+        old_k = round(float(base.iloc[i]["real_kg"]) / 1000.0, 2) if pd.notna(base.iloc[i]["real_kg"]) else None
+        new_k = float(ed.iloc[i]["Final (TN)"]) if pd.notna(ed.iloc[i]["Final (TN)"]) else None
         chg_i = pd.notna(new_i) and (pd.isna(old_i) or new_i != old_i)
         chg_f = pd.notna(new_f) and (pd.isna(old_f) or new_f != old_f)
         chg_t = (new_t is not None) and (new_t != old_t)
-        if not (chg_i or chg_f or chg_t):
+        chg_k = (new_k is not None) and (old_k is None or abs(new_k - old_k) > 0.005)
+        if not (chg_i or chg_f or chg_t or chg_k):
             continue
         _ident = str(base.iloc[i]["ident"])
         eff_i = new_i if pd.notna(new_i) else old_i
@@ -459,7 +463,8 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
                         "new_i": (new_i if chg_i else None), "new_f": (new_f if chg_f else None),
                         "eff_i": eff_i, "eff_f": eff_f,
                         "tk": tk_new, "tk_lbl": (new_t if chg_t else None),
-                        "prog": base.iloc[i]["prog_proceso_h"]})
+                        "kg": (round(new_k * 1000.0, 1) if chg_k else None),
+                        "prog": base.iloc[i]["prog_h"]})
     if invalidas:
         st.error("No se van a guardar: " + " · ".join(invalidas))
     if cambios:
@@ -471,12 +476,13 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
                          if pd.notna(c["eff_i"]) and pd.notna(c["eff_f"]) else None),
             "Prog. (h)": (round(float(c["prog"]), 1) if pd.notna(c["prog"]) else None),
             "Nuevo tanque": (c["tk_lbl"] or "(sin cambio)"),
+            "Final (TN)": (round(c["kg"] / 1000.0, 2) if c["kg"] is not None else "(sin cambio)"),
         } for c in cambios])
         _prev["Δ (h)"] = (_prev["Real (h)"] - _prev["Prog. (h)"]).round(1)
         st.markdown(f"**{len(cambios)} reacción(es) con cambios:**")
         st.dataframe(_prev, hide_index=True, use_container_width=True)
     else:
-        st.caption("Sin cambios pendientes: editá Inicio real / Fin reacción real / Tanque final y apretá Guardar.")
+        st.caption("Sin cambios pendientes: editá Inicio real / Fin reacción real / Final (TN) / Tanque final y apretá Guardar.")
 
     if st.button("💾 Guardar cambios", type="primary", key="perf_edit_save",
                  disabled=(not cambios)):
@@ -522,10 +528,19 @@ def _editor_inicio_fin(USR, cat, conectar, ids=None):
                                 cur.execute("UPDATE produccion.fact_batch_proceso "
                                             "SET id_tanque_are_final=%s, tanque_destino=%s "
                                             "WHERE id_batch=%s", (_idt, _txt, idb))
+                        if c["kg"] is not None:
+                            cur.execute("INSERT INTO produccion.fact_reaccion_cierre "
+                                        "(id_batch, real_kg, metodo, id_usuario, actualizado_en) "
+                                        "VALUES (%s,%s,'EDITOR_MANUAL',%s,now()) "
+                                        "ON CONFLICT (id_batch) DO UPDATE SET "
+                                        "real_kg=EXCLUDED.real_kg, metodo='EDITOR_MANUAL', "
+                                        "id_usuario=EXCLUDED.id_usuario, actualizado_en=now()",
+                                        (idb, float(c["kg"]), int(USR["id_usuario"])))
                         audit.log("U", "fact_batch_proceso", idb,
                                   {"inicio": (str(c["new_i"]) if c["new_i"] is not None else None),
                                    "fin": (str(c["new_f"]) if c["new_f"] is not None else None),
                                    "tanque_final": (c["tk"][0] if c["tk"] is not None else None),
+                                   "real_kg": c["kg"],
                                    "via": "performance_editor_masivo"})
             st.success(f"Guardado: {len(cambios)} reacción(es) actualizadas.")
             cat.clear()
