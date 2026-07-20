@@ -25,7 +25,7 @@ def render(USR, cat, conectar):
         st.warning("Sección de dirección (SUPERVISOR / ADMIN).")
         return
     st.caption("Análisis de rentabilidad sobre los cierres (BBDD_GASTOS + BBDD_INGRESOS_FINAL). "
-               "Valores en **ARS**, expresados en **millones (M)**. Período: ene–may 2026 (junio cierra en breve).")
+               "Valores en **ARS**, expresados en **millones (M)**. Período: ene–jun 2026.")
 
     pl = cat(f"SELECT to_char(mes,'YYYY-MM') AS mes, ingresos, gastos_total, costo_variable, costo_fijo, "
              f"mp, insumos, energia, personal, servicios, inversion, margen_contribucion, mc_pct, "
@@ -73,7 +73,7 @@ def render(USR, cat, conectar):
     # ============ 2 · Donde esta el valor ============
     with t2:
         st.subheader("Contribución por segmento (ingreso − costo directo)")
-        st.caption("Acumulado ene–may. **Acá se ve dónde se gana y dónde se pierde plata de verdad.**")
+        st.caption("Acumulado del período cargado. **Acá se ve dónde se gana y dónde se pierde plata de verdad.**")
         seg = cat(f"SELECT sector, round(sum(ingreso)/1e6,0) ing, round(sum(costo_directo)/1e6,0) costo, "
                   f"round(sum(contribucion)/1e6,0) contrib, "
                   f"round(sum(contribucion)/NULLIF(sum(ingreso),0)*100,0) pct "
