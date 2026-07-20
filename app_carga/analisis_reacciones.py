@@ -379,7 +379,8 @@ def render(USR, cat, conectar):
             _t = _t.merge(_tks, on="id_batch", how="left")
         else:
             _t["tickets"] = None
-        _t["Lab"] = _t["fuente_lab"].map({"TICKETS": "🎫 tickets", "ASIGNADO": "🧪 asignado"}).fillna("❌ sin lab")
+        _t["Lab"] = _t["fuente_lab"].map({"TICKETS": "🎫 tickets", "ASIGNADO": "🧪 asignado",
+                                          "TICKET_REACCION": "🏷️ ticket=ID"}).fillna("❌ sin lab")
         _t["Tickets finales"] = _t["tickets"].fillna("—")
         st.dataframe(_t.drop(columns=["fuente_lab", "id_batch", "tickets"]).rename(
                          columns={"ident": "ID", "producto": "Producto", "acidez_pct": "Acidez %",
@@ -462,7 +463,8 @@ def render(USR, cat, conectar):
                                "**sin lab**. Pedí el análisis o asignale una muestra a mano (expander de abajo).")
 
     with st.expander("🧪 Asignar evaluación de laboratorio al producto final", expanded=False):
-        st.caption("Los **desgomados** toman el lab automáticamente de los tickets finales de pesada; "
+        st.caption("Si laboratorio cargó una muestra con **ticket = identificador de la reacción** (ej. RE-348), se usa sola 🏷️ — sin asignar nada. "
+                   "Los **desgomados** también toman lab de los tickets finales de pesada; "
                    "las **ARE** (o un desgomado sin ticket analizado) se asignan acá. La lista solo "
                    "muestra muestras de `procesos_lab` **del producto final de la reacción** "
                    "(ARE → ARE · AFE-S/AFE-G → AFE), las de calidad exacta primero.")
@@ -480,6 +482,8 @@ def render(USR, cat, conectar):
             st.info("No hay reacciones finalizadas.")
         else:
             def _estado_lab(r):
+                if r["fuente_lab"] == "TICKET_REACCION":
+                    return f"🏷️ auto: ticket con su ID (muestra {int(r['id_procesos_lab'])})"
                 if pd.notna(r["id_procesos_lab"]):
                     return f"🧪 muestra {int(r['id_procesos_lab'])}"
                 if r["fuente_lab"] == "TICKETS":

@@ -2666,14 +2666,21 @@ if st.session_state.section != "CARGAS":
                 try:
                     emps_lab = cat("SELECT DISTINCT empleado FROM produccion.procesos_lab WHERE empleado IS NOT NULL ORDER BY 1")["empleado"].tolist()
                 except Exception: emps_lab = []
+                q_tk = st.text_input("🔍 Ticket / nº muestra / id", key="lab_q_tk",
+                                     placeholder="ej: RE-348 · 5690 · 424 — busca en TODO el histórico (ignora fechas)")
                 c4, c5, c6 = st.columns(3)
                 sel_prod = c4.multiselect("Producto", prods_lab, key="lab_prods")
                 sel_emp  = c5.multiselect("Empleado", emps_lab, key="lab_emps")
                 sel_corr = c6.multiselect("Corriente", CORR_EVAL, default=CORR_EVAL, key="lab_corr",
                                           help="Solo corrientes que se evalúan (vegetal, animal, insumo, efluente).")
 
-            where = ["pl.fecha >= %s", "pl.fecha < %s"]
-            params = [fmin.isoformat(), (fmax + _td(days=1)).isoformat()]
+            if q_tk.strip():
+                _qtk = f"%{q_tk.strip()}%"
+                where = ["(pl.ticket ILIKE %s OR pl.num_muestra::text ILIKE %s OR pl.id::text = %s)"]
+                params = [_qtk, _qtk, q_tk.strip()]
+            else:
+                where = ["pl.fecha >= %s", "pl.fecha < %s"]
+                params = [fmin.isoformat(), (fmax + _td(days=1)).isoformat()]
             if sel_prod:
                 where.append("produccion.fn_rotulo(pl.producto_lab) = ANY(%s)"); params.append(sel_prod)
             if sel_emp:
