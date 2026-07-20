@@ -324,14 +324,35 @@ def render(USR, cat, conectar):
                     tooltip=["ident", "Parámetro", alt.Tooltip("Valor:Q", format=".2f"), "fuente_lab"],
                 ).properties(height=240), use_container_width=True)
     with g6:
-        _t = dfw[["ident", "producto", "fuente_lab", "acidez_pct", "agua_pct", "azufre_ppm"]].copy()
+        _ids_w = tuple(int(x) for x in dfw["id_batch"].tolist())
+        _tks = cat("SELECT t.id_batch, string_agg(t.ticket || "
+                   "CASE WHEN v.tx IS NULL THEN ' ❌' WHEN v.con_lab THEN ' ✅' ELSE ' ⚠️' END, "
+                   "' · ' ORDER BY t.ticket) AS tickets "
+                   "FROM produccion.fact_batch_ticket_final t "
+                   "LEFT JOIN (SELECT transaccion::text AS tx, "
+                   "  bool_or(lab_num_muestra IS NOT NULL OR lab_prc_acidez IS NOT NULL) AS con_lab "
+                   "  FROM produccion.v_transacciones_limpias GROUP BY transaccion::text) v "
+                   "  ON v.tx = t.ticket::text "
+                   "WHERE t.id_batch IN %s AND NOT COALESCE(t.anulado,false) "
+                   "GROUP BY t.id_batch", (_ids_w,))
+        _t = dfw[["id_batch", "ident", "producto", "fuente_lab", "acidez_pct", "agua_pct",
+                  "azufre_ppm"]].copy()
+        if _tks is not None and not _tks.empty:
+            _t = _t.merge(_tks, on="id_batch", how="left")
+        else:
+            _t["tickets"] = None
         _t["Lab"] = _t["fuente_lab"].map({"TICKETS": "🎫 tickets", "ASIGNADO": "🧪 asignado"}).fillna("❌ sin lab")
-        st.dataframe(_t.drop(columns=["fuente_lab"]).rename(
+        _t["Tickets finales"] = _t["tickets"].fillna("—")
+        st.dataframe(_t.drop(columns=["fuente_lab", "id_batch", "tickets"]).rename(
                          columns={"ident": "ID", "producto": "Producto", "acidez_pct": "Acidez %",
                                   "agua_pct": "Agua %", "azufre_ppm": "Azufre ppm"}),
                      hide_index=True, use_container_width=True,
-                     column_config={c: st.column_config.NumberColumn(format="%.2f")
-                                    for c in ("Acidez %", "Agua %")})
+                     column_config={**{c: st.column_config.NumberColumn(format="%.2f")
+                                       for c in ("Acidez %", "Agua %")},
+                                    "Tickets finales": st.column_config.TextColumn(
+                                        help="Tickets finales de pesada asignados a la reacción: "
+                                             "✅ evaluado por lab · ⚠️ pesado sin evaluación · "
+                                             "❌ no está en balanza.")})
 
     # ---------- asignar evaluación de lab a ARE ----------
     with st.expander("🎫 Tickets finales por reacción — ¿se evaluaron?", expanded=False):
