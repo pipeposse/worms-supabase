@@ -493,15 +493,27 @@ def render(USR, cat, conectar):
             if not _lab_prod:
                 st.warning("Esta reacción no tiene producto final definido; no puedo filtrar muestras.")
             else:
+                _bq = st.text_input("🔍 Buscar muestra por ticket / nº / id",
+                                    key=f"anr_asig_q_{int(_rb['id_batch'])}",
+                                    placeholder="ej: RE-348 · 5690 · 424 (vacío = últimas 30)")
+                _flt, _par = "", [str(_lab_prod)]
+                if _bq.strip():
+                    _flt = "AND (ticket ILIKE %s OR num_muestra::text ILIKE %s OR id::text = %s) "
+                    _par += [f"%{_bq.strip()}%", f"%{_bq.strip()}%", _bq.strip()]
+                _par += [str(_rb["ident"] or ""), (str(_lab_cal) if _lab_cal else "")]
                 _mu = cat("SELECT id, ticket, num_muestra, fecha, producto_lab, "
                           "calidad_final_lab AS calidad, prc_acidez, prc_agua, ppm_azufre "
                           "FROM produccion.procesos_lab WHERE producto_lab=%s "
                           "AND COALESCE(anulado,false)=false "
-                          "ORDER BY (CASE WHEN calidad_final_lab=%s THEN 0 ELSE 1 END), "
+                          + _flt +
+                          "ORDER BY (CASE WHEN ticket ILIKE %s THEN 0 ELSE 1 END), "
+                          "(CASE WHEN calidad_final_lab=%s THEN 0 ELSE 1 END), "
                           "fecha DESC NULLS LAST, id DESC LIMIT 30",
-                          (str(_lab_prod), (str(_lab_cal) if _lab_cal else "")))
+                          tuple(_par))
                 if _mu is None or _mu.empty:
-                    st.warning(f"No hay muestras de {_lab_prod} en procesos_lab.")
+                    st.warning(f"No hay muestras de {_lab_prod}"
+                               + (f" que coincidan con «{_bq.strip()}»" if _bq.strip() else " en procesos_lab")
+                               + ".")
                 else:
                     def _fmt_mu(r):
                         try:
