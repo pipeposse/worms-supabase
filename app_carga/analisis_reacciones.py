@@ -137,6 +137,32 @@ def render(USR, cat, conectar):
     _kpi(k[3], "Con lab del producto final", f"{a['lab_n']}/{a['n']}",
          help_="Desgomados: tickets finales analizados. ARE: evaluación asignada (abajo).")
 
+    # ---------- la semana por tipo: ⚗️ ARE vs 🫧 DESGOMADO ----------
+    st.markdown("#### La semana por tipo de reacción")
+    _c_are, _c_des = st.columns(2)
+    for _tt, _colc, _emoji in (("ARE", _c_are, "⚗️"), ("DESGOMADO", _c_des, "🫧")):
+        _dt = dfw[dfw["tipo"] == _tt]
+        _dp2 = dfp[dfp["tipo"] == _tt]
+        with _colc:
+            with st.container(border=True):
+                st.markdown(f"##### {_emoji} {_tt}")
+                if _dt.empty:
+                    st.caption("Sin reacciones esta semana.")
+                    continue
+                _at, _pt = _agg(_dt), _agg(_dp2)
+                m = st.columns(3)
+                _kpi(m[0], "Reacciones", _at["n"],
+                     (f"{_at['n']-_pt['n']:+d}" if _pt else None))
+                _kpi(m[1], "MP (TN)", f"{_at['mp']:,.1f}", _fmt_delta(_at["mp"], _pt.get("mp") if _pt else None))
+                _kpi(m[2], "Final (TN)", f"{_at['pf']:,.1f}", _fmt_delta(_at["pf"], _pt.get("pf") if _pt else None))
+                m = st.columns(3)
+                _kpi(m[0], "Rendimiento", (f"{_at['rend']:.0f}%" if _at["rend"] is not None else "—"),
+                     _fmt_delta(_at["rend"], _pt.get("rend") if _pt else None, " pp", 0))
+                _kpi(m[1], "Desvío (h)", (f"{_at['dsv']:+.1f}" if _at["dsv"] is not None else "—"),
+                     _fmt_delta(_at["dsv"], _pt.get("dsv") if _pt else None, " h"), inverso=True)
+                _kpi(m[2], "Acidez", (f"{_at['aci']:.2f}%" if _at["aci"] is not None else "—"),
+                     _fmt_delta(_at["aci"], _pt.get("aci") if _pt else None, " pp", 2), inverso=True)
+
     st.divider()
 
     # ---------- gráfico 1: TN por semana (tendencia) ----------
@@ -221,6 +247,58 @@ def render(USR, cat, conectar):
             _r2 = alt.Chart(pd.DataFrame({"y": [100]})).mark_rule(color=C_MUT, strokeDash=[4, 4]).encode(y="y:Q")
             st.altair_chart((_pts + _r1 + _r2).properties(height=280), use_container_width=True)
             st.caption("Arriba-derecha = reactor lleno y rendimiento pleno. Sin punto = falta cerrar el real en Terminadas.")
+
+    # ---------- comparativa entre semanas ----------
+    st.divider()
+    st.markdown("### 📊 Comparativa entre semanas — ⚗️ ARE vs 🫧 DESGOMADO")
+    st.caption("Evolución semanal de los indicadores clave, separada por tipo (últimas 12 semanas). "
+               "Acidez = promedio del lab del producto final; desvío = mediana vs Reacción del cronograma.")
+    _rows_cmp = []
+    for (_s, _lblc, _t), _g in df.groupby(["semana", "sem_lbl", "tipo"]):
+        _a3 = _agg(_g)
+        _rows_cmp.append({"semana": _s, "Semana": _lblc, "Tipo": _t, "Reacciones": _a3["n"],
+                          "MP (TN)": round(_a3["mp"], 1), "Final (TN)": round(_a3["pf"], 1),
+                          "Rendimiento %": (round(_a3["rend"], 0) if _a3["rend"] is not None else None),
+                          "Acidez %": (round(_a3["aci"], 2) if _a3["aci"] is not None else None),
+                          "Desvío (h)": (round(_a3["dsv"], 1) if _a3["dsv"] is not None else None)})
+    _cmp = pd.DataFrame(_rows_cmp)
+    if not _cmp.empty:
+        _ult = sorted(_cmp["semana"].unique())[-12:]
+        _cmp = _cmp[_cmp["semana"].isin(_ult)].sort_values(["semana", "Tipo"])
+        _ord_sem = list(dict.fromkeys(_cmp.sort_values("semana")["Semana"]))
+        _sc_tipo = alt.Scale(domain=["ARE", "DESGOMADO"], range=[C_PRI, C_AMB])
+
+        def _mini_cmp(col, campo, titulo, bar=False, fmt=",.1f"):
+            _d = _cmp.dropna(subset=[campo])
+            with col:
+                st.markdown(f"**{titulo}**")
+                if _d.empty:
+                    st.caption("Sin datos todavía.")
+                    return
+                _enc = dict(
+                    x=alt.X("Semana:N", sort=_ord_sem, title=None),
+                    y=alt.Y(f"{campo}:Q", title=None),
+                    color=alt.Color("Tipo:N", scale=_sc_tipo, legend=alt.Legend(orient="top", title=None)),
+                    tooltip=["Semana", "Tipo", "Reacciones", alt.Tooltip(f"{campo}:Q", format=fmt)],
+                )
+                if bar:
+                    _ch = alt.Chart(_d).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
+                        xOffset="Tipo:N", **_enc)
+                else:
+                    _ch = (alt.Chart(_d).mark_line(point=True).encode(**_enc))
+                st.altair_chart(_ch.properties(height=220), use_container_width=True)
+
+        _cc1, _cc2 = st.columns(2)
+        _mini_cmp(_cc1, "MP (TN)", "Toneladas de MP por semana", bar=True)
+        _mini_cmp(_cc2, "Rendimiento %", "Rendimiento (%) por semana", fmt=",.0f")
+        _cc3, _cc4 = st.columns(2)
+        _mini_cmp(_cc3, "Acidez %", "Acidez del producto final (%)", fmt=",.2f")
+        _mini_cmp(_cc4, "Desvío (h)", "Desvío vs plan (h, mediana)", bar=True)
+        with st.expander("📋 Tabla comparativa semana a semana", expanded=False):
+            st.dataframe(_cmp.drop(columns=["semana"]), hide_index=True, use_container_width=True,
+                         column_config={c: st.column_config.NumberColumn(format="%.1f")
+                                        for c in ("MP (TN)", "Final (TN)", "Rendimiento %", "Desvío (h)")}
+                                       | {"Acidez %": st.column_config.NumberColumn(format="%.2f")})
 
     # ---------- laboratorio del producto final ----------
     st.divider()
