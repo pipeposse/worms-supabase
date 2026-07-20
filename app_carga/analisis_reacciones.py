@@ -23,7 +23,7 @@ C_MUT = "#94a3b8"
 _NUMS = ["espera_arranque_h", "reaccion_h", "reposo_h", "decantacion_h", "ciclo_proceso_h",
          "prog_proceso_h", "desvio_proceso_h", "prog_reaccion_h", "desvio_h", "max_kg",
          "formula_kg", "mp_kg", "real_kg", "utilizacion_pct", "capacidad_perdida_kg",
-         "rendimiento_pct", "acidez_pct", "agua_pct", "azufre_ppm", "densidad"]
+         "rendimiento_pct", "acidez_pct", "agua_pct", "azufre_ppm", "fosforo_ppm", "densidad"]
 
 
 def _cargar(cat):
@@ -33,7 +33,7 @@ def _cargar(cat):
              "p.prog_reaccion_h, p.desvio_h, p.reaccion_confiable, "
              "p.max_kg, p.formula_kg, p.mp_kg, p.real_kg, p.utilizacion_pct, p.capacidad_perdida_kg, "
              "p.rendimiento_pct, p.tiempos_confiables, "
-             "l.fuente_lab, l.id_procesos_lab, l.acidez_pct, l.agua_pct, l.azufre_ppm, l.densidad "
+             "l.fuente_lab, l.id_procesos_lab, l.acidez_pct, l.agua_pct, l.azufre_ppm, l.fosforo_ppm, l.densidad "
              "FROM produccion.v_perf_reaccion p "
              "LEFT JOIN produccion.v_reaccion_lab_final l ON l.id_batch = p.id_batch "
              "ORDER BY p.fecha, p.id_batch")
@@ -162,6 +162,44 @@ def render(USR, cat, conectar):
                      _fmt_delta(_at["dsv"], _pt.get("dsv") if _pt else None, " h"), inverso=True)
                 _kpi(m[2], "Acidez", (f"{_at['aci']:.2f}%" if _at["aci"] is not None else "—"),
                      _fmt_delta(_at["aci"], _pt.get("aci") if _pt else None, " pp", 2), inverso=True)
+
+    # ---------- calidad ARE por reacción: acidez · azufre · fósforo ----------
+    _qa = df[(df["tipo"] == "ARE")
+             & (df["acidez_pct"].notna() | df["azufre_ppm"].notna() | df["fosforo_ppm"].notna())].copy()
+    if not _qa.empty:
+        st.markdown("#### ⚗️ Calidad ARE por reacción — acidez · azufre · fósforo")
+        st.caption("Barras = **acidez %** (eje izquierdo) · líneas = **azufre** y **fósforo** en ppm "
+                   "(eje derecho). Las reacciones de la semana elegida van en color pleno; las anteriores "
+                   "en gris, para comparar de un vistazo. Se muestran las últimas 20 ARE con lab.")
+        _qa = _qa.sort_values(["fecha", "id_batch"]).tail(20)
+        _qa["es_sem"] = _qa["semana"] == _wk
+        _ord = list(_qa["ident"])
+        _ql = _qa.melt(id_vars=["ident"], value_vars=["azufre_ppm", "fosforo_ppm"],
+                       var_name="Parámetro", value_name="ppm").dropna(subset=["ppm"])
+        _ql["Parámetro"] = _ql["Parámetro"].map({"azufre_ppm": "Azufre (ppm)",
+                                                 "fosforo_ppm": "Fósforo (ppm)"})
+        _qb = alt.Chart(_qa).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
+            x=alt.X("ident:N", sort=_ord, title=None),
+            y=alt.Y("acidez_pct:Q", title="Acidez (%)"),
+            color=alt.condition(alt.datum.es_sem, alt.value(C_PRI), alt.value(C_MUT)),
+            opacity=alt.condition(alt.datum.es_sem, alt.value(0.9), alt.value(0.45)),
+            tooltip=["ident", "etiqueta", "sem_lbl", "fuente_lab",
+                     alt.Tooltip("acidez_pct:Q", title="Acidez %", format=".2f"),
+                     alt.Tooltip("azufre_ppm:Q", title="Azufre ppm", format=",.0f"),
+                     alt.Tooltip("fosforo_ppm:Q", title="Fósforo ppm", format=",.0f")],
+        )
+        _qp = alt.Chart(_ql).mark_line(strokeWidth=2.5,
+                                       point=alt.OverlayMarkDef(size=70, filled=True)).encode(
+            x=alt.X("ident:N", sort=_ord, title=None),
+            y=alt.Y("ppm:Q", title="ppm", axis=alt.Axis(orient="right")),
+            color=alt.Color("Parámetro:N",
+                            scale=alt.Scale(domain=["Azufre (ppm)", "Fósforo (ppm)"],
+                                            range=[C_AMB, C_OK]),
+                            legend=alt.Legend(orient="top", title=None)),
+            tooltip=["ident", "Parámetro", alt.Tooltip("ppm:Q", format=",.0f")],
+        )
+        st.altair_chart(alt.layer(_qb, _qp).resolve_scale(y="independent").properties(height=320),
+                        use_container_width=True)
 
     st.divider()
 
@@ -336,7 +374,7 @@ def render(USR, cat, conectar):
                    "WHERE t.id_batch IN %s AND NOT COALESCE(t.anulado,false) "
                    "GROUP BY t.id_batch", (_ids_w,))
         _t = dfw[["id_batch", "ident", "producto", "fuente_lab", "acidez_pct", "agua_pct",
-                  "azufre_ppm"]].copy()
+                  "azufre_ppm", "fosforo_ppm"]].copy()
         if _tks is not None and not _tks.empty:
             _t = _t.merge(_tks, on="id_batch", how="left")
         else:
@@ -345,7 +383,8 @@ def render(USR, cat, conectar):
         _t["Tickets finales"] = _t["tickets"].fillna("—")
         st.dataframe(_t.drop(columns=["fuente_lab", "id_batch", "tickets"]).rename(
                          columns={"ident": "ID", "producto": "Producto", "acidez_pct": "Acidez %",
-                                  "agua_pct": "Agua %", "azufre_ppm": "Azufre ppm"}),
+                                  "agua_pct": "Agua %", "azufre_ppm": "Azufre ppm",
+                                  "fosforo_ppm": "Fósforo ppm"}),
                      hide_index=True, use_container_width=True,
                      column_config={**{c: st.column_config.NumberColumn(format="%.2f")
                                        for c in ("Acidez %", "Agua %")},
