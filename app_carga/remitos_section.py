@@ -306,6 +306,93 @@ def _subir_lote(conectar, usr, items):
 
 # ------------------------------------------------------------------ UI
 
+def _guardar_fallido(conectar, usr, archivo, nro, error, raw=None):
+    """Guarda un remito que la cámara/IA no pudo leer, para no perderlo."""
+    with conectar(usr["id_usuario"]) as (conn, _a):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO produccion.fact_remito_fallido (archivo, nro_remito, error, raw_json, cargado_por) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                (archivo, (nro or None), (error or None),
+                 json.dumps(raw or {}, ensure_ascii=False, default=str), usr.get("nombre")))
+
+
+def _carga_manual(USR, conectar):
+    st.caption("Si la cámara no pudo leer el remito, cargá los datos a mano acá. Queda igual en la base y se puede "
+               "vincular al ticket de balanza después.")
+    ss = st.session_state
+    c1, c2, c3 = st.columns(3)
+    _nro = c1.text_input("N° remito (ID único) *", key="rm_man_nro")
+    _fch = c2.date_input("Fecha", date.today(), key="rm_man_fch", format="DD/MM/YYYY")
+    _emisor = c3.text_input("Emisor *", key="rm_man_em")
+    c4, c5, c6 = st.columns(3)
+    _prod = c4.text_input("Producto", key="rm_man_prod")
+    _neto = c5.number_input("Neto (kg) *", min_value=0.0, step=10.0, key="rm_man_neto")
+    _tk = c6.number_input("Ticket balanza (opcional)", min_value=0, step=1, key="rm_man_tk")
+    c7, c8, c9 = st.columns(3)
+    _pch = c7.text_input("Patente chasis", key="rm_man_pch")
+    _trans = c8.text_input("Transportista", key="rm_man_tr")
+    _obs = c9.text_input("Observaciones", key="rm_man_ob")
+    _idfall = ss.get("rm_man_fromfall")
+    if _idfall:
+        st.info(f"Estás completando el pendiente #{_idfall}. Al guardar, se marca como resuelto.")
+    _ok = bool((_nro or "").strip() and (_emisor or "").strip() and _neto > 0)
+    if not _ok:
+        st.caption("Completá al menos **N° remito**, **Emisor** y **Neto (kg)**.")
+    if st.button("💾 Guardar remito manual", type="primary", disabled=not _ok, key="rm_man_save"):
+        try:
+            with conectar(USR["id_usuario"]) as (conn, _a):
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO produccion.fact_remito (emisor,nro_remito,fecha_remito,producto,neto_kg,"
+                        " patente_chasis,transportista,observaciones,ticket_balanza,estado,raw_json,cargado_por) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                        ((_emisor or "").strip(), (_nro or "").strip(), _fch, ((_prod or "").strip() or None),
+                         float(_neto), ((_pch or "").strip() or None), ((_trans or "").strip() or None),
+                         ((_obs or "").strip() or None), (int(_tk) if _tk else None),
+                         ("CONFIRMADO" if _tk else "SIN_TICKET"),
+                         json.dumps({"origen": "manual"}, ensure_ascii=False), USR.get("nombre")))
+                    _rid = cur.fetchone()[0]
+                    if _idfall:
+                        cur.execute("UPDATE produccion.fact_remito_fallido SET estado='RESUELTO', id_remito=%s, "
+                                    "resuelto_en=now() WHERE id=%s", (_rid, int(_idfall)))
+            st.success(f"Remito {_nro} guardado (id {_rid}).")
+            for _k in ("rm_man_nro", "rm_man_em", "rm_man_prod", "rm_man_pch", "rm_man_tr", "rm_man_ob", "rm_man_fromfall"):
+                ss.pop(_k, None)
+            st.rerun()
+        except psycopg2.errors.UniqueViolation:
+            st.error("Ya existe un remito con ese N°.")
+        except Exception as e:
+            st.error(f"No se pudo guardar: {e}")
+
+    st.markdown("---")
+    st.markdown("#### 🕐 Remitos pendientes (foto que no se pudo leer)")
+    try:
+        _pend = _read_df("SELECT id, archivo, nro_remito, error, cargado_por, creado_en::timestamp AS creado "
+                         "FROM produccion.fact_remito_fallido WHERE estado='PENDIENTE' ORDER BY creado_en DESC")
+    except Exception as e:
+        st.caption(f"No se pudieron leer pendientes: {e}"); _pend = None
+    if _pend is None or _pend.empty:
+        st.caption("No hay remitos pendientes.")
+    else:
+        st.dataframe(_pend, use_container_width=True, hide_index=True)
+        _op = _pend.apply(lambda r: f"#{int(r['id'])} · {r['nro_remito'] or 's/n'} · {r['archivo'] or ''}", axis=1).tolist()
+        _sel = st.selectbox("Completar / descartar un pendiente", ["(elegir)"] + _op, key="rm_man_pendsel")
+        cc1, cc2 = st.columns(2)
+        if cc1.button("✍️ Cargar arriba para completar", key="rm_man_pendload", disabled=(_sel == "(elegir)")):
+            _r = _pend.iloc[_op.index(_sel)]
+            ss["rm_man_nro"] = str(_r["nro_remito"] or "")
+            ss["rm_man_fromfall"] = int(_r["id"])
+            st.rerun()
+        if cc2.button("🗑️ Descartar pendiente", key="rm_man_penddesc", disabled=(_sel == "(elegir)")):
+            _r = _pend.iloc[_op.index(_sel)]
+            with conectar(USR["id_usuario"]) as (conn, _a):
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE produccion.fact_remito_fallido SET estado='DESCARTADO', resuelto_en=now() WHERE id=%s",
+                                (int(_r["id"]),))
+            st.rerun()
+
+
 def _card_revision(item: dict, h: str):
     """Formulario editable de un remito. Los widgets actualizan item['datos'] en vivo."""
     datos = item["datos"]
@@ -385,7 +472,7 @@ def _card_revision(item: dict, h: str):
 
 def render(USR, conectar):
     st.subheader("📸 Remitos — digitalización por foto")
-    tab_carga, tab_hist = st.tabs(["📥 Cargar remitos", "📋 Historial y control"])
+    tab_carga, tab_manual, tab_hist = st.tabs(["📥 Cargar por foto", "✍️ Carga manual rápida", "📋 Historial y control"])
 
     ss = st.session_state
     ss.setdefault("rem_cache", {})     # hash foto -> item
@@ -508,6 +595,13 @@ def render(USR, conectar):
                     if it["estado"] == "ERROR":
                         st.error(it["motivo"])
                         st.image(it["raw"], width=350)
+                        _fbnro = st.text_input("N° de remito (para no perderlo)", key=f"fbnro_{h}")
+                        if st.button("💾 Guardar como pendiente (revisar/cargar a mano después)", key=f"fbsave_{h}"):
+                            try:
+                                _guardar_fallido(conectar, USR, it["name"], _fbnro, it["motivo"], it.get("datos"))
+                                st.success("Guardado como pendiente. Lo vas a ver en la pestaña 'Carga manual rápida'.")
+                            except Exception as _e2:
+                                st.error(f"No se pudo guardar el pendiente: {_e2}")
                         continue
                     if it["estado"] == "DUPLICADO":
                         st.error(f"🔁 {it['motivo']}. No se sube de nuevo.")
@@ -542,6 +636,10 @@ def render(USR, conectar):
                 ss.rem_cache = {}
                 ss.rem_informe = None
                 st.rerun()
+
+    # ================= CARGA MANUAL =================
+    with tab_manual:
+        _carga_manual(USR, conectar)
 
     # ================= HISTORIAL =================
     with tab_hist:
@@ -630,14 +728,52 @@ def render(USR, conectar):
             "diferencia_kg": "Dif (kg) rem−port", "diferencia_pct": "Dif %", "patcha": "Patente",
             "producto_lab": "Prod. lab", "calidad_lab": "Calidad lab", "lab_estado": "Lab",
             "estado": "Estado", "cargado_por": "Cargado por", "fecha_carga": "Fecha carga"})
-        st.dataframe(
-            df_show, use_container_width=True, hide_index=True,
+        _edit_map = {"Fecha": "fecha_remito", "Emisor": "emisor", "N° remito": "nro_remito",
+                     "Prod. remito": "producto", "Neto remito (kg)": "neto_kg",
+                     "Ticket portería": "ticket_balanza", "Estado": "estado"}
+        _disabled = [c for c in df_show.columns if c not in _edit_map]
+        st.caption("✏️ Podés **editar** Fecha, Emisor, N° remito, Producto, Neto, Ticket y Estado en la tabla, y "
+                   "**Guardar cambios**. Los valores anteriores quedan versionados en el historial (no se pierden).")
+        _edited = st.data_editor(
+            df_show, use_container_width=True, hide_index=True, key="rh_editor", disabled=_disabled,
             column_config={
-                "Neto remito (kg)": st.column_config.NumberColumn(format="%,.0f"),
-                "Neto portería (kg)": st.column_config.NumberColumn(format="%,.0f"),
-                "Dif (kg) rem−port": st.column_config.NumberColumn(format="%,.0f"),
+                "Neto remito (kg)": st.column_config.NumberColumn(format="%.0f"),
+                "Neto portería (kg)": st.column_config.NumberColumn(format="%.0f"),
+                "Dif (kg) rem−port": st.column_config.NumberColumn(format="%.0f"),
                 "Dif %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Ticket portería": st.column_config.NumberColumn(format="%d"),
+                "Estado": st.column_config.SelectboxColumn(options=["PENDIENTE", "CONFIRMADO", "SIN_TICKET", "ANULADO"]),
             })
+        if st.button("💾 Guardar cambios de la tabla", type="primary", key="rh_save_edits"):
+            _orig = df_show.reset_index(drop=True); _new = _edited.reset_index(drop=True)
+            _n = 0
+            try:
+                with conectar(USR["id_usuario"]) as (conn, _a):
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT set_config('app.usuario', %s, true)", (str(USR.get("nombre") or "app"),))
+                        for i in range(len(_new)):
+                            _chg = {db: _new.iloc[i][disp] for disp, db in _edit_map.items()
+                                    if str(_orig.iloc[i][disp]) != str(_new.iloc[i][disp])}
+                            if not _chg:
+                                continue
+                            _rid = int(_orig.iloc[i]["id"])
+                            _cols = list(_chg.keys()); _vals = []
+                            for c in _cols:
+                                v = _chg[c]
+                                if pd.isna(v) or v == "":
+                                    v = None
+                                elif c == "neto_kg":
+                                    v = float(v)
+                                elif c == "ticket_balanza":
+                                    v = int(float(v))
+                                _vals.append(v)
+                            cur.execute("UPDATE produccion.fact_remito SET " + ", ".join(f"{c}=%s" for c in _cols) +
+                                        " WHERE id=%s", _vals + [_rid])
+                            _n += 1
+                st.success(f"{_n} remito(s) actualizado(s). Versiones anteriores guardadas en el historial.")
+                st.rerun()
+            except Exception as _e:
+                st.error(f"No se pudo guardar: {_e}")
         st.download_button("⬇️ CSV (con filtros aplicados)",
                            df_show.to_csv(index=False).encode("utf-8-sig"),
                            f"remitos_{f_desde}_{f_hasta}.csv", "text/csv")
