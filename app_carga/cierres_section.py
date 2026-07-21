@@ -603,7 +603,7 @@ def _render_calzim_produccion(cat):
     # -------- comparativa entre lotes: el "por qué un lote rinde más" --------
     st.markdown("#### 🐷 Comparativa entre lotes")
     lo = cat(f"SELECT to_char(mes,'YYYY-MM') mes, lote, q_sitio3, kg_prom_s3, precio_s3, mortandad_s3_pct, "
-             f"merma_total_pct, ingreso_sitio3, costo_total, margen, margen_pct, costo_x_cabeza, "
+             f"merma_total_pct, ing_sitio3 AS ingreso_sitio3, costo_total, margen, margen_pct, costo_x_cabeza, "
              f"ingreso_x_cabeza, margen_x_cabeza, costo_alim_x_kg, conversion_alim "
              f"FROM {SC}.v_prod_lote ORDER BY mes, lote")
     if lo is not None and not lo.empty:
