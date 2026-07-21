@@ -4,8 +4,14 @@ render(USR, cat, conectar). Solo direccion (SUPERVISOR/ADMIN) o acceso CIERRES.
 """
 import pandas as pd
 import streamlit as st
+try:
+    import altair as alt
+except Exception:
+    alt = None
 
 S = '"cierres_worms"'
+SC = "cierres_calzim"
+CC_PRI="#4f46e5"; CC_OK="#16a34a"; CC_BAD="#dc2626"; CC_AMB="#d97706"; CC_MUT="#94a3b8"
 
 
 def _puede(USR):
@@ -24,6 +30,13 @@ def render(USR, cat, conectar):
     if not _puede(USR):
         st.warning("Sección de dirección (SUPERVISOR / ADMIN).")
         return
+    _emp = st.radio("Empresa · reporte",
+                    ["🏭 WORMS", "🐷 CALZIM · Facturas", "🐷 CALZIM · Producción"],
+                    horizontal=True, key="cierres_empresa")
+    if _emp == "🐷 CALZIM · Facturas":
+        _render_calzim_facturas(cat); return
+    if _emp == "🐷 CALZIM · Producción":
+        _render_calzim_produccion(cat); return
     st.caption("Análisis de rentabilidad sobre los cierres (BBDD_GASTOS + BBDD_INGRESOS_FINAL). "
                "Valores en **ARS**, expresados en **millones (M)**. Período: ene–jun 2026.")
 
@@ -424,3 +437,210 @@ def render(USR, cat, conectar):
                                file_name="cierres_datos_originales.csv", mime="text/csv", key="orig_dl")
         else:
             st.info("Sin registros para ese filtro.")
+
+
+# ==================== CALZIM · FACTURAS ====================
+def _render_calzim_facturas(cat):
+    st.caption("**CALZIM · Facturas** — P&L mensual: ingresos por venta (capón + chancha) menos egresos "
+               "(union_gastos). ARS en millones. Período ene–jun 2026. El resultado real deflacta a "
+               "pesos de junio con IPC INDEC 2026.")
+    pl = cat(f"SELECT to_char(mes,'YYYY-MM') mes, ingresos, ing_capon, ing_chancha, cabezas, cab_capon, "
+             f"precio_capon, egresos, e_nutricion, e_personal, e_otros, resultado, margen_pct "
+             f"FROM {SC}.v_fact_pl ORDER BY mes")
+    if pl is None or pl.empty:
+        st.info("No hay datos de facturas de Calzim cargados.")
+        return
+    for c in pl.columns:
+        if c != "mes":
+            pl[c] = pd.to_numeric(pl[c], errors="coerce")
+    defl = cat(f"SELECT to_char(mes,'YYYY-MM') mes, factor_a_hoy FROM {SC}.v_deflactor ORDER BY mes")
+    if defl is not None and not defl.empty:
+        defl["factor_a_hoy"] = pd.to_numeric(defl["factor_a_hoy"], errors="coerce")
+        d = pl.merge(defl, on="mes", how="left")
+    else:
+        d = pl.assign(factor_a_hoy=1.0)
+    d["factor_a_hoy"] = d["factor_a_hoy"].fillna(1.0)
+    d["result_real"] = d["resultado"] * d["factor_a_hoy"]
+
+    ing_t = pl["ingresos"].sum(); res_t = pl["resultado"].sum()
+    k = st.columns(4)
+    k[0].metric("Ingresos acum.", _mm(ing_t))
+    k[1].metric("Resultado acum.", _mm(res_t), f"{res_t/ing_t*100:.1f}% margen" if ing_t else None)
+    k[2].metric("Resultado real (jun $)", _mm(d["result_real"].sum()))
+    k[3].metric("Meses cargados", str(len(pl)))
+
+    st.markdown("#### P&L mensual")
+    show = pd.DataFrame({
+        "Mes": pl["mes"],
+        "Ingresos": (pl["ingresos"]/1e6).round(0),
+        "Egresos": (pl["egresos"]/1e6).round(0),
+        "Resultado": (pl["resultado"]/1e6).round(0),
+        "Margen %": pl["margen_pct"],
+        "Result. real (jun$)": (d["result_real"]/1e6).round(0),
+        "Capones": pl["cab_capon"],
+        "Precio capón": pl["precio_capon"].round(0),
+    })
+    st.dataframe(show, hide_index=True, use_container_width=True,
+                 column_config={c: st.column_config.NumberColumn(format="%.0f")
+                                for c in ["Ingresos","Egresos","Resultado","Result. real (jun$)",
+                                          "Capones","Precio capón"]}
+                 | {"Margen %": st.column_config.NumberColumn(format="%.1f%%")})
+    st.caption("Cifras en millones de ARS salvo capones (cabezas) y precio (ARS/kg).")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Ingresos vs egresos vs resultado**")
+        ch = pl[["mes"]].copy()
+        ch["Ingresos"] = pl["ingresos"]/1e6
+        ch["Egresos"] = pl["egresos"]/1e6
+        ch["Resultado"] = pl["resultado"]/1e6
+        st.line_chart(ch.set_index("mes"), use_container_width=True)
+    with c2:
+        st.markdown("**Precio del capón (ARS/kg)** — evolución")
+        pc = pl[["mes"]].copy(); pc["Precio capón"] = pl["precio_capon"]
+        st.line_chart(pc.set_index("mes"), use_container_width=True)
+
+    st.markdown("#### Egresos por rubro")
+    er = cat(f"SELECT to_char(mes,'YYYY-MM') mes, rubro, monto FROM {SC}.v_fact_egreso_rubro ORDER BY mes")
+    if er is not None and not er.empty:
+        er["monto"] = pd.to_numeric(er["monto"], errors="coerce")/1e6
+        piv = er.pivot_table(index="mes", columns="rubro", values="monto", aggfunc="sum").fillna(0).round(1)
+        st.bar_chart(piv, use_container_width=True)
+        with st.expander("Detalle egresos por rubro (M ARS)"):
+            st.dataframe(piv, use_container_width=True)
+
+
+# ==================== CALZIM · PRODUCCIÓN (por lote) ====================
+def _render_calzim_produccion(cat):
+    st.caption("**CALZIM · Producción** — análisis por **lote**. El resultado toma sólo la etapa **SITIO 3** "
+               "(la venta real); la *venta de ½ res* se muestra aparte como referencia y NO entra al "
+               "resultado. Foco: rendimientos, mortandad en Sitio 3, y por qué un lote rinde más que otro. "
+               "Pesos constantes de junio con IPC INDEC 2026.")
+    m = cat(f"SELECT to_char(mes,'YYYY-MM') mes, lotes, cabezas_s3, mort_s3_pct_prom, kg_producidos, "
+            f"ingreso_sitio3, venta_media_res, costo_total, c_nutricion, c_genetica, c_sanidad, c_personal, "
+            f"margen, margen_pct, costo_x_cabeza, ingreso_x_cabeza, costo_alim_x_kg "
+            f"FROM {SC}.v_prod_mensual ORDER BY mes")
+    if m is None or m.empty:
+        st.info("No hay datos de producción de Calzim cargados.")
+        return
+    for c in m.columns:
+        if c != "mes":
+            m[c] = pd.to_numeric(m[c], errors="coerce")
+    defl = cat(f"SELECT to_char(mes,'YYYY-MM') mes, factor_a_hoy FROM {SC}.v_deflactor ORDER BY mes")
+    fac = {}
+    if defl is not None and not defl.empty:
+        fac = {r["mes"]: float(r["factor_a_hoy"]) for _, r in defl.iterrows()}
+    m["factor"] = m["mes"].map(fac).fillna(1.0)
+    m["margen_real"] = m["margen"] * m["factor"]
+
+    ing_t = m["ingreso_sitio3"].sum(); mar_t = m["margen"].sum()
+    k = st.columns(4)
+    k[0].metric("Ingreso Sitio 3 acum.", _mm(ing_t))
+    k[1].metric("Margen acum.", _mm(mar_t), f"{mar_t/ing_t*100:.1f}%" if ing_t else None)
+    k[2].metric("Margen real (jun $)", _mm(m["margen_real"].sum()))
+    k[3].metric("Mortandad S3 prom.", f"{m['mort_s3_pct_prom'].mean():.1f}%")
+
+    st.markdown("#### Resumen mensual")
+    show = pd.DataFrame({
+        "Mes": m["mes"], "Lotes": m["lotes"], "Cabezas S3": m["cabezas_s3"],
+        "Mort. S3 %": m["mort_s3_pct_prom"],
+        "Ing. S3 (M)": (m["ingreso_sitio3"]/1e6).round(0),
+        "Costo (M)": (m["costo_total"]/1e6).round(0),
+        "Margen (M)": (m["margen"]/1e6).round(0),
+        "Margen %": m["margen_pct"],
+        "Margen real (M)": (m["margen_real"]/1e6).round(0),
+        "Alim. $/kg": m["costo_alim_x_kg"].round(0),
+        "Ing./cabeza": m["ingreso_x_cabeza"].round(0),
+    })
+    st.dataframe(show, hide_index=True, use_container_width=True,
+                 column_config={c: st.column_config.NumberColumn(format="%.0f")
+                                for c in ["Cabezas S3","Ing. S3 (M)","Costo (M)","Margen (M)",
+                                          "Margen real (M)","Alim. $/kg","Ing./cabeza"]}
+                 | {"Mort. S3 %": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Margen %": st.column_config.NumberColumn(format="%.1f%%")})
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Margen % vs mortandad Sitio 3** — por mes")
+        mm = m[["mes"]].copy(); mm["Margen %"] = m["margen_pct"]; mm["Mortandad S3 %"] = m["mort_s3_pct_prom"]
+        st.line_chart(mm.set_index("mes"), use_container_width=True)
+    with c2:
+        st.markdown("**Costo de alimento (ARS/kg)** — evolución")
+        al = m[["mes"]].copy(); al["Alimento $/kg"] = m["costo_alim_x_kg"]
+        st.line_chart(al.set_index("mes"), use_container_width=True)
+
+    # -------- comparativa entre lotes: el "por qué un lote rinde más" --------
+    st.markdown("#### 🐷 Comparativa entre lotes")
+    lo = cat(f"SELECT to_char(mes,'YYYY-MM') mes, lote, q_sitio3, kg_prom_s3, precio_s3, mortandad_s3_pct, "
+             f"merma_total_pct, ingreso_sitio3, costo_total, margen, margen_pct, costo_x_cabeza, "
+             f"ingreso_x_cabeza, margen_x_cabeza, costo_alim_x_kg, conversion_alim "
+             f"FROM {SC}.v_prod_lote ORDER BY mes, lote")
+    if lo is not None and not lo.empty:
+        for c in lo.columns:
+            if c not in ("mes", "lote"):
+                lo[c] = pd.to_numeric(lo[c], errors="coerce")
+        st.caption("Cada fila es un lote. Ordenado por margen %. Comparás mortandad, precio de venta, "
+                   "alimento por kg y conversión para entender por qué un lote deja más que otro.")
+        tab = pd.DataFrame({
+            "Mes": lo["mes"], "Lote": lo["lote"],
+            "Cabezas S3": lo["q_sitio3"], "Kg prom": lo["kg_prom_s3"].round(1),
+            "Precio $/kg": lo["precio_s3"].round(0),
+            "Mort. S3 %": lo["mortandad_s3_pct"], "Merma total %": lo["merma_total_pct"],
+            "Margen (M)": (lo["margen"]/1e6).round(1), "Margen %": lo["margen_pct"],
+            "Margen/cabeza": lo["margen_x_cabeza"].round(0),
+            "Alim. $/kg": lo["costo_alim_x_kg"].round(0),
+            "Conversión": lo["conversion_alim"].round(2),
+        }).sort_values("Margen %", ascending=False)
+        st.dataframe(tab, hide_index=True, use_container_width=True,
+                     column_config={c: st.column_config.NumberColumn(format="%.0f")
+                                    for c in ["Cabezas S3","Precio $/kg","Margen/cabeza","Alim. $/kg"]}
+                     | {"Mort. S3 %": st.column_config.NumberColumn(format="%.1f%%"),
+                        "Merma total %": st.column_config.NumberColumn(format="%.1f%%"),
+                        "Margen %": st.column_config.NumberColumn(format="%.1f%%"),
+                        "Kg prom": st.column_config.NumberColumn(format="%.1f"),
+                        "Margen (M)": st.column_config.NumberColumn(format="%.1f"),
+                        "Conversión": st.column_config.NumberColumn(format="%.2f")})
+        if alt is not None:
+            st.markdown("**Mapa: mortandad S3 vs margen %** (tamaño = cabezas; arriba-izquierda = ideal)")
+            sc = lo.dropna(subset=["mortandad_s3_pct", "margen_pct"]).copy()
+            if not sc.empty:
+                st.altair_chart(
+                    alt.Chart(sc).mark_circle(opacity=0.8).encode(
+                        x=alt.X("mortandad_s3_pct:Q", title="Mortandad Sitio 3 %"),
+                        y=alt.Y("margen_pct:Q", title="Margen %"),
+                        size=alt.Size("q_sitio3:Q", legend=None, scale=alt.Scale(range=[80, 700])),
+                        color=alt.Color("mes:N", legend=alt.Legend(title="Mes", orient="top")),
+                        tooltip=["mes", "lote",
+                                 alt.Tooltip("mortandad_s3_pct:Q", title="Mort. S3 %", format=".1f"),
+                                 alt.Tooltip("margen_pct:Q", title="Margen %", format=".1f"),
+                                 alt.Tooltip("precio_s3:Q", title="Precio $/kg", format=",.0f"),
+                                 alt.Tooltip("costo_alim_x_kg:Q", title="Alim $/kg", format=",.0f")],
+                    ).properties(height=300), use_container_width=True)
+
+    # -------- costo por rubro --------
+    st.markdown("#### Costo por rubro")
+    cr = cat(f"SELECT to_char(mes,'YYYY-MM') mes, rubro, sum(monto) monto FROM {SC}.v_prod_costo_rubro "
+             f"GROUP BY 1,2 ORDER BY 1")
+    if cr is not None and not cr.empty:
+        cr["monto"] = pd.to_numeric(cr["monto"], errors="coerce")/1e6
+        piv = cr.pivot_table(index="mes", columns="rubro", values="monto", aggfunc="sum").fillna(0).round(1)
+        st.bar_chart(piv, use_container_width=True)
+
+    # -------- precios MP nutrición --------
+    with st.expander("🛢️ Precios de materia prima (nutrición)"):
+        mp = cat(f"SELECT campo, um, ars, usd, proveedor, precio_final FROM {SC}.v_precio_mp "
+                 f"WHERE rubro='NUTRICION' ORDER BY ars DESC NULLS LAST")
+        if mp is not None and not mp.empty:
+            st.dataframe(mp, hide_index=True, use_container_width=True)
+        else:
+            st.caption("Sin precios de MP cargados.")
+
+    # -------- venta 1/2 res (dato aparte) --------
+    vr = m[["mes", "venta_media_res"]].copy()
+    vr = vr[vr["venta_media_res"].fillna(0) > 0]
+    if not vr.empty:
+        with st.expander("🥩 Venta de ½ res (referencia, NO entra al resultado)"):
+            vr["Venta ½ res (M)"] = (vr["venta_media_res"]/1e6).round(0)
+            st.dataframe(vr[["mes", "Venta ½ res (M)"]].rename(columns={"mes": "Mes"}),
+                         hide_index=True, use_container_width=True)
+            st.caption("Valorización de la venta en media res; se muestra sólo como referencia comercial.")
