@@ -242,8 +242,11 @@ def render(USR, cat, conectar):
         _pv["_aprov_pct"] = (_pv["real_kg"] / _pv["max_kg"] * 100.0).where(_pv["max_kg"] > 0)
         _pv["_fuente"] = _pv["fuente_lab"].map({"TICKETS": "🎫 tickets", "TICKET_REACCION": "🎫 ticket=ID",
                                                "ASIGNADO": "🧪 manual"}).fillna("—")
+        _rxshort = lambda v: (str(v or "").upper().replace("REACTOR ", "R").replace("BACHA ", "B").strip() or "—")
+        _pv["_rx"] = _pv["reactor"].map(_rxshort)
+        _pv["_ylab"] = _pv["ident"].astype(str) + " · " + _pv["_rx"] + " · " + _pv["subtipo"].astype(str)
         _pv = _pv.sort_values(["fecha", "id_batch"])
-        _order = list(_pv["ident"])
+        _order = list(_pv["_ylab"])
 
         k = st.columns(4)
         k[0].metric("Reacciones", len(_pv))
@@ -256,20 +259,20 @@ def render(USR, cat, conectar):
                     help="Real / máximo teórico (reactor a tope). Lo que falta es capacidad no usada + merma.")
 
         st.markdown("**Máximo posible · Proyectado por fórmula · Real** (TN por reacción)")
-        _ml = _pv.melt(id_vars=["ident", "tipo", "producto", "_fuente"],
+        _ml = _pv.melt(id_vars=["_ylab", "ident", "subtipo", "producto", "_rx", "_fuente"],
                        value_vars=["_max_tn", "_form_tn", "_real_tn"], var_name="Serie", value_name="TN")
         _ml["Serie"] = _ml["Serie"].map({"_max_tn": "Máximo posible", "_form_tn": "Proyectado (fórmula)",
                                          "_real_tn": "Real"})
         _h = max(260, 64 * len(_pv))
         st.altair_chart(
             alt.Chart(_ml).mark_bar().encode(
-                y=alt.Y("ident:N", sort=_order, title=None),
+                y=alt.Y("_ylab:N", sort=_order, title=None),
                 yOffset=alt.YOffset("Serie:N", sort=["Máximo posible", "Proyectado (fórmula)", "Real"]),
                 x=alt.X("TN:Q", title="Toneladas de producto final"),
                 color=alt.Color("Serie:N", scale=alt.Scale(
                     domain=["Máximo posible", "Proyectado (fórmula)", "Real"],
                     range=[C_MUT, C_AMB, C_OK]), legend=alt.Legend(orient="top", title=None)),
-                tooltip=["ident", "tipo", "producto", "_fuente", "Serie",
+                tooltip=[alt.Tooltip("ident:N", title="Reacción"), alt.Tooltip("_rx:N", title="Reactor"), alt.Tooltip("subtipo:N", title="Tipo"), "producto", "_fuente", "Serie",
                          alt.Tooltip("TN:Q", format=",.2f")],
             ).properties(height=_h), use_container_width=True)
 
@@ -280,11 +283,11 @@ def render(USR, cat, conectar):
             _pv["_col"] = _pv["_desv_tn"].map(lambda v: "Real < fórmula" if v < 0 else "Real ≥ fórmula")
             st.altair_chart(
                 alt.Chart(_pv).mark_bar(cornerRadius=3).encode(
-                    y=alt.Y("ident:N", sort=_order, title=None),
+                    y=alt.Y("_ylab:N", sort=_order, title=None),
                     x=alt.X("_desv_tn:Q", title="Desvío (TN)"),
                     color=alt.Color("_col:N", scale=alt.Scale(domain=["Real < fórmula", "Real ≥ fórmula"],
                                                               range=[C_BAD, C_OK]), legend=None),
-                    tooltip=["ident", "producto",
+                    tooltip=[alt.Tooltip("ident:N", title="Reacción"), alt.Tooltip("_rx:N", title="Reactor"), alt.Tooltip("subtipo:N", title="Tipo"), "producto",
                              alt.Tooltip("_form_tn:Q", title="Proyectado (TN)", format=",.2f"),
                              alt.Tooltip("_real_tn:Q", title="Real (TN)", format=",.2f"),
                              alt.Tooltip("_desv_tn:Q", title="Desvío (TN)", format="+,.2f"),
@@ -293,11 +296,11 @@ def render(USR, cat, conectar):
         with c2:
             st.markdown("**Aprovechamiento vs máximo** — Real / máximo teórico (%)")
             st.caption("Cuánto del máximo (reactor a tope) se obtuvo. Meta de referencia 90%.")
-            _base = alt.Chart(_pv).encode(y=alt.Y("ident:N", sort=_order, title=None))
+            _base = alt.Chart(_pv).encode(y=alt.Y("_ylab:N", sort=_order, title=None))
             st.altair_chart(
                 (_base.mark_bar(cornerRadius=3, color=C_PRI).encode(
                     x=alt.X("_aprov_pct:Q", title="% del máximo", scale=alt.Scale(domain=[0, 110])),
-                    tooltip=["ident", "producto",
+                    tooltip=[alt.Tooltip("ident:N", title="Reacción"), alt.Tooltip("_rx:N", title="Reactor"), alt.Tooltip("subtipo:N", title="Tipo"), "producto",
                              alt.Tooltip("_real_tn:Q", title="Real (TN)", format=",.2f"),
                              alt.Tooltip("_max_tn:Q", title="Máximo (TN)", format=",.2f"),
                              alt.Tooltip("_aprov_pct:Q", title="Aprovechado %", format=".0f")])
@@ -305,7 +308,7 @@ def render(USR, cat, conectar):
                  ).properties(height=_h), use_container_width=True)
 
         _tab = pd.DataFrame({
-            "Reacción": _pv["ident"], "Tipo": _pv["tipo"], "Producto": _pv["producto"],
+            "Reacción": _pv["ident"], "Reactor": _pv["_rx"], "Tipo": _pv["subtipo"], "Producto": _pv["producto"],
             "Fuente real": _pv["_fuente"],
             "Proyect. fórmula (TN)": _pv["_form_tn"].round(2), "Real (TN)": _pv["_real_tn"].round(2),
             "Desvío (TN)": _pv["_desv_tn"].round(2), "Desvío %": _pv["_desv_pct"].round(1),
