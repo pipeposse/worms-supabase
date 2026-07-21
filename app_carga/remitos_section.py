@@ -422,7 +422,7 @@ def _card_revision(item: dict, h: str):
         datos["producto"] = c7.text_input("Producto", datos.get("producto") or "", key=f"pr_{h}")
         datos["emisor_cuit"] = c8.text_input("CUIT emisor", datos.get("emisor_cuit") or "", key=f"cu_{h}")
 
-        with st.expander("Transporte y otros datos"):
+        if st.toggle("Transporte y otros datos", key=f"trmore_{h}"):
             d1, d2, d3 = st.columns(3)
             datos["transportista"] = d1.text_input("Transportista", datos.get("transportista") or "", key=f"tr_{h}")
             datos["patente_chasis"] = d2.text_input("Patente chasis", datos.get("patente_chasis") or "", key=f"pc_{h}")
@@ -605,7 +605,19 @@ def render(USR, conectar):
                         continue
                     if it["estado"] == "DUPLICADO":
                         st.error(f"🔁 {it['motivo']}. No se sube de nuevo.")
-                    _card_revision(it, h)
+                    try:
+                        _card_revision(it, h)
+                    except Exception as _ecr:
+                        st.error(f"No se pudo mostrar el formulario de este remito: {_ecr}")
+                        st.image(it["raw"], width=350)
+                        _fbn2 = st.text_input("N° de remito (para no perderlo)", key=f"fbnro2_{h}")
+                        if st.button("💾 Guardar como pendiente", key=f"fbsave2_{h}"):
+                            try:
+                                _guardar_fallido(conectar, USR, it["name"], _fbn2, str(_ecr), it.get("datos"))
+                                st.success("Guardado como pendiente (pestaña 'Carga manual rápida').")
+                            except Exception as _e3:
+                                st.error(f"No se pudo guardar el pendiente: {_e3}")
+                        continue
                     if it["estado"] != "DUPLICADO":
                         d = it["datos"]
                         ok = bool(d.get("emisor") and d.get("nro_remito") and d.get("neto_kg"))
