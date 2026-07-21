@@ -1619,6 +1619,7 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
 
 @st.dialog("🗂️ Ficha de reacción", width="large")
 def _dlg_reaccion(USR, cat, conectar, idb):
+    densidad_de = (st.session_state.get("_plan_helpers") or {}).get("densidad_de")
     info = cat("SELECT identificador_unidad AS ident, estado, tipo_proceso, "
                " et.etiqueta, bu.nombre_ui AS reactor, dpb.codigo_producto AS producto_obj, b.kg_obtenido, "
                " (b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS inicio_local, "
