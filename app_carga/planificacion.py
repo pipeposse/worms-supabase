@@ -1366,14 +1366,35 @@ def _registrar_destino_cierre(USR, cat, conectar, idb):
     st.caption("Elegí a qué tanque fue cada corriente y **Registrar**: genera la entrada al tanque en el libro de "
                "movimientos (rol PRODUCTO_FINAL / SUBPRODUCTO). Si ya había movimientos de cierre para esta reacción, se reemplazan.")
     _streams = []
-    _pf_kg = float(_p.get("are_objetivo_kg") or _p.get("afe_objetivo_kg") or 0.0)
-    _t_pf = _sel(f"Tanque destino · {_pf_code}",
-                 (_b["id_tanque_are_final"] if _es_are else _b["desg_id_tanque_destino"]), f"rd_pf_{idb}")
-    cpf1, cpf2 = st.columns(2)
-    _l_pf = cpf1.number_input(f"{_pf_code} · litros", 0.0, 1e7,
-                              value=float(round(_pf_kg / _pf_dens if _pf_dens else 0.0, 0)), step=50.0, key=f"rd_pfl_{idb}")
-    _kg_pf = cpf2.number_input(f"{_pf_code} · kg", 0.0, 1e7, value=float(round(_pf_kg, 0)), step=50.0, key=f"rd_pfkg_{idb}")
-    _streams.append(("PRODUCTO_FINAL", _id_pf, _pf_code, _t_pf, _l_pf, _kg_pf))
+    # total del producto final: tickets de pesada si hay, si no el teórico
+    _tkq = cat("SELECT round(sum(kg)::numeric,0) AS kg FROM produccion.fact_batch_ticket_final "
+               "WHERE id_batch=%s AND NOT COALESCE(anulado,false)", (int(idb),))
+    _tk_kg = float(_tkq.iloc[0]["kg"]) if (_tkq is not None and not _tkq.empty and _tkq.iloc[0]["kg"] is not None) else 0.0
+    _pf_kg = _tk_kg or float(_p.get("are_objetivo_kg") or _p.get("afe_objetivo_kg") or 0.0)
+    st.markdown(f"**Producto final · {_pf_code}** — total a repartir ≈ **{_pf_kg/1000:,.2f} t**. Elegí hasta **3 tanques**.")
+    _npf = st.radio("¿En cuántos tanques?", [1, 2, 3], horizontal=True, key=f"rd_npf_{idb}")
+    _cur_pf = (_b["id_tanque_are_final"] if _es_are else _b["desg_id_tanque_destino"])
+    _pf_sum_kg = 0.0
+    for _pi in range(int(_npf)):
+        _tp_i = _sel(f"Tanque destino {_pi+1} · {_pf_code}", (_cur_pf if _pi == 0 else None), f"rd_pf_{idb}_{_pi}")
+        _pc1, _pc2 = st.columns(2)
+        _defkg = round(_pf_kg / int(_npf), 0)
+        _kg_i = _pc2.number_input(f"{_pf_code} #{_pi+1} · kg", 0.0, 1e7, value=float(_defkg), step=50.0, key=f"rd_pfkg_{idb}_{_pi}")
+        _l_i = _pc1.number_input(f"{_pf_code} #{_pi+1} · litros", 0.0, 1e7,
+                                 value=float(round(_kg_i / _pf_dens if _pf_dens else 0.0, 0)), step=50.0, key=f"rd_pfl_{idb}_{_pi}")
+        _streams.append(("PRODUCTO_FINAL", _id_pf, _pf_code, _tp_i, _l_i, _kg_i))
+        _pf_sum_kg += float(_kg_i)
+    _pf_ids = [s[3] for s in _streams if s[0] == "PRODUCTO_FINAL" and s[3]]
+    _pf_dup = len(set(_pf_ids)) != len(_pf_ids)
+    _falt = (_pf_kg - _pf_sum_kg) / 1000.0
+    if _pf_dup:
+        st.warning("Hay tanques de producto final repetidos: elegí tanques distintos.")
+    elif _pf_kg > 0 and abs(_falt) <= 0.05:
+        st.success(f"✅ Reparto completo: {_pf_sum_kg/1000:,.2f} t de {_pf_kg/1000:,.2f} t.")
+    elif _pf_kg > 0:
+        (st.warning if abs(_falt) <= 0.5 else st.error)(
+            f"Repartidas {_pf_sum_kg/1000:,.2f} t de {_pf_kg/1000:,.2f} t · faltan/sobran {_falt:+,.2f} t.")
+    _okpf = (not _pf_dup) and ((_pf_kg <= 0) or abs(_falt) <= 0.5)
 
     if _es_are:
         _aporte = float(_p.get("aporte_glicerina_pct") or 10.0)
@@ -1399,7 +1420,7 @@ def _registrar_destino_cierre(USR, cat, conectar, idb):
     _kg_ag = ca2.number_input("Agua · kg", 0.0, 1e7, value=float(round(_agua_def, 0)), step=25.0, key=f"rd_agkg_{idb}")
     _streams.append(("SUBPRODUCTO", None, "Agua", _t_ag, _l_ag, _kg_ag))
 
-    if st.button("💾 Registrar destino y movimientos", type="primary", key=f"rd_save_{idb}", use_container_width=True):
+    if st.button("💾 Registrar destino y movimientos", type="primary", key=f"rd_save_{idb}", use_container_width=True, disabled=not _okpf):
         _uid = int(USR["id_usuario"])
         try:
             _n = 0
@@ -1419,12 +1440,14 @@ def _registrar_destino_cierre(USR, cat, conectar, idb):
                             (int(idb), _b["ident"], _rol, _idp, _txt, int(_tid),
                              float(_lit or 0), float(_kg or 0), float(_lit or 0), _uid))
                         _n += 1
+                    _pf_first = next((s[3] for s in _streams if s[0] == "PRODUCTO_FINAL" and s[3]), None)
+                    _gli_t = next((s[3] for s in _streams if s[2] == "Glicerina recuperada" and s[3]), None)
                     if _es_are:
                         cur.execute("UPDATE produccion.fact_batch_proceso SET id_tanque_are_final=%s, id_tanque_gli_recup=%s WHERE id_batch=%s",
-                                    (_streams[0][3], (_streams[1][3] if len(_streams) > 1 else None), int(idb)))
+                                    (_pf_first, _gli_t, int(idb)))
                     else:
                         cur.execute("UPDATE produccion.fact_batch_proceso SET desg_id_tanque_destino=%s WHERE id_batch=%s",
-                                    (_streams[0][3], int(idb)))
+                                    (_pf_first, int(idb)))
                 audit.log("I", "fact_movimiento_stock", int(idb), {"destino_cierre": True, "movs": _n})
             st.success(f"Destino registrado · {_n} movimiento(s) de stock generado(s).")
             cat.clear(); st.rerun()
