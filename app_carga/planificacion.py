@@ -899,7 +899,7 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
     _pobj = (producto_obj or "").strip()
     if not _pobj:
         st.info("Esta reacción no tiene producto final definido."); return
-    asg = cat("SELECT id, ticket, producto, calidad, kg FROM produccion.fact_batch_ticket_final "
+    asg = cat("SELECT id, ticket, producto, calidad, kg, fraccion FROM produccion.fact_batch_ticket_final "
               "WHERE id_batch=%s AND NOT COALESCE(anulado,false) ORDER BY ticket", (int(idb),))
     _tot_kg = float(asg["kg"].fillna(0).sum()) if (asg is not None and not asg.empty) else 0.0
     c1, c2 = st.columns(2)
@@ -925,7 +925,7 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
                             _rc = cand.iloc[_copt.index(_sc)]
                             cur.execute("INSERT INTO produccion.fact_batch_ticket_final "
                                         "(id_batch,ticket,producto,calidad,kg,fecha,id_usuario) VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                                        "ON CONFLICT (ticket) WHERE anulado=false DO NOTHING",
+                                        "ON CONFLICT (id_batch,ticket) WHERE anulado=false DO NOTHING",
                                         (int(idb), str(_rc["ticket"]), _pobj, _rc["calidad"], float(_rc["kg"] or 0),
                                          (str(_rc["fecha"]) if pd.notna(_rc["fecha"]) else None), int(USR["id_usuario"])))
                         _recompute_final(cur, int(idb))
@@ -955,18 +955,65 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
                     with conectar(int(USR["id_usuario"])) as (conn, audit):
                         with conn.cursor() as cur:
                             cur.execute("INSERT INTO produccion.fact_batch_ticket_final (id_batch,ticket,producto,calidad,kg,id_usuario) "
-                                        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (ticket) WHERE anulado=false DO NOTHING",
+                                        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (id_batch,ticket) WHERE anulado=false DO NOTHING",
                                         (int(idb), _mtv, _pobj, _calv, float(_kgv or 0), int(USR["id_usuario"])))
                             _recompute_final(cur, int(idb))
                     st.success("Ticket asignado."); cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
+    with st.expander("➗ Dividir una pesada compartida (2 o 3 desgomados con un solo ticket)"):
+        st.caption("Cuando varios desgomados se pesaron juntos en una sola pesada, cargá el N° de ese ticket, "
+                   "en cuántos se dividió y cuántas partes le tocan a esta reacción.")
+        _dt = st.text_input("N° de ticket de la pesada", key=f"pf_dt_{idb}")
+        _d1, _d2 = st.columns(2)
+        _dn = _d1.selectbox("Se dividió en", [2, 3, 4], key=f"pf_dn_{idb}")
+        _dp = _d2.number_input("Partes para esta reacción", 1, int(_dn), 1, key=f"pf_dp_{idb}")
+        _dkg_tot = None; _dcal = None
+        if (_dt or "").strip():
+            _lk = cat("SELECT round(abs(COALESCE(peso_neto,0))::numeric,0) AS kg, lab_calidad "
+                      "FROM produccion.v_transacciones_limpias WHERE transaccion::text=%s LIMIT 1", ((_dt or "").strip(),))
+            if _lk is not None and not _lk.empty:
+                _dkg_tot = float(_lk.iloc[0]["kg"] or 0); _dcal = _lk.iloc[0]["lab_calidad"]
+        _dkg_man = st.number_input("...o kilos TOTALES de la pesada a mano (si no está en balanza)",
+                                   min_value=0.0, value=0.0, step=10.0, key=f"pf_dkgman_{idb}")
+        _dbase = _dkg_tot if _dkg_tot is not None else float(_dkg_man or 0)
+        if _dbase > 0:
+            _dpart = _dbase * (int(_dp) / int(_dn))
+            st.info(f"Pesada total **{_dbase/1000:.2f} t** ÷ {int(_dn)} × {int(_dp)} parte(s) = "
+                    f"**{_dpart/1000:.2f} t** para esta reacción.")
+        elif (_dt or "").strip():
+            st.caption("Ese ticket no aparece en balanza; cargá los kilos totales a mano arriba.")
+        if st.button("➗ Asignar la parte a esta reacción", key=f"pf_dadd_{idb}"):
+            _tv = (_dt or "").strip()
+            if not _tv:
+                st.warning("Poné el N° de ticket.")
+            elif _dbase <= 0:
+                st.warning("No hay kilos de la pesada (ni de balanza ni a mano).")
+            else:
+                _kgpart = round(_dbase * (int(_dp) / int(_dn)), 0)
+                try:
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("INSERT INTO produccion.fact_batch_ticket_final "
+                                        "(id_batch,ticket,producto,calidad,kg,fraccion,id_usuario) "
+                                        "VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                                        "ON CONFLICT (id_batch,ticket) WHERE anulado=false "
+                                        "DO UPDATE SET kg=EXCLUDED.kg, fraccion=EXCLUDED.fraccion",
+                                        (int(idb), _tv, _pobj, _dcal, float(_kgpart),
+                                         float(int(_dp) / int(_dn)), int(USR["id_usuario"])))
+                            _recompute_final(cur, int(idb))
+                            audit.log("I", "fact_batch_ticket_final", int(idb),
+                                      {"ticket": _tv, "fraccion": f"{int(_dp)}/{int(_dn)}", "kg": _kgpart})
+                    st.success(f"Asignada la parte: {_kgpart/1000:.2f} t (÷{int(_dn)}×{int(_dp)})."); cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
     if asg is not None and not asg.empty:
         st.markdown("**Tickets asignados** (editá los kilos o marcá *Quitar*)")
         _disp = asg.copy(); _disp["Quitar"] = False
-        _disp = _disp.rename(columns={"ticket": "Ticket", "producto": "Producto", "calidad": "Calidad", "kg": "Kg"})
-        edp = st.data_editor(_disp[["Ticket", "Producto", "Calidad", "Kg", "Quitar"]], hide_index=True, use_container_width=True,
-                             disabled=["Ticket", "Producto", "Calidad"], key=f"pf_ed_{idb}",
+        _disp["frac_txt"] = _disp["fraccion"].apply(lambda v: (f"{v:.2f}" if pd.notna(v) else "completo"))
+        _disp = _disp.rename(columns={"ticket": "Ticket", "producto": "Producto", "calidad": "Calidad", "kg": "Kg", "frac_txt": "Fracción"})
+        edp = st.data_editor(_disp[["Ticket", "Producto", "Calidad", "Fracción", "Kg", "Quitar"]], hide_index=True, use_container_width=True,
+                             disabled=["Ticket", "Producto", "Calidad", "Fracción"], key=f"pf_ed_{idb}",
                              column_config={"Kg": st.column_config.NumberColumn(format="%g"),
                                             "Quitar": st.column_config.CheckboxColumn()})
         if st.button("💾 Guardar (definir kilos finales por estos tickets)", type="primary", key=f"pf_save_{idb}", use_container_width=True):
