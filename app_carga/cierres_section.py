@@ -76,7 +76,7 @@ def render(USR, cat, conectar):
             "Margen %": pl["margen_neto_pct"],
         })
         st.dataframe(_show, hide_index=True, use_container_width=True,
-                     column_config={c: st.column_config.NumberColumn(format="%,.0f")
+                     column_config={c: st.column_config.NumberColumn(format="localized")
                                     for c in ["Ingresos","Gastos","M.Prima","Costo var.","Costo fijo","Margen contrib.","Resultado"]})
         st.caption("Cifras en millones de ARS.")
         _ch = pl[["mes"]].copy()
@@ -146,9 +146,9 @@ def render(USR, cat, conectar):
             if _es_compra:
                 _cols.insert(4, "Rubro")
             st.dataframe(_t[_cols], hide_index=True, use_container_width=True,
-                         column_config={"Precio": st.column_config.NumberColumn(format="%,.1f"),
-                                        "Cantidad": st.column_config.NumberColumn(format="%,.1f"),
-                                        _val_lbl: st.column_config.NumberColumn(format="%,.0f")})
+                         column_config={"Precio": st.column_config.NumberColumn(format="localized"),
+                                        "Cantidad": st.column_config.NumberColumn(format="localized"),
+                                        _val_lbl: st.column_config.NumberColumn(format="localized")})
             st.caption("Precio = promedio ponderado por cantidad. La última columna es el total en ARS "
                        "(moneda contable), con separador de miles.")
 
@@ -292,7 +292,7 @@ def render(USR, cat, conectar):
                 "Ingreso USD (miles)": (real["ing_usd"]/1e3).round(0),
                 "Resultado USD (miles)": (real["resultado_usd"]/1e3).round(0)})
             st.dataframe(_t, hide_index=True, use_container_width=True,
-                         column_config={c: st.column_config.NumberColumn(format="%,.0f") for c in _t.columns if c != "Mes"})
+                         column_config={c: st.column_config.NumberColumn(format="localized") for c in _t.columns if c != "Mes"})
             _c = pd.DataFrame({"Mes": real["mes"], "Nominal": real["ing_nominal"]/1e6, "Real (constante)": real["ing_real"]/1e6})
             st.line_chart(_c.set_index("Mes"), use_container_width=True)
         st.info("**Sobre estacionalidad:** desestacionalizar formalmente (X-13 / STL) necesita 2–3 años de historia mensual. "
@@ -325,7 +325,7 @@ def render(USR, cat, conectar):
                                    "cantidad_tn": "TN compradas", "indice_estacional": "Indice estac.",
                                    "var_mom_usd_pct": "Var MoM % (USD)"}),
                 hide_index=True, use_container_width=True,
-                column_config={c: st.column_config.NumberColumn(format="%,.0f")
+                column_config={c: st.column_config.NumberColumn(format="localized")
                                for c in ["ARS/TN nominal", "ARS/TN real", "TN compradas"]})
             st.info("**Lectura:** los precios de MP están **estables en USD** (ej. AFE-S ~945 USD/TN constante). "
                     "Los saltos grandes en ARS son **monetarios** (inflación/devaluación), no estacionalidad real — "
@@ -358,7 +358,7 @@ def render(USR, cat, conectar):
                                               "gasto": "Gasto ARS", "resultado": "Resultado ARS",
                                               "margen": "Margen %"}),
                          hide_index=True, use_container_width=True,
-                         column_config={c: st.column_config.NumberColumn(format="%,.0f")
+                         column_config={c: st.column_config.NumberColumn(format="localized")
                                         for c in ["Ingreso ARS", "Gasto ARS", "Resultado ARS"]}
                          | {"Margen %": st.column_config.NumberColumn(format="%.1f%%")})
             try:
@@ -466,7 +466,7 @@ def render(USR, cat, conectar):
 # ==================== CALZIM · FACTURAS ====================
 def _render_calzim_facturas(cat):
     st.caption("**CALZIM · Facturas** — P&L mensual: ingresos por venta (capón + chancha) menos egresos "
-               "(union_gastos). ARS en millones. Período ene–jun 2026. El resultado real deflacta a "
+               "(union_gastos). Montos en ARS con separador de miles. Período ene–jun 2026. El resultado real "
                "pesos de junio con IPC INDEC 2026.")
     pl = cat(f"SELECT to_char(mes,'YYYY-MM') mes, ingresos, ing_capon, ing_chancha, cabezas, cab_capon, "
              f"precio_capon, egresos, e_nutricion, e_personal, e_otros, resultado, margen_pct "
@@ -494,22 +494,29 @@ def _render_calzim_facturas(cat):
     k[3].metric("Meses cargados", str(len(pl)))
 
     st.markdown("#### P&L mensual")
+    mort = cat(f"SELECT to_char(mes,'YYYY-MM') mes, mort_s3_pct_prom FROM {SC}.v_prod_mensual ORDER BY mes")
+    _mort = {}
+    if mort is not None and not mort.empty:
+        _mort = {r["mes"]: pd.to_numeric(r["mort_s3_pct_prom"], errors="coerce") for _, r in mort.iterrows()}
     show = pd.DataFrame({
         "Mes": pl["mes"],
-        "Ingresos": (pl["ingresos"]/1e6).round(0),
-        "Egresos": (pl["egresos"]/1e6).round(0),
-        "Resultado": (pl["resultado"]/1e6).round(0),
+        "Ingresos ARS": pl["ingresos"].round(0),
+        "Egresos ARS": pl["egresos"].round(0),
+        "Resultado ARS": pl["resultado"].round(0),
         "Margen %": pl["margen_pct"],
-        "Result. real (jun$)": (d["result_real"]/1e6).round(0),
+        "Result. real ARS (jun$)": d["result_real"].round(0),
+        "Mortandad S3 %": pl["mes"].map(_mort),
         "Capones": pl["cab_capon"],
-        "Precio capón": pl["precio_capon"].round(0),
+        "Precio capón ARS/kg": pl["precio_capon"].round(0),
     })
     st.dataframe(show, hide_index=True, use_container_width=True,
-                 column_config={c: st.column_config.NumberColumn(format="%,.0f")
-                                for c in ["Ingresos","Egresos","Resultado","Result. real (jun$)",
-                                          "Capones","Precio capón"]}
-                 | {"Margen %": st.column_config.NumberColumn(format="%.1f%%")})
-    st.caption("Cifras en millones de ARS salvo capones (cabezas) y precio (ARS/kg).")
+                 column_config={c: st.column_config.NumberColumn(format="localized")
+                                for c in ["Ingresos ARS","Egresos ARS","Resultado ARS",
+                                          "Result. real ARS (jun$)","Capones","Precio capón ARS/kg"]}
+                 | {"Margen %": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Mortandad S3 %": st.column_config.NumberColumn(format="%.1f%%")})
+    st.caption("Montos en **ARS** con separador de miles. **Mortandad S3 %** = mortandad observada en "
+               "Sitio 3 de los lotes del mes (modelo producción); en meses sin lotes cargados queda vacía.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -577,7 +584,7 @@ def _render_calzim_produccion(cat):
         "Ing./cabeza": m["ingreso_x_cabeza"].round(0),
     })
     st.dataframe(show, hide_index=True, use_container_width=True,
-                 column_config={c: st.column_config.NumberColumn(format="%,.0f")
+                 column_config={c: st.column_config.NumberColumn(format="localized")
                                 for c in ["Cabezas S3","Ing. S3 (M)","Costo (M)","Margen (M)",
                                           "Margen real (M)","Alim. $/kg","Ing./cabeza"]}
                  | {"Mort. S3 %": st.column_config.NumberColumn(format="%.1f%%"),
@@ -616,7 +623,7 @@ def _render_calzim_produccion(cat):
             "Conversión": lo["conversion_alim"].round(2),
         }).sort_values("Margen %", ascending=False)
         st.dataframe(tab, hide_index=True, use_container_width=True,
-                     column_config={c: st.column_config.NumberColumn(format="%,.0f")
+                     column_config={c: st.column_config.NumberColumn(format="localized")
                                     for c in ["Cabezas S3","Precio $/kg","Margen/cabeza","Alim. $/kg"]}
                      | {"Mort. S3 %": st.column_config.NumberColumn(format="%.1f%%"),
                         "Merma total %": st.column_config.NumberColumn(format="%.1f%%"),
