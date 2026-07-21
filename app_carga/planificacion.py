@@ -1771,27 +1771,76 @@ def _dlg_reaccion(USR, cat, conectar, idb):
         else:
             _opt = _tks.apply(lambda r: f"{r['nombre']} · {r['codigo']}", axis=1).tolist()
             _cur = str(b["destino"] or "")
-            _idx = next((i for i, o in enumerate(_opt) if _cur and (_cur in o or o in _cur)), None)
             st.caption(f"Destino actual: **{_cur or '—'}**")
-            _seldest = st.selectbox("Tanque de destino final", _opt, index=(_idx if _idx is not None else 0), key=f"dlg_dest_{idb}")
-            if st.button("💾 Guardar destino final", type="primary", key=f"dlg_save3_{idb}", use_container_width=True):
-                _rr = _tks.iloc[_opt.index(_seldest)]
+            _tt = cat("SELECT COALESCE("
+                      " (SELECT round(sum(kg)::numeric,0) FROM produccion.fact_batch_ticket_final "
+                      "  WHERE id_batch=%s AND NOT COALESCE(anulado,false)),"
+                      " NULLIF(parametros_proceso->>'are_objetivo_kg','')::numeric,"
+                      " NULLIF(parametros_proceso->>'afe_objetivo_kg','')::numeric,"
+                      " NULLIF(parametros_proceso->>'kg_objetivo','')::numeric, 0) AS kg, "
+                      " id_producto_buscado AS idp "
+                      "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(idb), int(idb)))
+            _totkg = float(_tt.iloc[0]["kg"]) if (_tt is not None and not _tt.empty and _tt.iloc[0]["kg"] is not None) else 0.0
+            _idp = _tt.iloc[0]["idp"] if (_tt is not None and not _tt.empty) else None
+            _densp = float(densidad_de(_pobj)) if (callable(densidad_de) and densidad_de(_pobj)) else 0.9
+            _tott = _totkg / 1000.0
+            st.markdown(f"**Total final a repartir: {_tott:,.2f} t** (≈ {(_totkg/_densp if _densp else 0):,.0f} L). "
+                        "Elegí hasta **3 tanques** y repartí las toneladas; la suma tiene que dar el total.")
+            _nd = st.radio("¿En cuántos tanques?", [1, 2, 3], horizontal=True, key=f"dlg_ndest_{idb}")
+            _picks = []; _sum = 0.0
+            for _di in range(int(_nd)):
+                _dc1, _dc2 = st.columns([3, 1])
+                _sd = _dc1.selectbox(f"Tanque {_di+1}", _opt, key=f"dlg_dest_{idb}_{_di}")
+                _deft = round(_tott / int(_nd), 2) if _tott else 0.0
+                _tv = _dc2.number_input(f"t · #{_di+1}", 0.0, 1e6, value=_deft, step=0.1, format="%.2f", key=f"dlg_destt_{idb}_{_di}")
+                _picks.append((_tks.iloc[_opt.index(_sd)], float(_tv)))
+                _sum += float(_tv)
+            _falt = _tott - _sum
+            _ids = [int(p[0]["id_tanque"]) for p in _picks if p[1] > 0]
+            _dup = len(set(_ids)) != len(_ids)
+            _okrep = (abs(_falt) <= 0.05) and (not _dup) and _sum > 0
+            if _dup:
+                st.warning("Hay tanques repetidos: elegí tanques distintos.")
+            elif _totkg <= 0:
+                st.info("No hay total final (teórico ni tickets). Cargá tickets finales o el objetivo para repartir por toneladas.")
+            elif abs(_falt) <= 0.05:
+                st.success(f"✅ Reparto completo: {_sum:,.2f} t de {_tott:,.2f} t.")
+            else:
+                st.error(f"Repartidas {_sum:,.2f} t de {_tott:,.2f} t · faltan/sobran {_falt:+,.2f} t. Ajustá para que cierre el total.")
+            if st.button("💾 Guardar destino(s) final(es) y registrar", type="primary", key=f"dlg_save3_{idb}",
+                         use_container_width=True, disabled=not _okrep):
                 try:
                     with conectar(int(USR["id_usuario"])) as (conn, audit):
                         with conn.cursor() as cur:
+                            cur.execute("UPDATE produccion.fact_movimiento_stock SET anulado=true, estado_mov='ANULADO' "
+                                        "WHERE id_batch=%s AND sentido=1 AND rol='PRODUCTO_FINAL' AND NOT COALESCE(anulado,false)",
+                                        (int(idb),))
+                            _lbls = []
+                            for _rr, _tv in _picks:
+                                if _tv <= 0:
+                                    continue
+                                _kg = _tv * 1000.0; _l = (_kg / _densp) if _densp else 0.0
+                                cur.execute(
+                                    "INSERT INTO produccion.fact_movimiento_stock "
+                                    "(momento,id_batch,identificador_prod,tipo_movimiento,rol,sentido,id_producto,producto,"
+                                    " fuente,id_tanque,cantidad,unidad,kg,litros,id_usuario,origen,estado_mov) "
+                                    "VALUES (now(),%s,%s,'ENTRADA','PRODUCTO_FINAL',1,%s,%s,'TANQUE',%s,%s,'LT',%s,%s,%s,'ajuste_manual','EJECUTADO')",
+                                    (int(idb), b["ident"], (int(_idp) if pd.notna(_idp) else None), _pobj,
+                                     int(_rr["id_tanque"]), float(_l), float(_kg), float(_l), int(USR["id_usuario"])))
+                                _lbls.append(f"{_rr['nombre']} ({_tv:.1f}t)")
                             cur.execute("UPDATE produccion.fact_batch_proceso SET tanque_destino=%s WHERE id_batch=%s",
-                                        (f"{_rr['nombre']} · {_rr['codigo']}", int(idb)))
+                                        (" + ".join(_lbls), int(idb)))
+                            _first = int(_picks[0][0]["id_tanque"])
                             if _tp == "DESGOMADO_ACUOSO":
-                                cur.execute("UPDATE produccion.fact_batch_proceso SET desg_id_tanque_destino=%s WHERE id_batch=%s",
-                                            (int(_rr["id_tanque"]), int(idb)))
-                            audit.log("U", "fact_batch_proceso", int(idb), {"destino": _rr["codigo"]})
-                    st.success("Destino final guardado."); cat.clear(); st.rerun()
+                                cur.execute("UPDATE produccion.fact_batch_proceso SET desg_id_tanque_destino=%s WHERE id_batch=%s", (_first, int(idb)))
+                            else:
+                                cur.execute("UPDATE produccion.fact_batch_proceso SET id_tanque_are_final=%s WHERE id_batch=%s", (_first, int(idb)))
+                            audit.log("U", "fact_batch_proceso", int(idb), {"destinos": _lbls})
+                    st.success("Destino(s) guardado(s) y movimientos de stock registrados."); cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
         st.divider()
         _control_rendimiento(USR, cat, conectar, int(idb))
-        st.divider()
-        _registrar_destino_cierre(USR, cat, conectar, int(idb))
 
     with tPF:
         _ficha_final_tickets(USR, cat, conectar, int(idb), b.get("producto_obj"))
