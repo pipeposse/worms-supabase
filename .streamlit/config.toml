@@ -1,6 +1,7 @@
 [server]
 headless = true
 runOnSave = false
+fileWatcherType = "none"
 maxUploadSize = 50
 
 [browser]
