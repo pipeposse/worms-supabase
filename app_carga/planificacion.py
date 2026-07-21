@@ -3080,7 +3080,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
 
-    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📈 Performance", "📅 Cronogramas", "📊 Variación semanal", "🧮 Reconciliación"]
+    _grupo_opts = ["➕ Cargar nueva reacción", "⬆️ Carga masiva", "⚙️ Administrar en curso", "📈 Performance", "📅 Cronogramas", "📊 Variación semanal", "🧮 Reconciliación"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3113,6 +3113,14 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         else:
             import desgomado
             desgomado.planificacion(USR, cat, conectar)
+        return
+
+    if _grupo.startswith("⬆️"):
+        try:
+            import carga_masiva
+            carga_masiva.render(USR, cat, conectar, siguiente_identificador)
+        except Exception as e:
+            st.error("No se pudo cargar Carga masiva."); st.exception(e)
         return
 
     if _grupo.startswith("📈"):
