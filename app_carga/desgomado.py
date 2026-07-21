@@ -373,6 +373,17 @@ def produccion(USR, cat, conectar, id_batch=None):
         st.caption(f"Ajuste vs estimado: {'merma' if _merma>0 else 'excedente'} de **{abs(_merma):,.0f} L** "
                    f"(estimado {_lit_def:,.0f} − vaciado {l_afe:,.0f} − quedó {l_rem:,.0f}).")
 
+    # ---- tickets de destino final (pesadas del producto, evaluadas por lab) ----
+    st.markdown("###### 🏁 Tickets de destino final (pesadas del producto)")
+    st.caption("Cargá acá las pesadas de balanza del producto final ya evaluadas por laboratorio. "
+               "La suma define los kilos finales reales de la reacción.")
+    try:
+        import planificacion as _plan
+        _plan._ficha_final_tickets(USR, cat, conectar, int(b["id_batch"]), _pf)
+    except Exception as _etk:
+        st.caption(f"No se pudieron cargar los tickets finales: {_etk}")
+    st.divider()
+
     # confirmación de vaciado: DOS chequeos
     st.markdown("###### Confirmación de vaciado")
     k1, k2 = st.columns(2)
