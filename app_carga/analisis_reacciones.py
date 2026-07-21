@@ -208,9 +208,17 @@ def render(USR, cat, conectar):
     st.caption("Por reacción: **TN proyectadas por la fórmula** vs **TN reales** (desgomados por tickets finales — "
                "AFE-S/AFE-G — · ARE por carga manual) vs el **máximo teórico** si se cargara el reactor a tope. "
                "El desvío muestra dónde la fórmula sobre/subestima; el aprovechamiento, cuánto se dejó sobre la mesa.")
-    _amb = st.radio("Alcance", ["Esta semana", "Todas las reacciones"], horizontal=True, key="anr_pvr_amb")
-    _pv = (dfw if _amb == "Esta semana" else df).copy()
-    _pv = _pv[(_pv["real_kg"].fillna(0) > 0) & (_pv["formula_kg"].fillna(0) > 0)].copy()
+    _fc1, _fc2 = st.columns(2)
+    _wk_opts = (df.dropna(subset=["semana"]).sort_values("semana", ascending=False)
+                  .drop_duplicates("sem_lbl")["sem_lbl"].tolist())
+    _wsel = _fc1.multiselect("Semanas (vacío = todas)", _wk_opts, default=[], key="anr_pvr_wk")
+    _tsel = _fc2.multiselect("Tipo de reacción (vacío = todos)", ["ARE", "DESGOMADO"], default=[], key="anr_pvr_tp")
+    _fbase = df.copy()
+    if _tsel:
+        _fbase = _fbase[_fbase["tipo"].isin(_tsel)]
+    if _wsel:
+        _fbase = _fbase[_fbase["sem_lbl"].isin(_wsel)]
+    _pv = _fbase[(_fbase["real_kg"].fillna(0) > 0) & (_fbase["formula_kg"].fillna(0) > 0)].copy()
     if _pv.empty:
         st.info("No hay reacciones con proyección y real cargados para comparar todavía.")
     else:
@@ -304,7 +312,7 @@ def render(USR, cat, conectar):
                    "y aprovechamiento (vs máximo).")
 
     # ---------- comparación semanal: proyectado vs real vs máximo ----------
-    _wcmp = df[(df["real_kg"].fillna(0) > 0) & (df["formula_kg"].fillna(0) > 0)].copy()
+    _wcmp = _fbase[(_fbase["real_kg"].fillna(0) > 0) & (_fbase["formula_kg"].fillna(0) > 0)].copy()
     if not _wcmp.empty:
         st.markdown("#### 📅 Comparación semanal — proyectado vs real vs máximo")
         _wk2 = (_wcmp.groupby(["semana", "sem_lbl"], as_index=False)
