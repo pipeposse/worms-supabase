@@ -47,9 +47,9 @@ def render(USR, cat, conectar):
         st.error("No hay datos de cierres cargados.")
         return
 
-    t1, t9, t10, t2, t3, t4, t5, t6, t7, t8, t11 = st.tabs(
-        ["📊 Resumen P&L", "🔑 Claves de rentabilidad", "🥧 Composición", "🧭 Dónde está el valor",
-         "📈 Evolución / Q1·Q2", "💱 Precios MP vs venta", "⚠️ Observaciones", "💡 Insights",
+    t1, t9, t10, t3, t4, t5, t6, t7, t8, t11 = st.tabs(
+        ["📊 Resumen P&L", "🔑 Claves de rentabilidad", "🥧 Composición",
+         "📈 Evolución / Q1·Q2", "💱 Precios por producto", "⚠️ Observaciones", "💡 Insights",
          "💵 Pesos constantes", "🛢️ Precios MP", "📂 Datos originales"])
 
     # ============ 1 · Resumen P&L ============
@@ -76,37 +76,12 @@ def render(USR, cat, conectar):
             "Margen %": pl["margen_neto_pct"],
         })
         st.dataframe(_show, hide_index=True, use_container_width=True,
-                     column_config={c: st.column_config.NumberColumn(format="%.0f")
+                     column_config={c: st.column_config.NumberColumn(format="%,.0f")
                                     for c in ["Ingresos","Gastos","M.Prima","Costo var.","Costo fijo","Margen contrib.","Resultado"]})
         st.caption("Cifras en millones de ARS.")
         _ch = pl[["mes"]].copy()
         _ch["Ingresos"] = pl["ingresos"]/1e6; _ch["Gastos"] = pl["gastos_total"]/1e6; _ch["Resultado"] = pl["resultado_neto"]/1e6
         st.line_chart(_ch.set_index("mes"), use_container_width=True)
-
-    # ============ 2 · Donde esta el valor ============
-    with t2:
-        st.subheader("Contribución por segmento (ingreso − costo directo)")
-        st.caption("Acumulado del período cargado. **Acá se ve dónde se gana y dónde se pierde plata de verdad.**")
-        seg = cat(f"SELECT sector, round(sum(ingreso)/1e6,0) ing, round(sum(costo_directo)/1e6,0) costo, "
-                  f"round(sum(contribucion)/1e6,0) contrib, "
-                  f"round(sum(contribucion)/NULLIF(sum(ingreso),0)*100,0) pct "
-                  f"FROM {S}.v_margen_segmento GROUP BY sector ORDER BY contrib DESC NULLS LAST")
-        if seg is not None and not seg.empty:
-            _pos = seg[seg["contrib"] > 0]; _neg = seg[seg["contrib"] <= 0]
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**🟢 Generan valor**")
-                st.dataframe(_pos.rename(columns={"sector":"Segmento","ing":"Ingreso M","costo":"Costo M","contrib":"Contrib. M","pct":"Margen %"}),
-                             hide_index=True, use_container_width=True)
-            with c2:
-                st.markdown("**🔴 Destruyen valor / overhead**")
-                st.dataframe(_neg.rename(columns={"sector":"Segmento","ing":"Ingreso M","costo":"Costo M","contrib":"Contrib. M","pct":"Margen %"}),
-                             hide_index=True, use_container_width=True)
-            st.bar_chart(seg.set_index("sector")["contrib"], use_container_width=True)
-            st.info("**Lectura:** los **servicios ambientales** (PILETAS ~87%, DISP. FINAL LÍQUIDOS ~56%) son el verdadero motor de margen. "
-                    "La **exportación** mueve la mayor parte de los ingresos pero deja ~4% (la MP se lleva casi todo). "
-                    "Ojo con **transfer pricing**: REACTORES y BACHAS figuran negativos porque su costo está en su sector "
-                    "pero el valor que generan se factura dentro de EXPORTACIÓN — hay que mirar la cadena oleoquímica integrada.")
 
     # ============ 3 · Evolucion / Q1 vs Q2 ============
     with t3:
@@ -126,41 +101,56 @@ def render(USR, cat, conectar):
                          hide_index=True, use_container_width=True)
             st.caption("⚠️ Q2 está **incompleto** (faltan datos de junio). La comparación se completa al cerrar el mes.")
 
-    # ============ 4 · Rentabilidad venta vs compra de MP (mensual, USD) ============
+    # ============ 4 · Precios por producto (compras prod% + ventas) ============
     with t4:
-        st.subheader("Rentabilidad: precio de venta vs precio de compra de MP")
-        st.caption("**De dónde sale:** *Venta USD/TN* = promedio del **PRECIO** (filas en USD) de la hoja **BBDD_INGRESOS_FINAL**; "
-                   "*Compra USD/TN* = promedio del **PRECIO** de **BBDD_GASTOS** (rubro M.PRIMAS, por tonelada); *Spread* = venta − compra. "
-                   "Mirá los registros crudos en la pestaña **📂 Datos originales**. "
-                   "⚠️ Para productos que se **transforman** (AG/AFE → ARE), la venta de acá es **transferencia interna**, "
-                   "no la exportación final: el margen real se realiza al exportar el ARE.")
-        rv = cat(f"SELECT to_char(mes,'YYYY-MM') mes, producto, venta_usd, compra_usd, spread_usd, spread_pct, q_vend, q_comp "
-                 f"FROM {S}.v_rentabilidad_venta_compra ORDER BY mes, producto")
-        if rv is None or rv.empty:
-            st.info("Sin productos emparejables entre venta y compra.")
+        st.subheader("Evolución de precios por producto")
+        st.caption("Precios reales por producto en su **moneda de origen**: los productos por **tonelada** "
+                   "se negocian en **USD/TN**; combustibles, insumos y servicios en **ARS**. "
+                   "**Compras** = gastos con comprobante 'prod…' (todas las MP, insumos y energía). "
+                   "**Ventas** = productos facturados en ingresos.")
+        _cv = st.radio("Ver", ["🛒 Compras (MP / insumos / energía)", "💵 Ventas (ingresos)"],
+                       horizontal=True, key="pxp_cv")
+        if _cv.startswith("🛒"):
+            px = cat(f"SELECT to_char(mes,'YYYY-MM') mes, producto, moneda, um, precio_prom, cantidad, "
+                     f"monto_ars, rubro FROM {S}.v_precio_compra_prod ORDER BY producto, mes")
+            _val_lbl = "Gasto ARS"; _es_compra = True
         else:
-            res = cat(f"SELECT producto, venta_usd_prom, compra_usd_prom, spread_usd_prom, spread_pct_prom, meses "
-                      f"FROM {S}.v_rentabilidad_venta_compra_resumen ORDER BY spread_usd_prom DESC NULLS LAST")
-            st.markdown("**Resumen del período (USD/TN, promedio)**")
-            st.dataframe(res.rename(columns={"producto":"Producto","venta_usd_prom":"Venta USD/TN","compra_usd_prom":"Compra USD/TN",
-                                             "spread_usd_prom":"Spread USD/TN","spread_pct_prom":"Spread %","meses":"Meses"}),
-                         hide_index=True, use_container_width=True)
-            _prods = sorted(rv["producto"].dropna().unique().tolist())
-            _sel = st.multiselect("Productos (evolución mensual del spread)", _prods, default=_prods[:6], key="rv_sel")
-            _f = rv[rv["producto"].isin(_sel)] if _sel else rv
-            try:
-                _piv = _f.pivot_table(index="mes", columns="producto", values="spread_usd", aggfunc="mean")
-                st.markdown("**Spread mensual (USD/TN) = venta − compra**")
-                st.line_chart(_piv, use_container_width=True)
-            except Exception:
-                pass
-            st.dataframe(_f.rename(columns={"mes":"Mes","producto":"Producto","venta_usd":"Venta USD/TN","compra_usd":"Compra USD/TN",
-                                            "spread_usd":"Spread USD/TN","spread_pct":"Spread %","q_vend":"TN vend.","q_comp":"TN comp."}),
-                         hide_index=True, use_container_width=True)
-            st.info("**Lectura:** AG‑E deja **+11%** (compra 909 / vende 1.008). AG‑C / AG‑D / AG‑B dan negativo porque son "
-                    "**insumos intermedios** que se transfieren internamente por debajo de su costo y luego se transforman en ARE para exportar "
-                    "(ahí se realiza el margen). El resultado del negocio oleoquímico depende del **rendimiento de transformación** y del **tipo de cambio**, "
-                    "no de un arbitraje directo compra-venta del mismo producto.")
+            px = cat(f"SELECT to_char(mes,'YYYY-MM') mes, producto, moneda, um, precio_prom, cantidad, "
+                     f"total_ars AS monto_ars, ''::text rubro FROM {S}.v_precio_venta_prod ORDER BY producto, mes")
+            _val_lbl = "Venta ARS"; _es_compra = False
+        if px is None or px.empty:
+            st.info("Sin datos de precios para esta vista.")
+        else:
+            for c in ["precio_prom", "cantidad", "monto_ars"]:
+                px[c] = pd.to_numeric(px[c], errors="coerce")
+            _rank = px.groupby("producto")["monto_ars"].sum().sort_values(ascending=False)
+            _prods = _rank.index.tolist()
+            _sel = st.multiselect("Productos (ordenados por volumen $)", _prods,
+                                  default=_prods[:6], key="pxp_sel")
+            _f = px[px["producto"].isin(_sel)] if _sel else px
+            for _mon, _cap in [("USD", "**Precio USD/TN** — productos por tonelada"),
+                               ("ARS", "**Precio ARS por unidad** — combustibles / insumos / servicios")]:
+                _fm = _f[_f["moneda"] == _mon]
+                if _fm.empty:
+                    continue
+                st.markdown(_cap)
+                try:
+                    _piv = _fm.pivot_table(index="mes", columns="producto", values="precio_prom", aggfunc="mean")
+                    st.line_chart(_piv, use_container_width=True)
+                except Exception:
+                    pass
+            _t = _f.rename(columns={"mes": "Mes", "producto": "Producto", "moneda": "Moneda", "um": "UM",
+                                    "precio_prom": "Precio", "cantidad": "Cantidad", "monto_ars": _val_lbl,
+                                    "rubro": "Rubro"})
+            _cols = ["Mes", "Producto", "Moneda", "UM", "Precio", "Cantidad", _val_lbl]
+            if _es_compra:
+                _cols.insert(4, "Rubro")
+            st.dataframe(_t[_cols], hide_index=True, use_container_width=True,
+                         column_config={"Precio": st.column_config.NumberColumn(format="%,.1f"),
+                                        "Cantidad": st.column_config.NumberColumn(format="%,.1f"),
+                                        _val_lbl: st.column_config.NumberColumn(format="%,.0f")})
+            st.caption("Precio = promedio ponderado por cantidad. La última columna es el total en ARS "
+                       "(moneda contable), con separador de miles.")
 
     # ============ 5 · Observaciones / outliers ============
     with t5:
@@ -302,7 +292,7 @@ def render(USR, cat, conectar):
                 "Ingreso USD (miles)": (real["ing_usd"]/1e3).round(0),
                 "Resultado USD (miles)": (real["resultado_usd"]/1e3).round(0)})
             st.dataframe(_t, hide_index=True, use_container_width=True,
-                         column_config={c: st.column_config.NumberColumn(format="%.0f") for c in _t.columns if c != "Mes"})
+                         column_config={c: st.column_config.NumberColumn(format="%,.0f") for c in _t.columns if c != "Mes"})
             _c = pd.DataFrame({"Mes": real["mes"], "Nominal": real["ing_nominal"]/1e6, "Real (constante)": real["ing_real"]/1e6})
             st.line_chart(_c.set_index("Mes"), use_container_width=True)
         st.info("**Sobre estacionalidad:** desestacionalizar formalmente (X-13 / STL) necesita 2–3 años de historia mensual. "
@@ -335,7 +325,7 @@ def render(USR, cat, conectar):
                                    "cantidad_tn": "TN compradas", "indice_estacional": "Indice estac.",
                                    "var_mom_usd_pct": "Var MoM % (USD)"}),
                 hide_index=True, use_container_width=True,
-                column_config={c: st.column_config.NumberColumn(format="%.0f")
+                column_config={c: st.column_config.NumberColumn(format="%,.0f")
                                for c in ["ARS/TN nominal", "ARS/TN real", "TN compradas"]})
             st.info("**Lectura:** los precios de MP están **estables en USD** (ej. AFE-S ~945 USD/TN constante). "
                     "Los saltos grandes en ARS son **monetarios** (inflación/devaluación), no estacionalidad real — "
@@ -344,6 +334,40 @@ def render(USR, cat, conectar):
     # ============ 9 · Claves de rentabilidad (bridge) ============
     with t9:
         st.subheader("¿Qué hace que un mes rinda más que otro?")
+        # --- jugar con sectores ---
+        st.markdown("#### 🧭 Rentabilidad por sector — filtrá y jugá")
+        sm = cat(f"SELECT to_char(mes,'YYYY-MM') mes, sector, ingreso, gasto, resultado "
+                 f"FROM {S}.v_sector_mensual ORDER BY sector, mes")
+        if sm is not None and not sm.empty:
+            for c in ["ingreso", "gasto", "resultado"]:
+                sm[c] = pd.to_numeric(sm[c], errors="coerce")
+            _secs = sm.groupby("sector")["ingreso"].sum().sort_values(ascending=False).index.tolist()
+            _ssel = st.multiselect("Sectores", _secs, default=_secs[:5], key="claves_sec")
+            _sf = sm[sm["sector"].isin(_ssel)] if _ssel else sm
+            _kk = st.columns(4)
+            _it = _sf["ingreso"].sum(); _gt = _sf["gasto"].sum(); _rt = _sf["resultado"].sum()
+            _kk[0].metric("Ingreso ARS", f"{_it:,.0f}")
+            _kk[1].metric("Gasto ARS", f"{_gt:,.0f}")
+            _kk[2].metric("Resultado ARS", f"{_rt:,.0f}")
+            _kk[3].metric("Margen %", f"{(_rt/_it*100 if _it else 0):.1f}%")
+            _agg = (_sf.groupby("sector", as_index=False)
+                       .agg(ingreso=("ingreso", "sum"), gasto=("gasto", "sum"), resultado=("resultado", "sum")))
+            _agg["margen"] = (_agg["resultado"] / _agg["ingreso"].where(_agg["ingreso"] != 0) * 100).round(1)
+            _agg = _agg.sort_values("resultado", ascending=False)
+            st.dataframe(_agg.rename(columns={"sector": "Sector", "ingreso": "Ingreso ARS",
+                                              "gasto": "Gasto ARS", "resultado": "Resultado ARS",
+                                              "margen": "Margen %"}),
+                         hide_index=True, use_container_width=True,
+                         column_config={c: st.column_config.NumberColumn(format="%,.0f")
+                                        for c in ["Ingreso ARS", "Gasto ARS", "Resultado ARS"]}
+                         | {"Margen %": st.column_config.NumberColumn(format="%.1f%%")})
+            try:
+                _pivs = _sf.pivot_table(index="mes", columns="sector", values="resultado", aggfunc="sum")
+                st.markdown("**Resultado mensual por sector (ARS)**")
+                st.line_chart(_pivs, use_container_width=True)
+            except Exception:
+                pass
+        st.divider()
         st.caption("El resultado operativo se descompone en tres palancas: **volumen** (cuánto se factura), "
                    "**margen de contribución** (cuánto del ingreso queda tras la MP y los costos variables) y **costos fijos**.")
         drv = cat(f"SELECT to_char(mes,'YYYY-MM') mes, mp_pct, var_pct, fijo_pct, mc_pct FROM {S}.v_pl_drivers ORDER BY mes")
@@ -481,7 +505,7 @@ def _render_calzim_facturas(cat):
         "Precio capón": pl["precio_capon"].round(0),
     })
     st.dataframe(show, hide_index=True, use_container_width=True,
-                 column_config={c: st.column_config.NumberColumn(format="%.0f")
+                 column_config={c: st.column_config.NumberColumn(format="%,.0f")
                                 for c in ["Ingresos","Egresos","Resultado","Result. real (jun$)",
                                           "Capones","Precio capón"]}
                  | {"Margen %": st.column_config.NumberColumn(format="%.1f%%")})
@@ -553,7 +577,7 @@ def _render_calzim_produccion(cat):
         "Ing./cabeza": m["ingreso_x_cabeza"].round(0),
     })
     st.dataframe(show, hide_index=True, use_container_width=True,
-                 column_config={c: st.column_config.NumberColumn(format="%.0f")
+                 column_config={c: st.column_config.NumberColumn(format="%,.0f")
                                 for c in ["Cabezas S3","Ing. S3 (M)","Costo (M)","Margen (M)",
                                           "Margen real (M)","Alim. $/kg","Ing./cabeza"]}
                  | {"Mort. S3 %": st.column_config.NumberColumn(format="%.1f%%"),
@@ -592,7 +616,7 @@ def _render_calzim_produccion(cat):
             "Conversión": lo["conversion_alim"].round(2),
         }).sort_values("Margen %", ascending=False)
         st.dataframe(tab, hide_index=True, use_container_width=True,
-                     column_config={c: st.column_config.NumberColumn(format="%.0f")
+                     column_config={c: st.column_config.NumberColumn(format="%,.0f")
                                     for c in ["Cabezas S3","Precio $/kg","Margen/cabeza","Alim. $/kg"]}
                      | {"Mort. S3 %": st.column_config.NumberColumn(format="%.1f%%"),
                         "Merma total %": st.column_config.NumberColumn(format="%.1f%%"),
