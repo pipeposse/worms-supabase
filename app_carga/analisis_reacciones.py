@@ -48,6 +48,13 @@ def _cargar(cat):
     df["semana"] = df["fecha"].dt.to_period("W").dt.start_time
     df["sem_lbl"] = df["semana"].map(
         lambda s: f"S{pd.Timestamp(s).isocalendar()[1]} · {pd.Timestamp(s):%d/%m}" if pd.notna(s) else "—")
+
+    def _sub(r):
+        if r.get("tipo") == "ARE":
+            _p = str(r.get("producto") or "").upper()
+            return "ARE animal" if ("ANIMAL" in _p or "(AN)" in _p) else "ARE vegetal"
+        return r.get("tipo")
+    df["subtipo"] = df.apply(_sub, axis=1)
     return df
 
 
@@ -80,10 +87,10 @@ def render(USR, cat, conectar):
             for s in _sems}
     c_sel, c_tipo = st.columns([2, 1])
     _sel = c_sel.selectbox("Semana", [_lbl[s] for s in _sems], key="anr_sem")
-    _tipo = c_tipo.selectbox("Tipo", ["Todas", "ARE", "DESGOMADO"], key="anr_tipo")
+    _tipo = c_tipo.selectbox("Tipo", ["Todas", "ARE vegetal", "ARE animal", "DESGOMADO"], key="anr_tipo")
     _wk = next(s for s in _sems if _lbl[s] == _sel)
     if _tipo != "Todas":
-        df = df[df["tipo"] == _tipo]
+        df = df[df["subtipo"] == _tipo]
     dfw = df[df["semana"] == _wk]
     _prev_wk = pd.Timestamp(_wk) - pd.Timedelta(days=7)
     dfp = df[df["semana"] == _prev_wk]
@@ -139,10 +146,15 @@ def render(USR, cat, conectar):
 
     # ---------- la semana por tipo: ⚗️ ARE vs 🫧 DESGOMADO ----------
     st.markdown("#### La semana por tipo de reacción")
-    _c_are, _c_des = st.columns(2)
-    for _tt, _colc, _emoji in (("ARE", _c_are, "⚗️"), ("DESGOMADO", _c_des, "🫧")):
-        _dt = dfw[dfw["tipo"] == _tt]
-        _dp2 = dfp[dfp["tipo"] == _tt]
+    _EMO = {"ARE vegetal": "⚗️🌱", "ARE animal": "⚗️🐄", "DESGOMADO": "🫧"}
+    _sub_order = [t for t in ["ARE vegetal", "ARE animal", "DESGOMADO"] if t in set(dfw["subtipo"])]
+    if not _sub_order:
+        _sub_order = ["ARE vegetal", "DESGOMADO"]
+    _cols = st.columns(len(_sub_order))
+    for _tt, _colc in zip(_sub_order, _cols):
+        _emoji = _EMO.get(_tt, "🔬")
+        _dt = dfw[dfw["subtipo"] == _tt]
+        _dp2 = dfp[dfp["subtipo"] == _tt]
         with _colc:
             with st.container(border=True):
                 st.markdown(f"##### {_emoji} {_tt}")
@@ -212,10 +224,10 @@ def render(USR, cat, conectar):
     _wk_opts = (df.dropna(subset=["semana"]).sort_values("semana", ascending=False)
                   .drop_duplicates("sem_lbl")["sem_lbl"].tolist())
     _wsel = _fc1.multiselect("Semanas (vacío = todas)", _wk_opts, default=[], key="anr_pvr_wk")
-    _tsel = _fc2.multiselect("Tipo de reacción (vacío = todos)", ["ARE", "DESGOMADO"], default=[], key="anr_pvr_tp")
+    _tsel = _fc2.multiselect("Tipo de reacción (vacío = todos)", ["ARE vegetal", "ARE animal", "DESGOMADO"], default=[], key="anr_pvr_tp")
     _fbase = df.copy()
     if _tsel:
-        _fbase = _fbase[_fbase["tipo"].isin(_tsel)]
+        _fbase = _fbase[_fbase["subtipo"].isin(_tsel)]
     if _wsel:
         _fbase = _fbase[_fbase["sem_lbl"].isin(_wsel)]
     _pv = _fbase[(_fbase["real_kg"].fillna(0) > 0) & (_fbase["formula_kg"].fillna(0) > 0)].copy()
