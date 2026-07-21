@@ -296,9 +296,60 @@ def render(USR, cat, conectar):
                      column_config={c: st.column_config.NumberColumn(format="%.2f")
                                     for c in ["Proyect. fórmula (TN)", "Real (TN)", "Desvío (TN)", "Máx. posible (TN)"]}
                      | {"Desvío %": st.column_config.NumberColumn(format="%+.1f%%"),
-                        "Rendim. %": st.column_config.NumberColumn(format="%.1f%%"),
-                        "Aprovechado %": st.column_config.NumberColumn(format="%.0f%%")})
-        st.caption("Ordenado por desvío (arriba, donde la fórmula más sobreestimó). Rendimiento % = real / proyectado.")
+                        "Rendim. %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=120,
+                                                                     help="Real / proyectado por fórmula."),
+                        "Aprovechado %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100,
+                                                                         help="Real / máximo teórico (reactor a tope).")})
+        st.caption("Ordenado por desvío (arriba, donde la fórmula más sobreestimó). Barras: rendimiento (vs fórmula) "
+                   "y aprovechamiento (vs máximo).")
+
+    # ---------- comparación semanal: proyectado vs real vs máximo ----------
+    _wcmp = df[(df["real_kg"].fillna(0) > 0) & (df["formula_kg"].fillna(0) > 0)].copy()
+    if not _wcmp.empty:
+        st.markdown("#### 📅 Comparación semanal — proyectado vs real vs máximo")
+        _wk2 = (_wcmp.groupby(["semana", "sem_lbl"], as_index=False)
+                     .agg(n=("id_batch", "count"), form=("formula_kg", "sum"),
+                          real=("real_kg", "sum"), mx=("max_kg", "sum")))
+        _wk2 = _wk2.sort_values("semana").tail(12)
+        _wk2["Proyectado"] = _wk2["form"] / 1000.0
+        _wk2["Real"] = _wk2["real"] / 1000.0
+        _wk2["Máximo"] = _wk2["mx"] / 1000.0
+        _wk2["Desvío %"] = (_wk2["real"] / _wk2["form"] - 1.0) * 100.0
+        _wk2["Aprov. %"] = (_wk2["real"] / _wk2["mx"] * 100.0).where(_wk2["mx"] > 0)
+        _wl = _wk2.melt(id_vars=["sem_lbl"], value_vars=["Máximo", "Proyectado", "Real"],
+                        var_name="Serie", value_name="TN")
+        cwa, cwb = st.columns([1.5, 1])
+        with cwa:
+            st.altair_chart(
+                alt.Chart(_wl).mark_bar().encode(
+                    x=alt.X("sem_lbl:N", sort=list(_wk2["sem_lbl"]), title=None),
+                    xOffset=alt.XOffset("Serie:N", sort=["Máximo", "Proyectado", "Real"]),
+                    y=alt.Y("TN:Q", title="TN producto final"),
+                    color=alt.Color("Serie:N", scale=alt.Scale(domain=["Máximo", "Proyectado", "Real"],
+                                                               range=[C_MUT, C_AMB, C_OK]),
+                                    legend=alt.Legend(orient="top", title=None)),
+                    tooltip=["sem_lbl", "Serie", alt.Tooltip("TN:Q", format=",.1f")],
+                ).properties(height=280), use_container_width=True)
+        with cwb:
+            st.altair_chart(
+                alt.Chart(_wk2).mark_line(point=True, strokeWidth=2.5, color=C_BAD).encode(
+                    x=alt.X("sem_lbl:N", sort=list(_wk2["sem_lbl"]), title=None),
+                    y=alt.Y("Desvío %:Q", title="Desvío fórmula %"),
+                    tooltip=["sem_lbl", alt.Tooltip("Desvío %:Q", format="+.1f")],
+                ).properties(height=280)
+                + alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=C_MUT, strokeDash=[4, 4]).encode(y="y:Q"),
+                use_container_width=True)
+        _wtab = pd.DataFrame({
+            "Semana": _wk2["sem_lbl"], "Reacc.": _wk2["n"],
+            "Proyect. (TN)": _wk2["Proyectado"].round(1), "Real (TN)": _wk2["Real"].round(1),
+            "Máximo (TN)": _wk2["Máximo"].round(1), "Desvío %": _wk2["Desvío %"].round(1),
+            "Aprov. %": _wk2["Aprov. %"].round(0),
+        })
+        st.dataframe(_wtab, hide_index=True, use_container_width=True,
+                     column_config={c: st.column_config.NumberColumn(format="%.1f")
+                                    for c in ["Proyect. (TN)", "Real (TN)", "Máximo (TN)"]}
+                     | {"Desvío %": st.column_config.NumberColumn(format="%+.1f%%"),
+                        "Aprov. %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
 
     st.divider()
 
