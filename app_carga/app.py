@@ -2634,7 +2634,7 @@ if st.session_state.section != "CARGAS":
     if st.session_state.section == "LAB":
         # =================== LABORATORIO ===================
         st.title("🧪 Laboratorio")
-        _lab_view = st.radio("Vista", ["➕ Carga / Edición", "🛢️ Parámetros por tanque", "🚛 Entrada diaria", "📦 Asignación a tanque", "📊 Resultados", "🔬 Producciones en marcha"],
+        _lab_view = st.radio("Vista", ["➕ Carga / Edición", "🛢️ Parámetros por tanque", "🚛 Entrada diaria", "📦 Asignación a tanque", "📊 Resultados", "🚦 Sin evaluación", "🔬 Producciones en marcha"],
                              horizontal=True, key="lab_view_sel", label_visibility="collapsed")
         if _lab_view.startswith("🔬"):
             _pm_tipo = st.radio("Tipo de proceso", ["🧴 ARE (decantación)", "🫧 Desgomado acuoso"],
@@ -2645,6 +2645,45 @@ if st.session_state.section != "CARGAS":
             else:
                 import decantacion
                 decantacion.laboratorio(USR, cat, conectar)
+        elif _lab_view.startswith("🚦"):
+            st.subheader("🚦 Reacciones terminadas sin evaluación final de laboratorio")
+            st.caption("Reacciones FINALIZADAS que **no tienen evaluación por ningún camino**: ni muestra asignada, "
+                       "ni ticket con el ID de la reacción, ni ticket final de pesada analizado. "
+                       "⚠️ Los **desgomados cuyo ticket final ya tiene análisis** cuentan como evaluados y **no** aparecen acá.")
+            _se = cat("SELECT b.identificador_unidad AS ident, "
+                      "  CASE b.tipo_proceso WHEN 'PRODUCCION_ARE' THEN 'ARE' "
+                      "       WHEN 'DESGOMADO_ACUOSO' THEN 'DESGOMADO' ELSE b.tipo_proceso END AS tipo, "
+                      "  bu.nombre_ui AS reactor, dp.codigo_producto AS producto, "
+                      "  (b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires')::date AS inicio, "
+                      "  COALESCE(l.n_tickets,0) AS n_tickets, COALESCE(l.n_con_lab,0) AS n_con_lab "
+                      "FROM produccion.fact_batch_proceso b "
+                      "LEFT JOIN produccion.v_reaccion_lab_final l ON l.id_batch=b.id_batch "
+                      "LEFT JOIN produccion.dim_bien_uso bu ON bu.id_bien_uso=b.id_bien_uso "
+                      "LEFT JOIN produccion.dim_producto dp ON dp.id_producto=b.id_producto_buscado "
+                      "WHERE b.estado='FINALIZADO' AND b.sector='REACTORES' "
+                      "  AND COALESCE(b.anulado,false)=false AND l.fuente_lab IS NULL "
+                      "ORDER BY inicio DESC NULLS LAST, b.id_batch DESC")
+            if _se is None or _se.empty:
+                st.success("✅ Todas las reacciones terminadas tienen evaluación final.")
+            else:
+                def _falta(r):
+                    if int(r["n_tickets"]) > 0 and int(r["n_con_lab"]) == 0:
+                        return "🎫 tiene tickets — falta que laboratorio los analice"
+                    if int(r["n_tickets"]) == 0 and str(r["tipo"]) == "DESGOMADO":
+                        return "❌ falta cargar el ticket final de pesada"
+                    return "🧪 falta asignar evaluación (muestra por id)"
+                _se["Qué falta"] = _se.apply(_falta, axis=1)
+                _n_are = int((_se["tipo"] == "ARE").sum()); _n_des = int((_se["tipo"] == "DESGOMADO").sum())
+                k = st.columns(3)
+                k[0].metric("Sin evaluación", len(_se))
+                k[1].metric("ARE", _n_are)
+                k[2].metric("Desgomados", _n_des)
+                st.dataframe(_se[["ident", "tipo", "reactor", "producto", "inicio", "n_tickets", "Qué falta"]].rename(
+                                 columns={"ident": "Reacción", "tipo": "Tipo", "reactor": "Reactor",
+                                          "producto": "Producto", "inicio": "Inicio", "n_tickets": "Tickets"}),
+                             hide_index=True, use_container_width=True)
+                st.caption("ARE → asignales la muestra de lab. Desgomado sin ticket → cargá el ticket final de pesada. "
+                           "Desgomado con ticket → pedile a laboratorio el análisis de esa pesada.")
         elif _lab_view.startswith("🛢️"):
             _form_param_tanque(cat, conectar, USR)
         elif _lab_view.startswith("🚛"):
