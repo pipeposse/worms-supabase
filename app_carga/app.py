@@ -2584,46 +2584,53 @@ def _humanize_ago(ts):
     return f"hace {s//86400} d"
 
 def _header_sync():
-    """Header con último registro subido a procesos_lab y transacciones."""
+    """Estado de sincronización. Portería (transacciones) es lo esencial: muestra la hora del
+    último ticket registrado. Laboratorio (procesos_lab) queda secundario: ya se carga en la app."""
     try:
+        df_port = cat("SELECT id, usuario, fecha_e, hora_e, _synced_at FROM produccion.transacciones ORDER BY id DESC LIMIT 1")
         df_lab = cat("SELECT id, empleado, _synced_at FROM produccion.procesos_lab ORDER BY id DESC LIMIT 1")
-        df_port = cat("SELECT id, usuario, _synced_at FROM produccion.transacciones ORDER BY id DESC LIMIT 1")
-        df_sync = cat("SELECT source_id, last_status, last_successful_sync, updated_at, left(coalesce(last_error,''),120) AS err FROM produccion.sync_control")
+        df_sync = cat("SELECT source_id, last_status, last_successful_sync, updated_at, "
+                      "left(coalesce(last_error,''),160) AS err FROM produccion.sync_control")
     except Exception as e:
-        st.warning(f"No se pudo leer sync_control / tablas raw: {e}")
+        st.caption(f"No se pudo leer el estado de sincronización: {e}")
         return
+
+    def _sync(source):
+        _r = df_sync[df_sync["source_id"] == source] if (df_sync is not None and not df_sync.empty) else None
+        if _r is None or _r.empty:
+            return ("—", None, None, "")
+        return (_r.iloc[0]["last_status"], _r.iloc[0]["updated_at"], _r.iloc[0]["last_successful_sync"], _r.iloc[0]["err"])
+
     cA, cB = st.columns(2)
-    def _card(col, titulo, df_last, user_col, source):
-        with col:
-            if df_last.empty:
-                st.error(f"**{titulo}** · sin datos")
-                return
-            r = df_last.iloc[0]
-            synced = r.get("_synced_at")
-            uname  = r.get(user_col, "—") or "—"
-            sync_row = df_sync[df_sync["source_id"]==source]
-            status = sync_row.iloc[0]["last_status"] if not sync_row.empty else "—"
-            last_try = sync_row.iloc[0]["updated_at"] if not sync_row.empty else None
-            last_ok  = sync_row.iloc[0]["last_successful_sync"] if not sync_row.empty else None
-            err = sync_row.iloc[0]["err"] if not sync_row.empty else ""
-            es_viejo = False
-            try:
-                from datetime import datetime as _dt, timezone as _tz
-                now = _dt.now(_tz.utc) if getattr(synced,"tzinfo",None) else _dt.now()
-                es_viejo = (now - synced).total_seconds() > 300
-            except Exception:
-                pass
-            if status != "OK" or es_viejo:
-                st.error(f"**{titulo}**\n\n"
-                         f"Último ID: **{r['id']}** · usuario **{uname}** · {_humanize_ago(synced)}\n\n"
-                         f"Agente **{status}** · último intento {_humanize_ago(last_try)} · última carga OK {_humanize_ago(last_ok)}"
-                         + (f"\n\nError: {err}" if err else ""))
+
+    # ---- PORTERÍA (esencial): hora del último ticket ----
+    with cA:
+        st.markdown("**🚛 Portería — último ticket de balanza registrado**")
+        if df_port is None or df_port.empty:
+            st.error("Sin tickets de portería.")
+        else:
+            r = df_port.iloc[0]
+            _fh = f"{r.get('fecha_e') or '—'} {r.get('hora_e') or ''}".strip()
+            _status, _lt, _lok, _err = _sync("porteria_pc_1")
+            st.markdown(f"#### 🎫 {_fh}")
+            st.caption(f"Ticket **#{r['id']}** · usuario **{r.get('usuario') or '—'}** · sincronizado {_humanize_ago(r.get('_synced_at'))}")
+            if _status != "OK":
+                st.warning("⚠️ El agente **no está leyendo el Access de portería** (último intento "
+                           f"{_humanize_ago(_lt)}). Pueden estar entrando tickets en balanza que todavía **no llegan acá** — "
+                           "revisá la PC de portería." + (f"\n\n_{_err}_" if _err else ""))
             else:
-                st.success(f"**{titulo}**\n\n"
-                           f"Último ID: **{r['id']}** · usuario **{uname}** · {_humanize_ago(synced)}\n\n"
-                           f"Agente **OK** · último intento {_humanize_ago(last_try)} · última carga OK {_humanize_ago(last_ok)}")
-    _card(cA, "🧪 procesos_lab",     df_lab,  "empleado", "laboratorio_pc_1")
-    _card(cB, "🚛 transacciones",    df_port, "usuario",  "porteria_pc_1")
+                st.caption(f"✅ Sincronización OK · última carga {_humanize_ago(_lok)}")
+
+    # ---- LABORATORIO (secundario): ya se carga en la app ----
+    with cB:
+        st.markdown("**🧪 Laboratorio (Access) — secundario**")
+        st.caption("El laboratorio ahora se carga en la app; el Access de laboratorio no debería recibir datos nuevos.")
+        if df_lab is not None and not df_lab.empty:
+            r = df_lab.iloc[0]
+            st.caption(f"Último dato en Access: **#{r['id']}** · {r.get('empleado') or '—'} · {_humanize_ago(r.get('_synced_at'))}")
+        _status, _lt, _lok, _err = _sync("laboratorio_pc_1")
+        if _status != "OK":
+            st.caption("ℹ️ El agente de laboratorio no está conectado al Access (no es crítico).")
 
 
 if st.session_state.section != "CARGAS":
