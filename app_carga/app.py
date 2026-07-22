@@ -3128,8 +3128,13 @@ if st.session_state.section != "CARGAS":
         st.divider()
         st.markdown('#### 🛠️ Carga manual, aforo y detalle por tanque')
         _panel = cat("SELECT * FROM produccion.vw_tanque_panel ORDER BY sector, nombre")
-        _prods = cat("SELECT id_producto, codigo_producto, COALESCE(densidad_g_ml,0.91) AS dens "
+        _prods = cat("SELECT id_producto, codigo_producto, COALESCE(densidad_g_ml,0.91) AS dens, "
+                     "COALESCE(NULLIF(rotulo_oficial,''), codigo_producto) AS rotulo "
                      "FROM produccion.dim_producto WHERE activo ORDER BY codigo_producto")
+        _rotmap = (dict(zip(_prods["codigo_producto"].tolist(), _prods["rotulo"].tolist()))
+                   if _prods is not None and not _prods.empty else {})
+        def _fmt_prod(_c):
+            return "(sin asignar)" if _c == "(sin asignar)" else _rotmap.get(_c, _c)
         if _panel.empty:
             st.info("No hay tanques cargados.")
         else:
@@ -3382,7 +3387,7 @@ if st.session_state.section != "CARGAS":
                         _es_bolsa = str(_row["tipo_tanque"] or "").strip().upper() == "BOLSA"
                         cc1, cc2 = st.columns(2)
                         _defprod = _cpr if (_cpr != "Todos" and _cpr in _plist) else _defp
-                        _pcod = cc1.selectbox("Producto medido", _plist, index=_plist.index(_defprod), key="tq_prod_c")
+                        _pcod = cc1.selectbox("Producto medido", _plist, index=_plist.index(_defprod), key="tq_prod_c", format_func=_fmt_prod)
                         _cambiar_prod = False
                         if _ppal and _pcod != _ppal[0]:
                             _cambiar_prod = st.checkbox(
@@ -3513,7 +3518,7 @@ if st.session_state.section != "CARGAS":
                                      "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
                                      "WHERE tp.id_tanque=%s ORDER BY tp.es_principal DESC, p.codigo_producto", (_aid,))
                         _aplist = _aperm["codigo_producto"].tolist() or _prods["codigo_producto"].tolist()
-                        _apcod = st.selectbox("Producto", _aplist, key="afo_prod")
+                        _apcod = st.selectbox("Producto", _aplist, key="afo_prod", format_func=_fmt_prod)
                         _adens = float(_prods[_prods["codigo_producto"] == _apcod]["dens"].iloc[0])
                         _akg = _vol * _adens
                         ma1, ma2, ma3, ma4 = st.columns(4)
@@ -3640,10 +3645,10 @@ if st.session_state.section != "CARGAS":
                     _codes = _prods["codigo_producto"].tolist()
                     _pp2 = _prods[_prods["id_producto"] == _r2["id_producto_principal"]]["codigo_producto"].tolist()
                     _ppal_sel = st.selectbox("Producto que contiene (principal)", ["(sin asignar)"] + _codes,
-                                             index=(_codes.index(_pp2[0]) + 1 if _pp2 else 0), key="tq_ppal_e")
+                                             index=(_codes.index(_pp2[0]) + 1 if _pp2 else 0), key="tq_ppal_e", format_func=_fmt_prod)
                     _curp = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
                                 "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto WHERE tp.id_tanque=%s", (_idt2,))["codigo_producto"].tolist()
-                    _puede = st.multiselect("Productos que puede almacenar", _codes, default=_curp, key="tq_puede_e")
+                    _puede = st.multiselect("Productos que puede almacenar", _codes, default=_curp, key="tq_puede_e", format_func=_fmt_prod)
                     _act = st.checkbox("Tanque activo (en uso)", value=bool(_r2["activo"]), key="tq_act_e")
                     if st.button("Guardar tanque", type="primary", use_container_width=True, key="tq_save_e"):
                         try:
@@ -3690,8 +3695,8 @@ if st.session_state.section != "CARGAS":
                         _a_tip = a5.selectbox("Tipo de tanque", _tipos_ex)
                         _a_cap = a6.number_input("Capacidad (litros)", 0.0, 5_000_000.0, step=1000.0, value=0.0)
                         a7, a8 = st.columns(2)
-                        _a_ppal = a7.selectbox("Producto principal", ["(sin asignar)"] + _codes_a)
-                        _a_perm = a8.multiselect("Otros productos que puede almacenar", _codes_a)
+                        _a_ppal = a7.selectbox("Producto principal", ["(sin asignar)"] + _codes_a, format_func=_fmt_prod)
+                        _a_perm = a8.multiselect("Otros productos que puede almacenar", _codes_a, format_func=_fmt_prod)
                         _a_ok = st.form_submit_button("➕ Crear tanque", type="primary", use_container_width=True)
                     if _a_ok:
                         _sec_final = (_a_sec_n or "").strip() if _a_sec.startswith("➕") else _a_sec
