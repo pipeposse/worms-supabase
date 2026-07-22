@@ -2558,6 +2558,13 @@ def _analisis_reaccion(USR, cat, conectar):
         st.caption("Asigná el ID de laboratorio (ticket del producto final) para linkear la evaluación.")
 
 
+def _term_ok(msg):
+    """Confirma la edicion de una reaccion terminada: globos + volver a Gestion de reacciones."""
+    st.session_state["_term_saved_msg"] = msg
+    st.session_state["_nav_admin_gestion"] = True
+    st.rerun()
+
+
 def _reacciones_terminadas(USR, cat, conectar):
     st.subheader("🏁 Reacciones terminadas — objetivo vs real")
     st.caption("Máximo por reactor · objetivo/fórmula · real por tickets de pesada · real por variación de tanque. "
@@ -2711,7 +2718,7 @@ def _reacciones_terminadas(USR, cat, conectar):
                                 " fin_ts = CASE WHEN %s IS NULL THEN fin_ts ELSE (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') END "
                                 "WHERE id_batch=%s", (_isoi, _isoi, _isof, _isof, idb))
                     audit.log("U", "fact_batch_proceso", idb, {"inicio": _isoi, "fin": _isof})
-            st.success("Inicio/fin actualizados."); cat.clear(); st.rerun()
+            cat.clear(); _term_ok("Inicio/fin actualizados.")
         except Exception as e:
             st.exception(e)
 
@@ -2745,7 +2752,7 @@ def _reacciones_terminadas(USR, cat, conectar):
                                         "VALUES (%s,'EN_TANQUE',(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires'),%s)",
                                         (idb, _iso, int(USR["id_usuario"])))
                         audit.log("U", "fact_etapa_evento", idb, {"acopio_final": _iso})
-                st.success("Horario de acopio final guardado (recalcula la variación sugerida)."); cat.clear(); st.rerun()
+                cat.clear(); _term_ok("Horario de acopio final guardado.")
             except Exception as e:
                 st.exception(e)
 
@@ -2778,7 +2785,7 @@ def _reacciones_terminadas(USR, cat, conectar):
                                 " obs=EXCLUDED.obs, id_usuario=EXCLUDED.id_usuario, actualizado_en=now()",
                                 (idb, float(_real_t*1000), _met, ((_obs or "").strip() or None), int(USR["id_usuario"])))
                     audit.log("U", "fact_reaccion_cierre", idb, {"real_kg": float(_real_t*1000), "metodo": _met})
-            st.success(f"Producción real guardada: {_real_t:.2f} t ({_met})."); cat.clear(); st.rerun()
+            cat.clear(); _term_ok(f"Producción real guardada: {_real_t:.2f} t ({_met}).")
         except Exception as e:
             st.exception(e)
 
@@ -2928,6 +2935,10 @@ def _reacciones_terminadas(USR, cat, conectar):
 
 def _gestion_reacciones(USR, cat, conectar):
     st.subheader("🛠️ Gestión de reacciones")
+    _msg = st.session_state.pop("_term_saved_msg", None)
+    if _msg:
+        st.success("✅ Reacción actualizada — " + _msg + " Verificá acá que quedó bien.")
+        st.balloons()
     _g0, _g1, _g2, _g3, _g4 = st.tabs(["🎛️ Tablero", "⏯️ Trabajar (arrancar / cargar muestras / decantar)",
                                        "📋 En marcha & nombres", "🕐 Etapas & horarios", "🧫 Evaluaciones internas"])
     with _g0:
@@ -3151,7 +3162,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
 
-    _grupo_opts = ["➕ Cargar nueva reacción", "⬆️ Carga masiva", "⚙️ Administrar en curso", "📈 Performance", "📅 Cronogramas", "📊 Variación semanal", "🧮 Reconciliación"]
+    _grupo_opts = ["➕ Cargar nueva reacción", "⬆️ Carga masiva", "⚙️ Administración de reacciones", "📈 Performance", "📅 Cronogramas", "📊 Variación semanal", "🧮 Reconciliación"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3162,6 +3173,9 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     # ----- Administrar procesos en curso (no es carga: se decide sobre reacciones ya arrancadas) -----
     if _grupo.startswith("⚙️"):
+        if st.session_state.pop("_nav_admin_gestion", False):
+            st.session_state["pl_admin_sc"] = "🛠️ Gestión de reacciones"
+            st.session_state["pl_admin"] = "🛠️ Gestión de reacciones"
         _admin_opts = ["🛠️ Gestión de reacciones", "🏁 Terminadas (objetivo vs real)", "🔬 Análisis por reacción", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"]
         try:
             _admin = st.segmented_control("Administrar", _admin_opts, default=_admin_opts[0],
