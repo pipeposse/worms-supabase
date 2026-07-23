@@ -425,11 +425,12 @@ def _gli_tanques(cat, codigo):
         "                  CASE WHEN (f.parametros_extra->>'gli_glicerol')::numeric<=1 "
         "                       THEN (f.parametros_extra->>'gli_glicerol')::numeric*100 "
         "                       ELSE (f.parametros_extra->>'gli_glicerol')::numeric END END) AS glicerol, "
-        "       COALESCE((f.parametros_extra->>'glicerina_pct')::numeric, 100) AS glicerina "
+        "       COALESCE((f.parametros_extra->>'glicerina_pct')::numeric, 100) AS glicerina, "
+        "       COALESCE(f.producto_pct,0)::numeric AS producto_pct "
         "FROM produccion.dim_tanque t "
         "JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
         "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
-        "LEFT JOIN LATERAL (SELECT densidad_g_ml, agua_pct, glicerina_pct, parametros_extra, ultima_evaluacion_ts FROM produccion.fact_param_tanque fp "
+        "LEFT JOIN LATERAL (SELECT densidad_g_ml, agua_pct, glicerina_pct, producto_pct, parametros_extra, ultima_evaluacion_ts FROM produccion.fact_param_tanque fp "
         "                   WHERE fp.id_tanque=t.id_tanque AND fp.id_producto=t.id_producto_principal "
         "                   ORDER BY actualizado_en DESC NULLS LAST LIMIT 1) f ON true "
         "WHERE t.activo AND p.codigo_producto=%s ORDER BY t.nombre", (codigo,))
@@ -439,7 +440,8 @@ def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
     """Selector de UNO O VARIOS tanques de glicerina + litros por tanque.
     Devuelve un dict AGREGADO (l, kg, glicerol_kg, % ponderados) con la lista 'tanques' adentro."""
     agg = {"idt": None, "nombre": None, "l": 0.0, "dens": None, "glicerina_pct": None,
-           "glicerol_pct": None, "glicerol_kg": 0.0, "kg": 0.0, "agua_pct": None, "tanques": []}
+           "glicerol_pct": None, "glicerol_kg": 0.0, "kg": 0.0, "agua_pct": None,
+           "producto_pct": None, "producto_kg": 0.0, "tanques": []}
     df = _gli_tanques(cat, codigo)
     if df is None or df.empty:
         st.info("Sin tanques activos.")
@@ -461,12 +463,14 @@ def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
                   (f"glicerol {gpct:.0f}% (sin fecha de lab)" if gpct is not None else "sin glicerol de lab"))
         l = st.number_input(f"Litros · {r['nombre']} — {_glcap}", 0.0, 1_000_000.0, value=float(_per), step=50.0,
                             key=f"{key}_l_{i}")
+        ppct = float(r["producto_pct"]) if ("producto_pct" in r.index and pd.notna(r["producto_pct"])) else None
         kg = float(l) * dens
         picks.append({"idt": int(r["id_tanque"]), "nombre": r["nombre"], "l": float(l), "dens": dens,
-                      "glicerina_pct": npct, "glicerol_pct": gpct,
+                      "glicerina_pct": npct, "glicerol_pct": gpct, "producto_pct": ppct,
                       "agua_pct": (float(r["agua_pct"]) if pd.notna(r["agua_pct"]) else None),
                       "kg": kg,
-                      "glicerol_kg": kg * ((gpct or 0) / 100.0)})
+                      "glicerol_kg": kg * ((gpct or 0) / 100.0),
+                      "producto_kg": kg * ((ppct or 0) / 100.0)})
     tot_l = sum(p["l"] for p in picks)
     _wl = tot_l or 1.0
     agg.update({
@@ -474,6 +478,8 @@ def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
         "l": tot_l,
         "kg": sum(p["kg"] for p in picks),
         "glicerol_kg": sum(p["glicerol_kg"] for p in picks),
+        "producto_kg": sum(p["producto_kg"] for p in picks),
+        "producto_pct": sum((p["producto_pct"] or 0) * p["l"] for p in picks) / _wl,
         "glicerina_pct": sum((p["glicerina_pct"] or 0) * p["l"] for p in picks) / _wl,
         "glicerol_pct": sum((p["glicerol_pct"] or 0) * p["l"] for p in picks) / _wl,
         "agua_pct": sum((p["agua_pct"] or 0) * p["l"] for p in picks) / _wl,
@@ -3444,11 +3450,18 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             ajustes["fuel (L)"] = {"formula": round(fuel_def), "ajustado": round(_fuel_l)}
         est_pot = _koh
         est_fuel = _fuel_l * DENS_INSUMO["FUEL_OIL"]
-        # Objetivo ARE-B = AG-C (kg) − agua del AG-C (lab) + 10% de litros de glicerina (fresca+recup)
+        # Objetivo ARE-B = AG-C (kg) − agua del AG-C (lab) + ARE que aporta la glicerina.
+        #   fresca: heurística (aporte% de litros)   ·   recuperada: su % PRODUCTO (ARE) medido en el tanque.
         agua_frac = float(lab_avg.get("prc_agua")) if lab_avg.get("prc_agua") is not None else 0.0
         agua_kg = kg_used * agua_frac
-        litros_gli_tot = float(gli_fresca.get("l") or 0) + float(gli_recup.get("l") or 0)
-        are_kg = max(0.0, kg_used - agua_kg + (_aporte / 100.0) * litros_gli_tot)
+        litros_fresca = float(gli_fresca.get("l") or 0)
+        litros_recup = float(gli_recup.get("l") or 0)
+        litros_gli_tot = litros_fresca + litros_recup
+        _ap_fresca = (_aporte / 100.0) * litros_fresca
+        _are_recup = float(gli_recup.get("producto_kg") or 0.0)      # % producto (ARE) del tanque de glicerina recuperada
+        _recup_por_pct = _are_recup > 0
+        _ap_recup = _are_recup if _recup_por_pct else (_aporte / 100.0) * litros_recup
+        are_kg = max(0.0, kg_used - agua_kg + _ap_fresca + _ap_recup)
         dens_are = 0.88
         g1, g2, g3 = st.columns(3)
         g1.metric("Glicerol cargado", f"{glol_cargado:,.0f} kg",
@@ -3460,9 +3473,13 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             g2.metric("Glicerol requerido", "—", "falta acidez de la MP")
         g3.metric("KOH · Fuel", f"{_koh:,.0f} kg · {_fuel_l:,.0f} L")
         st.metric("🎯 ARE-B objetivo", f"{are_kg/dens_are:,.0f} L", f"{are_kg:,.0f} kg")
+        _rec_txt = (f"+ ARE de glicerina recuperada por su **% producto** medido ({float(gli_recup.get('producto_pct') or 0):.0f}% → +{_are_recup:,.0f} kg)"
+                    if _recup_por_pct else
+                    f"+ {_aporte:.0f}% de los {litros_recup:,.0f} L de glicerina recuperada (+{_ap_recup:,.0f} kg · sin % producto medido)")
         st.caption(f"Objetivo ARE-B (fórmula) = AG-C ({kg_used:,.0f} kg) − agua AG-C ({agua_kg:,.0f} kg · {agua_frac*100:.1f}%) "
-                   f"+ {_aporte:.0f}% de litros de glicerina ({litros_gli_tot:,.0f} L → +{(_aporte/100.0)*litros_gli_tot:,.0f}). "
-                   f"En decantación, la glicerina recuperada = {100-_aporte:.0f}% de los litros cargados (se contrarresta con el aporte).")
+                   f"+ {_aporte:.0f}% de {litros_fresca:,.0f} L de glicerina fresca (+{_ap_fresca:,.0f} kg) "
+                   f"{_rec_txt} = **{are_kg:,.0f} kg**. "
+                   "El **% producto** del tanque de glicerina recuperada representa el **ARE** que trae de vuelta.")
         if glol_req > 0 and glol_cargado < glol_req * 0.999:
             st.warning(f"⚠️ Glicerol cargado ({glol_cargado:,.0f} kg) < requerido ({glol_req:,.0f} kg). "
                        "Agregá litros de glicerina fresca o recuperada en la sección 2.")
