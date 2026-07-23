@@ -354,44 +354,30 @@ if st.session_state.section is None:
     </div>
     """, unsafe_allow_html=True)
 
-    # --- Estado de sincronización de datos (Access → Supabase) ---
+    # --- Estado de datos de PORTERÍA (lo esencial). Laboratorio ya se carga en la app: no se muestra. ---
     try:
-        _sc = _home_df("SELECT source_id, machine_name, last_status, COALESCE(last_error,'') last_error, "
-                  "last_successful_sync, rows_last_batch, "
-                  "round((extract(epoch from now()-updated_at)/60.0)::numeric,0) AS hace_min "
-                  "FROM produccion.sync_control ORDER BY source_id")
-        _ultp = _home_df("SELECT max(fecha_entrada) ult, max(transaccion) tk FROM produccion.v_transacciones_limpias")
-        _ultl = _home_df("SELECT max(fecha) ult FROM produccion.v_procesos_lab_efectivo")
+        _scp = _home_df("SELECT last_status, last_successful_sync, "
+                        "round((extract(epoch from now()-updated_at)/60.0)::numeric,0) AS hace_min "
+                        "FROM produccion.sync_control WHERE source_id LIKE 'porteria%' "
+                        "ORDER BY updated_at DESC NULLS LAST LIMIT 1")
+        _ultp = _home_df("SELECT id, fecha_e, hora_e FROM produccion.transacciones ORDER BY id DESC LIMIT 1")
     except Exception:
-        _sc = None; _ultp = None; _ultl = None
-    if _sc is not None and not _sc.empty:
-        st.markdown('<div class="section-title">Estado de datos · portería y laboratorio</div>', unsafe_allow_html=True)
-        _scols = st.columns(len(_sc))
-        for _i, (_, _r) in enumerate(_sc.iterrows()):
-            _sid = str(_r["source_id"])
-            _nom = "🚛 Portería" if _sid.startswith("porteria") else ("🧪 Laboratorio" if _sid.startswith("laboratorio") else _sid)
-            _ok = str(_r["last_status"]).upper() == "OK"
-            _hace = _r["hace_min"]
-            _hn = int(_hace) if pd.notna(_hace) else None
-            _viejo = (_hn is not None and _hn > 60)
-            _icon = "🟢" if (_ok and not _viejo) else ("🟠" if _ok else "🔴")
-            _when = pd.to_datetime(_r["last_successful_sync"]).strftime("%d/%m %H:%M") if pd.notna(_r["last_successful_sync"]) else "—"
-            with _scols[_i]:
-                st.markdown(f"**{_icon} {_nom}**")
-                st.caption(f"PC: **{_r['machine_name'] or '—'}** · último OK: **{_when}**"
-                           + (f" (hace {_hn} min)" if _hn is not None else "")
-                           + f" · {int(_r['rows_last_batch'] or 0)} filas")
-                if not _ok and _r["last_error"]:
-                    st.error(f"⚠️ Error de sincronización: {_r['last_error']}")
-                elif _viejo:
-                    st.warning(f"Sin refrescar hace {_hn} min — revisá la PC de sincronización.")
-        if _ultp is not None and not _ultp.empty:
-            _up = _ultp.iloc[0]
-            _upf = pd.to_datetime(_up["ult"]).strftime("%d/%m/%Y") if pd.notna(_up["ult"]) else "—"
-            _tk = f"#{int(_up['tk'])}" if pd.notna(_up["tk"]) else "—"
-            _ul = _ultl.iloc[0]["ult"] if (_ultl is not None and not _ultl.empty) else None
-            _ulf = pd.to_datetime(_ul).strftime("%d/%m/%Y") if pd.notna(_ul) else "—"
-            st.caption(f"📅 Último dato de **portería**: {_upf} (ticket {_tk}) · último dato de **laboratorio**: {_ulf}")
+        _scp = None; _ultp = None
+    _tkt = "—"; _tkid = "—"
+    if _ultp is not None and not _ultp.empty:
+        _u = _ultp.iloc[0]
+        _tkt = f"{_u.get('fecha_e') or '—'} {_u.get('hora_e') or ''}".strip()
+        _tkid = f"#{int(_u['id'])}" if pd.notna(_u.get('id')) else "—"
+    _when = "—"; _ok = True; _hn = None
+    if _scp is not None and not _scp.empty:
+        _r = _scp.iloc[0]
+        _ok = str(_r["last_status"]).upper() == "OK"
+        _hn = int(_r["hace_min"]) if pd.notna(_r["hace_min"]) else None
+        _when = pd.to_datetime(_r["last_successful_sync"]).strftime("%d/%m %H:%M") if pd.notna(_r["last_successful_sync"]) else "—"
+    st.caption(f"🚛 **Portería** · último ticket registrado: **{_tkt}** ({_tkid}) · última carga OK: **{_when}**"
+               + (f" · hace {_hn} min" if _hn is not None else ""))
+    if not _ok:
+        st.caption("⚠️ El agente de portería no está leyendo el Access — pueden entrar tickets que todavía no llegan acá.")
 
     # --- PCs que intentan subir (heartbeat): cuál sube efectivamente ---
     try:
