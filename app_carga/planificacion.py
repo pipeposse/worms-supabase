@@ -2303,8 +2303,123 @@ def _reconciliacion_profunda(USR, cat, conectar):
                        "tanque también se drene). **Coincidencia** = cuán cerca está ese ingreso del teórico de la reacción.")
 
 
+def _desvios_semanal(USR, cat, conectar):
+    """Sección Desvíos (Dirección): stock semana anterior → proyectado con producción → real → desvío."""
+    _desvio_stock_ledger(USR, cat, conectar)
+    st.divider()
+    _reconciliacion_semanal(USR, cat, conectar)
+
+
+def _desvio_stock_ledger(USR, cat, conectar):
+    st.subheader("📉 Desvíos de stock — proyectado vs real por familia")
+    st.caption("Partimos del **stock de la semana anterior**, le sumamos lo **producido** (y ajustes de portería) para "
+               "obtener cuánto **debería** haber quedado, y lo comparamos con el **stock real** medido al cierre de la semana. "
+               "La diferencia es el **desvío**.")
+    with st.expander("ℹ️ Cómo se calcula"):
+        st.markdown(
+            "**Proyectado = Stock semana anterior + Producción + Ext. entra − Ext. sale − Interno.**\n\n"
+            "- **Stock anterior (t)**: stock físico medido en los tanques de la familia al cierre de la semana previa.\n"
+            "- **Producción (t)**: lo producido por reacciones terminadas de esa familia.\n"
+            "- **Ext. entra / sale (t)**: ingresos/despachos por portería (proveedores/clientes).\n"
+            "- **Interno (t)**: consumo por movimiento interno (ej. AG usado para fabricar AG-E).\n"
+            "- **Proyectado (t)**: lo que *debería* quedar en tanque.\n"
+            "- **Real (t)**: stock físico medido al cierre de la semana.\n"
+            "- **Desvío (t) = Real − Proyectado** (🟢 |·|<5 · 🟡 5–20 · 🔴 >20).\n\n"
+            "⚠️ Familias de **alto flujo de portería** (AFE, AG) muestran desvíos grandes porque el movimiento de portería "
+            "no coincide 1:1 con el tanque físico (compra/consumo inmediato, subproductos despachados). El desvío es más "
+            "confiable en las familias que **producimos y acumulamos** (ARE, GLICERINA, SEBO).")
+    c1, c2 = st.columns([1, 2])
+    _sem = c1.number_input("Semanas atrás", 2, 52, 8, step=1, key="dsv_sem")
+    df = cat("SELECT semana, familia, stock_ini_t, prod_t, ext_in_t, ext_out_t, interno_t, "
+             "delta_esp_t, stock_proy_t, stock_real_t, desvio_t "
+             "FROM produccion.v_desvio_stock_semanal "
+             "WHERE semana >= (date_trunc('week', now())::date - (%s || ' weeks')::interval) "
+             "ORDER BY semana DESC, familia", (int(_sem),))
+    if df is None or df.empty:
+        st.info("Sin datos de stock para calcular desvíos."); return
+    df = df.copy()
+    for _c in ["stock_ini_t", "prod_t", "ext_in_t", "ext_out_t", "interno_t", "delta_esp_t",
+               "stock_proy_t", "stock_real_t", "desvio_t"]:
+        df[_c] = pd.to_numeric(df[_c], errors="coerce")
+    _fams = sorted(df["familia"].dropna().unique().tolist())
+    _def = [x for x in ["ARE", "GLICERINA", "SEBO"] if x in _fams] or _fams
+    _fsel = c2.multiselect("Familias", _fams, default=_def, key="dsv_fam",
+                           help="Por defecto las familias que producimos y acumulamos, donde el desvío es más confiable.")
+    dff = (df[df["familia"].isin(_fsel)] if _fsel else df).copy()
+    if dff.empty:
+        st.info("Elegí al menos una familia."); return
+    dff["Semana"] = pd.to_datetime(dff["semana"]).dt.strftime("S%V")
+
+    # --- Semana más reciente: tarjetas por familia ---
+    _ult = dff["semana"].max()
+    _lastw = dff[dff["semana"] == _ult].sort_values("familia")
+    st.markdown(f"**Última semana cerrada · {pd.to_datetime(_ult).strftime('S%V · sem del %d/%m')}**")
+    for _, r in _lastw.iterrows():
+        if pd.isna(r["desvio_t"]):
+            continue
+        _d = float(r["desvio_t"])
+        _clr = "#16a34a" if abs(_d) < 5 else ("#b45309" if abs(_d) < 20 else "#dc2626")
+        cA, cB, cC, cD, cE = st.columns([1.1, 1, 1, 1, 1.1])
+        cA.markdown(f"**{r['familia']}**")
+        cB.metric("Stock ant.", f"{r['stock_ini_t']:,.1f} t" if pd.notna(r['stock_ini_t']) else "—")
+        cC.metric("Proyectado", f"{r['stock_proy_t']:,.1f} t" if pd.notna(r['stock_proy_t']) else "—")
+        cD.metric("Real", f"{r['stock_real_t']:,.1f} t" if pd.notna(r['stock_real_t']) else "—")
+        cE.markdown(f"<div style='font-size:.8rem;color:#666'>Desvío</div>"
+                    f"<div style='font-size:1.4rem;font-weight:800;color:{_clr}'>{_d:+,.1f} t</div>",
+                    unsafe_allow_html=True)
+
+    # --- Gráfico proyectado vs real (última familia / todas) ---
+    try:
+        import altair as alt
+        _cg = dff.dropna(subset=["stock_proy_t", "stock_real_t"]).copy()
+        if not _cg.empty:
+            _orden = _cg.sort_values("semana")["Semana"].drop_duplicates().tolist()
+            _long = _cg.melt(id_vars=["Semana", "familia"], value_vars=["stock_proy_t", "stock_real_t"],
+                             var_name="tipo", value_name="t")
+            _long["tipo"] = _long["tipo"].map({"stock_proy_t": "Proyectado", "stock_real_t": "Real"})
+            _ch = (alt.Chart(_long).mark_bar().encode(
+                    x=alt.X("Semana:O", sort=_orden, title="Semana"),
+                    xOffset=alt.XOffset("tipo:N"),
+                    y=alt.Y("t:Q", title="Stock (t)"),
+                    color=alt.Color("tipo:N", title="", scale=alt.Scale(
+                        domain=["Proyectado", "Real"], range=["#94a3b8", "#2563eb"])),
+                    tooltip=["Semana", "familia", "tipo", alt.Tooltip("t:Q", format=",.1f")])
+                   .properties(height=340))
+            if len(_fsel) > 1:
+                _ch = _ch.facet(row=alt.Row("familia:N", title="")).resolve_scale(y="independent")
+            st.altair_chart(_ch, use_container_width=True)
+    except Exception:
+        pass
+
+    # --- Tabla detalle ---
+    st.markdown("**Detalle semanal**")
+    _disp = dff.rename(columns={"familia": "Familia", "stock_ini_t": "Stock ant. (t)",
+                                "prod_t": "Producción (t)", "ext_in_t": "Ext. entra (t)",
+                                "ext_out_t": "Ext. sale (t)", "interno_t": "Interno (t)",
+                                "stock_proy_t": "Proyectado (t)", "stock_real_t": "Real (t)",
+                                "desvio_t": "Desvío (t)"})
+    _disp = _disp[["Semana", "Familia", "Stock ant. (t)", "Producción (t)", "Ext. entra (t)",
+                   "Ext. sale (t)", "Interno (t)", "Proyectado (t)", "Real (t)", "Desvío (t)"]]
+
+    def _cc(v):
+        if pd.isna(v):
+            return ""
+        a = abs(v)
+        return ("color:#16a34a;font-weight:700" if a < 5 else
+                ("color:#b45309;font-weight:700" if a < 20 else "color:#dc2626;font-weight:700"))
+    _fmt = {c: "{:,.1f}" for c in ["Stock ant. (t)", "Producción (t)", "Ext. entra (t)", "Ext. sale (t)",
+                                   "Interno (t)", "Proyectado (t)", "Real (t)", "Desvío (t)"]}
+    try:
+        st.dataframe(_disp.style.map(_cc, subset=["Desvío (t)"]).format(_fmt, na_rep="—"),
+                     hide_index=True, use_container_width=True)
+    except Exception:
+        st.dataframe(_disp, hide_index=True, use_container_width=True)
+    st.caption("**Desvío**: 🟢 <5 t · 🟡 5–20 t · 🔴 >20 t. Un desvío positivo = quedó más stock del proyectado; "
+               "negativo = quedó menos (salió más, mermó, o producción sin acopiar).")
+
+
 def _reconciliacion_semanal(USR, cat, conectar):
-    st.subheader("🧮 Reconciliación semanal — ¿la producción se ve en los tanques?")
+    st.subheader("🔎 Balance de masa por familia (detalle)")
     with st.expander("ℹ️ Cómo leer esta sección (qué significa cada columna)"):
         st.markdown(
             "**Balance de masa por familia y semana.** Lo que entró/salió de los tanques debería explicarse por "
@@ -3168,7 +3283,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         _render_planificadas(cat)
     _render_aprobaciones(USR, cat, conectar)
 
-    _grupo_opts = ["➕ Cargar nueva reacción", "⬆️ Carga masiva", "⚙️ Administración de reacciones", "📈 Performance", "📅 Cronogramas", "📊 Variación semanal", "🧮 Reconciliación"]
+    _grupo_opts = ["➕ Cargar nueva reacción", "⬆️ Carga masiva", "⚙️ Administración de reacciones", "📈 Performance", "📅 Cronogramas"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3224,14 +3339,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     if _grupo.startswith("📅"):
         _render_cronogramas(USR, cat, conectar)
-        return
-
-    if _grupo.startswith("📊"):
-        _variacion_semanal(USR, cat, conectar)
-        return
-
-    if _grupo.startswith("🧮"):
-        _reconciliacion_semanal(USR, cat, conectar)
         return
 
     # ----- Cargar nueva reacción: reactores o bachas -----

@@ -4224,15 +4224,31 @@ if st.session_state.section != "CARGAS":
                 st.code(_tb.format_exc())
 
     elif st.session_state.section == "DIRECCION":
-        # =================== DIRECCIÓN (aprobaciones fuera de norma) ===================
+        # =================== DIRECCIÓN ===================
         try:
-            from planificacion import _render_aprobaciones
+            import planificacion as _pl
             st.title("🛂 Dirección")
-            st.caption("Aprobación de planificaciones **fuera de norma**: cargas menores al 80% de la capacidad "
-                       "del reactor o bacha. Mientras el ticket esté pendiente, el operario no puede iniciar la producción.")
-            _render_aprobaciones(USR, cat, conectar, compacto=False)
+            _dir_opts = ["🛂 Aprobaciones", "📉 Desvíos", "📊 Variación semanal"]
+            try:
+                _dir = st.segmented_control("Sección", _dir_opts, default=_dir_opts[0],
+                                            key="dir_grupo_sc", label_visibility="collapsed")
+            except Exception:
+                _dir = st.radio("Sección", _dir_opts, horizontal=True, key="dir_grupo")
+            _dir = _dir or _dir_opts[0]
+            st.write("")
+            if _dir.startswith("📉"):
+                _pl._desvios_semanal(USR, cat, conectar)
+            elif _dir.startswith("📊"):
+                _pl._variacion_semanal(USR, cat, conectar)
+            else:
+                st.caption("Aprobación de planificaciones **fuera de norma**: cargas menores al 80% de la capacidad "
+                           "del reactor o bacha. Mientras el ticket esté pendiente, el operario no puede iniciar la producción.")
+                _pl._render_aprobaciones(USR, cat, conectar, compacto=False)
         except Exception as _e:
+            import traceback as _tb
             st.error(f"No se pudo cargar Dirección: {_e}")
+            with st.expander("🔧 Detalle técnico"):
+                st.code(_tb.format_exc())
 
     elif st.session_state.section == "FORMULAS":
         # =================== FÓRMULAS (dirección) ===================
