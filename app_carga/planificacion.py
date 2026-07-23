@@ -899,7 +899,7 @@ def _recompute_final(cur, idb):
                 " WHERE id_batch=%s AND NOT COALESCE(anulado,false)) WHERE id_batch=%s", (int(idb), int(idb)))
 
 
-def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
+def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj, kp=""):
     st.caption("Asigná los **tickets de balanza (pesadas) ya evaluados por laboratorio** del producto final. "
                "La **suma de estos tickets define los kilos finales** de la reacción (editable por ticket).")
     _pobj = (producto_obj or "").strip()
@@ -922,8 +922,8 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
     st.markdown(f"**Tickets pesados disponibles** (evaluados como {_pobj})")
     if cand is not None and not cand.empty:
         _copt = cand.apply(lambda r: f"#{r['ticket']} · {float(r['kg'] or 0)/1000:.2f} t · cal {r['calidad'] or '-'} · {r['fecha']}", axis=1).tolist()
-        _selc = st.multiselect("Elegí tickets para asignar", _copt, key=f"pf_sel_{idb}")
-        if st.button("➕ Asignar seleccionados", type="primary", key=f"pf_add_{idb}", use_container_width=True) and _selc:
+        _selc = st.multiselect("Elegí tickets para asignar", _copt, key=f"pf_sel_{idb}{kp}")
+        if st.button("➕ Asignar seleccionados", type="primary", key=f"pf_add_{idb}{kp}", use_container_width=True) and _selc:
             try:
                 with conectar(int(USR["id_usuario"])) as (conn, audit):
                     with conn.cursor() as cur:
@@ -942,10 +942,10 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
     else:
         st.caption("No hay tickets pesados sin asignar para este producto. Podés agregar uno manual abajo.")
     with st.expander("➕ Agregar ticket manual"):
-        _mt = st.text_input("N° de ticket", key=f"pf_mt_{idb}")
-        _mk = st.number_input("Kilos (si lo dejás vacío, se busca de balanza)", min_value=0.0, value=None, step=10.0, format="%g", key=f"pf_mk_{idb}")
-        _mc = st.text_input("Calidad", value="", key=f"pf_mc_{idb}")
-        if st.button("➕ Asignar manual", key=f"pf_addman_{idb}"):
+        _mt = st.text_input("N° de ticket", key=f"pf_mt_{idb}{kp}")
+        _mk = st.number_input("Kilos (si lo dejás vacío, se busca de balanza)", min_value=0.0, value=None, step=10.0, format="%g", key=f"pf_mk_{idb}{kp}")
+        _mc = st.text_input("Calidad", value="", key=f"pf_mc_{idb}{kp}")
+        if st.button("➕ Asignar manual", key=f"pf_addman_{idb}{kp}"):
             _mtv = (_mt or "").strip()
             if not _mtv:
                 st.warning("Poné el N° de ticket.")
@@ -970,10 +970,10 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
     with st.expander("➗ Dividir una pesada compartida (2 o 3 desgomados con un solo ticket)"):
         st.caption("Cuando varios desgomados se pesaron juntos en una sola pesada, cargá el N° de ese ticket, "
                    "en cuántos se dividió y cuántas partes le tocan a esta reacción.")
-        _dt = st.text_input("N° de ticket de la pesada", key=f"pf_dt_{idb}")
+        _dt = st.text_input("N° de ticket de la pesada", key=f"pf_dt_{idb}{kp}")
         _d1, _d2 = st.columns(2)
-        _dn = _d1.selectbox("Se dividió en", [2, 3, 4], key=f"pf_dn_{idb}")
-        _dp = _d2.number_input("Partes para esta reacción", 1, int(_dn), 1, key=f"pf_dp_{idb}")
+        _dn = _d1.selectbox("Se dividió en", [2, 3, 4], key=f"pf_dn_{idb}{kp}")
+        _dp = _d2.number_input("Partes para esta reacción", 1, int(_dn), 1, key=f"pf_dp_{idb}{kp}")
         _dkg_tot = None; _dcal = None
         if (_dt or "").strip():
             _lk = cat("SELECT round(abs(COALESCE(peso_neto,0))::numeric,0) AS kg, lab_calidad "
@@ -981,7 +981,7 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
             if _lk is not None and not _lk.empty:
                 _dkg_tot = float(_lk.iloc[0]["kg"] or 0); _dcal = _lk.iloc[0]["lab_calidad"]
         _dkg_man = st.number_input("...o kilos TOTALES de la pesada a mano (si no está en balanza)",
-                                   min_value=0.0, value=0.0, step=10.0, key=f"pf_dkgman_{idb}")
+                                   min_value=0.0, value=0.0, step=10.0, key=f"pf_dkgman_{idb}{kp}")
         _dbase = _dkg_tot if _dkg_tot is not None else float(_dkg_man or 0)
         if _dbase > 0:
             _dpart = _dbase * (int(_dp) / int(_dn))
@@ -989,7 +989,7 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
                     f"**{_dpart/1000:.2f} t** para esta reacción.")
         elif (_dt or "").strip():
             st.caption("Ese ticket no aparece en balanza; cargá los kilos totales a mano arriba.")
-        if st.button("➗ Asignar la parte a esta reacción", key=f"pf_dadd_{idb}"):
+        if st.button("➗ Asignar la parte a esta reacción", key=f"pf_dadd_{idb}{kp}"):
             _tv = (_dt or "").strip()
             if not _tv:
                 st.warning("Poné el N° de ticket.")
@@ -1019,10 +1019,10 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
         _disp["frac_txt"] = _disp["fraccion"].apply(lambda v: (f"{v:.2f}" if pd.notna(v) else "completo"))
         _disp = _disp.rename(columns={"ticket": "Ticket", "producto": "Producto", "calidad": "Calidad", "kg": "Kg", "frac_txt": "Fracción"})
         edp = st.data_editor(_disp[["Ticket", "Producto", "Calidad", "Fracción", "Kg", "Quitar"]], hide_index=True, use_container_width=True,
-                             disabled=["Ticket", "Producto", "Calidad", "Fracción"], key=f"pf_ed_{idb}",
+                             disabled=["Ticket", "Producto", "Calidad", "Fracción"], key=f"pf_ed_{idb}{kp}",
                              column_config={"Kg": st.column_config.NumberColumn(format="%g"),
                                             "Quitar": st.column_config.CheckboxColumn()})
-        if st.button("💾 Guardar (definir kilos finales por estos tickets)", type="primary", key=f"pf_save_{idb}", use_container_width=True):
+        if st.button("💾 Guardar (definir kilos finales por estos tickets)", type="primary", key=f"pf_save_{idb}{kp}", use_container_width=True):
             try:
                 with conectar(int(USR["id_usuario"])) as (conn, audit):
                     with conn.cursor() as cur:
@@ -1920,7 +1920,7 @@ def _dlg_reaccion(USR, cat, conectar, idb):
         _control_rendimiento(USR, cat, conectar, int(idb))
 
     with tPF:
-        _ficha_final_tickets(USR, cat, conectar, int(idb), b.get("producto_obj"))
+        _ficha_final_tickets(USR, cat, conectar, int(idb), b.get("producto_obj"), kp="dlg")
 
     with tLM:
         render_checklist_limpieza(USR, cat, conectar, int(idb), b.get("tipo_proceso"))
@@ -2764,7 +2764,7 @@ def _reacciones_terminadas(USR, cat, conectar):
 
     # asignar tickets de pesada final (mismo flujo que la ficha) — la suma define kg_obtenido
     st.markdown("**🏁 Tickets de pesada final (asignar / editar)**")
-    _ficha_final_tickets(USR, cat, conectar, int(idb), r["producto"])
+    _ficha_final_tickets(USR, cat, conectar, int(idb), r["producto"], kp="term")
 
     # asignar / editar kg real
     st.markdown("**Producción real de la reacción**")

@@ -379,7 +379,7 @@ def produccion(USR, cat, conectar, id_batch=None):
                "La suma define los kilos finales reales de la reacción.")
     try:
         import planificacion as _plan
-        _plan._ficha_final_tickets(USR, cat, conectar, int(b["id_batch"]), _pf)
+        _plan._ficha_final_tickets(USR, cat, conectar, int(b["id_batch"]), _pf, kp="desg")
     except Exception as _etk:
         st.caption(f"No se pudieron cargar los tickets finales: {_etk}")
     st.divider()
