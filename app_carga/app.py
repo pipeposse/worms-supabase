@@ -4228,7 +4228,7 @@ if st.session_state.section != "CARGAS":
         try:
             import planificacion as _pl
             st.title("🛂 Dirección")
-            _dir_opts = ["🛂 Aprobaciones", "📉 Desvíos", "📊 Variación semanal"]
+            _dir_opts = ["📉 Desvíos", "📊 Variación semanal", "🛂 Aprobaciones"]
             try:
                 _dir = st.segmented_control("Sección", _dir_opts, default=_dir_opts[0],
                                             key="dir_grupo_sc", label_visibility="collapsed")
