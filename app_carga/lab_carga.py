@@ -1062,7 +1062,7 @@ def render_laboratorio(get_conn=None, usr=None):
             st.success(f"✅ Sin tickets pendientes para {_et}.")
         else:
             st.caption(f"{len(pend)} ticket(s) sin evaluar · {_et}")
-            for _t in pend:
+            for _ix, _t in enumerate(pend):
                 _pat = "/".join([x for x in [_t.get("patente_chasis"),
                                              _t.get("patente_acoplado")] if x])
                 _tn = (abs(_t.get("peso_neto") or 0) / 1000.0)
@@ -1072,7 +1072,7 @@ def render_laboratorio(get_conn=None, usr=None):
                     f" · {(_t.get('cliente') or '')[:28]}"
                     f"{(' · ' + _pat) if _pat else ''}"
                     f"{(f' · {_tn:,.1f} TN' if _tn else '')}")
-                if c2.button("Evaluar", key=f"pend_ev_{_t['transaccion']}",
+                if c2.button("Evaluar", key=f"pend_ev_{_ix}_{_t['transaccion']}",
                              use_container_width=True):
                     ss["lab_ftk"] = str(_t["transaccion"])
                     ss["_lab_force_modo"] = "➕ Nueva carga"
