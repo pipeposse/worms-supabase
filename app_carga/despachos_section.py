@@ -27,7 +27,23 @@ SPEC_DEFAULT = {"acidez": 5.0, "ays": 2.0, "azufre": 50.0, "fosforo": 150.0}
 TIPOS_CARGA = ["FLEX", "ISO TANK", "BULK", "CAMION", "TAMBORES"]
 ESTADOS = ["BORRADOR", "CONFIRMADO", "DESPACHADO", "ANULADO"]
 
-_COLS_ED = ["Tanque", "Litros", "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %"]
+_COLS_MIN = ["Tanque", "Litros"]
+_COLS_LAB = ["Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %"]
+_COLS_ED = _COLS_MIN + _COLS_LAB
+_PARAMS = (("Acidez %", "acidez"), ("Fósforo ppm", "fosforo"),
+           ("Azufre ppm", "azufre"), ("AyS %", "agua_sedimento"))
+_NAN = float("nan")
+
+
+def _base_vacia(cols):
+    """DataFrame vacío con dtypes correctos: evita que el editor muestre 'None' en las celdas."""
+    return pd.DataFrame({c: pd.Series(dtype=("object" if c == "Tanque" else "float64"))
+                         for c in cols})
+
+
+def _faltan_lab(r):
+    """Parámetros de laboratorio ausentes en un tanque."""
+    return [n for n, k in _PARAMS if pd.isna(r.get(k))]
 
 
 # ------------------------------------------------------------------ datos
@@ -190,7 +206,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, min_l=1000.0):
         if toma < min_l * 0.2:
             continue
         out.append({"Tanque": r["etq"], "Litros": round(toma, 0),
-                    "Acidez %": None, "Fósforo ppm": None, "Azufre ppm": None, "AyS %": None})
+                    "Acidez %": _NAN, "Fósforo ppm": _NAN, "Azufre ppm": _NAN, "AyS %": _NAN})
         acum += toma
     if not out:
         return pd.DataFrame(), "No se pudo armar una mezcla con el stock disponible."
@@ -369,51 +385,117 @@ def _armar(USR, cat, conectar):
                                  step=10.0, key="dsp_spfos")
     spec = {"acidez": sp_ac, "ays": sp_ays, "azufre": sp_az, "fosforo": sp_fos}
 
-    # ---------- 2 · Formulación ----------
-    st.markdown("#### 2 · Formulación por tanque")
-    ca, cb = st.columns([1, 3])
+    # ---------- 2 · Tanques del producto ----------
+    st.markdown(f"#### 2 · Tanques con **{prod_lbl}**")
+    _tp = tks[tks["producto_principal"].astype(str).str.strip().str.upper()
+              == str(prod_cod).strip().upper()].copy()
+    if _tp.empty:
+        st.error(f"No hay ningún tanque activo con producto **{prod_lbl}** ({prod_cod}). "
+                 "Revisá el producto principal de los tanques en el panel de tanques.")
+        return
+
+    _con = _tp[_tp["litros_actual"].fillna(0) > 0].copy()
+    if _con.empty:
+        st.error(f"Hay tanques de **{prod_lbl}** pero ninguno con stock medido. "
+                 "Cargá las mediciones de nivel antes de armar el despacho.")
+        return
+    _sin_lab = _con[_con.apply(lambda r: len(_faltan_lab(r)) > 0, axis=1)]
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Tanques con stock", f"{len(_con)}")
+    k2.metric("Stock disponible", f"{_con['litros_actual'].fillna(0).sum():,.0f} L")
+    k3.metric("Con lab completo", f"{len(_con) - len(_sin_lab)} de {len(_con)}")
+
+    if not _sin_lab.empty:
+        _det = []
+        for _, r in _sin_lab.iterrows():
+            _f = _faltan_lab(r)
+            _det.append(f"**{r['nombre']}** ({r['litros_actual']:,.0f} L) → falta {', '.join(_f)}"
+                        if pd.notna(r["litros_actual"]) else f"**{r['nombre']}** → falta {', '.join(_f)}")
+        st.error("🧪 **Faltan análisis de laboratorio.** Estos tanques no tienen todos los parámetros "
+                 "cargados, así que no se pueden verificar contra la especificación:\n\n- "
+                 + "\n- ".join(_det)
+                 + "\n\nPedile al laboratorio que los cargue antes de armar el despacho. Si igual los usás, "
+                 "el promedio ponderado ignora esa masa y puede quedar **optimista**.")
+
+    try:
+        _viejos = _con[pd.notna(_con["lab_actualizado_en"])].copy()
+        if not _viejos.empty:
+            _ts = pd.to_datetime(_viejos["lab_actualizado_en"], errors="coerce")
+            if getattr(_ts.dt, "tz", None) is not None:
+                _ts = _ts.dt.tz_localize(None)
+            _viejos["_dias"] = (pd.Timestamp.now() - _ts).dt.days
+            _v = _viejos[_viejos["_dias"] > 30]
+            if not _v.empty:
+                st.warning("⏳ Laboratorio desactualizado (>30 días): " +
+                           ", ".join(f"{r['nombre']} ({int(r['_dias'])} d)" for _, r in _v.iterrows()))
+    except Exception:
+        pass
+
+    with st.expander("Ver laboratorio por tanque", expanded=False):
+        _lt = _con.rename(columns={"nombre": "Tanque", "sector": "Sector", "litros_actual": "Disp. (L)",
+                                   "densidad": "Densidad", "acidez": "Acidez %", "fosforo": "Fósforo ppm",
+                                   "azufre": "Azufre ppm", "agua_sedimento": "AyS %",
+                                   "lab_actualizado_en": "Lab del"})
+        st.dataframe(_lt[["Tanque", "Sector", "Disp. (L)", "Densidad", "Acidez %", "Fósforo ppm",
+                          "Azufre ppm", "AyS %", "Lab del"]],
+                     hide_index=True, use_container_width=True,
+                     column_config={"Disp. (L)": st.column_config.NumberColumn(format="%.0f"),
+                                    "Lab del": st.column_config.DatetimeColumn(format="DD/MM/YY")})
+
+    # ---------- 3 · Formulación ----------
+    st.markdown("#### 3 · Formulación por tanque")
+    ca, cb, cc = st.columns([1, 1, 2.4])
     if ca.button("🎯 Sugerir mezcla", use_container_width=True,
                  help="Propone tanques del producto elegido, priorizando los de mayor margen contra la spec."):
         _sug, _msg = _sugerir(tks, prod_cod, lit_obj, spec)
         if _sug.empty:
-            cb.warning(_msg)
+            cc.warning(_msg)
         else:
             ss["dsp_lineas"] = _sug
-            cb.success(_msg)
             st.rerun()
-    if cb.button("🗑️ Vaciar formulación"):
-        ss["dsp_lineas"] = pd.DataFrame(columns=_COLS_ED)
+    if cb.button("🗑️ Vaciar", use_container_width=True):
+        ss["dsp_lineas"] = _base_vacia(_COLS_ED)
         st.rerun()
+    pisar = cc.checkbox("✏️ Pisar valores de laboratorio a mano", key="dsp_pisar",
+                        help="Sólo si el lab te pasó un valor que todavía no está en el sistema. "
+                             "Por defecto los parámetros salen del tanque.")
+    _cols = _COLS_ED if pisar else _COLS_MIN
 
     base = ss.get("dsp_lineas")
-    if base is None or not isinstance(base, pd.DataFrame) or base.empty:
-        base = pd.DataFrame([{c: None for c in _COLS_ED} for _ in range(3)])
-    base = base.reindex(columns=_COLS_ED)
+    if base is None or not isinstance(base, pd.DataFrame):
+        base = _base_vacia(_COLS_ED)
+    base = base.reindex(columns=_cols)
+    base["Tanque"] = base["Tanque"].astype("object")
+    for _c in _cols[1:]:
+        base[_c] = pd.to_numeric(base[_c], errors="coerce")
 
-    _o = tks["etq"].tolist()
-    ed = st.data_editor(
-        base, num_rows="dynamic", hide_index=True, use_container_width=True, key="dsp_ed",
-        column_config={
-            "Tanque": st.column_config.SelectboxColumn("Tanque", options=_o, width="large",
-                                                       help="Nombre · producto · litros disponibles."),
-            "Litros": st.column_config.NumberColumn("Litros a cargar", min_value=0.0, step=500.0,
-                                                    format="%.0f"),
+    _o = _con["etq"].tolist()
+    _cfg = {
+        "Tanque": st.column_config.SelectboxColumn("Tanque", options=_o, width="large", required=True,
+                                                   help="Sólo tanques con " + str(prod_lbl) + " y stock."),
+        "Litros": st.column_config.NumberColumn("Litros a cargar", min_value=0.0, step=500.0,
+                                                format="%.0f"),
+    }
+    if pisar:
+        _cfg.update({
             "Acidez %": st.column_config.NumberColumn("Acidez % (pisar)", format="%.2f",
                                                       help="Vacío = usa el último lab del tanque."),
             "Fósforo ppm": st.column_config.NumberColumn("Fósforo ppm (pisar)", format="%.1f"),
             "Azufre ppm": st.column_config.NumberColumn("Azufre ppm (pisar)", format="%.1f"),
             "AyS %": st.column_config.NumberColumn("AyS % (pisar)", format="%.2f"),
         })
-    st.caption("Elegí el tanque y los litros. Producto, densidad y laboratorio se completan solos; "
-               "las columnas *(pisar)* sólo se llenan si querés forzar un valor distinto al del sistema.")
+    ed = st.data_editor(base, num_rows="dynamic", hide_index=True, use_container_width=True,
+                        key=("dsp_ed_p" if pisar else "dsp_ed"), column_config=_cfg)
+    st.caption("Elegí el tanque y los litros. Producto, densidad, acidez, fósforo, azufre y AyS "
+               "se completan solos con el último análisis del tanque.")
 
     res = _resolver(ed, tks)
     if res.empty:
         st.info("Cargá al menos una línea con tanque y litros para ver los cálculos.")
         return
 
-    # ---------- 3 · Resultado ----------
-    st.markdown("#### 3 · Resultado de la mezcla")
+    # ---------- 4 · Resultado ----------
+    st.markdown("#### 4 · Resultado de la mezcla")
     tot_l = float(res["Litros"].sum())
     tot_kg = float(res["kg"].sum())
     dif = tot_l - lit_obj
@@ -463,7 +545,7 @@ def _armar(USR, cat, conectar):
                  "o bajá su participación antes de confirmar.")
 
     # ---------- 5 · Guardar ----------
-    st.markdown("#### 4 · Guardar")
+    st.markdown("#### 5 · Guardar")
     g1, g2, g3 = st.columns([1.2, 1, 1.6])
     estado = g1.selectbox("Estado", ESTADOS, index=0, key="dsp_estado")
     obs = g3.text_input("Observaciones", key="dsp_obs")
