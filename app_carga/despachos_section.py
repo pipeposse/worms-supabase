@@ -312,7 +312,7 @@ def render(USR, cat, conectar):
         st.warning("Sección exclusiva de dirección.")
         return
 
-    _opts = ["🧪 Armar / editar despacho", "📋 Despachos cargados"]
+    _opts = ["🧪 Armar / editar despacho", "🎟️ Tickets de portería", "📋 Despachos cargados"]
     try:
         _t = st.segmented_control("Vista", _opts, default=_opts[0], key="dsp_tab_sc",
                                   label_visibility="collapsed")
@@ -323,6 +323,8 @@ def render(USR, cat, conectar):
 
     if _t.startswith("📋"):
         _listado(USR, cat, conectar)
+    elif _t.startswith("🎟️"):
+        _tickets(USR, cat, conectar)
     else:
         _armar(USR, cat, conectar)
 
@@ -648,3 +650,223 @@ def _listado(USR, cat, conectar):
             cat.clear(); st.success("Despacho borrado."); st.rerun()
         except Exception as e:
             st.error(f"No se pudo borrar: {e}")
+
+
+# ------------------------------------------------------------------ tickets de portería
+
+_ROLES_TK = {
+    "SALIDA": {
+        "titulo": "🚚 Salidas a exportación (flexi / contenedor)",
+        "ayuda": ("Cada ticket de salida es un camión que sale cargado a la terminal. En portería "
+                  "aparecen con procedencia **EGNITRADE S.L.** y destino la terminal (SOUTHCROSS, "
+                  "LIBRA, PADILLA, MERCOMAR, INTERALMAR…). El producto viene como *ACIDOS GRASOS* "
+                  "genérico: el producto fino lo define el laboratorio, no portería."),
+        "clases": ("SALIDA",),
+    },
+    "MP": {
+        "titulo": "🛢️ Materia prima cargada (movimiento interno)",
+        "ayuda": ("Los movimientos internos que alimentan la carga: procedencia **MOVIMIENTO INTERNO**, "
+                  "destino PROPIO y el área en el campo *chofer* (EXPORTACIÓN, REACTORES, PILETAS, "
+                  "BACHAS). El camión entra cargado y sale vacío, por eso el neto de portería es "
+                  "negativo; acá se muestra en valor absoluto. También se listan los ingresos de "
+                  "materia prima de terceros, por si querés trazar el despacho hasta la compra."),
+        "clases": ("MP_EXPO", "INTERNO", "INGRESO"),
+    },
+}
+
+
+def _tk_asignados(cat, id_despacho, rol):
+    return cat("SELECT id_dt, ticket, empresa, fecha, producto, destino, patente, kg, area, "
+               "nro_contenedor, precinto, observaciones, estado_validacion, familia, sin_pesada "
+               "FROM produccion.v_despacho_ticket WHERE id_despacho=%s AND rol=%s "
+               "ORDER BY fecha, ticket", (int(id_despacho), rol))
+
+
+def _tk_candidatos(cat, clases, d1, d2, txt, familia):
+    q = ("SELECT p.id_transaccion, p.ticket, p.empresa, p.fecha, p.hora, p.producto, p.destino, "
+         "p.area, p.procedencia, p.patente, p.kg, p.sin_pesada, p.familia, p.observaciones "
+         "FROM produccion.v_porteria_ticket p "
+         "LEFT JOIN produccion.fact_despacho_ticket a ON a.id_transaccion = p.id_transaccion "
+         "WHERE a.id_transaccion IS NULL AND p.clase = ANY(%s) "
+         "AND p.fecha BETWEEN %s AND %s ")
+    par = [list(clases), d1, d2]
+    if familia and familia != "Todas":
+        q += "AND p.familia=%s "
+        par.append(familia)
+    if txt:
+        q += ("AND (p.producto ILIKE %s OR p.destino ILIKE %s OR p.area ILIKE %s "
+              "OR p.patente ILIKE %s OR p.observaciones ILIKE %s OR p.ticket::text LIKE %s) ")
+        par += ["%" + txt + "%"] * 5 + ["%" + txt + "%"]
+    q += "ORDER BY p.fecha DESC, p.ticket DESC LIMIT 400"
+    return cat(q, tuple(par))
+
+
+def _tk_panel(USR, cat, conectar, cab, rol):
+    spec = _ROLES_TK[rol]
+    st.markdown(f"##### {spec['titulo']}")
+    st.caption(spec["ayuda"])
+
+    asg = _tk_asignados(cat, cab["id_despacho"], rol)
+    if asg is not None and not asg.empty:
+        _a = asg.copy()
+        _a["kg"] = pd.to_numeric(_a["kg"], errors="coerce")
+        _err = _a[_a["estado_validacion"].astype(str).str.startswith("ERROR")]
+        _avi = _a[_a["estado_validacion"].astype(str).str.startswith("AVISO")]
+        if not _err.empty:
+            st.error("⛔ **Tickets AFE sin pesada cerrada:** " +
+                     ", ".join(str(int(t)) for t in _err["ticket"].dropna()) +
+                     ". Un AFE siempre tiene que tener pesada de entrada y de salida; si falta, el "
+                     "camión sigue adentro o la balanza no cerró el ticket. Corregilo en portería "
+                     "antes de confirmar el despacho.")
+        if not _avi.empty:
+            st.warning("⚠️ **Tickets sin pesada cerrada:** " +
+                       ", ".join(str(int(t)) for t in _avi["ticket"].dropna()) +
+                       ". En AG-E de formulación (AG-E + AFE-S → AG-E de exportación) puede ser "
+                       "legítimo, pero esos kg no suman al control de carga.")
+        _v = _a.rename(columns={"ticket": "Ticket", "fecha": "Fecha", "producto": "Producto",
+                                "destino": "Destino", "area": "Área", "patente": "Patente",
+                                "kg": "kg", "nro_contenedor": "Contenedor", "precinto": "Precinto",
+                                "observaciones": "Obs. portería", "estado_validacion": "Chequeo"})
+        _cols = ["Ticket", "Fecha", "Producto", "Destino" if rol == "SALIDA" else "Área",
+                 "Patente", "kg", "Contenedor", "Precinto", "Obs. portería", "Chequeo"]
+        st.dataframe(_v[_cols], hide_index=True, use_container_width=True)
+
+        c1, c2 = st.columns([2, 1])
+        _q = c1.multiselect("Quitar tickets", _a["id_dt"].tolist(),
+                            format_func=lambda i: f"#{int(_a[_a['id_dt'] == i]['ticket'].iloc[0])}",
+                            key=f"dsp_tk_del_{rol}")
+        if _q and c2.button("🗑️ Quitar", key=f"dsp_tk_delb_{rol}", use_container_width=True):
+            try:
+                with conectar(USR["id_usuario"]) as (conn, _x):
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM produccion.fact_despacho_ticket WHERE id_dt = ANY(%s)",
+                                    ([int(i) for i in _q],))
+                cat.clear(); st.success("Tickets desasignados."); st.rerun()
+            except Exception as e:
+                st.error(f"No se pudo quitar: {e}")
+    else:
+        st.info("Todavía no hay tickets asignados en este rol.")
+
+    with st.expander("➕ Asignar tickets de portería", expanded=asg is None or asg.empty):
+        _f = cab.get("fecha_despacho")
+        _f = pd.to_datetime(_f).date() if pd.notna(_f) else _dt.date.today()
+        f1, f2, f3, f4 = st.columns([1, 1, 1, 1.6])
+        d1 = f1.date_input("Desde", _f - _dt.timedelta(days=7), key=f"dsp_tk_d1_{rol}")
+        d2 = f2.date_input("Hasta", _f + _dt.timedelta(days=7), key=f"dsp_tk_d2_{rol}")
+        fam = f3.selectbox("Familia", ["Todas", "AG", "AFE"], key=f"dsp_tk_fam_{rol}")
+        txt = f4.text_input("Buscar (producto, destino, área, patente, obs., ticket)",
+                            key=f"dsp_tk_txt_{rol}")
+
+        cnd = _tk_candidatos(cat, spec["clases"], d1, d2, txt.strip(), fam)
+        if cnd is None or cnd.empty:
+            st.info("No hay tickets libres con ese filtro. Ampliá el rango de fechas o sacá el texto.")
+            return
+        cnd = cnd.copy()
+        cnd["kg"] = pd.to_numeric(cnd["kg"], errors="coerce")
+        cnd["Asignar"] = False
+        cnd["Contenedor"] = ""
+        cnd["Precinto"] = ""
+        _pre = cnd.rename(columns={"ticket": "Ticket", "fecha": "Fecha", "hora": "Hora",
+                                   "producto": "Producto", "destino": "Destino", "area": "Área",
+                                   "patente": "Patente", "sin_pesada": "Sin pesada",
+                                   "procedencia": "Procedencia", "observaciones": "Obs. portería"})
+        _c = (["Asignar", "Ticket", "Fecha", "Hora", "Producto", "Destino", "Patente", "kg",
+               "Sin pesada", "Obs. portería", "Contenedor", "Precinto"] if rol == "SALIDA" else
+              ["Asignar", "Ticket", "Fecha", "Hora", "Producto", "Procedencia", "Área", "Patente",
+               "kg", "Sin pesada", "Obs. portería", "Contenedor", "Precinto"])
+        ed = st.data_editor(
+            _pre[_c], hide_index=True, use_container_width=True, key=f"dsp_tk_ed_{rol}",
+            disabled=[c for c in _c if c not in ("Asignar", "Contenedor", "Precinto")],
+            column_config={
+                "Asignar": st.column_config.CheckboxColumn("✔", width="small"),
+                "kg": st.column_config.NumberColumn("kg", format="%.0f"),
+                "Sin pesada": st.column_config.CheckboxColumn("Sin pesada", disabled=True,
+                                                              help="El ticket no tiene pesada de salida cerrada."),
+                "Contenedor": st.column_config.TextColumn("Contenedor", width="small"),
+                "Precinto": st.column_config.TextColumn("Precinto", width="small"),
+            })
+        _sel = ed[ed["Asignar"] == True]  # noqa: E712
+        st.caption(f"{len(cnd)} tickets libres en el rango · {len(_sel)} seleccionados "
+                   f"({_sel['kg'].sum():,.0f} kg)".replace(",", "."))
+        if len(_sel) and st.button(f"✅ Asignar {len(_sel)} ticket(s)", key=f"dsp_tk_add_{rol}",
+                                   type="primary"):
+            _idx = _sel.index.tolist()
+            filas = []
+            for i in _idx:
+                o = cnd.loc[i]
+                s = ed.loc[i]
+                filas.append((int(cab["id_despacho"]), rol, int(o["id_transaccion"]),
+                              int(o["ticket"]) if pd.notna(o["ticket"]) else None,
+                              int(o["empresa"]) if pd.notna(o["empresa"]) else None,
+                              o["fecha"], o["producto"],
+                              o["destino"] if rol == "SALIDA" else o["area"],
+                              o["patente"], float(o["kg"]) if pd.notna(o["kg"]) else None,
+                              bool(o["sin_pesada"]),
+                              (str(s.get("Contenedor") or "").strip() or None),
+                              (str(s.get("Precinto") or "").strip() or None),
+                              USR.get("nombre")))
+            try:
+                with conectar(USR["id_usuario"]) as (conn, _x):
+                    with conn.cursor() as cur:
+                        cur.executemany(
+                            "INSERT INTO produccion.fact_despacho_ticket "
+                            "(id_despacho, rol, id_transaccion, ticket, empresa, fecha, producto, "
+                            " destino, patente, kg, sin_pesada, nro_contenedor, precinto, creado_por) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                            "ON CONFLICT (id_transaccion) DO NOTHING", filas)
+                cat.clear(); st.success(f"{len(filas)} ticket(s) asignados."); st.rerun()
+            except Exception as e:
+                st.error(f"No se pudieron asignar: {e}")
+
+
+def _tickets(USR, cat, conectar):
+    df = cat("SELECT id_despacho, titulo, destino, cliente, producto, fecha_despacho, "
+             "n_contenedores, litros_objetivo, tn_total, estado FROM produccion.v_despacho_resumen "
+             "ORDER BY fecha_despacho DESC NULLS LAST, id_despacho DESC")
+    if df is None or df.empty:
+        st.info("Primero cargá un despacho en *Armar / editar despacho*.")
+        return
+    _lbl = {int(r["id_despacho"]): (f"#{int(r['id_despacho'])} · {r['titulo']} · "
+                                    f"{r['destino'] or 's/destino'} · {r['fecha_despacho'] or 's/fecha'}")
+            for _, r in df.iterrows()}
+    sel = st.selectbox("Despacho", df["id_despacho"].tolist(),
+                       format_func=lambda i: _lbl.get(int(i), str(i)), key="dsp_tk_desp")
+    if sel is None:
+        return
+    cab = df[df["id_despacho"] == sel].iloc[0]
+
+    res = cat("SELECT tickets_salida, tickets_mp, kg_salida, kg_mp, tickets_error, tickets_aviso "
+              "FROM produccion.v_despacho_ticket_resumen WHERE id_despacho=%s", (int(sel),))
+    r = res.iloc[0] if res is not None and not res.empty else {}
+    _ns = int(r.get("tickets_salida") or 0)
+    _nc = int(cab.get("n_contenedores") or 0)
+    _ks = float(r.get("kg_salida") or 0)
+    _km = float(r.get("kg_mp") or 0)
+    _tn = float(cab.get("tn_total") or 0)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Contenedores", f"{_ns} de {_nc}", delta=(None if _ns == _nc else f"{_ns - _nc:+d}"))
+    m2.metric("Salida despachada", f"{_ks / 1000:,.1f} TN".replace(",", "."))
+    m3.metric("Objetivo formulación", f"{_tn:,.1f} TN".replace(",", "."))
+    m4.metric("MP cargada", f"{_km / 1000:,.1f} TN".replace(",", "."),
+              delta=(f"{(_km - _ks) / 1000:+.1f} TN vs salida" if _ks and _km else None))
+
+    if _tn and _ks:
+        _dif = (_ks / 1000) - _tn
+        if abs(_dif) / _tn > 0.03:
+            st.warning(f"⚖️ La salida pesada difiere **{_dif:+,.1f} TN** ({_dif / _tn * 100:+.1f} %) "
+                       "de lo formulado. Revisá si faltan tickets, si sobran, o si la densidad "
+                       "usada en la formulación no es la real.".replace(",", "."))
+    if int(r.get("tickets_error") or 0):
+        st.error(f"⛔ {int(r['tickets_error'])} ticket(s) con error de pesada — ver detalle abajo.")
+
+    st.markdown("---")
+    _o = ["🚚 Salidas a exportación", "🛢️ Materia prima"]
+    try:
+        _r = st.segmented_control("Rol", _o, default=_o[0], key="dsp_tk_rol_sc",
+                                  label_visibility="collapsed")
+    except Exception:
+        _r = st.radio("Rol", _o, horizontal=True, key="dsp_tk_rol")
+    _r = _r or _o[0]
+    st.write("")
+    _tk_panel(USR, cat, conectar, cab, "SALIDA" if _r.startswith("🚚") else "MP")
