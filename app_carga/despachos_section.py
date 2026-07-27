@@ -1,0 +1,568 @@
+"""Despachos (Centro de Planificación) — carga de un despacho de exportación con su formulación.
+
+Réplica corregida de la planilla "FORMULACION EXPO.xlsx":
+  - Cabecera: destino, cliente, producto, tipo de carga, Nº de contenedores × litros por contenedor
+    -> litros objetivo (y toneladas objetivo con la densidad del producto).
+  - Especificación de venta: acidez % / AyS % / azufre ppm / fósforo ppm (máximos).
+  - Formulación: una línea por tanque con los litros a cargar. El producto, la densidad y los
+    parámetros de laboratorio se traen solos desde el tanque (vw_tanque_panel) y se pueden pisar.
+  - Cálculo: kg = litros × densidad. Los promedios de acidez/fósforo/azufre/AyS se ponderan por KG
+    (no por litros) porque % y ppm son fracciones másicas: ponderar por litros mezcla densidades
+    distintas (AFE-S 0,89 vs AG-E 0,92) y da un resultado sesgado.
+  - Validaciones: litros vs objetivo, litros vs stock real del tanque, cobertura de lab,
+    y cumplimiento de cada spec con margen.
+
+render(USR, cat, conectar)
+"""
+import io
+import json
+import datetime as _dt
+
+import pandas as pd
+import streamlit as st
+
+ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
+
+SPEC_DEFAULT = {"acidez": 5.0, "ays": 2.0, "azufre": 50.0, "fosforo": 150.0}
+TIPOS_CARGA = ["FLEX", "ISO TANK", "BULK", "CAMION", "TAMBORES"]
+ESTADOS = ["BORRADOR", "CONFIRMADO", "DESPACHADO", "ANULADO"]
+
+_COLS_ED = ["Tanque", "Litros", "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %"]
+
+
+# ------------------------------------------------------------------ datos
+
+def _tanques(cat):
+    """Tanques activos con stock, densidad y último lab."""
+    df = cat("SELECT id_tanque, codigo, nombre, sector, producto_principal, densidad, "
+             "capacidad_litros, litros_actual, kg_actual, nivel_pct_actual, "
+             "acidez, fosforo, azufre, agua_sedimento, lab_actualizado_en, condicion "
+             "FROM produccion.vw_tanque_panel WHERE activo ORDER BY sector, codigo")
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.copy()
+    for c in ["densidad", "capacidad_litros", "litros_actual", "kg_actual", "nivel_pct_actual",
+              "acidez", "fosforo", "azufre", "agua_sedimento"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["etq"] = df.apply(lambda r: _etq_tanque(r), axis=1)
+    return df
+
+
+def _etq_tanque(r):
+    _p = str(r.get("producto_principal") or "—")
+    _l = r.get("litros_actual")
+    _l = f"{_l:,.0f} L" if pd.notna(_l) else "sin medición"
+    return f"{r['nombre']} · {_p} · {_l}"
+
+
+def _productos(cat):
+    df = cat("SELECT codigo_producto, coalesce(rotulo_oficial, codigo_producto) AS producto, "
+             "tipo_producto, densidad_g_ml, es_exportacion FROM produccion.dim_producto "
+             "WHERE activo ORDER BY 2")
+    return df if df is not None else pd.DataFrame()
+
+
+# ------------------------------------------------------------------ cálculo
+
+def _resolver(ed: pd.DataFrame, tks: pd.DataFrame) -> pd.DataFrame:
+    """Toma lo editado (Tanque + Litros + overrides) y devuelve la formulación resuelta."""
+    if ed is None or ed.empty or tks.empty:
+        return pd.DataFrame()
+    mapa = tks.set_index("etq")
+    filas = []
+    for i, r in ed.iterrows():
+        etq = r.get("Tanque")
+        if not etq or etq not in mapa.index:
+            continue
+        try:
+            lit = float(r.get("Litros") or 0)
+        except Exception:
+            lit = 0.0
+        if lit <= 0:
+            continue
+        t = mapa.loc[etq]
+        dens = float(t["densidad"]) if pd.notna(t["densidad"]) else 0.91
+        fila = {
+            "orden": len(filas) + 1,
+            "id_tanque": int(t["id_tanque"]),
+            "Tanque": t["nombre"],
+            "Sector": t["sector"],
+            "Producto": t["producto_principal"],
+            "Litros": lit,
+            "Densidad": dens,
+            "kg": lit * dens,
+            "TN": lit * dens / 1000.0,
+            "Disp. (L)": float(t["litros_actual"]) if pd.notna(t["litros_actual"]) else 0.0,
+        }
+        for k_ed, k_tk, k_out in (("Acidez %", "acidez", "Acidez %"),
+                                  ("Fósforo ppm", "fosforo", "Fósforo ppm"),
+                                  ("Azufre ppm", "azufre", "Azufre ppm"),
+                                  ("AyS %", "agua_sedimento", "AyS %")):
+            v = r.get(k_ed)
+            v = float(v) if (v is not None and str(v).strip() != "" and pd.notna(v)) else None
+            if v is None:
+                v = float(t[k_tk]) if pd.notna(t[k_tk]) else None
+                fila[k_out + "_src"] = "lab" if v is not None else "—"
+            else:
+                fila[k_out + "_src"] = "manual"
+            fila[k_out] = v
+        fila["Restante (L)"] = fila["Disp. (L)"] - lit
+        fila["Excede"] = lit > fila["Disp. (L)"] + 0.5
+        filas.append(fila)
+    return pd.DataFrame(filas)
+
+
+def _ponderar(df: pd.DataFrame, col: str):
+    """Promedio ponderado por kg + % de la masa que tiene ese dato."""
+    if df.empty or col not in df.columns:
+        return None, 0.0
+    d = df[pd.notna(df[col])]
+    kg_tot = float(df["kg"].sum())
+    if d.empty or kg_tot <= 0:
+        return None, 0.0
+    kg_c = float(d["kg"].sum())
+    if kg_c <= 0:
+        return None, 0.0
+    return float((d[col] * d["kg"]).sum() / kg_c), 100.0 * kg_c / kg_tot
+
+
+def _panel_specs(res: pd.DataFrame, spec: dict):
+    """Tarjetas de cumplimiento. Devuelve True si todo lo medible cumple."""
+    filas = [("Acidez %", "Acidez %", spec["acidez"], "{:.2f}"),
+             ("AyS %", "AyS %", spec["ays"], "{:.2f}"),
+             ("Azufre ppm", "Azufre ppm", spec["azufre"], "{:.1f}"),
+             ("Fósforo ppm", "Fósforo ppm", spec["fosforo"], "{:.1f}")]
+    ok_total = True
+    cols = st.columns(4)
+    for (titulo, col, lim, fmt), c in zip(filas, cols):
+        val, cob = _ponderar(res, col)
+        if val is None or not lim:
+            c.markdown(f"<div style='font-size:.78rem;color:#666'>{titulo}</div>"
+                       f"<div style='font-size:1.3rem;font-weight:800;color:#94a3b8'>—</div>"
+                       f"<div style='font-size:.72rem;color:#94a3b8'>sin dato de lab</div>",
+                       unsafe_allow_html=True)
+            continue
+        cumple = val <= float(lim)
+        margen = 100.0 * (float(lim) - val) / float(lim)
+        if not cumple:
+            clr, nota = "#dc2626", f"EXCEDE por {fmt.format(val - float(lim))}"
+        elif margen < 5:
+            clr, nota = "#b45309", f"al límite ({margen:.1f}% de margen)"
+        else:
+            clr, nota = "#16a34a", f"margen {margen:.1f}%"
+        ok_total = ok_total and cumple
+        _av = "" if cob >= 99.5 else f" · sólo {cob:.0f}% de la masa medida"
+        c.markdown(f"<div style='font-size:.78rem;color:#666'>{titulo} · máx {fmt.format(float(lim))}</div>"
+                   f"<div style='font-size:1.3rem;font-weight:800;color:{clr}'>{fmt.format(val)}</div>"
+                   f"<div style='font-size:.72rem;color:{clr}'>{nota}{_av}</div>",
+                   unsafe_allow_html=True)
+    return ok_total
+
+
+# ------------------------------------------------------------------ sugerencia de mezcla
+
+def _sugerir(tks, prod_cod, litros_obj, spec, min_l=1000.0):
+    """Heurística: llena el objetivo tomando primero los tanques de mejor calidad relativa.
+
+    score = peor ratio contra la spec (val/límite). Menor score = más margen. Se cargan tanques
+    de menor a mayor score hasta cubrir el objetivo; el último se toma parcial.
+    """
+    d = tks[(tks["producto_principal"].astype(str).str.upper() == str(prod_cod).upper())
+            & (tks["litros_actual"].fillna(0) >= min_l)].copy()
+    if d.empty:
+        return pd.DataFrame(), "No hay tanques con ese producto y stock suficiente."
+
+    def _score(r):
+        rr = []
+        for c, lim in (("acidez", spec["acidez"]), ("agua_sedimento", spec["ays"]),
+                       ("azufre", spec["azufre"]), ("fosforo", spec["fosforo"])):
+            if lim and pd.notna(r[c]):
+                rr.append(float(r[c]) / float(lim))
+        return max(rr) if rr else 0.90  # sin lab: prioridad media-baja
+
+    d["score"] = d.apply(_score, axis=1)
+    d = d.sort_values(["score", "litros_actual"], ascending=[True, False])
+    out, acum = [], 0.0
+    for _, r in d.iterrows():
+        if acum >= litros_obj:
+            break
+        toma = min(float(r["litros_actual"]), litros_obj - acum)
+        if toma < min_l * 0.2:
+            continue
+        out.append({"Tanque": r["etq"], "Litros": round(toma, 0),
+                    "Acidez %": None, "Fósforo ppm": None, "Azufre ppm": None, "AyS %": None})
+        acum += toma
+    if not out:
+        return pd.DataFrame(), "No se pudo armar una mezcla con el stock disponible."
+    falta = litros_obj - acum
+    msg = (f"Propuesta con {len(out)} tanque(s) — {acum:,.0f} L."
+           + (f" Faltan {falta:,.0f} L: no alcanza el stock del producto." if falta > 1 else ""))
+    return pd.DataFrame(out), msg
+
+
+# ------------------------------------------------------------------ persistencia
+
+def _guardar(conectar, USR, cab, res, id_despacho=None):
+    with conectar(USR["id_usuario"]) as (conn, _a):
+        with conn.cursor() as cur:
+            if id_despacho:
+                cur.execute(
+                    "UPDATE produccion.fact_despacho SET titulo=%s, destino=%s, cliente=%s, "
+                    "producto_codigo=%s, tipo_carga=%s, fecha_despacho=%s, semana_iso=%s, anio=%s, "
+                    "n_contenedores=%s, litros_por_contenedor=%s, spec_acidez_max=%s, spec_ays_max=%s, "
+                    "spec_azufre_max=%s, spec_fosforo_max=%s, estado=%s, observaciones=%s, "
+                    "actualizado_en=now() WHERE id_despacho=%s",
+                    (cab["titulo"], cab["destino"], cab["cliente"], cab["producto_codigo"],
+                     cab["tipo_carga"], cab["fecha"], cab["semana"], cab["anio"],
+                     cab["n_cont"], cab["l_cont"], cab["sp_ac"], cab["sp_ays"], cab["sp_az"],
+                     cab["sp_fos"], cab["estado"], cab["obs"], int(id_despacho)))
+                cur.execute("DELETE FROM produccion.fact_despacho_linea WHERE id_despacho=%s",
+                            (int(id_despacho),))
+                _id = int(id_despacho)
+            else:
+                cur.execute(
+                    "INSERT INTO produccion.fact_despacho (titulo,destino,cliente,producto_codigo,"
+                    "tipo_carga,fecha_despacho,semana_iso,anio,n_contenedores,litros_por_contenedor,"
+                    "spec_acidez_max,spec_ays_max,spec_azufre_max,spec_fosforo_max,estado,observaciones,"
+                    "creado_por) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "RETURNING id_despacho",
+                    (cab["titulo"], cab["destino"], cab["cliente"], cab["producto_codigo"],
+                     cab["tipo_carga"], cab["fecha"], cab["semana"], cab["anio"],
+                     cab["n_cont"], cab["l_cont"], cab["sp_ac"], cab["sp_ays"], cab["sp_az"],
+                     cab["sp_fos"], cab["estado"], cab["obs"], USR.get("nombre")))
+                _id = int(cur.fetchone()[0])
+            for _, r in res.iterrows():
+                cur.execute(
+                    "INSERT INTO produccion.fact_despacho_linea (id_despacho,orden,id_tanque,"
+                    "producto_codigo,litros,densidad,acidez,fosforo,azufre,agua_sedimento,lab_origen) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (_id, int(r["orden"]), int(r["id_tanque"]), (r["Producto"] or None),
+                     float(r["Litros"]), float(r["Densidad"]),
+                     _n(r.get("Acidez %")), _n(r.get("Fósforo ppm")), _n(r.get("Azufre ppm")),
+                     _n(r.get("AyS %")),
+                     "MANUAL" if "manual" in {r.get("Acidez %_src"), r.get("Fósforo ppm_src"),
+                                              r.get("Azufre ppm_src"), r.get("AyS %_src")} else "TANQUE"))
+    return _id
+
+
+def _n(v):
+    return float(v) if (v is not None and pd.notna(v)) else None
+
+
+def _excel(cab, res, spec):
+    """Planilla de formulación equivalente a la de la directora, con los totales bien calculados."""
+    buf = io.BytesIO()
+    tot_l = float(res["Litros"].sum()) if not res.empty else 0.0
+    tot_kg = float(res["kg"].sum()) if not res.empty else 0.0
+    d = res.copy()
+    if not d.empty:
+        d["%"] = 100.0 * d["Litros"] / tot_l if tot_l else 0.0
+    cols = ["Producto", "Acidez %", "Fósforo ppm", "Azufre ppm", "TN", "Litros", "%", "Tanque"]
+    d = d.reindex(columns=cols)
+    tot = {"Producto": "TOTAL", "TN": tot_kg / 1000.0, "Litros": tot_l, "%": 100.0 if tot_l else 0.0,
+           "Tanque": ""}
+    for c, k in (("Acidez %", "Acidez %"), ("Fósforo ppm", "Fósforo ppm"), ("Azufre ppm", "Azufre ppm")):
+        v, _ = _ponderar(res, k)
+        tot[c] = v
+    d = pd.concat([d, pd.DataFrame([tot])], ignore_index=True)
+    enc = pd.DataFrame([
+        ["DESPACHO", cab["titulo"]], ["DESTINO", cab["destino"]], ["CLIENTE", cab["cliente"]],
+        ["PRODUCTO", cab["producto_codigo"]], ["TIPO DE CARGA", cab["tipo_carga"]],
+        ["FECHA", str(cab["fecha"] or "")], ["SEMANA", cab["semana"]],
+        ["Nº CONTENEDORES", cab["n_cont"]], ["LITROS POR CONTENEDOR", cab["l_cont"]],
+        ["LITROS OBJETIVO", cab["n_cont"] * cab["l_cont"]],
+        ["LITROS FORMULADOS", tot_l], ["TN FORMULADAS", round(tot_kg / 1000.0, 2)],
+        ["SPEC Acidez % (máx)", spec["acidez"]], ["SPEC AyS % (máx)", spec["ays"]],
+        ["SPEC Azufre ppm (máx)", spec["azufre"]], ["SPEC Fósforo ppm (máx)", spec["fosforo"]],
+    ], columns=["Campo", "Valor"])
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        enc.to_excel(w, sheet_name="Despacho", index=False, startrow=0)
+        d.to_excel(w, sheet_name="Despacho", index=False, startrow=len(enc) + 3)
+    return buf.getvalue()
+
+
+# ------------------------------------------------------------------ UI
+
+def render(USR, cat, conectar):
+    st.markdown(
+        "<div style='background:linear-gradient(90deg,#0f766e,#0ea5e9);border-radius:14px;"
+        "padding:16px 20px;margin:0 0 12px'>"
+        "<div style='color:#fff;font-size:1.4rem;font-weight:900'>🚢 Despachos</div>"
+        "<div style='color:#e0f2fe;font-size:.88rem;margin-top:3px'>Armá la formulación de un despacho "
+        "combinando tanques: los litros, la densidad y el laboratorio salen del sistema y se controla "
+        "la especificación antes de confirmar.</div></div>", unsafe_allow_html=True)
+
+    if USR.get("rol") not in ROLES_DIRECCION and "PLANIFICACION" not in (USR.get("secciones_app") or []):
+        st.warning("Sección exclusiva de dirección.")
+        return
+
+    _opts = ["🧪 Armar / editar despacho", "📋 Despachos cargados"]
+    try:
+        _t = st.segmented_control("Vista", _opts, default=_opts[0], key="dsp_tab_sc",
+                                  label_visibility="collapsed")
+    except Exception:
+        _t = st.radio("Vista", _opts, horizontal=True, key="dsp_tab")
+    _t = _t or _opts[0]
+    st.write("")
+
+    if _t.startswith("📋"):
+        _listado(USR, cat, conectar)
+    else:
+        _armar(USR, cat, conectar)
+
+
+def _armar(USR, cat, conectar):
+    ss = st.session_state
+    tks = _tanques(cat)
+    if tks.empty:
+        st.error("No se pudieron leer los tanques.")
+        return
+    prods = _productos(cat)
+
+    # ---------- 1 · Cabecera ----------
+    st.markdown("#### 1 · Datos del despacho")
+    hoy = _dt.date.today()
+    c1, c2, c3 = st.columns([2, 1.4, 1])
+    titulo = c1.text_input("Título / referencia", value=ss.get("dsp_titulo", ""),
+                           placeholder="DESPACHO FLEX 07/07", key="dsp_titulo")
+    destino = c2.text_input("Destino", value=ss.get("dsp_destino", ""),
+                            placeholder="Rotterdam", key="dsp_destino")
+    cliente = c3.text_input("Cliente", value=ss.get("dsp_cliente", ""), key="dsp_cliente")
+
+    c1, c2, c3, c4 = st.columns(4)
+    _pl = prods["producto"].tolist() if not prods.empty else []
+    _pcod = dict(zip(prods["producto"], prods["codigo_producto"])) if not prods.empty else {}
+    _def_p = _pl.index("AFE-S") if "AFE-S" in _pl else 0
+    prod_lbl = c1.selectbox("Producto a despachar", _pl, index=_def_p, key="dsp_prod",
+                            help="Rótulo oficial. Define el filtro de tanques en la sugerencia.")
+    prod_cod = _pcod.get(prod_lbl, prod_lbl)
+    tipo = c2.selectbox("Tipo de carga", TIPOS_CARGA, key="dsp_tipo")
+    fecha = c3.date_input("Fecha de despacho", value=ss.get("dsp_fecha", hoy), key="dsp_fecha")
+    semana = int(pd.Timestamp(fecha).isocalendar().week)
+    c4.metric("Semana ISO", f"S{semana}")
+
+    c1, c2, c3, c4 = st.columns(4)
+    n_cont = c1.number_input("Nº de contenedores", min_value=1, max_value=200,
+                             value=int(ss.get("dsp_ncont", 14)), step=1, key="dsp_ncont")
+    l_cont = c2.number_input("Litros por contenedor", min_value=100.0, max_value=100000.0,
+                             value=float(ss.get("dsp_lcont", 26000.0)), step=500.0, key="dsp_lcont")
+    lit_obj = float(n_cont) * float(l_cont)
+    _dens_p = None
+    if not prods.empty:
+        _r = prods[prods["codigo_producto"] == prod_cod]
+        if not _r.empty and pd.notna(_r.iloc[0]["densidad_g_ml"]):
+            _dens_p = float(_r.iloc[0]["densidad_g_ml"])
+    c3.metric("Litros objetivo", f"{lit_obj:,.0f} L")
+    c4.metric("TN objetivo aprox.", f"{lit_obj * (_dens_p or 0.91) / 1000:,.1f} t",
+              help=f"Litros objetivo × densidad {(_dens_p or 0.91):.2f} kg/L. "
+                   "La planilla vieja mostraba litros bajo el rótulo 'TN a entregar'.")
+
+    with st.expander("📐 Especificación de venta (máximos)", expanded=True):
+        s1, s2, s3, s4 = st.columns(4)
+        sp_ac = s1.number_input("Acidez % máx", min_value=0.0, value=float(ss.get("dsp_spac", SPEC_DEFAULT["acidez"])),
+                                step=0.5, key="dsp_spac")
+        sp_ays = s2.number_input("AyS % máx", min_value=0.0, value=float(ss.get("dsp_spays", SPEC_DEFAULT["ays"])),
+                                 step=0.5, key="dsp_spays")
+        sp_az = s3.number_input("Azufre ppm máx", min_value=0.0, value=float(ss.get("dsp_spaz", SPEC_DEFAULT["azufre"])),
+                                step=5.0, key="dsp_spaz")
+        sp_fos = s4.number_input("Fósforo ppm máx", min_value=0.0, value=float(ss.get("dsp_spfos", SPEC_DEFAULT["fosforo"])),
+                                 step=10.0, key="dsp_spfos")
+    spec = {"acidez": sp_ac, "ays": sp_ays, "azufre": sp_az, "fosforo": sp_fos}
+
+    # ---------- 2 · Formulación ----------
+    st.markdown("#### 2 · Formulación por tanque")
+    ca, cb = st.columns([1, 3])
+    if ca.button("🎯 Sugerir mezcla", use_container_width=True,
+                 help="Propone tanques del producto elegido, priorizando los de mayor margen contra la spec."):
+        _sug, _msg = _sugerir(tks, prod_cod, lit_obj, spec)
+        if _sug.empty:
+            cb.warning(_msg)
+        else:
+            ss["dsp_lineas"] = _sug
+            cb.success(_msg)
+            st.rerun()
+    if cb.button("🗑️ Vaciar formulación"):
+        ss["dsp_lineas"] = pd.DataFrame(columns=_COLS_ED)
+        st.rerun()
+
+    base = ss.get("dsp_lineas")
+    if base is None or not isinstance(base, pd.DataFrame) or base.empty:
+        base = pd.DataFrame([{c: None for c in _COLS_ED} for _ in range(3)])
+    base = base.reindex(columns=_COLS_ED)
+
+    _o = tks["etq"].tolist()
+    ed = st.data_editor(
+        base, num_rows="dynamic", hide_index=True, use_container_width=True, key="dsp_ed",
+        column_config={
+            "Tanque": st.column_config.SelectboxColumn("Tanque", options=_o, width="large",
+                                                       help="Nombre · producto · litros disponibles."),
+            "Litros": st.column_config.NumberColumn("Litros a cargar", min_value=0.0, step=500.0,
+                                                    format="%.0f"),
+            "Acidez %": st.column_config.NumberColumn("Acidez % (pisar)", format="%.2f",
+                                                      help="Vacío = usa el último lab del tanque."),
+            "Fósforo ppm": st.column_config.NumberColumn("Fósforo ppm (pisar)", format="%.1f"),
+            "Azufre ppm": st.column_config.NumberColumn("Azufre ppm (pisar)", format="%.1f"),
+            "AyS %": st.column_config.NumberColumn("AyS % (pisar)", format="%.2f"),
+        })
+    st.caption("Elegí el tanque y los litros. Producto, densidad y laboratorio se completan solos; "
+               "las columnas *(pisar)* sólo se llenan si querés forzar un valor distinto al del sistema.")
+
+    res = _resolver(ed, tks)
+    if res.empty:
+        st.info("Cargá al menos una línea con tanque y litros para ver los cálculos.")
+        return
+
+    # ---------- 3 · Resultado ----------
+    st.markdown("#### 3 · Resultado de la mezcla")
+    tot_l = float(res["Litros"].sum())
+    tot_kg = float(res["kg"].sum())
+    dif = tot_l - lit_obj
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Litros formulados", f"{tot_l:,.0f} L", f"{dif:+,.0f} L vs objetivo")
+    m2.metric("Toneladas", f"{tot_kg/1000:,.2f} t")
+    m3.metric("Cobertura", f"{(100*tot_l/lit_obj if lit_obj else 0):,.1f} %")
+    m4.metric("Tanques usados", f"{len(res)}")
+
+    st.markdown("**Cumplimiento de especificación** (promedios ponderados por kg)")
+    ok = _panel_specs(res, spec)
+
+    _d = res.copy()
+    _d["Litros"] = _d["Litros"].round(0)
+    _d["% del total"] = (100.0 * _d["Litros"] / tot_l).round(2)
+    _d["TN"] = _d["TN"].round(2)
+    _show = _d[["Tanque", "Producto", "Litros", "% del total", "Densidad", "TN",
+                "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %", "Disp. (L)", "Restante (L)"]]
+    st.dataframe(_show, hide_index=True, use_container_width=True,
+                 column_config={"Litros": st.column_config.NumberColumn(format="%.0f"),
+                                "Disp. (L)": st.column_config.NumberColumn(format="%.0f"),
+                                "Restante (L)": st.column_config.NumberColumn(format="%.0f")})
+
+    # ---------- 4 · Avisos ----------
+    avisos = []
+    _ex = res[res["Excede"]]
+    if not _ex.empty:
+        avisos.append("Estos tanques no tienen tanto stock: " +
+                      ", ".join(f"{r['Tanque']} (pide {r['Litros']:,.0f} L, hay {r['Disp. (L)']:,.0f} L)"
+                                for _, r in _ex.iterrows()))
+    if abs(dif) > max(500.0, 0.02 * lit_obj):
+        avisos.append(f"La formulación difiere del objetivo en {dif:+,.0f} L "
+                      f"({100*dif/lit_obj:+.1f}%).")
+    _sin = res[res[["Acidez %", "Fósforo ppm", "Azufre ppm"]].isna().any(axis=1)]
+    if not _sin.empty:
+        avisos.append("Sin análisis completo de laboratorio: " +
+                      ", ".join(_sin["Tanque"].astype(str).tolist()) +
+                      " — el promedio ponderado ignora esa masa y puede quedar optimista.")
+    _multi = res["Producto"].dropna().unique().tolist()
+    if len(_multi) > 1:
+        avisos.append("La mezcla combina productos distintos: " + ", ".join(map(str, _multi)) + ".")
+    if avisos:
+        for a in avisos:
+            st.warning(a)
+    if not ok:
+        st.error("La mezcla **no cumple** la especificación. Reemplazá los tanques de peor calidad "
+                 "o bajá su participación antes de confirmar.")
+
+    # ---------- 5 · Guardar ----------
+    st.markdown("#### 4 · Guardar")
+    g1, g2, g3 = st.columns([1.2, 1, 1.6])
+    estado = g1.selectbox("Estado", ESTADOS, index=0, key="dsp_estado")
+    obs = g3.text_input("Observaciones", key="dsp_obs")
+    cab = {"titulo": (titulo or f"DESPACHO {tipo} {fecha:%d/%m}"), "destino": destino or None,
+           "cliente": cliente or None, "producto_codigo": prod_cod, "tipo_carga": tipo,
+           "fecha": fecha, "semana": semana, "anio": int(pd.Timestamp(fecha).isocalendar().year),
+           "n_cont": int(n_cont), "l_cont": float(l_cont), "sp_ac": sp_ac, "sp_ays": sp_ays,
+           "sp_az": sp_az, "sp_fos": sp_fos, "estado": estado, "obs": obs or None}
+
+    if estado != "BORRADOR" and not ok:
+        g2.button("💾 Guardar", disabled=True, use_container_width=True,
+                  help="No cumple la spec: sólo se puede guardar como BORRADOR.")
+    elif g2.button("💾 Guardar", type="primary", use_container_width=True):
+        try:
+            _id = _guardar(conectar, USR, cab, res, ss.get("dsp_edit_id"))
+            cat.clear()
+            ss["dsp_edit_id"] = None
+            st.success(f"Despacho guardado (id {_id}).")
+        except Exception as e:
+            st.error(f"No se pudo guardar: {e}")
+
+    st.download_button("⬇️ Descargar planilla (.xlsx)", _excel(cab, res, spec),
+                       file_name=f"despacho_{fecha:%Y%m%d}_{(destino or 'SD').replace(' ','_')}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+def _listado(USR, cat, conectar):
+    df = cat("SELECT id_despacho, titulo, destino, cliente, producto, tipo_carga, fecha_despacho, "
+             "semana_iso, n_contenedores, litros_objetivo, litros_total, tn_total, pct_cubierto, "
+             "acidez_pond, fosforo_pond, azufre_pond, ays_pond, spec_acidez_max, spec_fosforo_max, "
+             "spec_azufre_max, spec_ays_max, estado, n_lineas, n_lineas_exceden_stock, creado_por, "
+             "creado_en FROM produccion.v_despacho_resumen")
+    if df is None or df.empty:
+        st.info("Todavía no hay despachos cargados.")
+        return
+    df = df.copy()
+
+    def _est(r):
+        p = []
+        for v, lim in ((r["acidez_pond"], r["spec_acidez_max"]), (r["fosforo_pond"], r["spec_fosforo_max"]),
+                       (r["azufre_pond"], r["spec_azufre_max"]), (r["ays_pond"], r["spec_ays_max"])):
+            if pd.notna(v) and pd.notna(lim) and float(lim) > 0:
+                p.append(float(v) <= float(lim))
+        return "✅" if p and all(p) else ("❌" if p else "—")
+
+    df["Spec"] = df.apply(_est, axis=1)
+    _t = df.rename(columns={"id_despacho": "ID", "titulo": "Despacho", "destino": "Destino",
+                            "producto": "Producto", "tipo_carga": "Carga", "fecha_despacho": "Fecha",
+                            "semana_iso": "Sem", "n_contenedores": "Cont.", "litros_total": "Litros",
+                            "tn_total": "TN", "pct_cubierto": "% objetivo", "estado": "Estado",
+                            "n_lineas": "Tanques", "acidez_pond": "Acidez %",
+                            "fosforo_pond": "Fósforo ppm", "azufre_pond": "Azufre ppm"})
+    st.dataframe(_t[["ID", "Despacho", "Fecha", "Sem", "Destino", "Producto", "Carga", "Cont.",
+                     "Litros", "TN", "% objetivo", "Acidez %", "Fósforo ppm", "Azufre ppm",
+                     "Spec", "Estado", "Tanques"]],
+                 hide_index=True, use_container_width=True)
+
+    st.markdown("---")
+    _ids = df["id_despacho"].tolist()
+    _lbl = {int(r["id_despacho"]): f"#{int(r['id_despacho'])} · {r['titulo']} · {r['destino'] or 's/destino'}"
+            for _, r in df.iterrows()}
+    sel = st.selectbox("Ver detalle", _ids, format_func=lambda i: _lbl.get(int(i), str(i)), key="dsp_sel")
+    if sel is None:
+        return
+    det = cat("SELECT orden, tanque_nombre, tanque_sector, producto, litros, densidad, kg, tn, "
+              "acidez, fosforo, azufre, agua_sedimento, tanque_litros_actual, litros_restantes, "
+              "excede_stock FROM produccion.v_despacho_linea WHERE id_despacho=%s ORDER BY orden",
+              (int(sel),))
+    if det is None or det.empty:
+        st.info("Ese despacho no tiene líneas cargadas.")
+    else:
+        _d = det.rename(columns={"orden": "#", "tanque_nombre": "Tanque", "tanque_sector": "Sector",
+                                 "producto": "Producto", "litros": "Litros", "densidad": "Densidad",
+                                 "kg": "kg", "tn": "TN", "acidez": "Acidez %", "fosforo": "Fósforo ppm",
+                                 "azufre": "Azufre ppm", "agua_sedimento": "AyS %",
+                                 "tanque_litros_actual": "Disp. hoy (L)",
+                                 "litros_restantes": "Restante (L)"})
+        st.dataframe(_d[["#", "Tanque", "Sector", "Producto", "Litros", "Densidad", "TN",
+                         "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %", "Disp. hoy (L)",
+                         "Restante (L)"]], hide_index=True, use_container_width=True)
+        st.caption("*Disp. hoy* es el stock actual del tanque, no el del momento de la carga.")
+
+    r = df[df["id_despacho"] == sel].iloc[0]
+    c1, c2, c3 = st.columns([1.2, 1, 2])
+    _nuevo = c1.selectbox("Cambiar estado", ESTADOS, index=ESTADOS.index(r["estado"]), key="dsp_est_up")
+    if c2.button("Aplicar", use_container_width=True):
+        try:
+            with conectar(USR["id_usuario"]) as (conn, _a):
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE produccion.fact_despacho SET estado=%s, actualizado_en=now() "
+                                "WHERE id_despacho=%s", (_nuevo, int(sel)))
+            cat.clear(); st.success("Estado actualizado."); st.rerun()
+        except Exception as e:
+            st.error(f"No se pudo actualizar: {e}")
+    if c3.checkbox("Habilitar borrado", key="dsp_del_ok") and c3.button("🗑️ Borrar despacho"):
+        try:
+            with conectar(USR["id_usuario"]) as (conn, _a):
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM produccion.fact_despacho WHERE id_despacho=%s", (int(sel),))
+            cat.clear(); st.success("Despacho borrado."); st.rerun()
+        except Exception as e:
+            st.error(f"No se pudo borrar: {e}")
