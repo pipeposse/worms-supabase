@@ -274,84 +274,23 @@ def _alerta_precios(df_precios):
         f"⚠️ **{_n} de {len(df_precios)} precios de referencia llevan más de "
         f"{DIAS_PRECIO_VENCIDO} días sin actualizarse.** {_lst}.\n\n"
         "Mientras estén viejos, todas las cifras en dólares de esta pantalla son viejas — y no se nota, "
-        "porque el número sigue apareciendo igual de prolijo. Se corrigen en *Con qué precios se "
-        "valoriza todo esto*, acá abajo."
+        "porque el número sigue apareciendo igual de prolijo. Se corrigen en Dirección → **💵 Precios**."
         + ("\n\nOjo especial con **TC_USD**: si el tipo de cambio quedó atrasado, todo lo cargado en "
            "pesos (fuel, glicerina, potasa) aparece más caro en dólares de lo que realmente es."
            if (_v["codigo"].astype(str) == "TC_USD").any() else ""))
 
 
 def _editor_precios(USR, cat, conectar, df_precios):
-    """Editor de precios de referencia, para que comercial los corrija sin SQL ni redeploy.
+    """Puntero a la pantalla de precios, no un segundo editor.
 
-    Escribe solo la columna `precio` y sella `actualizado_en` / `usuario`. No permite
-    crear ni borrar códigos: alta de un producto nuevo sigue siendo una migración, para
-    que nadie invente un código que después nadie mapea.
+    Tener dos editores del mismo dato es la forma más barata de terminar con dos
+    criterios distintos de qué se puede tocar. La edición vive en Dirección →
+    Precios, que además muestra el USD/t normalizado y el historial de cambios.
     """
-    if conectar is None:
-        return
-    if str(USR.get("rol", "")).upper() not in ("SUPERVISOR", "ADMIN"):
-        return
-    st.markdown("**Actualizar precios**")
-    st.caption("Editá la columna *Precio nuevo* y guardá. Solo se escribe lo que cambiaste. "
-               "Cada cambio queda con tu usuario y la fecha de hoy. "
-               "Si actualizás `TC_USD`, se re-valorizan de golpe todos los insumos cargados en pesos.")
-    _e = df_precios[["codigo", "rol", "unidad", "moneda", "precio"]].copy()
-    _e = _e.rename(columns={"codigo": "Código", "rol": "Rol", "unidad": "Unidad",
-                            "moneda": "Moneda", "precio": "Precio nuevo"})
-    _e["Precio nuevo"] = pd.to_numeric(_e["Precio nuevo"], errors="coerce")
-    _orig = dict(zip(_e["Código"], _e["Precio nuevo"]))
-    try:
-        _ed = st.data_editor(
-            _e, hide_index=True, use_container_width=True, key="cg_precios_editor",
-            disabled=["Código", "Rol", "Unidad", "Moneda"],
-            column_config={
-                "Código": _coltxt("No se puede cambiar. Dar de alta un código nuevo requiere migración, "
-                                  "para que no queden precios que ningún producto mapea."),
-                "Rol": _coltxt("MP, FINAL, INSUMO o FX."),
-                "Unidad": _coltxt("TN, KG o L. Si el precio que tenés está en otra unidad, avisá antes de "
-                                  "cargarlo: la conversión la hace el sistema en función de esta columna."),
-                "Moneda": _coltxt("USD o ARS."),
-                "Precio nuevo": _colnum("%.2f", "Escribí acá el precio vigente, en la unidad y moneda de "
-                                                "las columnas de al lado.")})
-    except Exception:
-        st.caption("El editor no está disponible en esta versión de Streamlit.")
-        return
-    if _ed is None:
-        return
-    _cambios = []
-    for _, r in _ed.iterrows():
-        _cod = str(r["Código"])
-        _new = r["Precio nuevo"]
-        if _new is None or pd.isna(_new):
-            continue
-        _old = _orig.get(_cod)
-        if _old is None or pd.isna(_old) or abs(float(_new) - float(_old)) > 1e-9:
-            _cambios.append((_cod, float(_new)))
-    if not _cambios:
-        st.caption("Sin cambios pendientes.")
-        return
-    st.warning("Cambios sin guardar: " +
-               ", ".join(f"**{c}** → {v:,.2f}" for c, v in _cambios))
-    if not st.button("Guardar precios", key="cg_precios_guardar", type="primary"):
-        return
-    try:
-        with conectar(USR["id_usuario"]) as (conn, audit):
-            with conn.cursor() as cur:
-                for _cod, _val in _cambios:
-                    cur.execute(
-                        "UPDATE produccion.dim_precio_ref SET precio = %s, actualizado_en = now(), "
-                        "usuario = %s WHERE codigo = %s",
-                        (_val, str(USR.get("nombre") or USR.get("id_usuario")), _cod))
-        cat.clear()
-        st.success(f"{len(_cambios)} precio(s) actualizado(s). "
-                   "Todos los dólares de la pantalla se recalculan al recargar.")
-        try:
-            st.rerun()
-        except Exception:
-            pass
-    except Exception as e:
-        st.error(f"No se pudieron guardar los precios: {e}")
+    st.caption("Para **modificar** estos precios: Dirección → **💵 Precios**. "
+               "Ahí se editan por rol (materia prima, producto final, insumo, tipo de cambio), "
+               "se ve a cuánto equivale cada uno en USD por tonelada antes de guardar, "
+               "y queda el historial de quién cambió qué.")
 
 
 def _bloque_dinero(USR, cat, conectar, precios, fecha_precios, df_precios):
@@ -1329,7 +1268,7 @@ def _que_falta():
         "equivalencias no exista, el consumo de MP queda fuera del balance por producto y el desvío de "
         "stock de materia prima no se puede calcular.\n\n"
         "**7 · Precios comerciales al día.** Los precios de referencia los conoce comercial, no sistemas. "
-        "El editor está arriba, en *Con qué precios se valoriza todo esto*. Cuando un precio queda viejo, "
+        "El editor está en Dirección → **💵 Precios**. Cuando un precio queda viejo, "
         "no se rompe nada visible: simplemente todos los dólares de la pantalla quedan viejos en silencio. "
         "Por eso cada precio muestra su fecha, su antigüedad en días y un semáforo, y el bloque 0 avisa en "
         "rojo cuando alguno pasa los 30 días."

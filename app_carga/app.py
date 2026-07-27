@@ -4228,7 +4228,7 @@ if st.session_state.section != "CARGAS":
         try:
             import planificacion as _pl
             st.title("🛂 Dirección")
-            _dir_opts = ["🎯 Control de gestión", "📉 Desvíos", "📊 Variación semanal", "🛂 Aprobaciones"]
+            _dir_opts = ["🎯 Control de gestión", "💵 Precios", "📉 Desvíos", "📊 Variación semanal", "🛂 Aprobaciones"]
             try:
                 _dir = st.segmented_control("Sección", _dir_opts, default=_dir_opts[0],
                                             key="dir_grupo_sc", label_visibility="collapsed")
@@ -4239,6 +4239,9 @@ if st.session_state.section != "CARGAS":
             if _dir.startswith("🎯"):
                 from control_gestion_section import render as _render_cg
                 _render_cg(USR, cat, conectar)
+            elif _dir.startswith("💵"):
+                from precios_section import render as _render_px
+                _render_px(USR, cat, conectar)
             elif _dir.startswith("📉"):
                 _pl._desvios_semanal(USR, cat, conectar)
             elif _dir.startswith("📊"):
