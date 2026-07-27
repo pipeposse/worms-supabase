@@ -236,6 +236,51 @@ def _portada():
 # ============================================================================
 # Bloque 0 — Lo que está en juego, en dólares
 # ============================================================================
+DIAS_PRECIO_VENCIDO = 30
+
+
+def _antiguedad_precios(df_precios, dias=DIAS_PRECIO_VENCIDO):
+    """Precios con más de `dias` sin actualizar, o sin fecha.
+
+    Un precio viejo no rompe nada visible: simplemente todos los dólares de la
+    pantalla quedan viejos en silencio. Por eso se avisa arriba y no en un pie.
+    Devuelve (df_vencidos, dias_maximos).
+    """
+    if df_precios is None or df_precios.empty or "al" not in df_precios.columns:
+        return None, None
+    d = df_precios.copy()
+    d["_al"] = pd.to_datetime(d["al"], errors="coerce")
+    _hoy = pd.Timestamp.now().normalize()
+    d["_dias"] = (_hoy - d["_al"].dt.normalize()).dt.days
+    _v = d[d["_dias"].isna() | (d["_dias"] > int(dias))]
+    _val = d["_dias"].dropna()
+    return _v, (int(_val.max()) if len(_val) else None)
+
+
+def _alerta_precios(df_precios):
+    _v, _max = _antiguedad_precios(df_precios)
+    if _v is None or _v.empty:
+        if _max is not None:
+            st.caption(f"✅ Todos los precios de referencia se actualizaron en los últimos "
+                       f"{DIAS_PRECIO_VENCIDO} días (el más viejo, hace {_max}).")
+        return
+    _n = len(_v)
+    _lst = ", ".join(
+        f"**{r['codigo']}** ({'sin fecha' if pd.isna(r['_dias']) else str(int(r['_dias'])) + ' d'})"
+        for _, r in _v.sort_values("_dias", ascending=False, na_position="first").head(8).iterrows())
+    if _n > 8:
+        _lst += f" y {_n - 8} más"
+    st.error(
+        f"⚠️ **{_n} de {len(df_precios)} precios de referencia llevan más de "
+        f"{DIAS_PRECIO_VENCIDO} días sin actualizarse.** {_lst}.\n\n"
+        "Mientras estén viejos, todas las cifras en dólares de esta pantalla son viejas — y no se nota, "
+        "porque el número sigue apareciendo igual de prolijo. Se corrigen en *Con qué precios se "
+        "valoriza todo esto*, acá abajo."
+        + ("\n\nOjo especial con **TC_USD**: si el tipo de cambio quedó atrasado, todo lo cargado en "
+           "pesos (fuel, glicerina, potasa) aparece más caro en dólares de lo que realmente es."
+           if (_v["codigo"].astype(str) == "TC_USD").any() else ""))
+
+
 def _editor_precios(USR, cat, conectar, df_precios):
     """Editor de precios de referencia, para que comercial los corrija sin SQL ni redeploy.
 
@@ -433,6 +478,7 @@ def _bloque_dinero(USR, cat, conectar, precios, fecha_precios, df_precios):
                "en `dim_precio_ref` actualiza esta pantalla entera sin tocar nada más. "
                "Pasá el cursor por encima de cualquier tarjeta o encabezado de columna de esta pantalla "
                "para ver qué mide y cómo se calcula.")
+    _alerta_precios(df_precios)
 
     st.warning(
         "**Las cuatro cifras no se suman ni son todas pérdida.**\n\n"
@@ -469,6 +515,16 @@ def _bloque_dinero(USR, cat, conectar, precios, fecha_precios, df_precios):
             _p = df_precios.rename(columns={"codigo": "Código", "rol": "Rol", "precio": "Precio",
                                             "unidad": "Unidad", "moneda": "Moneda",
                                             "descripcion": "Descripción", "al": "Actualizado"})
+            try:
+                _dd = (pd.Timestamp.now().normalize()
+                       - pd.to_datetime(_p["Actualizado"], errors="coerce").dt.normalize()).dt.days
+                _p["Días sin actualizar"] = _dd
+                _p["Estado"] = _dd.map(
+                    lambda x: "⚪ sin fecha" if pd.isna(x)
+                    else ("🔴 vencido" if x > DIAS_PRECIO_VENCIDO
+                          else "🟡 por vencer" if x > DIAS_PRECIO_VENCIDO * 0.7 else "🟢 vigente"))
+            except Exception:
+                pass
             st.markdown("**Precios de referencia cargados**")
             st.dataframe(_p, hide_index=True, use_container_width=True, column_config={
                 "Código": _coltxt("Identificador del precio. Es lo que apuntan dim_precio_map y "
@@ -480,7 +536,12 @@ def _bloque_dinero(USR, cat, conectar, precios, fecha_precios, df_precios):
                 "Unidad": _coltxt("TN, KG o L. Determina cómo se convierte a USD por tonelada."),
                 "Moneda": _coltxt("USD o ARS. Si es ARS se divide por TC_USD."),
                 "Actualizado": _coltxt("Fecha de la última modificación del precio. Si está vieja, todos "
-                                       "los dólares de esta pantalla están viejos.")})
+                                       "los dólares de esta pantalla están viejos."),
+                "Días sin actualizar": _colnum("%.0f", "Días transcurridos desde la última modificación."),
+                "Estado": _coltxt(f"Vigente hasta {DIAS_PRECIO_VENCIDO} días; por vencer a partir de "
+                                  f"{int(DIAS_PRECIO_VENCIDO * 0.7)}; vencido después. Es una convención "
+                                  "de la pantalla, no una regla del negocio: si tus precios se mueven más "
+                                  "rápido, avisá y se baja el umbral.")})
             _editor_precios(USR, cat, conectar, df_precios)
         _pp = cat("SELECT codigo_producto AS \"Producto\", tipo_producto AS \"Tipo\", "
                   "codigo_precio AS \"Precio de referencia\", usd_por_t AS \"USD/t\" "
@@ -1270,7 +1331,8 @@ def _que_falta():
         "**7 · Precios comerciales al día.** Los precios de referencia los conoce comercial, no sistemas. "
         "El editor está arriba, en *Con qué precios se valoriza todo esto*. Cuando un precio queda viejo, "
         "no se rompe nada visible: simplemente todos los dólares de la pantalla quedan viejos en silencio. "
-        "Por eso cada precio muestra su fecha de actualización."
+        "Por eso cada precio muestra su fecha, su antigüedad en días y un semáforo, y el bloque 0 avisa en "
+        "rojo cuando alguno pasa los 30 días."
     )
 
     st.info(
