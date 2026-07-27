@@ -639,7 +639,21 @@ def _listado(USR, cat, conectar):
                 with conn.cursor() as cur:
                     cur.execute("UPDATE produccion.fact_despacho SET estado=%s, actualizado_en=now() "
                                 "WHERE id_despacho=%s", (_nuevo, int(sel)))
-            cat.clear(); st.success("Estado actualizado."); st.rerun()
+                    cur.execute("SELECT count(*), coalesce(sum(kg),0)/1000.0 "
+                                "FROM produccion.fact_movimiento_stock "
+                                "WHERE id_despacho=%s AND origen='despacho' AND anulado IS NOT TRUE",
+                                (int(sel),))
+                    _nm, _tn = cur.fetchone()
+            cat.clear()
+            if _nm:
+                st.success(f"Estado actualizado. Impacto en stock: {_nm} movimiento(s) de salida "
+                           f"por {float(_tn):,.1f} t descontados de los tanques.")
+            elif _nuevo in ("CONFIRMADO", "DESPACHADO"):
+                st.warning("Estado actualizado, pero no se generaron movimientos de stock "
+                           "(revisá que el despacho tenga líneas con tanque y litros).")
+            else:
+                st.success("Estado actualizado. Se revirtieron los movimientos de stock del despacho.")
+            st.rerun()
         except Exception as e:
             st.error(f"No se pudo actualizar: {e}")
     if c3.checkbox("Habilitar borrado", key="dsp_del_ok") and c3.button("🗑️ Borrar despacho"):

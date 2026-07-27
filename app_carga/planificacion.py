@@ -418,19 +418,13 @@ def _gli_tanques(cat, codigo):
     """Tanques activos de un producto de glicerina, con stock y parámetros de lab del tanque."""
     return cat(
         "SELECT t.id_tanque, t.nombre, t.codigo, COALESCE(s.litros_actual,0) lt, COALESCE(s.kg_actual,0) kg, "
-        "       f.densidad_g_ml, f.agua_pct, f.ultima_evaluacion_ts AS lab_ts, "
-        "       COALESCE(NULLIF(f.glicerina_pct,0), "
-        "                (f.parametros_extra->>'glicerol_pct')::numeric, "
-        "                CASE WHEN (f.parametros_extra->>'gli_glicerol') IS NOT NULL THEN "
-        "                  CASE WHEN (f.parametros_extra->>'gli_glicerol')::numeric<=1 "
-        "                       THEN (f.parametros_extra->>'gli_glicerol')::numeric*100 "
-        "                       ELSE (f.parametros_extra->>'gli_glicerol')::numeric END END) AS glicerol, "
-        "       COALESCE((f.parametros_extra->>'glicerina_pct')::numeric, 100) AS glicerina, "
-        "       COALESCE(f.producto_pct,0)::numeric AS producto_pct "
+        "       f.densidad_g_ml, f.agua_pct, "
+        "       (f.parametros_extra->>'glicerol_pct')::numeric AS glicerol, "
+        "       (f.parametros_extra->>'glicerina_pct')::numeric AS glicerina "
         "FROM produccion.dim_tanque t "
         "JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
         "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
-        "LEFT JOIN LATERAL (SELECT densidad_g_ml, agua_pct, glicerina_pct, producto_pct, parametros_extra, ultima_evaluacion_ts FROM produccion.fact_param_tanque fp "
+        "LEFT JOIN LATERAL (SELECT densidad_g_ml, agua_pct, parametros_extra FROM produccion.fact_param_tanque fp "
         "                   WHERE fp.id_tanque=t.id_tanque AND fp.id_producto=t.id_producto_principal "
         "                   ORDER BY actualizado_en DESC NULLS LAST LIMIT 1) f ON true "
         "WHERE t.activo AND p.codigo_producto=%s ORDER BY t.nombre", (codigo,))
@@ -440,8 +434,7 @@ def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
     """Selector de UNO O VARIOS tanques de glicerina + litros por tanque.
     Devuelve un dict AGREGADO (l, kg, glicerol_kg, % ponderados) con la lista 'tanques' adentro."""
     agg = {"idt": None, "nombre": None, "l": 0.0, "dens": None, "glicerina_pct": None,
-           "glicerol_pct": None, "glicerol_kg": 0.0, "kg": 0.0, "agua_pct": None,
-           "producto_pct": None, "producto_kg": 0.0, "tanques": []}
+           "glicerol_pct": None, "glicerol_kg": 0.0, "kg": 0.0, "agua_pct": None, "tanques": []}
     df = _gli_tanques(cat, codigo)
     if df is None or df.empty:
         st.info("Sin tanques activos.")
@@ -458,19 +451,14 @@ def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
         npct = float(r["glicerina"]) if pd.notna(r["glicerina"]) else None
         dens = float(r["densidad_g_ml"]) if pd.notna(r["densidad_g_ml"]) else \
             (float(densidad_de(codigo)) if (callable(densidad_de) and densidad_de(codigo)) else 1.1)
-        _labdt = (pd.to_datetime(r["lab_ts"]).strftime("%d/%m") if ("lab_ts" in r.index and pd.notna(r["lab_ts"])) else None)
-        _glcap = (f"glicerol {gpct:.0f}% (lab {_labdt})" if (gpct is not None and _labdt) else
-                  (f"glicerol {gpct:.0f}% (sin fecha de lab)" if gpct is not None else "sin glicerol de lab"))
-        l = st.number_input(f"Litros · {r['nombre']} — {_glcap}", 0.0, 1_000_000.0, value=float(_per), step=50.0,
+        l = st.number_input(f"Litros · {r['nombre']}", 0.0, 1_000_000.0, value=float(_per), step=50.0,
                             key=f"{key}_l_{i}")
-        ppct = float(r["producto_pct"]) if ("producto_pct" in r.index and pd.notna(r["producto_pct"])) else None
         kg = float(l) * dens
         picks.append({"idt": int(r["id_tanque"]), "nombre": r["nombre"], "l": float(l), "dens": dens,
-                      "glicerina_pct": npct, "glicerol_pct": gpct, "producto_pct": ppct,
+                      "glicerina_pct": npct, "glicerol_pct": gpct,
                       "agua_pct": (float(r["agua_pct"]) if pd.notna(r["agua_pct"]) else None),
                       "kg": kg,
-                      "glicerol_kg": kg * ((gpct or 0) / 100.0),
-                      "producto_kg": kg * ((ppct or 0) / 100.0)})
+                      "glicerol_kg": kg * ((npct or 0) / 100.0) * ((gpct or 0) / 100.0)})
     tot_l = sum(p["l"] for p in picks)
     _wl = tot_l or 1.0
     agg.update({
@@ -478,8 +466,6 @@ def _pick_gli(cat, codigo, key, densidad_de=None, default_l=0.0):
         "l": tot_l,
         "kg": sum(p["kg"] for p in picks),
         "glicerol_kg": sum(p["glicerol_kg"] for p in picks),
-        "producto_kg": sum(p["producto_kg"] for p in picks),
-        "producto_pct": sum((p["producto_pct"] or 0) * p["l"] for p in picks) / _wl,
         "glicerina_pct": sum((p["glicerina_pct"] or 0) * p["l"] for p in picks) / _wl,
         "glicerol_pct": sum((p["glicerol_pct"] or 0) * p["l"] for p in picks) / _wl,
         "agua_pct": sum((p["agua_pct"] or 0) * p["l"] for p in picks) / _wl,
@@ -528,13 +514,6 @@ def _borrador_guardar(conectar, USR):
         _js = _json.dumps(snap, sort_keys=True, default=str)
         if st.session_state.get("_plan_borr_last") == _js:
             return
-        # Throttle: sin esto, CADA cambio de input abría una conexión nueva + INSERT (≈1 s por tecla).
-        # Se guarda como mucho cada 12 s; lo pendiente se guarda solo en un rerun posterior.
-        import time as _time
-        _now_s = _time.time()
-        if _now_s - float(st.session_state.get("_plan_borr_ts") or 0) < 12:
-            return
-        st.session_state["_plan_borr_ts"] = _now_s
         st.session_state["_plan_borr_last"] = _js
         with conectar(int(USR["id_usuario"])) as (conn, audit):
             with conn.cursor() as cur:
@@ -899,13 +878,13 @@ def _recompute_final(cur, idb):
                 " WHERE id_batch=%s AND NOT COALESCE(anulado,false)) WHERE id_batch=%s", (int(idb), int(idb)))
 
 
-def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj, kp=""):
+def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
     st.caption("Asigná los **tickets de balanza (pesadas) ya evaluados por laboratorio** del producto final. "
                "La **suma de estos tickets define los kilos finales** de la reacción (editable por ticket).")
     _pobj = (producto_obj or "").strip()
     if not _pobj:
         st.info("Esta reacción no tiene producto final definido."); return
-    asg = cat("SELECT id, ticket, producto, calidad, kg, fraccion FROM produccion.fact_batch_ticket_final "
+    asg = cat("SELECT id, ticket, producto, calidad, kg FROM produccion.fact_batch_ticket_final "
               "WHERE id_batch=%s AND NOT COALESCE(anulado,false) ORDER BY ticket", (int(idb),))
     _tot_kg = float(asg["kg"].fillna(0).sum()) if (asg is not None and not asg.empty) else 0.0
     c1, c2 = st.columns(2)
@@ -922,8 +901,8 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj, kp=""):
     st.markdown(f"**Tickets pesados disponibles** (evaluados como {_pobj})")
     if cand is not None and not cand.empty:
         _copt = cand.apply(lambda r: f"#{r['ticket']} · {float(r['kg'] or 0)/1000:.2f} t · cal {r['calidad'] or '-'} · {r['fecha']}", axis=1).tolist()
-        _selc = st.multiselect("Elegí tickets para asignar", _copt, key=f"pf_sel_{idb}{kp}")
-        if st.button("➕ Asignar seleccionados", type="primary", key=f"pf_add_{idb}{kp}", use_container_width=True) and _selc:
+        _selc = st.multiselect("Elegí tickets para asignar", _copt, key=f"pf_sel_{idb}")
+        if st.button("➕ Asignar seleccionados", type="primary", key=f"pf_add_{idb}", use_container_width=True) and _selc:
             try:
                 with conectar(int(USR["id_usuario"])) as (conn, audit):
                     with conn.cursor() as cur:
@@ -931,7 +910,7 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj, kp=""):
                             _rc = cand.iloc[_copt.index(_sc)]
                             cur.execute("INSERT INTO produccion.fact_batch_ticket_final "
                                         "(id_batch,ticket,producto,calidad,kg,fecha,id_usuario) VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                                        "ON CONFLICT (id_batch,ticket) WHERE anulado=false DO NOTHING",
+                                        "ON CONFLICT (ticket) WHERE anulado=false DO NOTHING",
                                         (int(idb), str(_rc["ticket"]), _pobj, _rc["calidad"], float(_rc["kg"] or 0),
                                          (str(_rc["fecha"]) if pd.notna(_rc["fecha"]) else None), int(USR["id_usuario"])))
                         _recompute_final(cur, int(idb))
@@ -942,10 +921,10 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj, kp=""):
     else:
         st.caption("No hay tickets pesados sin asignar para este producto. Podés agregar uno manual abajo.")
     with st.expander("➕ Agregar ticket manual"):
-        _mt = st.text_input("N° de ticket", key=f"pf_mt_{idb}{kp}")
-        _mk = st.number_input("Kilos (si lo dejás vacío, se busca de balanza)", min_value=0.0, value=None, step=10.0, format="%g", key=f"pf_mk_{idb}{kp}")
-        _mc = st.text_input("Calidad", value="", key=f"pf_mc_{idb}{kp}")
-        if st.button("➕ Asignar manual", key=f"pf_addman_{idb}{kp}"):
+        _mt = st.text_input("N° de ticket", key=f"pf_mt_{idb}")
+        _mk = st.number_input("Kilos (si lo dejás vacío, se busca de balanza)", min_value=0.0, value=None, step=10.0, format="%g", key=f"pf_mk_{idb}")
+        _mc = st.text_input("Calidad", value="", key=f"pf_mc_{idb}")
+        if st.button("➕ Asignar manual", key=f"pf_addman_{idb}"):
             _mtv = (_mt or "").strip()
             if not _mtv:
                 st.warning("Poné el N° de ticket.")
@@ -961,68 +940,21 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj, kp=""):
                     with conectar(int(USR["id_usuario"])) as (conn, audit):
                         with conn.cursor() as cur:
                             cur.execute("INSERT INTO produccion.fact_batch_ticket_final (id_batch,ticket,producto,calidad,kg,id_usuario) "
-                                        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (id_batch,ticket) WHERE anulado=false DO NOTHING",
+                                        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (ticket) WHERE anulado=false DO NOTHING",
                                         (int(idb), _mtv, _pobj, _calv, float(_kgv or 0), int(USR["id_usuario"])))
                             _recompute_final(cur, int(idb))
                     st.success("Ticket asignado."); cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
-    with st.expander("➗ Dividir una pesada compartida (2 o 3 desgomados con un solo ticket)"):
-        st.caption("Cuando varios desgomados se pesaron juntos en una sola pesada, cargá el N° de ese ticket, "
-                   "en cuántos se dividió y cuántas partes le tocan a esta reacción.")
-        _dt = st.text_input("N° de ticket de la pesada", key=f"pf_dt_{idb}{kp}")
-        _d1, _d2 = st.columns(2)
-        _dn = _d1.selectbox("Se dividió en", [2, 3, 4], key=f"pf_dn_{idb}{kp}")
-        _dp = _d2.number_input("Partes para esta reacción", 1, int(_dn), 1, key=f"pf_dp_{idb}{kp}")
-        _dkg_tot = None; _dcal = None
-        if (_dt or "").strip():
-            _lk = cat("SELECT round(abs(COALESCE(peso_neto,0))::numeric,0) AS kg, lab_calidad "
-                      "FROM produccion.v_transacciones_limpias WHERE transaccion::text=%s LIMIT 1", ((_dt or "").strip(),))
-            if _lk is not None and not _lk.empty:
-                _dkg_tot = float(_lk.iloc[0]["kg"] or 0); _dcal = _lk.iloc[0]["lab_calidad"]
-        _dkg_man = st.number_input("...o kilos TOTALES de la pesada a mano (si no está en balanza)",
-                                   min_value=0.0, value=0.0, step=10.0, key=f"pf_dkgman_{idb}{kp}")
-        _dbase = _dkg_tot if _dkg_tot is not None else float(_dkg_man or 0)
-        if _dbase > 0:
-            _dpart = _dbase * (int(_dp) / int(_dn))
-            st.info(f"Pesada total **{_dbase/1000:.2f} t** ÷ {int(_dn)} × {int(_dp)} parte(s) = "
-                    f"**{_dpart/1000:.2f} t** para esta reacción.")
-        elif (_dt or "").strip():
-            st.caption("Ese ticket no aparece en balanza; cargá los kilos totales a mano arriba.")
-        if st.button("➗ Asignar la parte a esta reacción", key=f"pf_dadd_{idb}{kp}"):
-            _tv = (_dt or "").strip()
-            if not _tv:
-                st.warning("Poné el N° de ticket.")
-            elif _dbase <= 0:
-                st.warning("No hay kilos de la pesada (ni de balanza ni a mano).")
-            else:
-                _kgpart = round(_dbase * (int(_dp) / int(_dn)), 0)
-                try:
-                    with conectar(int(USR["id_usuario"])) as (conn, audit):
-                        with conn.cursor() as cur:
-                            cur.execute("INSERT INTO produccion.fact_batch_ticket_final "
-                                        "(id_batch,ticket,producto,calidad,kg,fraccion,id_usuario) "
-                                        "VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                                        "ON CONFLICT (id_batch,ticket) WHERE anulado=false "
-                                        "DO UPDATE SET kg=EXCLUDED.kg, fraccion=EXCLUDED.fraccion",
-                                        (int(idb), _tv, _pobj, _dcal, float(_kgpart),
-                                         float(int(_dp) / int(_dn)), int(USR["id_usuario"])))
-                            _recompute_final(cur, int(idb))
-                            audit.log("I", "fact_batch_ticket_final", int(idb),
-                                      {"ticket": _tv, "fraccion": f"{int(_dp)}/{int(_dn)}", "kg": _kgpart})
-                    st.success(f"Asignada la parte: {_kgpart/1000:.2f} t (÷{int(_dn)}×{int(_dp)})."); cat.clear(); st.rerun()
-                except Exception as e:
-                    st.exception(e)
     if asg is not None and not asg.empty:
         st.markdown("**Tickets asignados** (editá los kilos o marcá *Quitar*)")
         _disp = asg.copy(); _disp["Quitar"] = False
-        _disp["frac_txt"] = _disp["fraccion"].apply(lambda v: (f"{v:.2f}" if pd.notna(v) else "completo"))
-        _disp = _disp.rename(columns={"ticket": "Ticket", "producto": "Producto", "calidad": "Calidad", "kg": "Kg", "frac_txt": "Fracción"})
-        edp = st.data_editor(_disp[["Ticket", "Producto", "Calidad", "Fracción", "Kg", "Quitar"]], hide_index=True, use_container_width=True,
-                             disabled=["Ticket", "Producto", "Calidad", "Fracción"], key=f"pf_ed_{idb}{kp}",
+        _disp = _disp.rename(columns={"ticket": "Ticket", "producto": "Producto", "calidad": "Calidad", "kg": "Kg"})
+        edp = st.data_editor(_disp[["Ticket", "Producto", "Calidad", "Kg", "Quitar"]], hide_index=True, use_container_width=True,
+                             disabled=["Ticket", "Producto", "Calidad"], key=f"pf_ed_{idb}",
                              column_config={"Kg": st.column_config.NumberColumn(format="%g"),
                                             "Quitar": st.column_config.CheckboxColumn()})
-        if st.button("💾 Guardar (definir kilos finales por estos tickets)", type="primary", key=f"pf_save_{idb}{kp}", use_container_width=True):
+        if st.button("💾 Guardar (definir kilos finales por estos tickets)", type="primary", key=f"pf_save_{idb}", use_container_width=True):
             try:
                 with conectar(int(USR["id_usuario"])) as (conn, audit):
                     with conn.cursor() as cur:
@@ -1372,35 +1304,14 @@ def _registrar_destino_cierre(USR, cat, conectar, idb):
     st.caption("Elegí a qué tanque fue cada corriente y **Registrar**: genera la entrada al tanque en el libro de "
                "movimientos (rol PRODUCTO_FINAL / SUBPRODUCTO). Si ya había movimientos de cierre para esta reacción, se reemplazan.")
     _streams = []
-    # total del producto final: tickets de pesada si hay, si no el teórico
-    _tkq = cat("SELECT round(sum(kg)::numeric,0) AS kg FROM produccion.fact_batch_ticket_final "
-               "WHERE id_batch=%s AND NOT COALESCE(anulado,false)", (int(idb),))
-    _tk_kg = float(_tkq.iloc[0]["kg"]) if (_tkq is not None and not _tkq.empty and _tkq.iloc[0]["kg"] is not None) else 0.0
-    _pf_kg = _tk_kg or float(_p.get("are_objetivo_kg") or _p.get("afe_objetivo_kg") or 0.0)
-    st.markdown(f"**Producto final · {_pf_code}** — total a repartir ≈ **{_pf_kg/1000:,.2f} t**. Elegí hasta **3 tanques**.")
-    _npf = st.radio("¿En cuántos tanques?", [1, 2, 3], horizontal=True, key=f"rd_npf_{idb}")
-    _cur_pf = (_b["id_tanque_are_final"] if _es_are else _b["desg_id_tanque_destino"])
-    _pf_sum_kg = 0.0
-    for _pi in range(int(_npf)):
-        _tp_i = _sel(f"Tanque destino {_pi+1} · {_pf_code}", (_cur_pf if _pi == 0 else None), f"rd_pf_{idb}_{_pi}")
-        _pc1, _pc2 = st.columns(2)
-        _defkg = round(_pf_kg / int(_npf), 0)
-        _kg_i = _pc2.number_input(f"{_pf_code} #{_pi+1} · kg", 0.0, 1e7, value=float(_defkg), step=50.0, key=f"rd_pfkg_{idb}_{_pi}")
-        _l_i = _pc1.number_input(f"{_pf_code} #{_pi+1} · litros", 0.0, 1e7,
-                                 value=float(round(_kg_i / _pf_dens if _pf_dens else 0.0, 0)), step=50.0, key=f"rd_pfl_{idb}_{_pi}")
-        _streams.append(("PRODUCTO_FINAL", _id_pf, _pf_code, _tp_i, _l_i, _kg_i))
-        _pf_sum_kg += float(_kg_i)
-    _pf_ids = [s[3] for s in _streams if s[0] == "PRODUCTO_FINAL" and s[3]]
-    _pf_dup = len(set(_pf_ids)) != len(_pf_ids)
-    _falt = (_pf_kg - _pf_sum_kg) / 1000.0
-    if _pf_dup:
-        st.warning("Hay tanques de producto final repetidos: elegí tanques distintos.")
-    elif _pf_kg > 0 and abs(_falt) <= 0.05:
-        st.success(f"✅ Reparto completo: {_pf_sum_kg/1000:,.2f} t de {_pf_kg/1000:,.2f} t.")
-    elif _pf_kg > 0:
-        (st.warning if abs(_falt) <= 0.5 else st.error)(
-            f"Repartidas {_pf_sum_kg/1000:,.2f} t de {_pf_kg/1000:,.2f} t · faltan/sobran {_falt:+,.2f} t.")
-    _okpf = (not _pf_dup) and ((_pf_kg <= 0) or abs(_falt) <= 0.5)
+    _pf_kg = float(_p.get("are_objetivo_kg") or _p.get("afe_objetivo_kg") or 0.0)
+    _t_pf = _sel(f"Tanque destino · {_pf_code}",
+                 (_b["id_tanque_are_final"] if _es_are else _b["desg_id_tanque_destino"]), f"rd_pf_{idb}")
+    cpf1, cpf2 = st.columns(2)
+    _l_pf = cpf1.number_input(f"{_pf_code} · litros", 0.0, 1e7,
+                              value=float(round(_pf_kg / _pf_dens if _pf_dens else 0.0, 0)), step=50.0, key=f"rd_pfl_{idb}")
+    _kg_pf = cpf2.number_input(f"{_pf_code} · kg", 0.0, 1e7, value=float(round(_pf_kg, 0)), step=50.0, key=f"rd_pfkg_{idb}")
+    _streams.append(("PRODUCTO_FINAL", _id_pf, _pf_code, _t_pf, _l_pf, _kg_pf))
 
     if _es_are:
         _aporte = float(_p.get("aporte_glicerina_pct") or 10.0)
@@ -1426,7 +1337,7 @@ def _registrar_destino_cierre(USR, cat, conectar, idb):
     _kg_ag = ca2.number_input("Agua · kg", 0.0, 1e7, value=float(round(_agua_def, 0)), step=25.0, key=f"rd_agkg_{idb}")
     _streams.append(("SUBPRODUCTO", None, "Agua", _t_ag, _l_ag, _kg_ag))
 
-    if st.button("💾 Registrar destino y movimientos", type="primary", key=f"rd_save_{idb}", use_container_width=True, disabled=not _okpf):
+    if st.button("💾 Registrar destino y movimientos", type="primary", key=f"rd_save_{idb}", use_container_width=True):
         _uid = int(USR["id_usuario"])
         try:
             _n = 0
@@ -1446,14 +1357,12 @@ def _registrar_destino_cierre(USR, cat, conectar, idb):
                             (int(idb), _b["ident"], _rol, _idp, _txt, int(_tid),
                              float(_lit or 0), float(_kg or 0), float(_lit or 0), _uid))
                         _n += 1
-                    _pf_first = next((s[3] for s in _streams if s[0] == "PRODUCTO_FINAL" and s[3]), None)
-                    _gli_t = next((s[3] for s in _streams if s[2] == "Glicerina recuperada" and s[3]), None)
                     if _es_are:
                         cur.execute("UPDATE produccion.fact_batch_proceso SET id_tanque_are_final=%s, id_tanque_gli_recup=%s WHERE id_batch=%s",
-                                    (_pf_first, _gli_t, int(idb)))
+                                    (_streams[0][3], (_streams[1][3] if len(_streams) > 1 else None), int(idb)))
                     else:
                         cur.execute("UPDATE produccion.fact_batch_proceso SET desg_id_tanque_destino=%s WHERE id_batch=%s",
-                                    (_pf_first, int(idb)))
+                                    (_streams[0][3], int(idb)))
                 audit.log("I", "fact_movimiento_stock", int(idb), {"destino_cierre": True, "movs": _n})
             st.success(f"Destino registrado · {_n} movimiento(s) de stock generado(s).")
             cat.clear(); st.rerun()
@@ -1625,7 +1534,6 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
 
 @st.dialog("🗂️ Ficha de reacción", width="large")
 def _dlg_reaccion(USR, cat, conectar, idb):
-    densidad_de = (st.session_state.get("_plan_helpers") or {}).get("densidad_de")
     info = cat("SELECT identificador_unidad AS ident, estado, tipo_proceso, "
                " et.etiqueta, bu.nombre_ui AS reactor, dpb.codigo_producto AS producto_obj, b.kg_obtenido, "
                " (b.inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS inicio_local, "
@@ -1848,79 +1756,30 @@ def _dlg_reaccion(USR, cat, conectar, idb):
         else:
             _opt = _tks.apply(lambda r: f"{r['nombre']} · {r['codigo']}", axis=1).tolist()
             _cur = str(b["destino"] or "")
+            _idx = next((i for i, o in enumerate(_opt) if _cur and (_cur in o or o in _cur)), None)
             st.caption(f"Destino actual: **{_cur or '—'}**")
-            _tt = cat("SELECT COALESCE("
-                      " (SELECT round(sum(kg)::numeric,0) FROM produccion.fact_batch_ticket_final "
-                      "  WHERE id_batch=%s AND NOT COALESCE(anulado,false)),"
-                      " NULLIF(parametros_proceso->>'are_objetivo_kg','')::numeric,"
-                      " NULLIF(parametros_proceso->>'afe_objetivo_kg','')::numeric,"
-                      " NULLIF(parametros_proceso->>'kg_objetivo','')::numeric, 0) AS kg, "
-                      " id_producto_buscado AS idp "
-                      "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(idb), int(idb)))
-            _totkg = float(_tt.iloc[0]["kg"]) if (_tt is not None and not _tt.empty and _tt.iloc[0]["kg"] is not None) else 0.0
-            _idp = _tt.iloc[0]["idp"] if (_tt is not None and not _tt.empty) else None
-            _densp = float(densidad_de(_pobj)) if (callable(densidad_de) and densidad_de(_pobj)) else 0.9
-            _tott = _totkg / 1000.0
-            st.markdown(f"**Total final a repartir: {_tott:,.2f} t** (≈ {(_totkg/_densp if _densp else 0):,.0f} L). "
-                        "Elegí hasta **3 tanques** y repartí las toneladas; la suma tiene que dar el total.")
-            _nd = st.radio("¿En cuántos tanques?", [1, 2, 3], horizontal=True, key=f"dlg_ndest_{idb}")
-            _picks = []; _sum = 0.0
-            for _di in range(int(_nd)):
-                _dc1, _dc2 = st.columns([3, 1])
-                _sd = _dc1.selectbox(f"Tanque {_di+1}", _opt, key=f"dlg_dest_{idb}_{_di}")
-                _deft = round(_tott / int(_nd), 2) if _tott else 0.0
-                _tv = _dc2.number_input(f"t · #{_di+1}", 0.0, 1e6, value=_deft, step=0.1, format="%.2f", key=f"dlg_destt_{idb}_{_di}")
-                _picks.append((_tks.iloc[_opt.index(_sd)], float(_tv)))
-                _sum += float(_tv)
-            _falt = _tott - _sum
-            _ids = [int(p[0]["id_tanque"]) for p in _picks if p[1] > 0]
-            _dup = len(set(_ids)) != len(_ids)
-            _okrep = (abs(_falt) <= 0.05) and (not _dup) and _sum > 0
-            if _dup:
-                st.warning("Hay tanques repetidos: elegí tanques distintos.")
-            elif _totkg <= 0:
-                st.info("No hay total final (teórico ni tickets). Cargá tickets finales o el objetivo para repartir por toneladas.")
-            elif abs(_falt) <= 0.05:
-                st.success(f"✅ Reparto completo: {_sum:,.2f} t de {_tott:,.2f} t.")
-            else:
-                st.error(f"Repartidas {_sum:,.2f} t de {_tott:,.2f} t · faltan/sobran {_falt:+,.2f} t. Ajustá para que cierre el total.")
-            if st.button("💾 Guardar destino(s) final(es) y registrar", type="primary", key=f"dlg_save3_{idb}",
-                         use_container_width=True, disabled=not _okrep):
+            _seldest = st.selectbox("Tanque de destino final", _opt, index=(_idx if _idx is not None else 0), key=f"dlg_dest_{idb}")
+            if st.button("💾 Guardar destino final", type="primary", key=f"dlg_save3_{idb}", use_container_width=True):
+                _rr = _tks.iloc[_opt.index(_seldest)]
                 try:
                     with conectar(int(USR["id_usuario"])) as (conn, audit):
                         with conn.cursor() as cur:
-                            cur.execute("UPDATE produccion.fact_movimiento_stock SET anulado=true, estado_mov='ANULADO' "
-                                        "WHERE id_batch=%s AND sentido=1 AND rol='PRODUCTO_FINAL' AND NOT COALESCE(anulado,false)",
-                                        (int(idb),))
-                            _lbls = []
-                            for _rr, _tv in _picks:
-                                if _tv <= 0:
-                                    continue
-                                _kg = _tv * 1000.0; _l = (_kg / _densp) if _densp else 0.0
-                                cur.execute(
-                                    "INSERT INTO produccion.fact_movimiento_stock "
-                                    "(momento,id_batch,identificador_prod,tipo_movimiento,rol,sentido,id_producto,producto,"
-                                    " fuente,id_tanque,cantidad,unidad,kg,litros,id_usuario,origen,estado_mov) "
-                                    "VALUES (now(),%s,%s,'ENTRADA','PRODUCTO_FINAL',1,%s,%s,'TANQUE',%s,%s,'LT',%s,%s,%s,'ajuste_manual','EJECUTADO')",
-                                    (int(idb), b["ident"], (int(_idp) if pd.notna(_idp) else None), _pobj,
-                                     int(_rr["id_tanque"]), float(_l), float(_kg), float(_l), int(USR["id_usuario"])))
-                                _lbls.append(f"{_rr['nombre']} ({_tv:.1f}t)")
                             cur.execute("UPDATE produccion.fact_batch_proceso SET tanque_destino=%s WHERE id_batch=%s",
-                                        (" + ".join(_lbls), int(idb)))
-                            _first = int(_picks[0][0]["id_tanque"])
+                                        (f"{_rr['nombre']} · {_rr['codigo']}", int(idb)))
                             if _tp == "DESGOMADO_ACUOSO":
-                                cur.execute("UPDATE produccion.fact_batch_proceso SET desg_id_tanque_destino=%s WHERE id_batch=%s", (_first, int(idb)))
-                            else:
-                                cur.execute("UPDATE produccion.fact_batch_proceso SET id_tanque_are_final=%s WHERE id_batch=%s", (_first, int(idb)))
-                            audit.log("U", "fact_batch_proceso", int(idb), {"destinos": _lbls})
-                    st.success("Destino(s) guardado(s) y movimientos de stock registrados."); cat.clear(); st.rerun()
+                                cur.execute("UPDATE produccion.fact_batch_proceso SET desg_id_tanque_destino=%s WHERE id_batch=%s",
+                                            (int(_rr["id_tanque"]), int(idb)))
+                            audit.log("U", "fact_batch_proceso", int(idb), {"destino": _rr["codigo"]})
+                    st.success("Destino final guardado."); cat.clear(); st.rerun()
                 except Exception as e:
                     st.exception(e)
         st.divider()
         _control_rendimiento(USR, cat, conectar, int(idb))
+        st.divider()
+        _registrar_destino_cierre(USR, cat, conectar, int(idb))
 
     with tPF:
-        _ficha_final_tickets(USR, cat, conectar, int(idb), b.get("producto_obj"), kp="dlg")
+        _ficha_final_tickets(USR, cat, conectar, int(idb), b.get("producto_obj"))
 
     with tLM:
         render_checklist_limpieza(USR, cat, conectar, int(idb), b.get("tipo_proceso"))
@@ -2316,21 +2175,24 @@ def _desvio_stock_ledger(USR, cat, conectar):
         "**¿Qué mide?** Compara el **stock físico medido en los tanques** contra lo que *debería* haber según la "
         "producción de la semana. Sí — se basa en el **stock y los movimientos de tanque**.\n\n"
         "- **Real (t)** = toneladas medidas en los tanques al cierre de la semana (mediciones de nivel de tanque).\n"
-        "- **Proyectado (t)** = stock del cierre de la **semana anterior** + lo **producido** esa semana (± portería).\n"
+        "- **Proyectado (t)** = stock del cierre de la **semana anterior** + lo **producido** esa semana "
+        "(± portería − **insumos consumidos** − **despachos emitidos**).\n"
+        "- **Insumos (t)** = glicerina, fuel, catalizador y demás insumos sacados de tanque por la planificación.\n"
+        "- **Despachos (t)** = despachos en estado CONFIRMADO/DESPACHADO (kg pesados si hay tickets de salida).\n"
         "- **Desvío (t) = Real − Proyectado**: negativo = en los tanques quedaron **menos** toneladas de las esperadas "
         "(se consumió, despachó, mermó o no se acopió); positivo = quedaron de más."
     )
     # Solo desde la semana 28 (2026-07-06 = lunes de S28) en adelante
     df = cat("SELECT semana, producto, codigo_producto, tipo_producto, stock_ini_t, prod_t, ext_in_t, "
-             "ext_out_t, interno_t, delta_esp_t, stock_proy_t, stock_real_t, desvio_t "
+             "ext_out_t, interno_t, cons_t, desp_t, delta_esp_t, stock_proy_t, stock_real_t, desvio_t "
              "FROM produccion.v_desvio_stock_producto "
              "WHERE semana >= DATE '2026-07-06' "
              "ORDER BY semana DESC, producto")
     if df is None or df.empty:
         st.info("Sin datos de stock (desde S28) para calcular desvíos."); return
     df = df.copy()
-    for _c in ["stock_ini_t", "prod_t", "ext_in_t", "ext_out_t", "interno_t", "delta_esp_t",
-               "stock_proy_t", "stock_real_t", "desvio_t"]:
+    for _c in ["stock_ini_t", "prod_t", "ext_in_t", "ext_out_t", "interno_t", "cons_t", "desp_t",
+               "delta_esp_t", "stock_proy_t", "stock_real_t", "desvio_t"]:
         df[_c] = pd.to_numeric(df[_c], errors="coerce")
     df["Semana"] = pd.to_datetime(df["semana"]).dt.strftime("S%V")
     _prods = sorted(df["producto"].dropna().unique().tolist())
@@ -2352,10 +2214,12 @@ def _desvio_stock_ledger(USR, cat, conectar):
     _disp = dff.rename(columns={"producto": "Producto", "stock_ini_t": "Stock ant. (t)",
                                 "prod_t": "Producción (t)", "ext_in_t": "Ext. entra (t)",
                                 "ext_out_t": "Ext. sale (t)", "interno_t": "Interno (t)",
+                                "cons_t": "Insumos (t)", "desp_t": "Despachos (t)",
                                 "stock_proy_t": "Proyectado (t)", "stock_real_t": "Real (t)",
                                 "desvio_t": "Desvío (t)"})
     _disp = _disp[["Semana", "Producto", "Stock ant. (t)", "Producción (t)", "Ext. entra (t)",
-                   "Ext. sale (t)", "Interno (t)", "Proyectado (t)", "Real (t)", "Desvío (t)"]]
+                   "Ext. sale (t)", "Interno (t)", "Insumos (t)", "Despachos (t)",
+                   "Proyectado (t)", "Real (t)", "Desvío (t)"]]
 
     def _cc(v):
         if pd.isna(v):
@@ -2364,7 +2228,8 @@ def _desvio_stock_ledger(USR, cat, conectar):
         return ("color:#16a34a;font-weight:700" if a < 5 else
                 ("color:#b45309;font-weight:700" if a < 20 else "color:#dc2626;font-weight:700"))
     _fmt = {c: "{:,.1f}" for c in ["Stock ant. (t)", "Producción (t)", "Ext. entra (t)", "Ext. sale (t)",
-                                   "Interno (t)", "Proyectado (t)", "Real (t)", "Desvío (t)"]}
+                                   "Interno (t)", "Insumos (t)", "Despachos (t)",
+                                   "Proyectado (t)", "Real (t)", "Desvío (t)"]}
     try:
         st.dataframe(_disp.style.map(_cc, subset=["Desvío (t)"]).format(_fmt, na_rep="—"),
                      hide_index=True, use_container_width=True)
@@ -2530,162 +2395,6 @@ def _variacion_semanal(USR, cat, conectar):
         st.dataframe(_piv.round(2), use_container_width=True)
 
 
-def _analisis_reaccion(USR, cat, conectar):
-    st.subheader("🔬 Análisis por reacción")
-    st.caption("Curva de acidez en el tiempo · balance de masa (¿dónde fue cada kg?) · evaluación final de laboratorio.")
-    r = _sel_reaccion_mp(cat, "anr_sel", estados=("PLANIFICADO", "REACCION", "REPOSO", "DECANTACION", "FINALIZADO"))
-    if r is None:
-        return
-    idb = int(r["id_batch"])
-    b = cat("SELECT identificador_unidad AS ident, tipo_proceso, estado, id_producto_buscado, ticket_producto_final, "
-            " inicio_ts AT TIME ZONE 'America/Argentina/Buenos_Aires' AS inicio, parametros_proceso "
-            "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (idb,))
-    if b is None or b.empty:
-        return
-    b = b.iloc[0]
-    _p = b["parametros_proceso"]
-    if isinstance(_p, str):
-        try:
-            _p = _json.loads(_p)
-        except Exception:
-            _p = {}
-    _p = _p or {}
-    _es_are = str(b["tipo_proceso"] or "") == "PRODUCCION_ARE"
-    _pf = cat("SELECT codigo_producto, COALESCE(densidad_g_ml,0.88)::float AS dens FROM produccion.dim_producto WHERE id_producto=%s",
-              (int(b["id_producto_buscado"]),)) if pd.notna(b["id_producto_buscado"]) else None
-    _pfcode = str(_pf.iloc[0]["codigo_producto"]) if (_pf is not None and not _pf.empty) else "Producto"
-    _pfdens = float(_pf.iloc[0]["dens"]) if (_pf is not None and not _pf.empty) else 0.88
-    _ini = pd.to_datetime(b["inicio"]) if pd.notna(b["inicio"]) else None
-
-    st.markdown(f"### {b['ident']} · {_pfcode} · {b['estado']}")
-
-    # ---------- 1) Curva de acidez ----------
-    st.markdown("#### 📉 Curva de acidez (evaluaciones internas)")
-    _ev = cat("SELECT (ts AT TIME ZONE 'America/Argentina/Buenos_Aires') AS ts, "
-              " NULLIF(mediciones->>'acidez','')::float AS acidez, "
-              " NULLIF(mediciones->>'temperatura','')::float AS temp "
-              "FROM produccion.fact_evaluacion_interna "
-              "WHERE id_batch=%s AND NOT COALESCE(anulado,false) AND mediciones ? 'acidez' "
-              "ORDER BY ts", (idb,))
-    if _ev is None or _ev.empty:
-        st.caption("Esta reacción no tiene evaluaciones internas de acidez cargadas.")
-    else:
-        _ev = _ev.copy(); _ev["ts"] = pd.to_datetime(_ev["ts"])
-        _base = _ini if _ini is not None else _ev["ts"].iloc[0]
-        _ev["Horas"] = (_ev["ts"] - _base).dt.total_seconds() / 3600.0
-        _ev["Corte (13)"] = 13.0
-        _cut_row = _ev[_ev["acidez"] <= 13]
-        _t_cut = float(_cut_row["Horas"].iloc[0]) if not _cut_row.empty else None
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Acidez inicial", f"{_ev['acidez'].iloc[0]:.1f}" if pd.notna(_ev['acidez'].iloc[0]) else "—")
-        c2.metric("Acidez final", f"{_ev['acidez'].iloc[-1]:.1f}" if pd.notna(_ev['acidez'].iloc[-1]) else "—")
-        c3.metric("Horas hasta corte (<13)", (f"{_t_cut:.1f} h" if _t_cut is not None else "no cortó aún"))
-        try:
-            import altair as alt
-            _long = _ev.melt(id_vars=["Horas"], value_vars=["acidez", "Corte (13)"], var_name="serie", value_name="valor")
-            ch = (alt.Chart(_long).mark_line(point=True).encode(
-                    x=alt.X("Horas:Q", title="Horas desde el inicio"),
-                    y=alt.Y("valor:Q", title="Acidez (%)"),
-                    color=alt.Color("serie:N", title=None,
-                                    scale=alt.Scale(domain=["acidez", "Corte (13)"], range=["#2563eb", "#dc2626"])),
-                    strokeDash=alt.condition(alt.datum.serie == "Corte (13)", alt.value([6, 4]), alt.value([0])))
-                  .properties(height=320))
-            st.altair_chart(ch, use_container_width=True)
-        except Exception:
-            st.line_chart(_ev.set_index("Horas")[["acidez", "Corte (13)"]], use_container_width=True)
-        st.caption("La acidez baja a medida que avanza la reacción; el **corte** es a ≤13. La pendiente muestra la "
-                   "velocidad de reacción — MP más lenta = curva más plana.")
-
-    # ---------- 2) Balance de masa ----------
-    st.markdown("#### ⚖️ Balance de masa — ¿dónde fue cada kg?")
-    _mpq = cat("SELECT round(sum(abs(kg))::numeric,0) AS kg FROM produccion.fact_movimiento_stock "
-               "WHERE id_batch=%s AND rol='MP' AND NOT COALESCE(anulado,false)", (idb,))
-    _mpkg = float(_mpq.iloc[0]["kg"]) if (_mpq is not None and not _mpq.empty and _mpq.iloc[0]["kg"] is not None) else 0.0
-    _rc = cat("SELECT real_kg::float AS kg FROM produccion.fact_reaccion_cierre WHERE id_batch=%s", (idb,))
-    _tk = cat("SELECT round(sum(kg)::numeric,0) AS kg FROM produccion.fact_batch_ticket_final WHERE id_batch=%s AND NOT COALESCE(anulado,false)", (idb,))
-    _real_pf = None; _fte = "—"
-    if _tk is not None and not _tk.empty and _tk.iloc[0]["kg"]:
-        _real_pf, _fte = float(_tk.iloc[0]["kg"]), "tickets"
-    elif _rc is not None and not _rc.empty and pd.notna(_rc.iloc[0]["kg"]):
-        _real_pf, _fte = float(_rc.iloc[0]["kg"]), "tanque"
-    _pf_kg = _real_pf if _real_pf is not None else float(_p.get("are_objetivo_kg") or _p.get("afe_objetivo_kg") or 0.0)
-    _gli_carg = float(_p.get("litros_glicerina_total") or 0.0) * float(K("densidad_glicerina", 1.25) or 1.25) if _es_are else 0.0
-    _koh = float(_p.get("koh_kg") or 0.0) if _es_are else 0.0
-    _aporte = float(_p.get("aporte_glicerina_pct") or 10.0)
-    _gli_rec = (1.0 - _aporte / 100.0) * float(_p.get("litros_glicerina_total") or 0.0) * 1.05 if _es_are else 0.0
-    _agua = _mpkg * float(_p.get("agua_agc_pct") or 0.0) / 100.0 if _es_are else 0.0
-    _entra = _mpkg + _gli_carg + _koh
-    _sale = _pf_kg + _gli_rec + _agua
-    _merma = _entra - _sale
-    _bal = [
-        {"Flujo": "Entra · MP (AG/AFE)", "kg": round(_mpkg)},
-        {"Flujo": "Entra · Glicerina cargada", "kg": round(_gli_carg)},
-        {"Flujo": "Entra · KOH", "kg": round(_koh)},
-        {"Flujo": f"Sale · Producto final ({_pfcode}, {_fte})", "kg": -round(_pf_kg)},
-        {"Flujo": "Sale · Glicerina recuperada", "kg": -round(_gli_rec)},
-        {"Flujo": "Sale · Agua", "kg": -round(_agua)},
-        {"Flujo": "= Merma / no explicado", "kg": round(_merma)},
-    ]
-    st.dataframe(pd.DataFrame(_bal), hide_index=True, use_container_width=True,
-                 column_config={"kg": st.column_config.NumberColumn(format="%.0f")})
-    _mp100 = (_merma / _entra * 100.0) if _entra else None
-    st.caption(f"Entra **{_entra:,.0f} kg** · Sale **{_sale:,.0f} kg** · Merma/no explicado **{_merma:,.0f} kg**"
-               + (f" ({_mp100:.1f}% de lo que entró)." if _mp100 is not None else ".")
-               + " Rendimiento del producto final = "
-               + (f"{_pf_kg/ (float(_p.get('are_objetivo_kg') or _p.get('afe_objetivo_kg') or 0) or 1)*100:.0f}% del teórico." if (_p.get('are_objetivo_kg') or _p.get('afe_objetivo_kg')) else "s/teórico."))
-    st.caption("Una merma muy alta suele ser producto que quedó en el corte de glicerina (recuperable) o falta de medición "
-               "del tanque destino. Glicerina cargada usa densidad 1,25; producto final 0,88.")
-
-    # ---------- 3) Evaluación final de laboratorio (id de lab = ticket final) ----------
-    st.markdown("#### 🧪 Evaluación final de laboratorio")
-    _cur_tk = b["ticket_producto_final"] if pd.notna(b["ticket_producto_final"]) else ""
-    cc1, cc2 = st.columns([2, 1])
-    _newtk = cc1.text_input("ID de laboratorio / ticket del producto final", value=str(_cur_tk), key=f"anr_tk_{idb}",
-                            help="Es el ticket con el que laboratorio evalúa el producto final (ej. F14). Une la reacción con su análisis.")
-    if cc2.button("💾 Asignar ID de lab", key=f"anr_tksave_{idb}", use_container_width=True):
-        try:
-            with conectar(int(USR["id_usuario"])) as (conn, audit):
-                with conn.cursor() as cur:
-                    cur.execute("UPDATE produccion.fact_batch_proceso SET ticket_producto_final=%s WHERE id_batch=%s",
-                                ((_newtk.strip() or None), idb))
-                audit.log("U", "fact_batch_proceso", idb, {"ticket_producto_final": _newtk.strip()})
-            st.success("ID de laboratorio asignado."); cat.clear(); st.rerun()
-        except Exception as e:
-            st.exception(e)
-    if _cur_tk:
-        _lab = cat("SELECT producto_lab, calidad_final_lab, rechazado, prc_acidez, prc_hkf, prc_sedimentos, prc_agua, "
-                   " densidad__g_ml, ppm_azufre, ppm_fosforo, to_char(fecha,'DD/MM/YYYY HH24:MI') AS fecha, conclusion "
-                   "FROM produccion.v_procesos_lab_efectivo WHERE ticket=%s ORDER BY fecha DESC", (str(_cur_tk),))
-        if _lab is None or _lab.empty:
-            st.info(f"Todavía no hay evaluación de laboratorio para el ticket **{_cur_tk}**. "
-                    "Cuando laboratorio lo cargue (con ese ticket) va a aparecer acá automáticamente.")
-        else:
-            _l = _lab.iloc[0]
-            _sp = None
-            try:
-                _sp = (float(_l["ppm_azufre"]) < 200 and float(_l["ppm_fosforo"]) < 200)
-            except Exception:
-                _sp = None
-            g1, g2, g3, g4 = st.columns(4)
-            g1.metric("Calidad", str(_l["calidad_final_lab"] or "—"))
-            g2.metric("Resultado", str(_l["rechazado"] or "—"))
-            g3.metric("Azufre / Fósforo (ppm)", f"{_l['ppm_azufre'] or '—'} / {_l['ppm_fosforo'] or '—'}",
-                      ("apto export" if _sp else ("no export" if _sp is False else None)))
-            g4.metric("Acidez / HKF", f"{_l['prc_acidez'] or '—'} / {_l['prc_hkf'] or '—'}")
-            st.dataframe(_lab, hide_index=True, use_container_width=True)
-            if _l["conclusion"]:
-                st.caption(f"📝 {_l['conclusion']}")
-    else:
-        st.caption("Asigná el ID de laboratorio (ticket del producto final) para linkear la evaluación.")
-
-
-def _term_ok(msg):
-    """Confirma la edicion de una reaccion terminada: globos + volver a Gestion de reacciones."""
-    st.session_state["_term_saved_msg"] = msg
-    st.session_state["_nav_admin_gestion"] = True
-    st.rerun()
-
-
 def _reacciones_terminadas(USR, cat, conectar):
     st.subheader("🏁 Reacciones terminadas — objetivo vs real")
     st.caption("Máximo por reactor · objetivo/fórmula · real por tickets de pesada · real por variación de tanque. "
@@ -2839,7 +2548,7 @@ def _reacciones_terminadas(USR, cat, conectar):
                                 " fin_ts = CASE WHEN %s IS NULL THEN fin_ts ELSE (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') END "
                                 "WHERE id_batch=%s", (_isoi, _isoi, _isof, _isof, idb))
                     audit.log("U", "fact_batch_proceso", idb, {"inicio": _isoi, "fin": _isof})
-            cat.clear(); _term_ok("Inicio/fin actualizados.")
+            st.success("Inicio/fin actualizados."); cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
 
@@ -2873,13 +2582,13 @@ def _reacciones_terminadas(USR, cat, conectar):
                                         "VALUES (%s,'EN_TANQUE',(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires'),%s)",
                                         (idb, _iso, int(USR["id_usuario"])))
                         audit.log("U", "fact_etapa_evento", idb, {"acopio_final": _iso})
-                cat.clear(); _term_ok("Horario de acopio final guardado.")
+                st.success("Horario de acopio final guardado (recalcula la variación sugerida)."); cat.clear(); st.rerun()
             except Exception as e:
                 st.exception(e)
 
     # asignar tickets de pesada final (mismo flujo que la ficha) — la suma define kg_obtenido
     st.markdown("**🏁 Tickets de pesada final (asignar / editar)**")
-    _ficha_final_tickets(USR, cat, conectar, int(idb), r["producto"], kp="term")
+    _ficha_final_tickets(USR, cat, conectar, int(idb), r["producto"])
 
     # asignar / editar kg real
     st.markdown("**Producción real de la reacción**")
@@ -2906,7 +2615,7 @@ def _reacciones_terminadas(USR, cat, conectar):
                                 " obs=EXCLUDED.obs, id_usuario=EXCLUDED.id_usuario, actualizado_en=now()",
                                 (idb, float(_real_t*1000), _met, ((_obs or "").strip() or None), int(USR["id_usuario"])))
                     audit.log("U", "fact_reaccion_cierre", idb, {"real_kg": float(_real_t*1000), "metodo": _met})
-            cat.clear(); _term_ok(f"Producción real guardada: {_real_t:.2f} t ({_met}).")
+            st.success(f"Producción real guardada: {_real_t:.2f} t ({_met})."); cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
 
@@ -3056,10 +2765,6 @@ def _reacciones_terminadas(USR, cat, conectar):
 
 def _gestion_reacciones(USR, cat, conectar):
     st.subheader("🛠️ Gestión de reacciones")
-    _msg = st.session_state.pop("_term_saved_msg", None)
-    if _msg:
-        st.success("✅ Reacción actualizada — " + _msg + " Verificá acá que quedó bien.")
-        st.balloons()
     _g0, _g1, _g2, _g3, _g4 = st.tabs(["🎛️ Tablero", "⏯️ Trabajar (arrancar / cargar muestras / decantar)",
                                        "📋 En marcha & nombres", "🕐 Etapas & horarios", "🧫 Evaluaciones internas"])
     with _g0:
@@ -3281,8 +2986,9 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     _borrador_restaurar(cat, USR)
     with st.expander("📋 Ver planificadas y sus movimientos (todo lo cargado)", expanded=False):
         _render_planificadas(cat)
+    _render_aprobaciones(USR, cat, conectar)
 
-    _grupo_opts = ["➕ Cargar nueva reacción", "⬆️ Carga masiva", "⚙️ Administración de reacciones", "📈 Performance", "📅 Cronogramas", "🚢 Despachos", "🛂 Aprobaciones"]
+    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3293,10 +2999,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     # ----- Administrar procesos en curso (no es carga: se decide sobre reacciones ya arrancadas) -----
     if _grupo.startswith("⚙️"):
-        if st.session_state.pop("_nav_admin_gestion", False):
-            st.session_state["pl_admin_sc"] = "🛠️ Gestión de reacciones"
-            st.session_state["pl_admin"] = "🛠️ Gestión de reacciones"
-        _admin_opts = ["🛠️ Gestión de reacciones", "🏁 Terminadas (objetivo vs real)", "🔬 Análisis por reacción", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"]
+        _admin_opts = ["🛠️ Gestión de reacciones", "🏁 Terminadas (objetivo vs real)", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"]
         try:
             _admin = st.segmented_control("Administrar", _admin_opts, default=_admin_opts[0],
                                           key="pl_admin_sc", label_visibility="collapsed")
@@ -3308,8 +3011,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             _gestion_reacciones(USR, cat, conectar)
         elif _admin.startswith("🏁"):
             _reacciones_terminadas(USR, cat, conectar)
-        elif _admin.startswith("🔬"):
-            _analisis_reaccion(USR, cat, conectar)
         elif _admin.startswith("🧴"):
             import decantacion
             decantacion.destinos(USR, cat, conectar)
@@ -3320,47 +3021,11 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             desgomado.planificacion(USR, cat, conectar)
         return
 
-    if _grupo.startswith("⬆️"):
-        try:
-            import carga_masiva
-            carga_masiva.render(USR, cat, conectar, siguiente_identificador)
-        except Exception as e:
-            st.error("No se pudo cargar Carga masiva."); st.exception(e)
-        return
-
-    if _grupo.startswith("🛂"):
-
-        _render_aprobaciones(USR, cat, conectar, compacto=False)
-
-        return
-
-
-    if _grupo.startswith("🚢"):
-
-        try:
-
-            import despachos_section
-
-            despachos_section.render(USR, cat, conectar)
-
-        except Exception as e:
-
-            st.error("No se pudo cargar Despachos."); st.exception(e)
-
-        return
-
-
-    if _grupo.startswith("📈"):
-        try:
-            import performance_section
-            performance_section.render(USR, cat, conectar)
-        except Exception as e:
-            st.error("No se pudo cargar Performance."); st.exception(e)
-        return
-
     if _grupo.startswith("📅"):
         _render_cronogramas(USR, cat, conectar)
         return
+
+    # (📊 Variación semanal y 🧮 Desvíos se movieron a la sección Dirección)
 
     # ----- Cargar nueva reacción: reactores o bachas -----
     _modo_opts = ["🏭 Reactores", "🛁 Bachas"]
@@ -3578,18 +3243,11 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             ajustes["fuel (L)"] = {"formula": round(fuel_def), "ajustado": round(_fuel_l)}
         est_pot = _koh
         est_fuel = _fuel_l * DENS_INSUMO["FUEL_OIL"]
-        # Objetivo ARE-B = AG-C (kg) − agua del AG-C (lab) + ARE que aporta la glicerina.
-        #   fresca: heurística (aporte% de litros)   ·   recuperada: su % PRODUCTO (ARE) medido en el tanque.
+        # Objetivo ARE-B = AG-C (kg) − agua del AG-C (lab) + 10% de litros de glicerina (fresca+recup)
         agua_frac = float(lab_avg.get("prc_agua")) if lab_avg.get("prc_agua") is not None else 0.0
         agua_kg = kg_used * agua_frac
-        litros_fresca = float(gli_fresca.get("l") or 0)
-        litros_recup = float(gli_recup.get("l") or 0)
-        litros_gli_tot = litros_fresca + litros_recup
-        _ap_fresca = (_aporte / 100.0) * litros_fresca
-        _are_recup = float(gli_recup.get("producto_kg") or 0.0)      # % producto (ARE) del tanque de glicerina recuperada
-        _recup_por_pct = _are_recup > 0
-        _ap_recup = _are_recup if _recup_por_pct else (_aporte / 100.0) * litros_recup
-        are_kg = max(0.0, kg_used - agua_kg + _ap_fresca + _ap_recup)
+        litros_gli_tot = float(gli_fresca.get("l") or 0) + float(gli_recup.get("l") or 0)
+        are_kg = max(0.0, kg_used - agua_kg + (_aporte / 100.0) * litros_gli_tot)
         dens_are = 0.88
         g1, g2, g3 = st.columns(3)
         g1.metric("Glicerol cargado", f"{glol_cargado:,.0f} kg",
@@ -3601,13 +3259,9 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             g2.metric("Glicerol requerido", "—", "falta acidez de la MP")
         g3.metric("KOH · Fuel", f"{_koh:,.0f} kg · {_fuel_l:,.0f} L")
         st.metric("🎯 ARE-B objetivo", f"{are_kg/dens_are:,.0f} L", f"{are_kg:,.0f} kg")
-        _rec_txt = (f"+ ARE de glicerina recuperada por su **% producto** medido ({float(gli_recup.get('producto_pct') or 0):.0f}% → +{_are_recup:,.0f} kg)"
-                    if _recup_por_pct else
-                    f"+ {_aporte:.0f}% de los {litros_recup:,.0f} L de glicerina recuperada (+{_ap_recup:,.0f} kg · sin % producto medido)")
         st.caption(f"Objetivo ARE-B (fórmula) = AG-C ({kg_used:,.0f} kg) − agua AG-C ({agua_kg:,.0f} kg · {agua_frac*100:.1f}%) "
-                   f"+ {_aporte:.0f}% de {litros_fresca:,.0f} L de glicerina fresca (+{_ap_fresca:,.0f} kg) "
-                   f"{_rec_txt} = **{are_kg:,.0f} kg**. "
-                   "El **% producto** del tanque de glicerina recuperada representa el **ARE** que trae de vuelta.")
+                   f"+ {_aporte:.0f}% de litros de glicerina ({litros_gli_tot:,.0f} L → +{(_aporte/100.0)*litros_gli_tot:,.0f}). "
+                   f"En decantación, la glicerina recuperada = {100-_aporte:.0f}% de los litros cargados (se contrarresta con el aporte).")
         if glol_req > 0 and glol_cargado < glol_req * 0.999:
             st.warning(f"⚠️ Glicerol cargado ({glol_cargado:,.0f} kg) < requerido ({glol_req:,.0f} kg). "
                        "Agregá litros de glicerina fresca o recuperada en la sección 2.")
