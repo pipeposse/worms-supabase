@@ -3281,9 +3281,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     _borrador_restaurar(cat, USR)
     with st.expander("📋 Ver planificadas y sus movimientos (todo lo cargado)", expanded=False):
         _render_planificadas(cat)
-    _render_aprobaciones(USR, cat, conectar)
 
-    _grupo_opts = ["➕ Cargar nueva reacción", "⬆️ Carga masiva", "⚙️ Administración de reacciones", "📈 Performance", "📅 Cronogramas", "🚢 Despachos"]
+    _grupo_opts = ["➕ Cargar nueva reacción", "⬆️ Carga masiva", "⚙️ Administración de reacciones", "📈 Performance", "📅 Cronogramas", "🚢 Despachos", "🛂 Aprobaciones"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3328,6 +3327,13 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         except Exception as e:
             st.error("No se pudo cargar Carga masiva."); st.exception(e)
         return
+
+    if _grupo.startswith("🛂"):
+
+        _render_aprobaciones(USR, cat, conectar, compacto=False)
+
+        return
+
 
     if _grupo.startswith("🚢"):
 
