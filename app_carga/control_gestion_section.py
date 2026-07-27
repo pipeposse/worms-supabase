@@ -5,18 +5,22 @@ se la explique. Cada bloque responde tres preguntas: qué estoy viendo, de dónd
 sale el número, y qué hago si está mal.
 
 Orden deliberado:
+  0. Lo que está en juego, en USD — el titular para el que no va a bajar más.
   1. Confiabilidad del dato  — ¿los KPIs de abajo son creíbles?
   2. Conversión de planta    — el único rendimiento medido que no depende de carga manual.
   3. Rendimiento por batch   — estimado vs real, y cuántos batches son realmente "real".
   4. Stock                   — cuánto del inventario es medición y cuánto extrapolación.
   5. Calidad de la MP        — el agua que se compra a precio de producto.
 
+Toda la valorización sale de produccion.dim_precio_ref. Los mapeos producto -> precio
+viven en tablas editables (dim_precio_map, dic_flujo_porteria), no acá.
+
 render(USR, cat, conectar)
 
 Vistas de soporte (esquema produccion):
   v_dir_confiabilidad, v_dir_conversion_planta, v_dir_rendimiento_batch,
-  v_dir_stock_confianza, v_dir_calidad_mp, v_cobertura_libro_semanal,
-  v_salida_sin_respaldo
+  v_dir_stock_confianza, v_dir_calidad_mp, v_dir_inventario_valorizado,
+  v_dir_precio_producto, v_cobertura_libro_semanal, v_salida_sin_respaldo
 """
 import pandas as pd
 import streamlit as st
@@ -48,16 +52,124 @@ def _color_semaforo(valor, meta, mas_es_mejor):
     return AMBAR if v <= m * 1.5 else ROJO
 
 
-def _tarjeta(col, titulo, valor, unidad, meta, color, sufijo=""):
-    _v = "—" if valor is None or pd.isna(valor) else f"{float(valor):,.1f}{unidad}"
+def _fmt_usd(v):
+    """USD compacto: 4,78 M / 415 k / 940."""
+    if v is None or pd.isna(v):
+        return "—"
+    v = float(v)
+    a = abs(v)
+    if a >= 1_000_000:
+        return f"USD {v/1_000_000:,.2f} M"
+    if a >= 1_000:
+        return f"USD {v/1_000:,.0f} k"
+    return f"USD {v:,.0f}"
+
+
+def _tarjeta(col, titulo, valor, unidad, meta, color, sufijo="", valor_txt=None):
+    if valor_txt is not None:
+        _v, _sz = valor_txt, "1.5rem"
+    else:
+        _v = "—" if valor is None or pd.isna(valor) else f"{float(valor):,.1f}{unidad}"
+        _sz = "1.9rem"
     _m = "" if meta is None or pd.isna(meta) else f"meta {float(meta):,.0f}{unidad}"
     col.markdown(
         f"<div style='border:1px solid #e2e8f0;border-left:6px solid {color};"
         f"border-radius:8px;padding:.7rem .9rem;height:100%'>"
         f"<div style='font-size:.78rem;color:#475569;line-height:1.2;min-height:2.4em'>{titulo}</div>"
-        f"<div style='font-size:1.9rem;font-weight:800;color:{color};line-height:1.15'>{_v}</div>"
+        f"<div style='font-size:{_sz};font-weight:800;color:{color};line-height:1.2'>{_v}</div>"
         f"<div style='font-size:.72rem;color:#94a3b8'>{_m}{sufijo}</div>"
         f"</div>", unsafe_allow_html=True)
+
+
+# ============================================================================
+# Precios y consultas compartidas
+# ----------------------------------------------------------------------------
+# Los bloques y la banda de USD usan las MISMAS funciones de consulta para que
+# el cache de `cat` no las ejecute dos veces.
+# ============================================================================
+def _precios(cat):
+    df = cat("SELECT codigo, rol, precio, unidad, moneda, descripcion, "
+             "actualizado_en::date AS al FROM produccion.dim_precio_ref ORDER BY rol, codigo")
+    if df is None or df.empty:
+        return {}, None, df
+    p = {}
+    for _, r in df.iterrows():
+        try:
+            p[str(r["codigo"])] = float(r["precio"])
+        except (TypeError, ValueError):
+            pass
+    try:
+        _f = pd.to_datetime(df["al"]).max()
+        fecha = None if pd.isna(_f) else _f.strftime("%d-%m-%Y")
+    except Exception:
+        fecha = None
+    return p, fecha, df
+
+
+def _q_salidas(cat):
+    return cat(
+        "SELECT s.estado_control, COUNT(*) AS camiones, "
+        "ROUND((SUM(s.kg)/1000.0)::numeric,1) AS toneladas, "
+        "ROUND((SUM(s.kg/1000.0*COALESCE(p.precio,0)))::numeric,0) AS usd "
+        "FROM produccion.v_salida_sin_respaldo s "
+        "LEFT JOIN produccion.dic_flujo_porteria d ON d.producto_base = s.producto_base "
+        "LEFT JOIN produccion.dim_precio_ref p ON p.codigo = d.codigo_precio_pf "
+        "  AND upper(p.unidad)='TN' AND upper(p.moneda)='USD' "
+        "WHERE s.fecha >= current_date - 28 GROUP BY 1 ORDER BY 4 DESC NULLS LAST")
+
+
+def _q_conversion(cat):
+    return cat("SELECT semana, mp_entrada_t, pf_salida_t, conversion_pct, camiones_mp, camiones_pf, "
+               "usd_mp_entrada, usd_pf_salida "
+               "FROM produccion.v_dir_conversion_planta "
+               "WHERE semana >= (date_trunc('week', now())::date - INTERVAL '26 weeks') "
+               "AND semana < date_trunc('week', now())::date "
+               "ORDER BY semana")
+
+
+def _q_rendimiento(cat):
+    return cat("SELECT id_batch, identificador_unidad, tipo_proceso, fecha, mp_kg, objetivo_kg, "
+               "producido_kg, kg_ticket_final, tiene_ticket_final, calidad_dato, "
+               "rend_medido_pct, rend_objetivo_pct "
+               "FROM produccion.v_dir_rendimiento_batch "
+               "WHERE fecha >= current_date - 120 ORDER BY fecha DESC")
+
+
+def _q_calidad(cat):
+    return cat("SELECT producto_base, SUM(tickets) AS tickets, SUM(tickets_con_lab) AS con_lab, "
+               "ROUND(SUM(t_recibidas)::numeric,1) AS t_recibidas, "
+               "ROUND(SUM(t_agua_estimadas)::numeric,1) AS t_agua, "
+               "ROUND((SUM(t_recibidas*agua_prom_pct)/NULLIF(SUM(t_recibidas),0))::numeric,2) AS agua_pct, "
+               "ROUND((SUM(t_recibidas*acidez_prom)/NULLIF(SUM(t_recibidas),0))::numeric,2) AS acidez, "
+               "SUM(usd_agua) AS usd_agua, SUM(usd_recibido) AS usd_recibido, MAX(usd_por_t) AS usd_por_t "
+               "FROM produccion.v_dir_calidad_mp WHERE mes >= current_date - 120 "
+               "GROUP BY 1 ORDER BY 4 DESC NULLS LAST")
+
+
+def _q_inventario(cat):
+    return cat("SELECT sector, codigo_producto, tipo_producto, tanques, t_medidas, t_estimadas, "
+               "usd_por_t, usd_medido, usd_estimado "
+               "FROM produccion.v_dir_inventario_valorizado ORDER BY usd_medido DESC NULLS LAST")
+
+
+def _brecha_rendimiento(df):
+    """Brecha real vs objetivo por tipo de proceso, extrapolada a toda la MP procesada.
+
+    Solo los batches con pesada real dan una brecha medida; se asume que los que no
+    tienen pesada rinden parecido a los que sí. Es un supuesto, y se dice en pantalla.
+    """
+    filas = []
+    for proc, g in df.groupby("tipo_proceso"):
+        med = g[g["rend_medido_pct"].notna() & g["rend_objetivo_pct"].notna()]
+        if med.empty:
+            continue
+        real = float(med["rend_medido_pct"].mean())
+        obj = float(med["rend_objetivo_pct"].mean())
+        mp_t = float(g["mp_kg"].fillna(0).sum()) / 1000.0
+        filas.append({"Proceso": proc, "Batches": int(len(g)), "Con pesada real": int(len(med)),
+                      "Rend. real %": real, "Rend. objetivo %": obj, "Brecha (pts)": real - obj,
+                      "MP procesada (t)": mp_t, "t no obtenidas": (real - obj) / 100.0 * mp_t})
+    return pd.DataFrame(filas)
 
 
 # ============================================================================
@@ -89,6 +201,103 @@ def _portada():
             "Significa \"no lo estamos midiendo\". Primero se arregla la medición; recién después el número "
             "que sobra o falta se vuelve una pregunta con respuesta."
         )
+
+
+# ============================================================================
+# Bloque 0 — Lo que está en juego, en dólares
+# ============================================================================
+def _bloque_dinero(cat, precios, fecha_precios, df_precios):
+    st.subheader("0 · Lo que está en juego, en dólares")
+    st.caption("Las mismas brechas que se detallan más abajo, multiplicadas por el precio de referencia. "
+               "Un director actúa sobre *USD 400.000* mucho más rápido que sobre *554 toneladas*.")
+
+    _pf = precios.get("ARE-B")
+
+    # --- Salidas sin circuito cerrado (28 d) ---
+    _usd_sr = None
+    sal = _q_salidas(cat)
+    if sal is not None and not sal.empty:
+        sal = _num(sal.copy(), ["camiones", "toneladas", "usd"])
+        _m = sal["estado_control"].isin(["SIN RESPALDO", "SIN DESPACHO", "SIN SALIDA DE TANQUE"])
+        _usd_sr = float(sal.loc[_m, "usd"].sum())
+
+    # --- Brecha de rendimiento (120 d) ---
+    _usd_rend, _t_rend = None, None
+    ren = _q_rendimiento(cat)
+    if ren is not None and not ren.empty:
+        ren = _num(ren.copy(), ["mp_kg", "rend_medido_pct", "rend_objetivo_pct"])
+        _br = _brecha_rendimiento(ren)
+        if not _br.empty and _pf:
+            _t_rend = float(_br["t no obtenidas"].sum())
+            _usd_rend = _t_rend * float(_pf)
+
+    # --- Agua comprada dentro de la MP (120 d) ---
+    _usd_agua, _t_agua = None, None
+    cal = _q_calidad(cat)
+    if cal is not None and not cal.empty:
+        cal = _num(cal.copy(), ["t_recibidas", "t_agua", "usd_agua", "usd_recibido"])
+        _usd_agua = float(cal["usd_agua"].sum())
+        _t_agua = float(cal["t_agua"].sum())
+
+    # --- Inventario valorizado ---
+    _usd_inv, _t_inv = None, None
+    inv = _q_inventario(cat)
+    if inv is not None and not inv.empty:
+        inv = _num(inv.copy(), ["t_medidas", "t_estimadas", "usd_por_t", "usd_medido", "usd_estimado"])
+        _usd_inv = float(inv["usd_medido"].sum())
+        _t_inv = float(inv["t_medidas"].sum())
+
+    c1, c2, c3, c4 = st.columns(4)
+    _tarjeta(c1, "Producto que salió sin cerrar el circuito · 28 días", None, "", None,
+             (ROJO if (_usd_sr or 0) > 0 else VERDE), valor_txt=_fmt_usd(_usd_sr),
+             sufijo="valorizado a precio de venta")
+    _tarjeta(c2, "Producto no obtenido por brecha de rendimiento · 120 días", None, "", None,
+             (ROJO if (_usd_rend or 0) < 0 else GRIS), valor_txt=_fmt_usd(_usd_rend),
+             sufijo=(f"{_t_rend:,.0f} t" if _t_rend is not None else ""))
+    _tarjeta(c3, "Agua comprada dentro de la materia prima · 120 días", None, "", None,
+             (ROJO if (_usd_agua or 0) > 100_000 else AMBAR if (_usd_agua or 0) > 0 else GRIS),
+             valor_txt=_fmt_usd(_usd_agua),
+             sufijo=(f"{_t_agua:,.0f} t de agua" if _t_agua is not None else ""))
+    _tarjeta(c4, "Inventario en tanques valorizado · hoy", None, "", None, GRIS,
+             valor_txt=_fmt_usd(_usd_inv),
+             sufijo=(f"{_t_inv:,.0f} t medidas" if _t_inv is not None else ""))
+
+    st.caption(f"Precios de referencia al **{fecha_precios or 's/d'}**. "
+               "Si están viejos, todo lo de arriba se mueve en bloque: cambiar los precios "
+               "en `dim_precio_ref` actualiza esta pantalla entera sin tocar nada más.")
+
+    st.warning(
+        "**Las cuatro cifras no se suman ni son todas pérdida.**\n\n"
+        "• La primera es **producto real que salió de planta** y cuyo circuito administrativo no se cerró. "
+        "Casi todo es venta legítima; el problema es que hoy no hay forma de distinguirla de lo que no lo sea.\n\n"
+        "• La segunda es **producto que el proceso no entregó** respecto del objetivo, medido solo sobre los "
+        "batches que sí tienen pesada real y extrapolado al resto. Es un supuesto explícito, no un hecho.\n\n"
+        "• La tercera es **agua que se paga a precio de materia prima** — real, pero parte puede estar ya "
+        "descontada en el precio negociado con cada proveedor.\n\n"
+        "• La cuarta es **capital de trabajo inmovilizado**, no una pérdida."
+    )
+
+    with st.expander("Con qué precios se valoriza todo esto"):
+        st.markdown(
+            "Todos los números en USD de esta pantalla salen de una sola tabla, "
+            "`produccion.dim_precio_ref`. No hay precios escritos en el código.\n\n"
+            "Los productos que no tienen precio propio se valorizan al precio de referencia más "
+            "conservador de su familia (por ejemplo, borras y sebos van a AG-C). El mapeo vive en "
+            "`produccion.dim_precio_map` para stock y en `produccion.dic_flujo_porteria` para portería, "
+            "y se corrige sin tocar código.")
+        if df_precios is not None and not df_precios.empty:
+            _p = df_precios.rename(columns={"codigo": "Código", "rol": "Rol", "precio": "Precio",
+                                            "unidad": "Unidad", "moneda": "Moneda",
+                                            "descripcion": "Descripción", "al": "Actualizado"})
+            st.dataframe(_p, hide_index=True, use_container_width=True)
+        _pp = cat("SELECT codigo_producto AS \"Producto\", tipo_producto AS \"Tipo\", "
+                  "codigo_precio AS \"Precio de referencia\", usd_por_t AS \"USD/t\" "
+                  "FROM produccion.v_dir_precio_producto WHERE usd_por_t IS NOT NULL "
+                  "ORDER BY tipo_producto, codigo_producto")
+        if _pp is not None and not _pp.empty:
+            st.markdown("**Precio aplicado a cada producto de stock**")
+            st.dataframe(_pp, hide_index=True, use_container_width=True,
+                         column_config={"USD/t": st.column_config.NumberColumn(format="%.1f")})
 
 
 # ============================================================================
@@ -164,30 +373,34 @@ def _bloque_confiabilidad(cat):
     st.markdown("**Camiones que salieron cargados y no cerraron el circuito**")
     st.caption("Un camión que sale con producto debería dejar tres rastros: el peso en balanza, un despacho "
                "emitido y un descuento del tanque del que se cargó. Acá aparece cuáles de los tres faltan.")
-    sal = cat("SELECT estado_control, COUNT(*) AS camiones, "
-              "ROUND((SUM(kg)/1000.0)::numeric,1) AS toneladas "
-              "FROM produccion.v_salida_sin_respaldo "
-              "WHERE fecha >= current_date - 28 GROUP BY 1 ORDER BY 3 DESC NULLS LAST")
+    sal = _q_salidas(cat)
     if sal is None or sal.empty:
         st.info("Sin salidas registradas en los últimos 28 días.")
     else:
-        sal = _num(sal.copy(), ["camiones", "toneladas"])
+        sal = _num(sal.copy(), ["camiones", "toneladas", "usd"])
         _lbl = {"OK": "🟢 OK — despacho emitido y tanque descontado",
                 "SIN DESPACHO": "🟡 Salió sin despacho emitido",
                 "SIN SALIDA DE TANQUE": "🟡 Hay despacho pero no se descontó del tanque",
                 "SIN RESPALDO": "🔴 Sin despacho y sin descuento de tanque"}
         sal["Estado"] = sal["estado_control"].map(lambda x: _lbl.get(x, x))
-        st.dataframe(sal[["Estado", "camiones", "toneladas"]]
-                     .rename(columns={"camiones": "Camiones", "toneladas": "Toneladas"}),
+        st.dataframe(sal[["Estado", "camiones", "toneladas", "usd"]]
+                     .rename(columns={"camiones": "Camiones", "toneladas": "Toneladas",
+                                      "usd": "Valorizado (USD)"}),
                      hide_index=True, use_container_width=True,
-                     column_config={"Toneladas": st.column_config.NumberColumn(format="%.1f")})
-        _sr = float(sal.loc[sal["estado_control"] == "SIN RESPALDO", "toneladas"].sum() or 0)
+                     column_config={"Toneladas": st.column_config.NumberColumn(format="%.1f"),
+                                    "Valorizado (USD)": st.column_config.NumberColumn(format="%.0f")})
+        st.caption("El valorizado usa el precio de venta de referencia del producto que salió. "
+                   "Los flujos sin precio (compost, residuos, ganado) suman toneladas pero no dólares.")
+        _f = sal.loc[sal["estado_control"] == "SIN RESPALDO"]
+        _sr = float(_f["toneladas"].sum() or 0)
+        _su = float(_f["usd"].sum() or 0)
         if _sr > 0:
             st.warning(
-                f"**{_sr:,.0f} t salieron en los últimos 28 días sin despacho ni descuento de tanque.** "
-                "Cuidado con leer esto como faltante: casi todo es producto legítimamente vendido cuyo "
-                "circuito administrativo nunca se cerró en el sistema. El problema no es que falte producto, "
-                "es que **no hay forma de saberlo**. Mientras este número no baje, ningún control de pérdidas funciona."
+                f"**{_sr:,.0f} t — {_fmt_usd(_su)} — salieron en los últimos 28 días sin despacho ni "
+                "descuento de tanque.** Cuidado con leer esto como faltante: casi todo es producto "
+                "legítimamente vendido cuyo circuito administrativo nunca se cerró en el sistema. "
+                "El problema no es que falte producto, es que **no hay forma de saberlo**. "
+                "Mientras este número no baje, ningún control de pérdidas funciona."
             )
 
 
@@ -200,14 +413,11 @@ def _bloque_conversion(cat):
                "entraron. **Se calcula solo con la balanza**: no depende de que nadie cargue nada en el sistema. "
                "Es el indicador más robusto que tiene la planta hoy.")
 
-    df = cat("SELECT semana, mp_entrada_t, pf_salida_t, conversion_pct, camiones_mp, camiones_pf "
-             "FROM produccion.v_dir_conversion_planta "
-             "WHERE semana >= (date_trunc('week', now())::date - INTERVAL '26 weeks') "
-             "AND semana < date_trunc('week', now())::date "
-             "ORDER BY semana")
+    df = _q_conversion(cat)
     if df is None or df.empty:
         st.info("Sin datos de portería para calcular la conversión."); return
-    df = _num(df.copy(), ["mp_entrada_t", "pf_salida_t", "conversion_pct", "camiones_mp", "camiones_pf"])
+    df = _num(df.copy(), ["mp_entrada_t", "pf_salida_t", "conversion_pct", "camiones_mp", "camiones_pf",
+                          "usd_mp_entrada", "usd_pf_salida"])
     df["mm4"] = (100.0 * df["pf_salida_t"].rolling(4, min_periods=2).sum()
                  / df["mp_entrada_t"].rolling(4, min_periods=2).sum())
     df["Semana"] = pd.to_datetime(df["semana"]).dt.strftime("S%V")
@@ -242,8 +452,23 @@ def _bloque_conversion(cat):
     except Exception:
         st.line_chart(df.set_index("Semana")[["conversion_pct", "mm4"]])
 
+    _u_mp = float(df["usd_mp_entrada"].tail(4).sum())
+    _u_pf = float(df["usd_pf_salida"].tail(4).sum())
+    d1, d2, d3 = st.columns(3)
+    _tarjeta(d1, "MP que entró · últimas 4 semanas", None, "", None, GRIS, valor_txt=_fmt_usd(_u_mp),
+             sufijo=f"{df['mp_entrada_t'].tail(4).sum():,.0f} t")
+    _tarjeta(d2, "PF que salió · últimas 4 semanas", None, "", None, GRIS, valor_txt=_fmt_usd(_u_pf),
+             sufijo=f"{df['pf_salida_t'].tail(4).sum():,.0f} t")
+    _tarjeta(d3, "Diferencia — entró y todavía no salió", None, "", None,
+             (AMBAR if (_u_mp - _u_pf) > 0 else VERDE), valor_txt=_fmt_usd(_u_mp - _u_pf),
+             sufijo="acopio + merma + desfasaje")
+
     st.info(
         "**Cómo leerlo.** Las barras grises son cada semana; la línea azul es la media móvil de 4 semanas.\n\n"
+        "**La diferencia en dólares no es una pérdida.** Es materia prima que entró en la ventana y todavía "
+        "no salió como producto: parte está en acopio, parte se procesó y sale la semana que viene, parte "
+        "es merma real de proceso. Separar esos tres pedazos es exactamente lo que hoy no se puede hacer, "
+        "y lo que se destraba cuando suba la cobertura del libro de tanques.\n\n"
         "Parte de la oscilación semanal es normal y no es pérdida: lo que entra una semana puede salir la "
         "siguiente, porque la planta acopia. Por eso el número que importa es **la línea azul, no las barras**.\n\n"
         "Pero **la amplitud de la oscilación es en sí misma un indicador**. Una planta que convierte de forma "
@@ -267,30 +492,32 @@ def _bloque_conversion(cat):
             st.dataframe(_d, hide_index=True, use_container_width=True)
 
     st.markdown("**Detalle semanal**")
-    _t = df[["Semana", "mp_entrada_t", "pf_salida_t", "conversion_pct", "mm4", "camiones_mp", "camiones_pf"]].copy()
+    _t = df[["Semana", "mp_entrada_t", "pf_salida_t", "conversion_pct", "mm4",
+             "usd_mp_entrada", "usd_pf_salida", "camiones_mp", "camiones_pf"]].copy()
+    _t["Δ USD"] = _t["usd_mp_entrada"] - _t["usd_pf_salida"]
     _t = _t.rename(columns={"mp_entrada_t": "MP entrada (t)", "pf_salida_t": "PF salida (t)",
                             "conversion_pct": "Conversión %", "mm4": "Media móvil 4s %",
+                            "usd_mp_entrada": "MP entrada (USD)", "usd_pf_salida": "PF salida (USD)",
                             "camiones_mp": "Camiones MP", "camiones_pf": "Camiones PF"})
     st.dataframe(_t.sort_values("Semana", ascending=False), hide_index=True, use_container_width=True,
                  column_config={"MP entrada (t)": st.column_config.NumberColumn(format="%.0f"),
                                 "PF salida (t)": st.column_config.NumberColumn(format="%.0f"),
                                 "Conversión %": st.column_config.NumberColumn(format="%.1f"),
-                                "Media móvil 4s %": st.column_config.NumberColumn(format="%.1f")})
+                                "Media móvil 4s %": st.column_config.NumberColumn(format="%.1f"),
+                                "MP entrada (USD)": st.column_config.NumberColumn(format="%.0f"),
+                                "PF salida (USD)": st.column_config.NumberColumn(format="%.0f"),
+                                "Δ USD": st.column_config.NumberColumn(format="%.0f")})
 
 
 # ============================================================================
 # Bloque 3 — Rendimiento por batch: estimado vs real
 # ============================================================================
-def _bloque_rendimiento(cat):
+def _bloque_rendimiento(cat, precios):
     st.subheader("3 · Rendimiento por batch — ¿el sistema muestra el plan o el resultado?")
     st.caption("Cuando una reacción termina, el sistema anota cuánto producto se obtuvo. La pregunta es de "
                "dónde sale ese número: de una pesada real, o del objetivo que se había planificado.")
 
-    df = cat("SELECT id_batch, identificador_unidad, tipo_proceso, fecha, mp_kg, objetivo_kg, "
-             "producido_kg, kg_ticket_final, tiene_ticket_final, calidad_dato, "
-             "rend_medido_pct, rend_objetivo_pct "
-             "FROM produccion.v_dir_rendimiento_batch "
-             "WHERE fecha >= current_date - 120 ORDER BY fecha DESC")
+    df = _q_rendimiento(cat)
     if df is None or df.empty:
         st.info("Sin batches en los últimos 120 días."); return
     df = _num(df.copy(), ["mp_kg", "objetivo_kg", "producido_kg", "kg_ticket_final",
@@ -331,6 +558,34 @@ def _bloque_rendimiento(cat):
                 f"objetivo de **{_ro.mean():,.1f} %**. Esa brecha de **{_brecha:+,.1f} puntos** es la que está "
                 "invisible en los otros batches."
             )
+
+    # --- Valorización de la brecha ---
+    _pf = precios.get("ARE-B")
+    _br = _brecha_rendimiento(df)
+    if not _br.empty and _pf:
+        _br["Impacto (USD)"] = _br["t no obtenidas"] * float(_pf)
+        _tot_t = float(_br["t no obtenidas"].sum())
+        _tot_u = float(_br["Impacto (USD)"].sum())
+        st.markdown("**Cuánto vale esa brecha**")
+        e1, e2, e3 = st.columns(3)
+        _tarjeta(e1, "Toneladas no obtenidas · 120 días", _tot_t, " t", None,
+                 (ROJO if _tot_t < 0 else VERDE))
+        _tarjeta(e2, "Valorizado a precio de venta", None, "", None,
+                 (ROJO if _tot_u < 0 else VERDE), valor_txt=_fmt_usd(_tot_u),
+                 sufijo=f"a USD {float(_pf):,.0f}/t")
+        _tarjeta(e3, "Proyección a 12 meses", None, "", None,
+                 (ROJO if _tot_u < 0 else VERDE), valor_txt=_fmt_usd(_tot_u * 365.0 / 120.0),
+                 sufijo="si el ritmo se mantiene")
+        _cfg = {c: st.column_config.NumberColumn(format="%.1f") for c in
+                ["Rend. real %", "Rend. objetivo %", "Brecha (pts)", "MP procesada (t)", "t no obtenidas"]}
+        _cfg["Impacto (USD)"] = st.column_config.NumberColumn(format="%.0f")
+        st.dataframe(_br, hide_index=True, use_container_width=True, column_config=_cfg)
+        st.caption(
+            "**El supuesto está a la vista.** La brecha se mide solo sobre los batches con pesada real y se "
+            "aplica a *toda* la materia prima procesada del mismo proceso. Si los batches sin pesar rinden "
+            "distinto, este número cambia. Es el precio de no medir: hoy no se puede saber si la brecha es "
+            "de USD 0 o el doble de lo que dice acá. Con el ticket final cargado en cada batch, deja de ser "
+            "una extrapolación y pasa a ser una cuenta.")
 
     st.markdown("**De dónde sale el número de producción, batch por batch**")
     _lbl = {"MEDIDO": "🟢 Pesada real (ticket final)",
@@ -414,6 +669,37 @@ def _bloque_stock(cat):
         "reportado todavía no confirmó ningún sensor. Cuanto más grande sea, más se está reportando una "
         "cuenta en vez de una medición.")
 
+    # --- Inventario valorizado ---
+    st.markdown("**Inventario valorizado**")
+    inv = _q_inventario(cat)
+    if inv is None or inv.empty:
+        st.info("Sin inventario valorizado."); return
+    inv = _num(inv.copy(), ["tanques", "t_medidas", "t_estimadas", "usd_por_t", "usd_medido", "usd_estimado"])
+
+    _tot = float(inv["usd_medido"].sum())
+    _fin = float(inv.loc[inv["tipo_producto"] == "FINAL", "usd_medido"].sum())
+    _sinp = float(inv.loc[inv["usd_por_t"].isna(), "t_medidas"].sum())
+    g1, g2, g3 = st.columns(3)
+    _tarjeta(g1, "Capital inmovilizado en tanques", None, "", None, GRIS, valor_txt=_fmt_usd(_tot),
+             sufijo=f"{inv['t_medidas'].sum():,.0f} t medidas")
+    _tarjeta(g2, "De eso, producto terminado", None, "", None, GRIS, valor_txt=_fmt_usd(_fin),
+             sufijo=(f"{100.0*_fin/_tot:,.0f} % del total" if _tot else ""))
+    _tarjeta(g3, "Toneladas sin precio de referencia", _sinp, " t", None,
+             (AMBAR if _sinp > 0 else VERDE), sufijo="quedan fuera del valorizado")
+
+    _prod = (inv.groupby(["tipo_producto", "codigo_producto"], as_index=False)
+                .agg(**{"Tanques": ("tanques", "sum"), "Toneladas": ("t_medidas", "sum"),
+                        "USD/t": ("usd_por_t", "max"), "Valorizado (USD)": ("usd_medido", "sum")})
+                .rename(columns={"tipo_producto": "Tipo", "codigo_producto": "Producto"})
+                .sort_values("Valorizado (USD)", ascending=False))
+    st.dataframe(_prod, hide_index=True, use_container_width=True,
+                 column_config={"Toneladas": st.column_config.NumberColumn(format="%.1f"),
+                                "USD/t": st.column_config.NumberColumn(format="%.0f"),
+                                "Valorizado (USD)": st.column_config.NumberColumn(format="%.0f")})
+    st.caption("Valorizado sobre la **última medición real** de cada tanque, no sobre el estimado: es el "
+               "número respaldado por un sensor. Los productos sin precio propio se valorizan al precio "
+               "de referencia más conservador de su familia.")
+
 
 # ============================================================================
 # Bloque 5 — Calidad de la materia prima
@@ -424,56 +710,59 @@ def _bloque_calidad(cat):
                "Ese dato hoy no se cruza con nada. Cruzado, responde una pregunta de plata directa: "
                "**¿cuánto de lo que compramos por tonelada es agua?**")
 
-    df = cat("SELECT producto_base, SUM(tickets) AS tickets, SUM(tickets_con_lab) AS con_lab, "
-             "ROUND(SUM(t_recibidas)::numeric,1) AS t_recibidas, "
-             "ROUND(SUM(t_agua_estimadas)::numeric,1) AS t_agua, "
-             "ROUND((SUM(t_recibidas*agua_prom_pct)/NULLIF(SUM(t_recibidas),0))::numeric,2) AS agua_pct, "
-             "ROUND((SUM(t_recibidas*acidez_prom)/NULLIF(SUM(t_recibidas),0))::numeric,2) AS acidez "
-             "FROM produccion.v_dir_calidad_mp WHERE mes >= current_date - 120 "
-             "GROUP BY 1 ORDER BY 4 DESC NULLS LAST")
+    df = _q_calidad(cat)
     if df is None or df.empty:
         st.info("Sin análisis de laboratorio en portería para el período."); return
-    df = _num(df.copy(), ["tickets", "con_lab", "t_recibidas", "t_agua", "agua_pct", "acidez"])
+    df = _num(df.copy(), ["tickets", "con_lab", "t_recibidas", "t_agua", "agua_pct", "acidez",
+                          "usd_agua", "usd_recibido", "usd_por_t"])
     df["cobertura_lab"] = 100.0 * df["con_lab"] / df["tickets"].replace(0, pd.NA)
 
     _tagua = df["t_agua"].sum()
     _trec = df["t_recibidas"].sum()
+    _uagua = df["usd_agua"].sum()
     c1, c2, c3 = st.columns(3)
     _tarjeta(c1, "MP recibida (últimos 4 meses)", _trec, " t", None, GRIS)
     _tarjeta(c2, "Agua estimada dentro de esa MP", _tagua, " t", None,
              (ROJO if _trec and _tagua / _trec > 0.10 else AMBAR if _tagua else VERDE),
              sufijo=(f" · {100.0*_tagua/_trec:,.1f} % del total" if _trec else ""))
-    _cob = 100.0 * df["con_lab"].sum() / df["tickets"].sum() if df["tickets"].sum() else None
-    _tarjeta(c3, "Camiones con análisis de laboratorio", _cob, " %", 80,
-             _color_semaforo(_cob, 80, True))
+    _tarjeta(c3, "Esa agua, valorizada a precio de MP", None, "", None,
+             (ROJO if _uagua else GRIS), sufijo="últimos 4 meses", valor_txt=_fmt_usd(_uagua))
 
     _d = df.rename(columns={"producto_base": "Producto", "tickets": "Camiones",
                             "con_lab": "Con lab", "t_recibidas": "Recibido (t)",
                             "t_agua": "Agua estimada (t)", "agua_pct": "Agua prom. %",
-                            "acidez": "Acidez prom.", "cobertura_lab": "Cobertura lab %"})
+                            "acidez": "Acidez prom.", "cobertura_lab": "Cobertura lab %",
+                            "usd_agua": "Agua (USD)"})
     st.dataframe(_d[["Producto", "Camiones", "Con lab", "Cobertura lab %", "Recibido (t)",
-                     "Agua prom. %", "Agua estimada (t)", "Acidez prom."]],
+                     "Agua prom. %", "Agua estimada (t)", "Agua (USD)", "Acidez prom."]],
                  hide_index=True, use_container_width=True,
-                 column_config={c: st.column_config.NumberColumn(format="%.1f") for c in
-                                ["Cobertura lab %", "Recibido (t)", "Agua prom. %",
-                                 "Agua estimada (t)", "Acidez prom."]})
+                 column_config={"Cobertura lab %": st.column_config.NumberColumn(format="%.1f"),
+                                "Recibido (t)": st.column_config.NumberColumn(format="%.1f"),
+                                "Agua prom. %": st.column_config.NumberColumn(format="%.1f"),
+                                "Agua estimada (t)": st.column_config.NumberColumn(format="%.1f"),
+                                "Agua (USD)": st.column_config.NumberColumn(format="%.0f"),
+                                "Acidez prom.": st.column_config.NumberColumn(format="%.1f")})
 
     _peor = df.dropna(subset=["agua_pct"]).sort_values("agua_pct", ascending=False)
     if not _peor.empty:
         r = _peor.iloc[0]
+        _ru = r.get("usd_agua")
+        _rtxt = f" — **{_fmt_usd(_ru)}** a precio de referencia de esa materia prima" if pd.notna(_ru) else ""
         st.warning(
             f"**{r['producto_base']} entra con {r['agua_pct']:,.1f} % de agua promedio** sobre "
-            f"{r['t_recibidas']:,.0f} t recibidas — unas **{r['t_agua']:,.0f} t de agua**. "
+            f"{r['t_recibidas']:,.0f} t recibidas — unas **{r['t_agua']:,.0f} t de agua**{_rtxt}. "
             "Si se paga por peso bruto sin descontar humedad, esas toneladas se pagan a precio de producto "
             "y además consumen capacidad de tanque, de reactor y de tratamiento de efluentes."
         )
 
     with st.expander("Qué falta para cerrar este bloque"):
         st.markdown(
-            "Hoy esto muestra la **calidad recibida**. Para convertirlo en un control de sobrepago falta "
-            "cruzarlo con dos cosas que todavía no están en el sistema:\n\n"
+            "El dólar de arriba valoriza el agua al **precio de referencia** de esa materia prima, no al "
+            "precio que se pagó realmente en cada operación. Para convertir esto en un control de sobrepago "
+            "faltan dos cosas que todavía no están en el sistema:\n\n"
             "- **La calidad pactada por contrato con cada proveedor**, para comparar recibido contra pagado.\n"
-            "- **El precio efectivamente pagado por ticket**, para valorizar la diferencia en pesos.\n\n"
+            "- **El precio efectivamente pagado por ticket**, para atribuir la diferencia a un proveedor y "
+            "una factura concretos.\n\n"
             "Con eso, este bloque deja de ser informativo y pasa a ser una lista de proveedores ordenada "
             "por cuánta agua nos facturaron.")
 
@@ -503,13 +792,16 @@ def _cierre():
 
 # ============================================================================
 def render(USR, cat, conectar):
+    precios, fecha_precios, df_precios = _precios(cat)
     _portada()
+    st.divider()
+    _bloque_dinero(cat, precios, fecha_precios, df_precios)
     st.divider()
     _bloque_confiabilidad(cat)
     st.divider()
     _bloque_conversion(cat)
     st.divider()
-    _bloque_rendimiento(cat)
+    _bloque_rendimiento(cat, precios)
     st.divider()
     _bloque_stock(cat)
     st.divider()
