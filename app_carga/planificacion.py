@@ -2986,9 +2986,12 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     _borrador_restaurar(cat, USR)
     with st.expander("📋 Ver planificadas y sus movimientos (todo lo cargado)", expanded=False):
         _render_planificadas(cat)
-    _render_aprobaciones(USR, cat, conectar)
 
-    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas"]
+    # Aprobaciones dejó de renderizarse acá arriba: era lo primero que veía el
+    # director al entrar y le tapaba lo que realmente hace la sección (planificar).
+    # Ahora es la última opción del menú, como cualquier otra.
+    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas",
+                   "🚚 Despachos", "🛂 Aprobaciones"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3023,6 +3026,23 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     if _grupo.startswith("📅"):
         _render_cronogramas(USR, cat, conectar)
+        return
+
+    if _grupo.startswith("🚚"):
+        try:
+            from despachos_section import render as _render_dsp
+            _render_dsp(USR, cat, conectar)
+        except Exception as _e:
+            import traceback as _tb
+            st.error("No se pudo cargar Despachos: %s" % _e)
+            with st.expander("🔧 Detalle técnico (para diagnóstico)"):
+                st.code(_tb.format_exc())
+        return
+
+    if _grupo.startswith("🛂"):
+        st.caption("Planificaciones que quedaron **fuera de norma** y necesitan un OK de dirección "
+                   "antes de ejecutarse. Si está vacío, no hay nada trabado.")
+        _render_aprobaciones(USR, cat, conectar, compacto=False)
         return
 
     # (📊 Variación semanal y 🧮 Desvíos se movieron a la sección Dirección)
