@@ -4228,7 +4228,7 @@ if st.session_state.section != "CARGAS":
         try:
             import planificacion as _pl
             st.title("🛂 Dirección")
-            _dir_opts = ["🎯 Control de gestión", "💵 Precios", "📉 Desvíos", "📊 Variación semanal", "🛂 Aprobaciones"]
+            _dir_opts = ["📉 Desvíos", "📊 Variación semanal", "🛂 Aprobaciones", "💵 Precios", "🎯 Control de gestión"]
             try:
                 _dir = st.segmented_control("Sección", _dir_opts, default=_dir_opts[0],
                                             key="dir_grupo_sc", label_visibility="collapsed")
@@ -4236,20 +4236,20 @@ if st.session_state.section != "CARGAS":
                 _dir = st.radio("Sección", _dir_opts, horizontal=True, key="dir_grupo")
             _dir = _dir or _dir_opts[0]
             st.write("")
-            if _dir.startswith("🎯"):
-                from control_gestion_section import render as _render_cg
-                _render_cg(USR, cat, conectar)
-            elif _dir.startswith("💵"):
-                from precios_section import render as _render_px
-                _render_px(USR, cat, conectar)
-            elif _dir.startswith("📉"):
-                _pl._desvios_semanal(USR, cat, conectar)
-            elif _dir.startswith("📊"):
+            if _dir.startswith("📊"):
                 _pl._variacion_semanal(USR, cat, conectar)
-            else:
+            elif _dir.startswith("🛂"):
                 st.caption("Aprobación de planificaciones **fuera de norma**: cargas menores al 80% de la capacidad "
                            "del reactor o bacha. Mientras el ticket esté pendiente, el operario no puede iniciar la producción.")
                 _pl._render_aprobaciones(USR, cat, conectar, compacto=False)
+            elif _dir.startswith("💵"):
+                from precios_section import render as _render_px
+                _render_px(USR, cat, conectar)
+            elif _dir.startswith("🎯"):
+                from control_gestion_section import render as _render_cg
+                _render_cg(USR, cat, conectar)
+            else:
+                _pl._desvios_semanal(USR, cat, conectar)
         except Exception as _e:
             import traceback as _tb
             st.error(f"No se pudo cargar Dirección: {_e}")
