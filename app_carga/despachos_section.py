@@ -216,358 +216,6 @@ def _sugerir(tks, prod_cod, litros_obj, spec, min_l=1000.0):
     return pd.DataFrame(out), msg
 
 
-# ------------------------------------------------------------------ formulación por mezcla
-
-# Productos que no salen de un tanque homogéneo sino de una mezcla deliberada.
-# AG-E es el caso real de la planta: se arma en el tanque "Formulación AG-E" (FORM-AG-E)
-# combinando ARE (producción propia, acidez alta, barato) con AFE (comprado, acidez baja,
-# caro). El AFE entra sólo para bajar la acidez hasta la especificación de venta: cuanto
-# menos AFE se necesite, más barata sale la tonelada despachada.
-MEZCLAS = {
-    "AG-E": {
-        "tanque": "FORM-AG-E",
-        "base": ("ARE-B", "ARE-A", "ARE-A-ANIMAL"),
-        "corrector": ("AFE-S", "AFE-SG", "AFE-AL", "AFE-G", "AFE-P"),
-        "base_lbl": "ARE — base propia (acidez alta, costo bajo)",
-        "corr_lbl": "AFE — corrector comprado (acidez baja, costo alto)",
-        "nota": "El AG-E de exportación se formula mezclando ARE con AFE. El ARE es producción "
-                "propia y sale más barato, pero tiene la acidez muy por encima de la spec; el AFE "
-                "comprado la baja. La mezcla óptima es la que usa **la mayor proporción de ARE "
-                "que todavía cumpla la especificación**.",
-    },
-}
-DENS_DEF = 0.91
-
-
-def _familia(prod_cod):
-    """Productos admitidos en un despacho de prod_cod: él mismo + sus componentes de mezcla."""
-    cod = str(prod_cod or "").strip().upper()
-    m = MEZCLAS.get(cod)
-    if not m:
-        return [cod], None
-    return [cod] + list(m["base"]) + list(m["corrector"]), m
-
-
-def _a_usd_t(precio, unidad, moneda, tc, dens):
-    """Normaliza cualquier precio de dim_precio_ref a USD por tonelada."""
-    try:
-        p = float(precio)
-    except Exception:
-        return None
-    if p <= 0:
-        return None
-    u = str(unidad or "").upper()
-    mo = str(moneda or "").upper()
-    if mo == "ARS":
-        if not tc or tc <= 0:
-            return None
-        p = p / float(tc)
-    elif mo != "USD":
-        return None
-    if u == "TN":
-        return p
-    if u == "KG":
-        return p * 1000.0
-    if u == "L":
-        d = float(dens) if dens else DENS_DEF
-        return p * 1000.0 / max(d, 0.01)
-    return None
-
-
-def _precios(cat):
-    """codigo_producto -> USD/t, resolviendo dim_precio_map contra dim_precio_ref."""
-    try:
-        ref = cat("SELECT codigo, precio, unidad, moneda FROM produccion.dim_precio_ref")
-        mapa = cat("SELECT codigo_producto, codigo_precio, densidad_ref "
-                   "FROM produccion.dim_precio_map")
-    except Exception:
-        return {}
-    if ref is None or ref.empty or mapa is None or mapa.empty:
-        return {}
-    tc = None
-    _t = ref[ref["codigo"].astype(str).str.upper() == "TC_USD"]
-    if not _t.empty:
-        try:
-            tc = float(_t.iloc[0]["precio"])
-        except Exception:
-            tc = None
-    ix = ref.set_index(ref["codigo"].astype(str).str.upper())
-    out = {}
-    for _, r in mapa.iterrows():
-        cp = str(r.get("codigo_precio") or "").upper()
-        if cp not in ix.index:
-            continue
-        f = ix.loc[cp]
-        v = _a_usd_t(f["precio"], f["unidad"], f["moneda"], tc, r.get("densidad_ref"))
-        if v is not None:
-            out[str(r["codigo_producto"]).upper()] = v
-    return out
-
-
-def _pool(df):
-    """Agrega un conjunto de tanques en un solo 'componente' virtual.
-
-    Reparte proporcional al stock disponible, así el promedio ponderado que se calcula acá
-    es exactamente el de la mezcla que se va a cargar (no una aproximación).
-    """
-    if df is None or df.empty:
-        return None
-    d = df.copy()
-    d["_l"] = pd.to_numeric(d["litros_actual"], errors="coerce").fillna(0.0)
-    d = d[d["_l"] > 0]
-    if d.empty:
-        return None
-    d["_d"] = pd.to_numeric(d["densidad"], errors="coerce").fillna(DENS_DEF)
-    d["_kg"] = d["_l"] * d["_d"]
-    kg = float(d["_kg"].sum())
-    lit = float(d["_l"].sum())
-    p = {"litros": lit, "kg": kg, "dens": (kg / lit if lit > 0 else DENS_DEF), "tks": d}
-    for _lbl, _c in _PARAMS:
-        s = d[pd.notna(d[_c])]
-        if s.empty or float(s["_kg"].sum()) <= 0:
-            p[_c] = None
-            p[_c + "_cob"] = 0.0
-        else:
-            p[_c] = float((pd.to_numeric(s[_c]) * s["_kg"]).sum() / float(s["_kg"].sum()))
-            p[_c + "_cob"] = 100.0 * float(s["_kg"].sum()) / kg
-    return p
-
-
-def _x_optimo(pb, pc, spec, margen_pct=0.0):
-    """Fracción MÁSICA de base (ARE) máxima que sigue cumpliendo todas las specs.
-
-    Para cada parámetro: v(x) = x*vb + (1-x)*vc <= limite  =>  x <= (limite - vc)/(vb - vc).
-    Si la base ya cumple sola, ese parámetro no limita. Si ni el corrector puro cumple, no
-    hay mezcla posible con estos dos tanques. Devuelve (x, limitante, detalle_por_parametro).
-    """
-    xs, det, bloqueo = [], [], None
-    for lbl, c in _PARAMS:
-        lim = spec.get({"acidez": "acidez", "agua_sedimento": "ays",
-                        "azufre": "azufre", "fosforo": "fosforo"}[c])
-        vb, vc = pb.get(c), pc.get(c)
-        if not lim or vb is None or vc is None:
-            det.append({"Parámetro": lbl, "Base": vb, "Corrector": vc, "Límite": lim,
-                        "Máx. base %": None, "Nota": "sin dato de lab o sin límite"})
-            continue
-        lim = float(lim) * (1.0 - float(margen_pct) / 100.0)
-        if vb <= lim:
-            det.append({"Parámetro": lbl, "Base": vb, "Corrector": vc, "Límite": lim,
-                        "Máx. base %": 100.0, "Nota": "la base sola ya cumple"})
-            continue
-        if vc >= lim:
-            bloqueo = lbl
-            det.append({"Parámetro": lbl, "Base": vb, "Corrector": vc, "Límite": lim,
-                        "Máx. base %": 0.0, "Nota": "ni el corrector puro cumple"})
-            xs.append(0.0)
-            continue
-        x = (lim - vc) / (vb - vc)
-        x = max(0.0, min(1.0, x))
-        xs.append(x)
-        det.append({"Parámetro": lbl, "Base": vb, "Corrector": vc, "Límite": lim,
-                    "Máx. base %": 100.0 * x, "Nota": ""})
-    if not xs:
-        return None, None, pd.DataFrame(det), bloqueo
-    x = min(xs)
-    lim_lbl = None
-    for d in det:
-        if d["Máx. base %"] is not None and abs(d["Máx. base %"] / 100.0 - x) < 1e-9:
-            lim_lbl = d["Parámetro"]
-            break
-    return x, lim_lbl, pd.DataFrame(det), bloqueo
-
-
-def _litros_por_fraccion(x, dens_b, dens_c, litros_tot):
-    """Litros de cada lado para una fracción MÁSICA x de base y un total en LITROS.
-
-    No se puede repartir los litros por x directamente: x es masa y las densidades difieren
-    (ARE 0,88 vs AFE 0,89). Resolviendo el sistema masa/volumen:
-        Lb = T * x*dc / ((1-x)*db + x*dc)
-    """
-    db = float(dens_b or DENS_DEF)
-    dc = float(dens_c or DENS_DEF)
-    den = (1.0 - x) * db + x * dc
-    if den <= 0:
-        return 0.0, float(litros_tot)
-    lb = float(litros_tot) * x * dc / den
-    return lb, float(litros_tot) - lb
-
-
-def _reparto(pool, litros):
-    """Reparte litros entre los tanques del pool, proporcional al stock de cada uno."""
-    d = pool["tks"]
-    tot = float(d["_l"].sum())
-    out = []
-    if tot <= 0 or litros <= 0:
-        return out
-    for _, r in d.iterrows():
-        L = float(litros) * float(r["_l"]) / tot
-        if L < 1:
-            continue
-        out.append({"Tanque": r["etq"], "Litros": round(L, 0),
-                    "Acidez %": _NAN, "Fósforo ppm": _NAN, "Azufre ppm": _NAN, "AyS %": _NAN})
-    return out
-
-
-def _p_pool(pool, precios):
-    """USD/t del pool, ponderado por kg según dim_precio_map."""
-    num, kg = 0.0, 0.0
-    for _, r in pool["tks"].iterrows():
-        v = precios.get(str(r.get("producto_principal") or "").upper())
-        if v is None:
-            continue
-        num += float(v) * float(r["_kg"])
-        kg += float(r["_kg"])
-    return (num / kg) if kg > 0 else None
-
-
-def _mezclar(pb, pc, x):
-    """Valores de laboratorio de la mezcla para una fracción másica x de base."""
-    out = {}
-    for _lbl, c in _PARAMS:
-        vb, vc = pb.get(c), pc.get(c)
-        out[c] = None if (vb is None or vc is None) else (x * vb + (1.0 - x) * vc)
-    return out
-
-
-def _bloque_mezcla(cat, tks, prod_cod, prod_lbl, lit_obj, spec, ss):
-    """Sección 2b: arma el producto mezclando base + corrector y calcula la proporción óptima."""
-    fam, m = _familia(prod_cod)
-    if not m:
-        return
-    st.markdown("#### 2b · Formulación de **%s** (tanque %s) — cuánto ARE y cuánto AFE"
-                % (prod_lbl, m["tanque"]))
-    st.info(m["nota"])
-
-    _up = tks["producto_principal"].astype(str).str.strip().str.upper()
-    _lt = tks["litros_actual"].fillna(0)
-    tb = tks[_up.isin([c.upper() for c in m["base"]]) & (_lt > 0)].copy()
-    tc_ = tks[_up.isin([c.upper() for c in m["corrector"]]) & (_lt > 0)].copy()
-    if tb.empty or tc_.empty:
-        st.warning("Para formular %s hacen falta tanques con stock de los dos lados: base (%s) y "
-                   "corrector (%s). Hoy falta uno de los dos, así que sólo se puede despachar de "
-                   "tanques que ya tengan %s hecho."
-                   % (prod_lbl, ", ".join(m["base"]), ", ".join(m["corrector"]), prod_lbl))
-        return
-    tb = tb.sort_values("litros_actual", ascending=False)
-    tc_ = tc_.sort_values("litros_actual", ascending=False)
-
-    c1, c2 = st.columns(2)
-    sb = c1.multiselect(m["base_lbl"], tb["etq"].tolist(), default=tb["etq"].tolist()[:2],
-                        key="dsp_mz_b")
-    sc = c2.multiselect(m["corr_lbl"], tc_["etq"].tolist(), default=tc_["etq"].tolist()[:2],
-                        key="dsp_mz_c")
-    if not sb or not sc:
-        st.caption("Elegí al menos un tanque de cada lado para ver el cálculo.")
-        return
-    pb = _pool(tb[tb["etq"].isin(sb)])
-    pc = _pool(tc_[tc_["etq"].isin(sc)])
-    if pb is None or pc is None:
-        st.warning("Los tanques elegidos no tienen stock medido.")
-        return
-
-    precios = _precios(cat)
-    _pb0 = _p_pool(pb, precios)
-    _pc0 = _p_pool(pc, precios)
-    q1, q2, q3 = st.columns(3)
-    margen = q1.number_input("Margen de seguridad (%)", min_value=0.0, max_value=50.0,
-                             value=float(ss.get("dsp_mz_marg", 10.0)), step=5.0, key="dsp_mz_marg",
-                             help="Apunta a quedar ese % por debajo del máximo de cada spec. "
-                                  "Cubre el error de medición del lab y la heterogeneidad del tanque.")
-    usd_b = q2.number_input("USD/t del ARE (costo)", min_value=0.0,
-                            value=float(round(_pb0 or 0.0, 1)), step=10.0, key="dsp_mz_pb",
-                            help="Prellenado con el precio de la tabla de referencia. Ojo: el ARE-B "
-                                 "está cargado a precio de VENTA, no a costo de producción. "
-                                 "Pisalo con el costo real para que el ahorro tenga sentido.")
-    usd_c = q3.number_input("USD/t del AFE (compra)", min_value=0.0,
-                            value=float(round(_pc0 or 0.0, 1)), step=10.0, key="dsp_mz_pc")
-
-    x_opt, lim_lbl, det, bloqueo = _x_optimo(pb, pc, spec, margen)
-    if bloqueo:
-        st.error("Ni el corrector puro cumple **%s**: con estos tanques no hay mezcla que dé "
-                 "la especificación. Revisá el límite o elegí otro tanque de AFE." % bloqueo)
-    if x_opt is None:
-        st.warning("No hay datos de laboratorio suficientes en los tanques elegidos para calcular "
-                   "la proporción. Cargá el lab de acidez de los dos lados.")
-        return
-
-    r1, r2 = st.columns([3, 1])
-    x = r1.number_input("% de ARE a usar (sobre masa)", min_value=0.0, max_value=100.0,
-                        value=float(round(x_opt * 100.0, 1)), step=0.5, key="dsp_mz_x",
-                        help="Arranca en el óptimo calculado. Podés bajarlo para ir más "
-                             "conservador; subirlo rompe la spec.") / 100.0
-    if r2.button("↺ Volver al óptimo", use_container_width=True):
-        ss.pop("dsp_mz_x", None)
-        st.rerun()
-
-    Lb, Lc = _litros_por_fraccion(x, pb["dens"], pc["dens"], lit_obj)
-    kg_tot = Lb * pb["dens"] + Lc * pc["dens"]
-    mez = _mezclar(pb, pc, x)
-
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("ARE", "%.1f %%" % (100 * x), "%s L" % format(Lb, ",.0f"))
-    k2.metric("AFE", "%.1f %%" % (100 * (1 - x)), "%s L" % format(Lc, ",.0f"))
-    _ac = mez.get("acidez")
-    k3.metric("Acidez resultante", "—" if _ac is None else "%.2f %%" % _ac,
-              None if _ac is None else "%+.2f vs spec %.2f" % (_ac - spec["acidez"], spec["acidez"]),
-              delta_color="inverse")
-    k4.metric("Óptimo / limitante", "%.1f %% ARE" % (100 * x_opt), lim_lbl or "sin límite activo",
-              delta_color="off")
-
-    if usd_b > 0 and usd_c > 0:
-        cm = x * usd_b + (1 - x) * usd_c
-        ahorro = (usd_c - cm) * kg_tot / 1000.0
-        p1, p2, p3 = st.columns(3)
-        p1.metric("Costo de la mezcla", "%s USD/t" % format(cm, ",.0f"))
-        p2.metric("Contra 100 % AFE", "%s USD/t" % format(usd_c, ",.0f"),
-                  "%s USD/t" % format(cm - usd_c, "+,.0f"), delta_color="inverse")
-        p3.metric("Ahorro del despacho", "%s USD" % format(ahorro, ",.0f"),
-                  help="Diferencia contra comprar todo AFE, sobre %s t formuladas."
-                       % format(kg_tot / 1000.0, ",.1f"))
-        if usd_b >= usd_c:
-            st.warning("El ARE está cargado más caro que el AFE (%s vs %s USD/t). Eso pasa porque "
-                       "en la tabla de precios el ARE-B figura a **precio de venta** y el AFE a "
-                       "**precio de compra**: son cosas distintas. Mientras no pises el USD/t del "
-                       "ARE con el costo de producción, el ahorro que ves acá está mal y el cálculo "
-                       "sugiere lo contrario de lo que conviene."
-                       % (format(usd_b, ",.0f"), format(usd_c, ",.0f")))
-
-    _falta = []
-    if Lb > pb["litros"] + 1:
-        _falta.append("ARE: pide %s L y hay %s L" % (format(Lb, ",.0f"), format(pb["litros"], ",.0f")))
-    if Lc > pc["litros"] + 1:
-        _falta.append("AFE: pide %s L y hay %s L" % (format(Lc, ",.0f"), format(pc["litros"], ",.0f")))
-    if _falta:
-        _max = lit_obj
-        if Lb > 0 and pb["litros"] < Lb:
-            _max = min(_max, lit_obj * pb["litros"] / Lb)
-        if Lc > 0 and pc["litros"] < Lc:
-            _max = min(_max, lit_obj * pc["litros"] / Lc)
-        st.error("No alcanza el stock para el objetivo con esta proporción — " + " · ".join(_falta) +
-                 ". Con lo que hay se pueden formular hasta **%s L** (%s %% del objetivo)."
-                 % (format(_max, ",.0f"), format(100 * _max / lit_obj if lit_obj else 0, ",.0f")))
-
-    with st.expander("🔎 De dónde sale la proporción", expanded=False):
-        st.caption("Cada parámetro impone su propio techo de ARE: como la mezcla promedia por masa, "
-                   "`valor = x·base + (1−x)·corrector`, el máximo de ARE que cumple es "
-                   "`x ≤ (límite − corrector) / (base − corrector)`. Se toma el más exigente de los "
-                   "cuatro. El límite mostrado ya tiene aplicado el margen de seguridad.")
-        _dd = det.copy()
-        for _c in ["Base", "Corrector", "Límite", "Máx. base %"]:
-            _dd[_c] = pd.to_numeric(_dd[_c], errors="coerce").round(2)
-        st.dataframe(_dd, hide_index=True, use_container_width=True)
-        _cob = [lbl for lbl, c in _PARAMS if pb.get(c + "_cob", 0) < 99 or pc.get(c + "_cob", 0) < 99]
-        if _cob:
-            st.caption("⚠️ Lab incompleto en parte de la masa para: " + ", ".join(_cob) +
-                       ". El promedio ignora esa masa, así que puede quedar optimista.")
-
-    if st.button("🎯 Usar esta mezcla en la formulación", type="primary",
-                 help="Carga las líneas de abajo repartiendo los litros entre los tanques elegidos, "
-                      "proporcional al stock de cada uno."):
-        ss["dsp_lineas"] = pd.DataFrame(_reparto(pb, Lb) + _reparto(pc, Lc))
-        st.rerun()
-    st.divider()
-
-
 # ------------------------------------------------------------------ persistencia
 
 def _guardar(conectar, USR, cab, res, id_despacho=None):
@@ -740,33 +388,33 @@ def _armar(USR, cat, conectar):
     spec = {"acidez": sp_ac, "ays": sp_ays, "azufre": sp_az, "fosforo": sp_fos}
 
     # ---------- 2 · Tanques del producto ----------
-    # Para productos de formulación (AG-E) el universo de tanques no es sólo el del producto
-    # final: también entran los componentes con los que se arma (ARE + AFE).
-    _fam, _mz = _familia(prod_cod)
-    if _mz:
-        st.markdown(f"#### 2 · Tanques de **{prod_lbl}** y de sus componentes")
-        st.caption("**%s** se puede despachar de un tanque que ya lo tenga hecho, o formularlo en "
-                   "el momento mezclando %s + %s. Por eso acá aparecen los tanques de los tres."
-                   % (prod_lbl, _mz["base"][0].split("-")[0], _mz["corrector"][0].split("-")[0]))
-    else:
-        st.markdown(f"#### 2 · Tanques con **{prod_lbl}**")
+    st.markdown(f"#### 2 · Tanques con **{prod_lbl}**")
     _tp = tks[tks["producto_principal"].astype(str).str.strip().str.upper()
-              .isin([c.upper() for c in _fam])].copy()
+              == str(prod_cod).strip().upper()].copy()
     if _tp.empty:
         st.error(f"No hay ningún tanque activo con producto **{prod_lbl}** ({prod_cod}). "
                  "Revisá el producto principal de los tanques en el panel de tanques.")
         return
 
+    # Un tanque sin stock medido igual puede ser el origen del despacho: el de formulación
+    # (FORM-AG-E) se llena al momento de armar la carga, así que casi siempre figura en 0 y aun
+    # así es de donde sale el producto. Antes se lo excluía del selector y la opción no aparecía.
     _con = _tp[_tp["litros_actual"].fillna(0) > 0].copy()
-    if _con.empty:
-        st.error(f"Hay tanques de **{prod_lbl}** pero ninguno con stock medido. "
-                 "Cargá las mediciones de nivel antes de armar el despacho.")
+    _s0 = _tp[_tp["litros_actual"].fillna(0) <= 0].copy()
+    if _con.empty and _s0.empty:
+        st.error(f"Hay tanques de **{prod_lbl}** pero ninguno disponible. "
+                 "Revisá el panel de tanques.")
         return
     _sin_lab = _con[_con.apply(lambda r: len(_faltan_lab(r)) > 0, axis=1)]
     k1, k2, k3 = st.columns(3)
     k1.metric("Tanques con stock", f"{len(_con)}")
     k2.metric("Stock disponible", f"{_con['litros_actual'].fillna(0).sum():,.0f} L")
     k3.metric("Con lab completo", f"{len(_con) - len(_sin_lab)} de {len(_con)}")
+    if not _s0.empty:
+        st.caption("Sin medición de nivel cargada, pero igual seleccionables: **" +
+                   "**, **".join(_s0["nombre"].astype(str).tolist()) +
+                   "**. Es el caso del tanque de formulación, que se llena al armar la carga: "
+                   "elegilo y poné los litros a mano.")
 
     if not _sin_lab.empty:
         _det = []
@@ -805,9 +453,6 @@ def _armar(USR, cat, conectar):
                      column_config={"Disp. (L)": st.column_config.NumberColumn(format="%.0f"),
                                     "Lab del": st.column_config.DatetimeColumn(format="DD/MM/YY")})
 
-    if _mz:
-        _bloque_mezcla(cat, tks, prod_cod, prod_lbl, lit_obj, spec, ss)
-
     # ---------- 3 · Formulación ----------
     st.markdown("#### 3 · Formulación por tanque")
     ca, cb, cc = st.columns([1, 1, 2.4])
@@ -835,12 +480,10 @@ def _armar(USR, cat, conectar):
     for _c in _cols[1:]:
         base[_c] = pd.to_numeric(base[_c], errors="coerce")
 
-    _o = _con["etq"].tolist()
+    _o = _con["etq"].tolist() + _s0["etq"].tolist()
     _cfg = {
         "Tanque": st.column_config.SelectboxColumn("Tanque", options=_o, width="large", required=True,
-                                                   help=("Tanques con stock de " + str(prod_lbl) +
-                                                         (" o de sus componentes (" +
-                                                          ", ".join(_fam[1:]) + ")." if _mz else "."))),
+                                                   help="Sólo tanques con " + str(prod_lbl) + " y stock."),
         "Litros": st.column_config.NumberColumn("Litros a cargar", min_value=0.0, step=500.0,
                                                 format="%.0f"),
     }
@@ -891,6 +534,13 @@ def _armar(USR, cat, conectar):
     avisos = []
     _ex = res[res["Excede"]]
     if not _ex.empty:
+        _sm = _ex[_ex["Disp. (L)"] <= 0]
+        _ex = _ex[_ex["Disp. (L)"] > 0]
+        if not _sm.empty:
+            avisos.append("Sin medición de nivel cargada: " +
+                          ", ".join(_sm["Tanque"].astype(str).tolist()) +
+                          " — se toman los litros que pusiste a mano, sin control contra stock.")
+    if not _ex.empty:
         avisos.append("Estos tanques no tienen tanto stock: " +
                       ", ".join(f"{r['Tanque']} (pide {r['Litros']:,.0f} L, hay {r['Disp. (L)']:,.0f} L)"
                                 for _, r in _ex.iterrows()))
@@ -904,13 +554,7 @@ def _armar(USR, cat, conectar):
                       " — el promedio ponderado ignora esa masa y puede quedar optimista.")
     _multi = res["Producto"].dropna().unique().tolist()
     if len(_multi) > 1:
-        _fuera = [p for p in _multi if str(p).strip().upper() not in [c.upper() for c in _fam]]
-        if _mz and not _fuera:
-            st.caption("ℹ️ Esto es una **formulación de %s**: combina %s. Los promedios de abajo "
-                       "son los del producto que sale del tanque de mezcla."
-                       % (prod_lbl, ", ".join(map(str, _multi))))
-        else:
-            avisos.append("La mezcla combina productos distintos: " + ", ".join(map(str, _multi)) + ".")
+        avisos.append("La mezcla combina productos distintos: " + ", ".join(map(str, _multi)) + ".")
     if avisos:
         for a in avisos:
             st.warning(a)
