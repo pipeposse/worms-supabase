@@ -27,6 +27,11 @@ SPEC_DEFAULT = {"acidez": 5.0, "ays": 2.0, "azufre": 50.0, "fosforo": 150.0}
 TIPOS_CARGA = ["FLEX", "ISO TANK", "BULK", "CAMION", "TAMBORES"]
 ESTADOS = ["BORRADOR", "CONFIRMADO", "DESPACHADO", "ANULADO"]
 
+# El AG-E que sale a exportación no es un producto de un solo tanque: se arma con AG-E y AFE-S
+# en el tanque de formulación. Por eso un despacho de AG-E puede tomar litros de los dos.
+# Acá no hay ningún cálculo: sólo define qué tanques aparecen para elegir.
+COMPONENTES = {"AG-E": ("AFE-S",)}
+
 _COLS_MIN = ["Tanque", "Litros"]
 _COLS_LAB = ["Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %"]
 _COLS_ED = _COLS_MIN + _COLS_LAB
@@ -39,6 +44,12 @@ def _base_vacia(cols):
     """DataFrame vacío con dtypes correctos: evita que el editor muestre 'None' en las celdas."""
     return pd.DataFrame({c: pd.Series(dtype=("object" if c == "Tanque" else "float64"))
                          for c in cols})
+
+
+def _familia(prod_cod):
+    """Productos que puede tomar un despacho de prod_cod: él mismo + con lo que se lo formula."""
+    cod = str(prod_cod or "").strip().upper()
+    return [cod] + [str(c).strip().upper() for c in COMPONENTES.get(cod, ())]
 
 
 def _faltan_lab(r):
@@ -350,7 +361,12 @@ def _armar(USR, cat, conectar):
     c1, c2, c3, c4 = st.columns(4)
     _pl = prods["producto"].tolist() if not prods.empty else []
     _pcod = dict(zip(prods["producto"], prods["codigo_producto"])) if not prods.empty else {}
-    _def_p = _pl.index("AFE-S") if "AFE-S" in _pl else 0
+    # Lo que sale a exportación es casi siempre AG-E, así que arranca elegido ese.
+    _def_p = 0
+    for _c in ("AG-E", "AFE-S"):
+        if _c in _pl:
+            _def_p = _pl.index(_c)
+            break
     prod_lbl = c1.selectbox("Producto a despachar", _pl, index=_def_p, key="dsp_prod",
                             help="Rótulo oficial. Define el filtro de tanques en la sugerencia.")
     prod_cod = _pcod.get(prod_lbl, prod_lbl)
@@ -388,9 +404,15 @@ def _armar(USR, cat, conectar):
     spec = {"acidez": sp_ac, "ays": sp_ays, "azufre": sp_az, "fosforo": sp_fos}
 
     # ---------- 2 · Tanques del producto ----------
-    st.markdown(f"#### 2 · Tanques con **{prod_lbl}**")
+    _fam = _familia(prod_cod)
+    _extra = _fam[1:]
+    st.markdown(f"#### 2 · Tanques con **{prod_lbl}**" + (" y con lo que se formula" if _extra else ""))
+    if _extra:
+        st.caption("El %s que se despacha se arma con %s, así que también aparecen esos tanques "
+                   "para elegir. Los litros de cada uno los ponés vos."
+                   % (prod_lbl, " y ".join([prod_lbl] + _extra)))
     _tp = tks[tks["producto_principal"].astype(str).str.strip().str.upper()
-              == str(prod_cod).strip().upper()].copy()
+              .isin(_fam)].copy()
     if _tp.empty:
         st.error(f"No hay ningún tanque activo con producto **{prod_lbl}** ({prod_cod}). "
                  "Revisá el producto principal de los tanques en el panel de tanques.")
@@ -483,7 +505,7 @@ def _armar(USR, cat, conectar):
     _o = _con["etq"].tolist() + _s0["etq"].tolist()
     _cfg = {
         "Tanque": st.column_config.SelectboxColumn("Tanque", options=_o, width="large", required=True,
-                                                   help="Sólo tanques con " + str(prod_lbl) + " y stock."),
+                                                   help="Tanques con " + " / ".join(_fam) + "."),
         "Litros": st.column_config.NumberColumn("Litros a cargar", min_value=0.0, step=500.0,
                                                 format="%.0f"),
     }
@@ -554,7 +576,13 @@ def _armar(USR, cat, conectar):
                       " — el promedio ponderado ignora esa masa y puede quedar optimista.")
     _multi = res["Producto"].dropna().unique().tolist()
     if len(_multi) > 1:
-        avisos.append("La mezcla combina productos distintos: " + ", ".join(map(str, _multi)) + ".")
+        _fuera = [p for p in _multi if str(p).strip().upper() not in _fam]
+        if _fuera:
+            avisos.append("La mezcla combina productos distintos: " + ", ".join(map(str, _multi)) + ".")
+        else:
+            st.caption("ℹ️ El despacho combina " + ", ".join(map(str, _multi)) +
+                       ", que es como se arma el " + str(prod_lbl) +
+                       ". Los promedios de arriba ya son los del producto final cargado.")
     if avisos:
         for a in avisos:
             st.warning(a)
