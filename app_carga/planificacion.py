@@ -300,7 +300,7 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
         motivo_ajuste = st.text_input("Motivo del ajuste *", key="plb_aj_motivo", max_chars=200,
                                       placeholder="ej. borra con mucha agua, dosificamos más ácido")
     if _carga_baja:
-        st.error(f"🚨 Carga al {_pct:.0f}% de la bacha (<80%): justificá el motivo — va al ticket de aprobación del director.")
+        st.warning(f"⚠️ Carga al {_pct:.0f}% de la bacha (<80%): justificá el motivo. Queda **registrado** (la aprobación de dirección está deshabilitada por ahora; no bloquea).")
         just_carga = st.text_input("Justificación de carga baja (<80%) *", key="plb_just_carga", max_chars=250,
                                    placeholder="ej. no hay más MP disponible")
     obs = st.text_input("Observaciones", key="plb_obs", placeholder="opcional")
@@ -348,10 +348,12 @@ def _render_bachas(USR, cat, conectar, siguiente_identificador, H):
                     if _carga_baja:
                         cur.execute(
                             "INSERT INTO produccion.fact_aprobacion_carga "
-                            "(id_batch, identificador, sector, equipo, capacidad_l, litros_cargados, pct_carga, motivo, solicitado_por) "
-                            "VALUES (%s,%s,'BACHAS',%s,%s,%s,%s,%s,%s)",
+                            "(id_batch, identificador, sector, equipo, capacidad_l, litros_cargados, pct_carga, motivo, "
+                            " solicitado_por, estado, resuelto_por, resuelto_en, comentario_resolucion) "
+                            "VALUES (%s,%s,'BACHAS',%s,%s,%s,%s,%s,%s,'APROBADO',%s,now(),%s)",
                             (id_b, ident, _brow["nombre_ui"], cap, round(litros_mp, 1), round(_pct, 1),
-                             just_carga.strip(), uid))
+                             just_carga.strip(), uid, uid,
+                             "Auto-aprobado: la aprobación de dirección para cargas <80% está deshabilitada temporalmente (queda registrada)."))
 
                     def _mov(rol, id_producto, prod_txt, cod_ins, fuente, idt, tkp, kg, litros):
                         fmov = "TANQUE" if fuente == "TANQUE" else "PORTERIA"
@@ -3640,7 +3642,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         motivo_ajuste = st.text_input("Motivo del ajuste *", key="pl_aj_motivo", max_chars=200,
                                       placeholder="ej. la MP venía con más agua de lo normal")
     if _carga_baja:
-        st.error(f"🚨 Carga al {_pct_llen:.0f}% del reactor (<80%): justificá el motivo — va al ticket de aprobación del director.")
+        st.warning(f"⚠️ Carga al {_pct_llen:.0f}% del reactor (<80%): justificá el motivo. Queda **registrado** (la aprobación de dirección está deshabilitada por ahora; no bloquea el arranque).")
         just_carga = st.text_input("Justificación de carga baja (<80%) *", key="pl_just_carga", max_chars=250,
                                    placeholder="ej. no hay más MP disponible de esta calidad")
     obs = st.text_input("Observaciones", key="pl_obs", placeholder="opcional")
@@ -3717,10 +3719,12 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                     if _carga_baja:
                         cur.execute(
                             "INSERT INTO produccion.fact_aprobacion_carga "
-                            "(id_batch, identificador, sector, equipo, capacidad_l, litros_cargados, pct_carga, motivo, solicitado_por) "
-                            "VALUES (%s,%s,'REACTORES',%s,%s,%s,%s,%s,%s)",
+                            "(id_batch, identificador, sector, equipo, capacidad_l, litros_cargados, pct_carga, motivo, "
+                            " solicitado_por, estado, resuelto_por, resuelto_en, comentario_resolucion) "
+                            "VALUES (%s,%s,'REACTORES',%s,%s,%s,%s,%s,%s,'APROBADO',%s,now(),%s)",
                             (id_b, ident, fila["nombre_ui"], cap, round(litros_mp, 1), round(_pct_llen, 1),
-                             just_carga.strip(), uid))
+                             just_carga.strip(), uid, uid,
+                             "Auto-aprobado: la aprobación de dirección para cargas <80% está deshabilitada temporalmente (queda registrada)."))
 
                     def _mov(rol, id_producto, prod_txt, cod_ins, fuente, idt, tkp, kg, litros):
                         fmov = "TANQUE" if fuente == "TANQUE" else "PORTERIA"
