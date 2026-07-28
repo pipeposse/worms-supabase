@@ -2172,15 +2172,23 @@ def _desvios_semanal(USR, cat, conectar):
 def _desvio_stock_ledger(USR, cat, conectar):
     st.subheader("📉 Desvíos de stock — proyectado vs real por producto")
     st.info(
-        "**¿Qué mide?** Compara el **stock físico medido en los tanques** contra lo que *debería* haber según la "
-        "producción de la semana. Sí — se basa en el **stock y los movimientos de tanque**.\n\n"
-        "- **Real (t)** = toneladas medidas en los tanques al cierre de la semana (mediciones de nivel de tanque).\n"
-        "- **Proyectado (t)** = stock del cierre de la **semana anterior** + lo **producido** esa semana "
-        "(± portería − **insumos consumidos** − **despachos emitidos**).\n"
-        "- **Insumos (t)** = glicerina, fuel, catalizador y demás insumos sacados de tanque por la planificación.\n"
-        "- **Despachos (t)** = despachos en estado CONFIRMADO/DESPACHADO (kg pesados si hay tickets de salida).\n"
-        "- **Desvío (t) = Real − Proyectado**: negativo = en los tanques quedaron **menos** toneladas de las esperadas "
-        "(se consumió, despachó, mermó o no se acopió); positivo = quedaron de más."
+        "**Qué compara.** El stock que *debería* haber en los tanques al cierre de la semana contra el que "
+        "realmente se midió. Todo en toneladas.\n\n"
+        "**La cuenta, en orden, es la fila de la tabla leída de izquierda a derecha:**\n\n"
+        "`Stock ant. + Producción + Ext. entra − Ext. sale − Interno − Insumos − Despachos = Proyectado`\n\n"
+        "`Desvío = Real − Proyectado`\n\n"
+        "**Ext. entra y Ext. sale — que es lo que no se entendía.** Las dos salen del **mismo lugar**: los tickets "
+        "de báscula de portería de esa semana. Lo único que las separa es **el signo del peso neto del ticket**: "
+        "peso positivo = entró material a planta → va a **Ext. entra**; peso negativo = salió → va a **Ext. sale** "
+        "(se muestra en positivo para que se lea). No hay ningún cálculo intermedio: es la suma de los pesajes. "
+        "Tres filtros: los tickets cuyo cliente empieza con *MOVIMIENTO INTERNO* no van a ninguna de las dos, van a "
+        "**Interno**; los clientes de la lista de excluidos (Calzim y demás) quedan afuera del todo; y un ticket ya "
+        "atado a un despacho CONFIRMADO/DESPACHADO tampoco suma acá, para no contarlo dos veces contra "
+        "**Despachos**.\n\n"
+        "**El resto:** **Stock ant.** = lo medido al cierre de la semana anterior. **Producción** = reacciones "
+        "terminadas (kg de tickets de pesada; si no hay tickets, el objetivo de la fórmula). **Insumos** = salidas "
+        "de tanque cargadas como INSUMO o CATALIZADOR (glicerina, fuel, catalizador). **Despachos** = salidas de "
+        "tanque generadas por un despacho. **Real** = última medición de cada tanque dentro de la semana."
     )
     # Solo desde la semana 28 (2026-07-06 = lunes de S28) en adelante
     df = cat("SELECT semana, producto, codigo_producto, tipo_producto, stock_ini_t, prod_t, ext_in_t, "
@@ -2195,6 +2203,21 @@ def _desvio_stock_ledger(USR, cat, conectar):
                "delta_esp_t", "stock_proy_t", "stock_real_t", "desvio_t"]:
         df[_c] = pd.to_numeric(df[_c], errors="coerce")
     df["Semana"] = pd.to_datetime(df["semana"]).dt.strftime("S%V")
+
+    # Portería pesa contra el nombre de la FAMILIA ("AG", "AFE", "ARE", "RESIDUOS"...) y esta vista agrupa por
+    # CÓDIGO DE PRODUCTO ("AG-E", "ARE-B"). Esas etiquetas no son productos: entran igual a la vista y arman
+    # filas fantasma con stock 0 y todo el tonelaje convertido en desvío. Se apartan de la tabla y se usan
+    # después para explicar por qué las columnas de portería quedan en cero.
+    _cods = cat("SELECT upper(btrim(codigo_producto)) AS cod FROM produccion.dim_producto")
+    _reales = set(_cods["cod"].dropna().tolist()) if (_cods is not None and not _cods.empty) else set()
+    if _reales:
+        _esp = df["codigo_producto"].astype(str).str.strip().str.upper().isin(_reales)
+        _etq = sorted(df.loc[~_esp, "codigo_producto"].dropna().astype(str).unique().tolist())
+        df = df[_esp].copy()
+    else:
+        _etq = []
+    if df.empty:
+        st.info("Sin datos de stock (desde S28) para calcular desvíos."); return
     _prods = sorted(df["producto"].dropna().unique().tolist())
     _conprod = sorted(df[df["prod_t"].fillna(0) > 0]["producto"].dropna().unique().tolist())
     if not _conprod:
@@ -2230,13 +2253,54 @@ def _desvio_stock_ledger(USR, cat, conectar):
     _fmt = {c: "{:,.1f}" for c in ["Stock ant. (t)", "Producción (t)", "Ext. entra (t)", "Ext. sale (t)",
                                    "Interno (t)", "Insumos (t)", "Despachos (t)",
                                    "Proyectado (t)", "Real (t)", "Desvío (t)"]}
+    # Cada columna explica sola de dónde sale, pasando el mouse por el título.
+    _ayuda = {
+        "Stock ant. (t)": "Stock real medido en los tanques al cierre de la semana anterior. Es el punto de "
+                          "partida de la fila.",
+        "Producción (t)": "Producido esa semana por reacciones terminadas: kg de los tickets de pesada; si no "
+                            "hay tickets, el objetivo de la fórmula.",
+        "Ext. entra (t)": "Portería: suma de los tickets de báscula de la semana con peso neto POSITIVO "
+                          "(entró material). Excluye 'MOVIMIENTO INTERNO' (va a Interno), los clientes de la "
+                          "lista de excluidos, y los tickets ya atados a un despacho confirmado. Suma al proyectado.",
+        "Ext. sale (t)": "Portería: los mismos tickets pero con peso neto NEGATIVO (salió material), mostrados "
+                         "en positivo. El signo del peso del ticket es lo único que decide si va a entra o a "
+                         "sale. Mismos filtros. Resta del proyectado.",
+        "Interno (t)": "Tickets de portería cuyo cliente empieza con 'MOVIMIENTO INTERNO': material movido "
+                       "dentro de planta (ej. AG que se consume para fabricar AG-E). Resta del proyectado.",
+        "Insumos (t)": "Salidas de tanque cargadas con rol INSUMO o CATALIZADOR (glicerina, fuel, catalizador). Resta.",
+        "Despachos (t)": "Salidas de tanque generadas por un despacho. Resta.",
+        "Proyectado (t)": "Stock ant. + Producción + Ext. entra − Ext. sale − Interno − Insumos − Despachos.",
+        "Real (t)": "Toneladas medidas en los tanques al cierre de la semana (última medición de cada tanque).",
+        "Desvío (t)": "Real − Proyectado. Positivo = quedó más de lo esperado; negativo = quedó menos "
+                       "(salió, mermó o no se acopió).",
+    }
+    _cfg = {}
+    for _k, _v in _ayuda.items():
+        _cfg[_k] = st.column_config.NumberColumn(_k, help=_v)
     try:
         st.dataframe(_disp.style.map(_cc, subset=["Desvío (t)"]).format(_fmt, na_rep="—"),
-                     hide_index=True, use_container_width=True)
+                     hide_index=True, use_container_width=True, column_config=_cfg)
     except Exception:
         st.dataframe(_disp, hide_index=True, use_container_width=True)
-    st.caption("**Desvío (t)**: 🟢 <5 · 🟡 5–20 · 🔴 >20. Positivo = quedó más stock del proyectado; "
+    st.caption("Pasá el mouse por el título de cualquier columna para ver de dónde sale. "
+               "**Desvío (t)**: 🟢 <5 · 🟡 5–20 · 🔴 >20. Positivo = quedó más stock del proyectado; "
                "negativo = quedó menos (salió más, mermó, o producción sin acopiar).")
+
+    # Las columnas en cero no son "no pasó nada": son datos que no llegan. Decirlo en pantalla.
+    if float(_disp[["Ext. entra (t)", "Ext. sale (t)", "Interno (t)"]].fillna(0).abs().sum().sum()) == 0 and _etq:
+        st.warning(
+            "**Ext. entra, Ext. sale e Interno están en 0 en toda la tabla — y no es que no se haya movido nada.** "
+            "Portería pesa contra el nombre de la **familia** (" + ", ".join(_etq[:8]) +
+            ("…" if len(_etq) > 8 else "") + ") mientras que esta tabla agrupa por **código de producto** "
+            "(AG-E, ARE-B, AFE-S…). Como la etiqueta no coincide, ese tonelaje no se le puede imputar a ningún "
+            "producto y queda afuera. El movimiento de portería sí se ve, pero a nivel familia, en "
+            "**Balance de masa por familia** más abajo. Para verlo por producto hace falta una tabla de "
+            "equivalencias etiqueta de portería → código de producto.")
+    if float(_disp["Despachos (t)"].fillna(0).abs().sum()) == 0:
+        st.warning(
+            "**Despachos (t) está en 0 en todas las filas.** Hoy un despacho no descuenta del tanque: no genera "
+            "movimiento de stock. No lo leas como *no se despachó*, sino como *el despacho todavía no impacta "
+            "este balance* — parte del desvío positivo que ves es justamente despacho no descontado.")
 
     # ===================== TARJETAS DE LA SEMANA DESTACADA (default: actual) =====================
     st.markdown(f"**Semana destacada · {_semsel}**")
@@ -2287,20 +2351,30 @@ def _reconciliacion_semanal(USR, cat, conectar):
     st.subheader("🔎 Balance de masa por familia (detalle)")
     with st.expander("ℹ️ Cómo leer esta sección (qué significa cada columna)"):
         st.markdown(
-            "**Balance de masa por familia y semana.** Lo que entró/salió de los tanques debería explicarse por "
-            "lo que produjimos + lo que movió portería.\n\n"
-            "- **Familia**: grupo del producto (ARE, AG, AFE, SEBO, GLICERINA). *No es el producto con calidad* "
-            "(ARE-B, AG-C…): portería suele etiquetar sólo la familia, por eso el balance se hace a este nivel.\n"
-            "- **Δ Tanque (t)**: cambio del stock físico en los tanques de esa familia (mediciones de la semana).\n"
-            "- **Producción (t)**: lo producido por reacciones terminadas (tickets de pesada, o formulado si no hay).\n"
-            "- **Ext. entra (t)**: ingresos externos por portería (proveedores; sin 'MOVIMIENTO INTERNO' ni excluidos).\n"
-            "- **Ext. sale (t)**: despachos/salidas por portería.\n"
-            "- **Interno (t)**: 'MOVIMIENTO INTERNO' (ej. AG consumido para fabricar AG-E).\n"
-            "- **ΔTanque esperado (t)** = Producción + Ext.entra − Ext.sale − Interno.\n"
-            "- **Cuadre (t)** = Δ Tanque real − ΔTanque esperado (🟢 <5 · 🟡 5–20 · 🔴 >20).\n"
-            "- **Cuadre %** = |cuadre| sobre el mayor componente de la fila (qué tan grande es en proporción).\n\n"
-            "**Si no cuadra:** mediciones de tanque espaciadas, etiquetas de portería a revisar, o producción no acopiada aún. "
-            "Usá el **análisis profundo** de abajo para ir tanque por tanque.")
+            "**Qué mira.** Cada fila es una familia en una semana. Compara lo que **realmente varió el stock en "
+            "los tanques** contra lo que **debería** haber variado según lo que produjimos y lo que pesó "
+            "portería. Si no coinciden, la diferencia es el **cuadre**: toneladas que no se explican.\n\n"
+            "`ΔTanque esperado = Producción + Ext. entra − Ext. sale − Interno`\n\n"
+            "`Cuadre = Δ Tanque (real, medido) − ΔTanque esperado`\n\n"
+            "**Ext. entra y Ext. sale — que es lo que no se entendía.** Las dos salen del **mismo lugar**: los "
+            "tickets de báscula de portería de esa semana. Lo único que las separa es **el signo del peso neto "
+            "del ticket**: peso positivo = entró material → **Ext. entra**; peso negativo = salió → **Ext. "
+            "sale** (se muestra en positivo para que se lea). No hay cálculo intermedio, es la suma de los "
+            "pesajes. Quedan afuera los clientes de la lista de excluidos (Calzim y demás).\n\n"
+            "**El resto de las columnas:**\n"
+            "- **Familia**: el grupo, no el producto con calidad. Portería pesa contra 'AG', 'AFE', 'ARE' — no "
+            "contra 'AG-E' ni 'ARE-B'. Por eso el balance sólo cierra a nivel familia.\n"
+            "- **Δ Tanque (t)**: mediciones de nivel de los tanques de esa familia, entradas menos salidas de la "
+            "semana. Es el dato duro contra el que se contrasta todo lo demás.\n"
+            "- **Producción (t)**: reacciones terminadas; kg de los tickets de pesada, y si no hay tickets, el "
+            "objetivo de la fórmula.\n"
+            "- **Interno (t)**: tickets cuyo cliente empieza con 'MOVIMIENTO INTERNO'. Material movido dentro de "
+            "planta, típicamente AG que se consume para fabricar AG-E. Sale de la familia, por eso resta.\n"
+            "- **Cuadre %**: el cuadre en proporción al número más grande de la fila. 20 t sobre 1.000 t movidas "
+            "es ruido; 20 t sobre 40 t es un problema.\n\n"
+            "**Si el cuadre es grande** las causas de siempre son tres: mediciones de tanque muy espaciadas (la "
+            "semana se corta a mitad de un llenado), etiquetas de portería mal puestas, o producción terminada "
+            "que todavía no se acopió al tanque. Usá el **análisis profundo** de abajo para ir tanque por tanque.")
     c1, c2 = st.columns([1, 2])
     _sem = c1.number_input("Semanas atrás", 2, 52, 8, step=1, key="rec_sem")
     df = cat("SELECT semana, familia, dtank_t, prod_t, ext_in_t, ext_out_t, interno_t, cuadre_t "
@@ -2339,11 +2413,49 @@ def _reconciliacion_semanal(USR, cat, conectar):
     _numfmt = {c: "{:.2f}" for c in ["Δ Tanque (t)", "Producción (t)", "Ext. entra (t)", "Ext. sale (t)",
                                      "Interno (t)", "ΔTanque esperado (t)", "Cuadre (t)"]}
     _numfmt["Cuadre %"] = "{:.0f}%"
+    _ayuda = {
+        "Δ Tanque (t)": "Cuánto varió realmente el stock de esa familia en los tanques durante la semana "
+                         "(entradas menos salidas según las mediciones de nivel). Es el dato medido.",
+        "Producción (t)": "Producido por reacciones terminadas de esa familia: kg de los tickets de pesada; si "
+                            "no hay tickets, el objetivo de la fórmula. Suma.",
+        "Ext. entra (t)": "Portería: suma de los tickets de báscula de la semana con peso neto POSITIVO "
+                          "(entró material), agrupados por familia porque portería etiqueta 'AG', 'AFE', 'ARE' "
+                          "y no 'AG-E'. No incluye 'MOVIMIENTO INTERNO' ni los clientes excluidos. Suma.",
+        "Ext. sale (t)": "Portería: los mismos tickets pero con peso neto NEGATIVO (salió material), mostrados "
+                         "en positivo. El signo del peso del ticket es lo único que decide si va a entra o a "
+                         "sale. Resta.",
+        "Interno (t)": "Tickets cuyo cliente empieza con 'MOVIMIENTO INTERNO': material movido dentro de planta, "
+                       "ej. AG consumido para fabricar AG-E. Sale de la familia, por eso resta.",
+        "ΔTanque esperado (t)": "Producción + Ext. entra − Ext. sale − Interno. Lo que el stock debería "
+                                  "haber variado.",
+        "Cuadre (t)": "Δ Tanque real − ΔTanque esperado: las toneladas que no se explican. "
+                      "🟢 <5 · 🟡 5–20 · 🔴 >20.",
+        "Cuadre %": "|Cuadre| sobre el número más grande de la fila. Dice si esas toneladas son muchas o pocas "
+                    "comparadas con el movimiento de la semana.",
+    }
+    _cfg = {}
+    for _k, _v in _ayuda.items():
+        _cfg[_k] = st.column_config.NumberColumn(_k, help=_v)
     try:
         _sty = _disp.style.map(_cc, subset=["Cuadre (t)"]).format(_numfmt, na_rep="—")
-        st.dataframe(_sty, hide_index=True, use_container_width=True)
+        st.dataframe(_sty, hide_index=True, use_container_width=True, column_config=_cfg)
     except Exception:
         st.dataframe(_disp, hide_index=True, use_container_width=True)
+
+    # La cuenta con números reales de la fila que más se movió: leerla una vez alcanza para entender la tabla.
+    try:
+        _ord = dff[["prod_t", "ext_in_t", "ext_out_t", "interno_t"]].abs().max(axis=1).sort_values(ascending=False)
+        _ej = dff.loc[_ord.index[0]]
+        st.caption(
+            "**Cómo se lee, con la fila de más movimiento (%s · %s):** producción %.2f + entra %.2f − sale "
+            "%.2f − interno %.2f = **esperado %.2f t**. Los tanques en realidad variaron **%.2f t**. "
+            "Cuadre = %.2f − %.2f = **%.2f t**."
+            % (_ej["Semana"], _ej["familia"], float(_ej["prod_t"] or 0), float(_ej["ext_in_t"] or 0),
+               float(_ej["ext_out_t"] or 0), float(_ej["interno_t"] or 0), float(_ej["esperado_t"] or 0),
+               float(_ej["dtank_t"] or 0), float(_ej["dtank_t"] or 0), float(_ej["esperado_t"] or 0),
+               float(_ej["cuadre_t"] or 0)))
+    except Exception:
+        pass
     st.caption("**Cuadre**: 🟢 <5 t · 🟡 5–20 t · 🔴 >20 t. Grande = mediciones espaciadas, etiquetas de portería a revisar, "
                "o producción sin acopiar. Excluye clientes de la lista de excluidos (Calzim, etc.).")
     st.divider()
