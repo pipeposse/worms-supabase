@@ -2877,8 +2877,9 @@ def _reacciones_terminadas(USR, cat, conectar):
 
 def _gestion_reacciones(USR, cat, conectar):
     st.subheader("🛠️ Gestión de reacciones")
-    _g0, _g1, _g2, _g3, _g4 = st.tabs(["🎛️ Tablero", "⏯️ Trabajar (arrancar / cargar muestras / decantar)",
-                                       "📋 En marcha & nombres", "🕐 Etapas & horarios", "🧫 Evaluaciones internas"])
+    _g0, _g1, _g2, _g3, _g5, _g4 = st.tabs(["🎛️ Tablero", "⏯️ Trabajar (arrancar / cargar muestras / decantar)",
+                                            "📋 En marcha & nombres", "🕐 Etapas & horarios",
+                                            "⏱️ Horarios & TN finales (masivo)", "🧫 Evaluaciones internas"])
     with _g0:
         _panel_tablero(USR, cat, conectar)
     with _g1:
@@ -2892,6 +2893,12 @@ def _gestion_reacciones(USR, cat, conectar):
         _panel_en_marcha(USR, cat, conectar)
     with _g3:
         _panel_etapas(USR, cat, conectar)
+    with _g5:
+        try:
+            import editor_horarios
+            editor_horarios.render(USR, cat, conectar)
+        except Exception as e:
+            st.error("No se pudo cargar el editor de horarios y TN finales."); st.exception(e)
     with _g4:
         _panel_evals(USR, cat, conectar)
 
