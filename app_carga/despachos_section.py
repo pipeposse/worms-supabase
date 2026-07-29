@@ -101,10 +101,19 @@ def _tanques(cat):
 
 
 def _etq_tanque(r):
+    """Etiqueta del desplegable: producto, stock y laboratorio, para elegir viendo la calidad."""
     _p = str(r.get("producto_principal") or "—")
     _l = r.get("litros_actual")
     _l = f"{_l:,.0f} L" if pd.notna(_l) else "sin medición"
-    return f"{r['nombre']} · {_p} · {_l}"
+    _a, _f, _s = r.get("acidez"), r.get("fosforo"), r.get("azufre")
+    if pd.isna(_a) and pd.isna(_f) and pd.isna(_s):
+        _lab = "sin lab"
+    else:
+        _lab = "ac %s · P %s · S %s" % (
+            ("%.2f" % float(_a)) if pd.notna(_a) else "?",
+            ("%.0f" % float(_f)) if pd.notna(_f) else "?",
+            ("%.0f" % float(_s)) if pd.notna(_s) else "?")
+    return f"{r['nombre']} · {_p} · {_l} · {_lab}"
 
 
 def _productos(cat):
@@ -664,6 +673,38 @@ def _armar(USR, cat, conectar):
         st.info("Cargá al menos una línea con tanque y litros para ver los cálculos.")
         return
 
+    # Detalle por tanque: laboratorio y peso de cada tanque en la carga. Va acá, pegado al editor,
+    # y no dentro del editor, porque st.data_editor dibuja la grilla con los datos de ANTES de la
+    # edición: el % y el lab quedarían atrasados un click respecto de los litros que acabás de tocar.
+    tot_l = float(res["Litros"].sum())
+    _d = res.copy()
+    _d["Litros"] = _d["Litros"].round(0)
+    _d["% del total"] = (100.0 * _d["Litros"] / tot_l).round(2) if tot_l else 0.0
+    _d["TN"] = _d["TN"].round(2)
+    _d["Lab"] = _d.apply(
+        lambda r: "✅" if all(pd.notna(r[c]) for c in ("Acidez %", "Fósforo ppm", "Azufre ppm"))
+        else "⚠️ falta " + ", ".join(c for c in ("Acidez %", "Fósforo ppm", "Azufre ppm")
+                                     if pd.isna(r[c])), axis=1)
+    _show = _d[["Rol", "Tanque", "Producto", "Litros", "% del total", "Acidez %", "Fósforo ppm",
+                "Azufre ppm", "AyS %", "Lab", "Densidad", "TN", "Disp. (L)", "Restante (L)"]]
+    st.dataframe(
+        _show, hide_index=True, use_container_width=True,
+        column_config={
+            "Rol": st.column_config.TextColumn("Rol", width="small",
+                                               help="BASE = el componente AG-E. DILUYENTE = los AFE."),
+            "Litros": st.column_config.NumberColumn(format="%.0f"),
+            "% del total": st.column_config.NumberColumn("% del total", format="%.2f %%",
+                                                         help="Peso de este tanque sobre los litros cargados."),
+            "Acidez %": st.column_config.NumberColumn("Acidez %", format="%.2f"),
+            "Fósforo ppm": st.column_config.NumberColumn("Fósforo ppm", format="%.1f"),
+            "Azufre ppm": st.column_config.NumberColumn("Azufre ppm", format="%.1f"),
+            "AyS %": st.column_config.NumberColumn("AyS %", format="%.2f"),
+            "Lab": st.column_config.TextColumn("Lab", help="Parámetros que faltan para controlar la spec."),
+            "Disp. (L)": st.column_config.NumberColumn(format="%.0f"),
+            "Restante (L)": st.column_config.NumberColumn(format="%.0f")})
+    st.caption("Acidez, fósforo, azufre y AyS son el último análisis del tanque. El **% del total** "
+               "es sobre los litros efectivamente cargados acá, no sobre el objetivo.")
+
     # ---------- 4 · Resultado ----------
     st.markdown("#### 4 · Resultado de la mezcla")
     tot_l = float(res["Litros"].sum())
@@ -682,17 +723,6 @@ def _armar(USR, cat, conectar):
     st.markdown("**Cumplimiento de especificación** (promedios ponderados por kg)")
     ok_spec = _panel_specs(res, spec)
     ok = ok_spec and ok_est
-
-    _d = res.copy()
-    _d["Litros"] = _d["Litros"].round(0)
-    _d["% del total"] = (100.0 * _d["Litros"] / tot_l).round(2)
-    _d["TN"] = _d["TN"].round(2)
-    _show = _d[["Rol", "Tanque", "Producto", "Litros", "% del total", "Densidad", "TN",
-                "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %", "Disp. (L)", "Restante (L)"]]
-    st.dataframe(_show, hide_index=True, use_container_width=True,
-                 column_config={"Litros": st.column_config.NumberColumn(format="%.0f"),
-                                "Disp. (L)": st.column_config.NumberColumn(format="%.0f"),
-                                "Restante (L)": st.column_config.NumberColumn(format="%.0f")})
 
     # ---------- 4 · Avisos ----------
     avisos = []
