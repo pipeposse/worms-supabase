@@ -27,10 +27,14 @@ SPEC_DEFAULT = {"acidez": 5.0, "ays": 2.0, "azufre": 50.0, "fosforo": 150.0}
 TIPOS_CARGA = ["FLEX", "ISO TANK", "BULK", "CAMION", "TAMBORES"]
 ESTADOS = ["BORRADOR", "CONFIRMADO", "DESPACHADO", "ANULADO"]
 
-# El AG-E que sale a exportación no es un producto de un solo tanque: se arma con AG-E y AFE-S
-# en el tanque de formulación. Por eso un despacho de AG-E puede tomar litros de los dos.
-# Acá no hay ningún cálculo: sólo define qué tanques aparecen para elegir.
-COMPONENTES = {"AG-E": ("AFE-S",)}
+# El AG-E que sale a exportación no es el contenido de un solo tanque: es una FORMULACIÓN.
+# Siempre lleva UN componente base de AG-E (alto en acidez y azufre, fuera de spec por sí solo)
+# y el resto son AFE — casi siempre AFE-S — que lo diluyen hasta entrar en especificación.
+# FORMULADOS: producto despachado -> prefijos de los productos que lo diluyen. Se usan prefijos
+# y no una lista fija para que un AFE nuevo (AFE-M, AFE-P…) aparezca solo, sin tocar el código.
+FORMULADOS = {"AG-E": ("AFE",)}
+# Orden de preferencia al listar y al sugerir diluyentes; el resto va después, alfabético.
+PREFERIDOS = ("AFE-S",)
 
 _COLS_MIN = ["Tanque", "Litros"]
 _COLS_LAB = ["Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %"]
@@ -46,10 +50,31 @@ def _base_vacia(cols):
                          for c in cols})
 
 
-def _familia(prod_cod):
-    """Productos que puede tomar un despacho de prod_cod: él mismo + con lo que se lo formula."""
+def _familia(prod_cod, prods=None):
+    """Productos que puede tomar un despacho de prod_cod: el base + con lo que se lo formula.
+
+    Devuelve [base] + diluyentes ordenados por preferencia (AFE-S primero). Los diluyentes se
+    leen de dim_producto por prefijo, así que dar de alta un AFE nuevo alcanza para que aparezca.
+    """
     cod = str(prod_cod or "").strip().upper()
-    return [cod] + [str(c).strip().upper() for c in COMPONENTES.get(cod, ())]
+    if cod not in FORMULADOS:
+        return [cod]
+    pref = FORMULADOS[cod]
+    extra = []
+    if prods is not None and not getattr(prods, "empty", True):
+        for c in prods["codigo_producto"].astype(str).str.strip().str.upper().tolist():
+            if c != cod and any(c.startswith(x) for x in pref):
+                extra.append(c)
+    if not extra:
+        extra = list(PREFERIDOS)
+    extra = sorted(set(extra),
+                   key=lambda c: (PREFERIDOS.index(c) if c in PREFERIDOS else 99, c))
+    return [cod] + extra
+
+
+def _es_base(prod, prod_cod):
+    """True si el producto del tanque es el componente base del despacho (el AG-E)."""
+    return str(prod or "").strip().upper() == str(prod_cod or "").strip().upper()
 
 
 def _faltan_lab(r):
@@ -91,7 +116,7 @@ def _productos(cat):
 
 # ------------------------------------------------------------------ cálculo
 
-def _resolver(ed: pd.DataFrame, tks: pd.DataFrame) -> pd.DataFrame:
+def _resolver(ed: pd.DataFrame, tks: pd.DataFrame, prod_cod=None) -> pd.DataFrame:
     """Toma lo editado (Tanque + Litros + overrides) y devuelve la formulación resuelta."""
     if ed is None or ed.empty or tks.empty:
         return pd.DataFrame()
@@ -115,6 +140,7 @@ def _resolver(ed: pd.DataFrame, tks: pd.DataFrame) -> pd.DataFrame:
             "Tanque": t["nombre"],
             "Sector": t["sector"],
             "Producto": t["producto_principal"],
+            "Rol": ("BASE" if _es_base(t["producto_principal"], prod_cod) else "DILUYENTE"),
             "Litros": lit,
             "Densidad": dens,
             "kg": lit * dens,
@@ -186,18 +212,74 @@ def _panel_specs(res: pd.DataFrame, spec: dict):
     return ok_total
 
 
+def _estructura(res, prod_cod, prods=None):
+    """Controla que la carga respete la formulación: 1 componente base + N diluyentes AFE.
+
+    Devuelve (ok, mensajes). ok=False sólo cuando falta el base o falta el diluyente, que son los
+    dos casos en los que lo cargado no es el producto que se despacha.
+    """
+    fam = _familia(prod_cod, prods)
+    base_cod = fam[0]
+    if len(fam) == 1 or res.empty or "Rol" not in res.columns:
+        return True, []
+    tot = float(res["Litros"].sum()) or 1.0
+    b = res[res["Rol"] == "BASE"]
+    d = res[res["Rol"] == "DILUYENTE"]
+    l_b = float(b["Litros"].sum())
+    l_d = float(d["Litros"].sum())
+    c1, c2, c3 = st.columns([1, 1, 1.6])
+    c1.metric("Componente %s" % base_cod, "{:,.0f} L".format(l_b),
+              "%.2f %% del total" % (100.0 * l_b / tot), delta_color="off",
+              help="El AG-E crudo: es el que aporta la acidez y el azufre altos.")
+    c2.metric("Diluyentes · %d tanque(s)" % len(d), "{:,.0f} L".format(l_d),
+              "%.2f %% del total" % (100.0 * l_d / tot), delta_color="off",
+              help="Los AFE que bajan la mezcla hasta la especificación.")
+    _mix = ", ".join(sorted(set(str(x) for x in d["Producto"].dropna()))) or "—"
+    c3.metric("Con qué se diluye", _mix)
+
+    msgs = []
+    ok = True
+    if b.empty:
+        ok = False
+        msgs.append(("error", "La carga **no tiene componente %s**. Un despacho de %s siempre lleva "
+                              "un tanque de %s más los AFE que lo diluyen: así como está, lo que se "
+                              "despacha no es %s." % (base_cod, base_cod, base_cod, base_cod)))
+    elif len(b) > 1:
+        msgs.append(("warning", "Hay %d líneas de %s (%s). Lo normal es que el componente base "
+                                "salga de un solo tanque de formulación."
+                     % (len(b), base_cod, ", ".join(b["Tanque"].astype(str)))))
+    if d.empty:
+        ok = False
+        msgs.append(("error", "La carga es 100%% %s sin diluir. Agregá los tanques de AFE "
+                              "(en general AFE-S) que bajan la acidez y el azufre." % base_cod))
+    else:
+        _cods = set(str(x).strip().upper() for x in d["Producto"].dropna())
+        _raros = sorted(_cods - set(fam[1:]))
+        if _raros:
+            msgs.append(("warning", "Hay componentes que no son AFE: %s. Revisá el producto "
+                                    "principal de esos tanques." % ", ".join(_raros)))
+        _otros = sorted(_cods - set(PREFERIDOS) - set(_raros))
+        if _otros:
+            msgs.append(("info", "Se está diluyendo también con %s. Es válido, pero lo habitual "
+                                 "es AFE-S." % ", ".join(_otros)))
+    return ok, msgs
+
+
 # ------------------------------------------------------------------ sugerencia de mezcla
 
-def _sugerir(tks, prod_cod, litros_obj, spec, min_l=1000.0):
-    """Heurística: llena el objetivo tomando primero los tanques de mejor calidad relativa.
+def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, min_l=1000.0):
+    """Propone la carga RESPETANDO la formulación: primero el componente base, después los AFE.
 
-    score = peor ratio contra la spec (val/límite). Menor score = más margen. Se cargan tanques
-    de menor a mayor score hasta cubrir el objetivo; el último se toma parcial.
+    No optimiza nada: toma los litros de base que le indicás (por defecto, lo que haya en el
+    tanque de base con más stock, topeado al objetivo) y completa el objetivo con los diluyentes,
+    AFE-S primero y dentro de cada producto los de mayor margen contra la spec
+    (score = peor ratio val/límite; menor score = más margen). El cumplimiento real lo decide
+    el panel de specs con los promedios ponderados por kg.
     """
-    d = tks[(tks["producto_principal"].astype(str).str.upper() == str(prod_cod).upper())
-            & (tks["litros_actual"].fillna(0) >= min_l)].copy()
-    if d.empty:
-        return pd.DataFrame(), "No hay tanques con ese producto y stock suficiente."
+    fam = _familia(prod_cod, prods)
+    base_cod = fam[0]
+    up = tks["producto_principal"].astype(str).str.strip().str.upper()
+    dis = tks["litros_actual"].fillna(0)
 
     def _score(r):
         rr = []
@@ -207,23 +289,65 @@ def _sugerir(tks, prod_cod, litros_obj, spec, min_l=1000.0):
                 rr.append(float(r[c]) / float(lim))
         return max(rr) if rr else 0.90  # sin lab: prioridad media-baja
 
-    d["score"] = d.apply(_score, axis=1)
-    d = d.sort_values(["score", "litros_actual"], ascending=[True, False])
-    out, acum = [], 0.0
-    for _, r in d.iterrows():
-        if acum >= litros_obj:
-            break
-        toma = min(float(r["litros_actual"]), litros_obj - acum)
-        if toma < min_l * 0.2:
-            continue
-        out.append({"Tanque": r["etq"], "Litros": round(toma, 0),
-                    "Acidez %": _NAN, "Fósforo ppm": _NAN, "Azufre ppm": _NAN, "AyS %": _NAN})
-        acum += toma
+    def _linea(r, litros):
+        return {"Tanque": r["etq"], "Litros": round(float(litros), 0), "Acidez %": _NAN,
+                "Fósforo ppm": _NAN, "Azufre ppm": _NAN, "AyS %": _NAN}
+
+    out, acum, notas = [], 0.0, []
+
+    # 1 · componente base (el AG-E). Va siempre primero y en una sola línea.
+    if len(fam) > 1:
+        b = tks[up == base_cod].copy()
+        if b.empty:
+            return (pd.DataFrame(),
+                    "No hay ningún tanque con %s. Sin componente base no hay despacho de %s."
+                    % (base_cod, base_cod))
+        b["_d"] = b["litros_actual"].fillna(0)
+        b = b.sort_values("_d", ascending=False)
+        r0 = b.iloc[0]
+        _hay = float(r0["_d"])
+        toma = float(l_base) if l_base else (min(_hay, litros_obj) if _hay > 0 else 0.0)
+        toma = max(0.0, min(toma, float(litros_obj)))
+        if toma > 0:
+            out.append(_linea(r0, toma))
+            acum += toma
+            if _hay > 0 and toma > _hay + 0.5:
+                notas.append("%s tiene %s L y se piden %s L"
+                             % (r0["nombre"], "{:,.0f}".format(_hay), "{:,.0f}".format(toma)))
+        else:
+            notas.append("el tanque de %s (%s) está sin medición: poné los litros a mano"
+                         % (base_cod, r0["nombre"]))
+        cod_dil = fam[1:]
+    else:
+        cod_dil = [base_cod]
+
+    # 2 · diluyentes: AFE-S primero, después el resto de los AFE, por margen contra la spec.
+    d = tks[up.isin(cod_dil) & (dis >= min_l)].copy()
+    if d.empty and not out:
+        return pd.DataFrame(), "No hay tanques con ese producto y stock suficiente."
+    if not d.empty:
+        d["score"] = d.apply(_score, axis=1)
+        d["_pref"] = up[d.index].apply(lambda c: PREFERIDOS.index(c) if c in PREFERIDOS else 99)
+        d = d.sort_values(["_pref", "score", "litros_actual"], ascending=[True, True, False])
+        for _, r in d.iterrows():
+            if acum >= litros_obj:
+                break
+            toma = min(float(r["litros_actual"]), litros_obj - acum)
+            if toma < min_l * 0.2:
+                continue
+            out.append(_linea(r, toma))
+            acum += toma
     if not out:
         return pd.DataFrame(), "No se pudo armar una mezcla con el stock disponible."
     falta = litros_obj - acum
-    msg = (f"Propuesta con {len(out)} tanque(s) — {acum:,.0f} L."
-           + (f" Faltan {falta:,.0f} L: no alcanza el stock del producto." if falta > 1 else ""))
+    msg = "Propuesta con %d tanque(s) — %s L." % (len(out), "{:,.0f}".format(acum))
+    if len(fam) > 1:
+        msg += (" La primera línea es el componente %s; el resto son AFE (primero AFE-S)."
+                % base_cod)
+    if falta > 1:
+        msg += " Faltan %s L: no alcanza el stock." % "{:,.0f}".format(falta)
+    if notas:
+        msg += " Ojo: " + "; ".join(notas) + "."
     return pd.DataFrame(out), msg
 
 
@@ -284,10 +408,10 @@ def _excel(cab, res, spec):
     d = res.copy()
     if not d.empty:
         d["%"] = 100.0 * d["Litros"] / tot_l if tot_l else 0.0
-    cols = ["Producto", "Acidez %", "Fósforo ppm", "Azufre ppm", "TN", "Litros", "%", "Tanque"]
+    cols = ["Rol", "Producto", "Acidez %", "Fósforo ppm", "Azufre ppm", "TN", "Litros", "%", "Tanque"]
     d = d.reindex(columns=cols)
-    tot = {"Producto": "TOTAL", "TN": tot_kg / 1000.0, "Litros": tot_l, "%": 100.0 if tot_l else 0.0,
-           "Tanque": ""}
+    tot = {"Rol": "", "Producto": "TOTAL", "TN": tot_kg / 1000.0, "Litros": tot_l,
+           "%": 100.0 if tot_l else 0.0, "Tanque": ""}
     for c, k in (("Acidez %", "Acidez %"), ("Fósforo ppm", "Fósforo ppm"), ("Azufre ppm", "Azufre ppm")):
         v, _ = _ponderar(res, k)
         tot[c] = v
@@ -404,13 +528,14 @@ def _armar(USR, cat, conectar):
     spec = {"acidez": sp_ac, "ays": sp_ays, "azufre": sp_az, "fosforo": sp_fos}
 
     # ---------- 2 · Tanques del producto ----------
-    _fam = _familia(prod_cod)
+    _fam = _familia(prod_cod, prods)
     _extra = _fam[1:]
     st.markdown(f"#### 2 · Tanques con **{prod_lbl}**" + (" y con lo que se formula" if _extra else ""))
     if _extra:
-        st.caption("El %s que se despacha se arma con %s, así que también aparecen esos tanques "
-                   "para elegir. Los litros de cada uno los ponés vos."
-                   % (prod_lbl, " y ".join([prod_lbl] + _extra)))
+        st.caption("Un despacho de **%s** es una formulación: **un** componente de %s (el crudo, "
+                   "fuera de spec por sí solo) más los **AFE** que lo diluyen, en general **AFE-S**. "
+                   "Por eso acá aparecen los tanques de %s y de %s. Los litros de cada uno los "
+                   "ponés vos." % (prod_lbl, _fam[0], _fam[0], ", ".join(_extra)))
     _tp = tks[tks["producto_principal"].astype(str).str.strip().str.upper()
               .isin(_fam)].copy()
     if _tp.empty:
@@ -477,10 +602,22 @@ def _armar(USR, cat, conectar):
 
     # ---------- 3 · Formulación ----------
     st.markdown("#### 3 · Formulación por tanque")
-    ca, cb, cc = st.columns([1, 1, 2.4])
-    if ca.button("🎯 Sugerir mezcla", use_container_width=True,
-                 help="Propone tanques del producto elegido, priorizando los de mayor margen contra la spec."):
-        _sug, _msg = _sugerir(tks, prod_cod, lit_obj, spec)
+    _formulado = len(_fam) > 1
+    if _formulado:
+        ca, cb, cd, cc = st.columns([1.1, 0.9, 1, 1.6])
+        _lb = cd.number_input("Litros de %s" % _fam[0], min_value=0.0, step=500.0,
+                              value=float(ss.get("dsp_lbase", 0.0)), key="dsp_lbase",
+                              help="Litros del componente base para la sugerencia. 0 = lo que haya "
+                                   "en el tanque de %s con más stock, topeado al objetivo." % _fam[0])
+    else:
+        ca, cb, cc = st.columns([1, 1, 2.4])
+        _lb = 0.0
+    _hlp = ("Arma la formulación: primero el componente %s y después los AFE que lo diluyen "
+            "(AFE-S primero, y dentro de cada producto los de mayor margen contra la spec)."
+            % _fam[0]) if _formulado else \
+           "Propone tanques del producto elegido, priorizando los de mayor margen contra la spec."
+    if ca.button("🎯 Sugerir mezcla", use_container_width=True, help=_hlp):
+        _sug, _msg = _sugerir(tks, prod_cod, lit_obj, spec, prods, (_lb or None))
         if _sug.empty:
             cc.warning(_msg)
         else:
@@ -522,7 +659,7 @@ def _armar(USR, cat, conectar):
     st.caption("Elegí el tanque y los litros. Producto, densidad, acidez, fósforo, azufre y AyS "
                "se completan solos con el último análisis del tanque.")
 
-    res = _resolver(ed, tks)
+    res = _resolver(ed, tks, prod_cod)
     if res.empty:
         st.info("Cargá al menos una línea con tanque y litros para ver los cálculos.")
         return
@@ -538,14 +675,19 @@ def _armar(USR, cat, conectar):
     m3.metric("Cobertura", f"{(100*tot_l/lit_obj if lit_obj else 0):,.1f} %")
     m4.metric("Tanques usados", f"{len(res)}")
 
+    if _formulado:
+        st.markdown("**Estructura de la formulación** (%s + AFE)" % _fam[0])
+    ok_est, _msg_est = _estructura(res, prod_cod, prods)
+
     st.markdown("**Cumplimiento de especificación** (promedios ponderados por kg)")
-    ok = _panel_specs(res, spec)
+    ok_spec = _panel_specs(res, spec)
+    ok = ok_spec and ok_est
 
     _d = res.copy()
     _d["Litros"] = _d["Litros"].round(0)
     _d["% del total"] = (100.0 * _d["Litros"] / tot_l).round(2)
     _d["TN"] = _d["TN"].round(2)
-    _show = _d[["Tanque", "Producto", "Litros", "% del total", "Densidad", "TN",
+    _show = _d[["Rol", "Tanque", "Producto", "Litros", "% del total", "Densidad", "TN",
                 "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %", "Disp. (L)", "Restante (L)"]]
     st.dataframe(_show, hide_index=True, use_container_width=True,
                  column_config={"Litros": st.column_config.NumberColumn(format="%.0f"),
@@ -583,10 +725,15 @@ def _armar(USR, cat, conectar):
             st.caption("ℹ️ El despacho combina " + ", ".join(map(str, _multi)) +
                        ", que es como se arma el " + str(prod_lbl) +
                        ". Los promedios de arriba ya son los del producto final cargado.")
+    for _lvl, _m in _msg_est:
+        getattr(st, _lvl)(_m)
     if avisos:
         for a in avisos:
             st.warning(a)
-    if not ok:
+    if not ok_est:
+        st.error("La carga **no respeta la formulación** de un despacho de %s: siempre es un "
+                 "componente de %s más los AFE que lo diluyen." % (prod_lbl, _fam[0]))
+    if not ok_spec:
         st.error("La mezcla **no cumple** la especificación. Reemplazá los tanques de peor calidad "
                  "o bajá su participación antes de confirmar.")
 
