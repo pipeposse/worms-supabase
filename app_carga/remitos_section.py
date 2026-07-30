@@ -34,6 +34,7 @@ Extraé los datos del remito de la foto y devolvé SOLO un JSON válido (sin mar
   "nro_remito": "IDENTIFICADOR ÚNICO del remito: punto de venta + '-' + número, ej '00004-00016352'. Buscalo arriba junto a 'REMITO N°'. Transcribí TODOS los dígitos de ambas partes, es el dato más importante del documento.",
   "fecha_remito": "fecha del remito en formato YYYY-MM-DD o null",
   "producto": "producto trasladado o null",
+  "procedencia": "lugar/planta/localidad de ORIGEN de la carga (procedencia, origen, planta de carga) si figura en el remito, o null",
   "bruto_kg": número o null,
   "tara_kg": número o null,
   "neto_kg": número o null (si la cantidad está en TN convertí a kg),
@@ -51,7 +52,7 @@ Extraé los datos del remito de la foto y devolvé SOLO un JSON válido (sin mar
 Reglas:
 - El destinatario suele ser WORMS ARGENTINA S.A. (CUIT 30-71201396-2): NO es el emisor.
 - Números argentinos: el punto puede ser separador de miles. 28.040 kg = 28040.
-- Si un dato no está en el remito usá null. No inventes.
+- Si un dato no está en el remito usá null. No inventes. En particular, si la procedencia no figura o no se lee, va null.
 - Si el N° de remito no se lee con total certeza, incluí "nro_remito" en campos_dudosos.
 - Patentes formato AAA999 o AA999AA."""
 
@@ -252,15 +253,15 @@ def _f(v):
 def _insert_remito(cur, usr, datos: dict, ticket, diferencia) -> int:
     cur.execute(
         """INSERT INTO produccion.fact_remito
-           (emisor, emisor_cuit, nro_remito, fecha_remito, producto,
+           (emisor, emisor_cuit, nro_remito, fecha_remito, producto, procedencia,
             bruto_kg, tara_kg, neto_kg, lugar_entrega, transportista,
             patente_chasis, patente_acoplado, chofer, chofer_dni,
             observaciones, ticket_balanza, diferencia_kg, estado,
             raw_json, cargado_por)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
            RETURNING id""",
         (datos.get("emisor"), _f(datos.get("emisor_cuit")), datos.get("nro_remito"),
-         datos.get("fecha_remito"), _f(datos.get("producto")),
+         datos.get("fecha_remito"), _f(datos.get("producto")), _f(datos.get("procedencia")),
          _f(datos.get("bruto_kg")), _f(datos.get("tara_kg")), datos.get("neto_kg"),
          _f(datos.get("lugar_entrega")), _f(datos.get("transportista")),
          _f(datos.get("patente_chasis")), _f(datos.get("patente_acoplado")),
@@ -329,10 +330,12 @@ def _carga_manual(USR, conectar):
     _prod = c4.text_input("Producto", key="rm_man_prod")
     _neto = c5.number_input("Neto (kg) *", min_value=0.0, step=10.0, key="rm_man_neto")
     _tk = c6.number_input("Ticket balanza (opcional)", min_value=0, step=1, key="rm_man_tk")
-    c7, c8, c9 = st.columns(3)
-    _pch = c7.text_input("Patente chasis", key="rm_man_pch")
-    _trans = c8.text_input("Transportista", key="rm_man_tr")
-    _obs = c9.text_input("Observaciones", key="rm_man_ob")
+    c7, c8, c9, c10 = st.columns(4)
+    _proc = c7.text_input("Procedencia", key="rm_man_proc",
+                          help="Origen de la carga según el remito. Vacío = queda null.")
+    _pch = c8.text_input("Patente chasis", key="rm_man_pch")
+    _trans = c9.text_input("Transportista", key="rm_man_tr")
+    _obs = c10.text_input("Observaciones", key="rm_man_ob")
     _idfall = ss.get("rm_man_fromfall")
     if _idfall:
         st.info(f"Estás completando el pendiente #{_idfall}. Al guardar, se marca como resuelto.")
@@ -344,10 +347,11 @@ def _carga_manual(USR, conectar):
             with conectar(USR["id_usuario"]) as (conn, _a):
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO produccion.fact_remito (emisor,nro_remito,fecha_remito,producto,neto_kg,"
-                        " patente_chasis,transportista,observaciones,ticket_balanza,estado,raw_json,cargado_por) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                        "INSERT INTO produccion.fact_remito (emisor,nro_remito,fecha_remito,producto,procedencia,"
+                        " neto_kg,patente_chasis,transportista,observaciones,ticket_balanza,estado,raw_json,cargado_por) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                         ((_emisor or "").strip(), (_nro or "").strip(), _fch, ((_prod or "").strip() or None),
+                         ((_proc or "").strip() or None),
                          float(_neto), ((_pch or "").strip() or None), ((_trans or "").strip() or None),
                          ((_obs or "").strip() or None), (int(_tk) if _tk else None),
                          ("CONFIRMADO" if _tk else "SIN_TICKET"),
@@ -357,7 +361,7 @@ def _carga_manual(USR, conectar):
                         cur.execute("UPDATE produccion.fact_remito_fallido SET estado='RESUELTO', id_remito=%s, "
                                     "resuelto_en=now() WHERE id=%s", (_rid, int(_idfall)))
             st.success(f"Remito {_nro} guardado (id {_rid}).")
-            for _k in ("rm_man_nro", "rm_man_em", "rm_man_prod", "rm_man_pch", "rm_man_tr", "rm_man_ob", "rm_man_fromfall"):
+            for _k in ("rm_man_nro", "rm_man_em", "rm_man_prod", "rm_man_proc", "rm_man_pch", "rm_man_tr", "rm_man_ob", "rm_man_fromfall"):
                 ss.pop(_k, None)
             st.rerun()
         except psycopg2.errors.UniqueViolation:
@@ -418,9 +422,11 @@ def _card_revision(item: dict, h: str):
         datos["tara_kg"] = c5.number_input("Tara (kg)", value=float(datos.get("tara_kg") or 0), step=10.0, key=f"ta_{h}")
         datos["neto_kg"] = c6.number_input("Neto (kg) *", value=float(datos.get("neto_kg") or 0), step=10.0, key=f"ne_{h}")
 
-        c7, c8 = st.columns(2)
+        c7, c8, c9 = st.columns(3)
         datos["producto"] = c7.text_input("Producto", datos.get("producto") or "", key=f"pr_{h}")
-        datos["emisor_cuit"] = c8.text_input("CUIT emisor", datos.get("emisor_cuit") or "", key=f"cu_{h}")
+        datos["procedencia"] = c8.text_input("Procedencia", datos.get("procedencia") or "", key=f"pd_{h}",
+                                             help="Origen de la carga según el remito. Vacío = no figura (queda null).")
+        datos["emisor_cuit"] = c9.text_input("CUIT emisor", datos.get("emisor_cuit") or "", key=f"cu_{h}")
 
         if st.toggle("Transporte y otros datos", key=f"trmore_{h}"):
             d1, d2, d3 = st.columns(3)
@@ -660,9 +666,12 @@ def render(USR, conectar):
         f_hasta = c2.date_input("Hasta", date.today(), key="rh_h", format="DD/MM/YYYY")
         try:
             df = _read_df(
-                "SELECT id, fecha_remito, emisor, nro_remito, producto, neto_remito_kg, "
+                "SELECT id, fecha_remito, emisor, nro_remito, producto, procedencia_remito, "
+                "neto_remito_kg, bruto_kg, tara_kg, "
                 "ticket, neto_balanza_kg, diferencia_kg, diferencia_pct, patcha, "
                 "producto_lab, calidad_lab, lab_estado, "
+                "emisor_cuit, lugar_entrega, transportista, patente_chasis, patente_acoplado, "
+                "chofer, chofer_dni, observaciones, "
                 "estado, cargado_por, creado_en::date AS fecha_carga "
                 "FROM produccion.v_remito_vs_balanza "
                 "WHERE fecha_remito BETWEEN %s AND %s ORDER BY id DESC",
@@ -675,18 +684,24 @@ def render(USR, conectar):
             return
 
         # ---- filtros interactivos ----
-        for col in ("neto_remito_kg", "neto_balanza_kg", "diferencia_kg", "diferencia_pct"):
+        for col in ("neto_remito_kg", "neto_balanza_kg", "diferencia_kg", "diferencia_pct",
+                    "bruto_kg", "tara_kg"):
             df[col] = pd.to_numeric(df[col], errors="coerce")
         fc1, fc2, fc3, fc4 = st.columns(4)
         f_emisor = fc1.multiselect("Emisor", sorted(df["emisor"].dropna().unique()), key="rh_em")
         f_prod = fc2.multiselect("Producto", sorted(df["producto"].dropna().unique()), key="rh_pr")
         f_ticket = fc3.selectbox("Ticket balanza", ["Todos", "Con ticket", "Sin ticket"], key="rh_tkf")
         f_estado = fc4.multiselect("Estado", sorted(df["estado"].dropna().unique()), key="rh_es")
-        fc5, fc6, fc7 = st.columns([2, 1, 1])
-        f_busca = fc5.text_input("🔎 Buscar N° remito / patente / cargado por", key="rh_q")
-        f_difmin = fc6.number_input("Dif. mínima ±%", 0.0, 100.0, 0.0, 0.5, key="rh_difmin",
+        fc5, fc6, fc7, fc8, fc9 = st.columns([1, 1, 1.6, 0.9, 1])
+        f_nro = fc5.text_input("N° remito", key="rh_nro", placeholder="00004-16352",
+                               help="Coincidencia parcial: alcanza con una parte del número.")
+        f_tknum = fc6.text_input("Ticket", key="rh_tknum", placeholder="4962",
+                                 help="Coincidencia parcial sobre el N° de ticket de balanza.")
+        f_busca = fc7.text_input("🔎 Texto libre", key="rh_q",
+                                 placeholder="emisor, patente, procedencia, chofer, cargado por…")
+        f_difmin = fc8.number_input("Dif. ±% mín.", 0.0, 100.0, 0.0, 0.5, key="rh_difmin",
                                     help="Mostrar solo remitos cuya diferencia contra balanza supere este %")
-        f_orden = fc7.selectbox("Ordenar por", ["Más reciente", "Mayor diferencia", "Mayor neto"], key="rh_ord")
+        f_orden = fc9.selectbox("Ordenar por", ["Más reciente", "Mayor diferencia", "Mayor neto"], key="rh_ord")
 
         if f_emisor:
             df = df[df["emisor"].isin(f_emisor)]
@@ -700,11 +715,17 @@ def render(USR, conectar):
             df = df[df["ticket"].isna()]
         if f_difmin > 0:
             df = df[df["diferencia_pct"].abs() >= f_difmin]
+        if f_nro.strip():
+            df = df[df["nro_remito"].astype(str).str.contains(f_nro.strip(), case=False, na=False, regex=False)]
+        if f_tknum.strip():
+            _qtk = f_tknum.strip()
+            df = df[df["ticket"].apply(lambda v: pd.notna(v) and _qtk in str(int(float(v))))]
         if f_busca.strip():
             q = f_busca.strip().lower()
-            df = df[df.apply(lambda r: q in str(r["nro_remito"]).lower()
-                             or q in str(r["patcha"]).lower()
-                             or q in str(r["cargado_por"]).lower(), axis=1)]
+            _campos = ("nro_remito", "emisor", "producto", "procedencia_remito", "patcha",
+                       "patente_chasis", "patente_acoplado", "transportista", "chofer",
+                       "lugar_entrega", "observaciones", "cargado_por")
+            df = df[df.apply(lambda r: any(q in str(r[c]).lower() for c in _campos), axis=1)]
         if f_orden == "Mayor diferencia":
             df = df.reindex(df["diferencia_pct"].abs().sort_values(ascending=False).index)
         elif f_orden == "Mayor neto":
@@ -732,32 +753,62 @@ def render(USR, conectar):
             por_dia = (df.groupby("fecha_remito")["neto_remito_kg"].sum() / 1000).round(2).sort_index()
             st.bar_chart(por_dia, use_container_width=True)
 
-        # ---- tabla ----
+        # ---- tabla editable ----
+        # La fecha va como date real para que el editor abra un calendario y no un campo de texto.
+        df["fecha_remito"] = pd.to_datetime(df["fecha_remito"], errors="coerce").dt.date
         df_show = df.rename(columns={
             "fecha_remito": "Fecha", "emisor": "Emisor", "nro_remito": "N° remito",
-            "producto": "Prod. remito", "neto_remito_kg": "Neto remito (kg)",
+            "producto": "Prod. remito", "procedencia_remito": "Procedencia",
+            "neto_remito_kg": "Neto remito (kg)", "bruto_kg": "Bruto (kg)", "tara_kg": "Tara (kg)",
             "ticket": "Ticket portería", "neto_balanza_kg": "Neto portería (kg)",
-            "diferencia_kg": "Dif (kg) rem−port", "diferencia_pct": "Dif %", "patcha": "Patente",
+            "diferencia_kg": "Dif (kg) rem−port", "diferencia_pct": "Dif %", "patcha": "Patente port.",
             "producto_lab": "Prod. lab", "calidad_lab": "Calidad lab", "lab_estado": "Lab",
+            "emisor_cuit": "CUIT emisor", "lugar_entrega": "Lugar entrega",
+            "transportista": "Transportista", "patente_chasis": "Patente chasis",
+            "patente_acoplado": "Patente acoplado", "chofer": "Chofer", "chofer_dni": "DNI chofer",
+            "observaciones": "Observaciones",
             "estado": "Estado", "cargado_por": "Cargado por", "fecha_carga": "Fecha carga"})
-        _edit_map = {"Fecha": "fecha_remito", "Emisor": "emisor", "N° remito": "nro_remito",
-                     "Prod. remito": "producto", "Neto remito (kg)": "neto_kg",
+        # columna visible -> columna real de fact_remito. Todo lo del remito se puede corregir;
+        # lo de portería y laboratorio no, porque viene de otras tablas.
+        _edit_map = {"Fecha": "fecha_remito", "Emisor": "emisor", "CUIT emisor": "emisor_cuit",
+                     "N° remito": "nro_remito", "Prod. remito": "producto",
+                     "Procedencia": "procedencia", "Bruto (kg)": "bruto_kg", "Tara (kg)": "tara_kg",
+                     "Neto remito (kg)": "neto_kg", "Lugar entrega": "lugar_entrega",
+                     "Transportista": "transportista", "Patente chasis": "patente_chasis",
+                     "Patente acoplado": "patente_acoplado", "Chofer": "chofer",
+                     "DNI chofer": "chofer_dni", "Observaciones": "observaciones",
                      "Ticket portería": "ticket_balanza", "Estado": "estado"}
-        _disabled = [c for c in df_show.columns if c not in _edit_map]
-        st.caption("✏️ Podés **editar** Fecha, Emisor, N° remito, Producto, Neto, Ticket y Estado en la tabla, y "
-                   "**Guardar cambios**. Los valores anteriores quedan versionados en el historial (no se pierden).")
+        _principales = ["Fecha", "Emisor", "N° remito", "Prod. remito", "Procedencia",
+                        "Neto remito (kg)", "Ticket portería", "Neto portería (kg)",
+                        "Dif (kg) rem−port", "Dif %", "Prod. lab", "Estado"]
+        _todas = st.toggle("Mostrar todas las columnas (transporte, chofer, bruto/tara, obs.)",
+                           key="rh_allcols")
+        _cols_v = list(df_show.columns) if _todas else             (_principales + [c for c in ("Cargado por", "Fecha carga") if c in df_show.columns])
+        _cols_v = [c for c in _cols_v if c in df_show.columns]
+        _view = df_show[_cols_v]
+        _disabled = [c for c in _cols_v if c not in _edit_map]
+        st.caption("✏️ **Todas las columnas del remito se editan acá mismo** (doble click en la celda) "
+                   "y se confirman con **Guardar cambios**. Lo que viene de portería o del laboratorio "
+                   "no se toca desde acá. Cada versión anterior queda guardada en el historial. "
+                   "Dejar una celda vacía la deja en null.")
         _edited = st.data_editor(
-            df_show, use_container_width=True, hide_index=True, key="rh_editor", disabled=_disabled,
+            _view, use_container_width=True, hide_index=True,
+            key=("rh_editor_full" if _todas else "rh_editor"), disabled=_disabled,
             column_config={
-                "Neto remito (kg)": st.column_config.NumberColumn(format="%.0f"),
+                "Fecha": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Neto remito (kg)": st.column_config.NumberColumn(format="%.0f", min_value=0.0, step=10.0),
+                "Bruto (kg)": st.column_config.NumberColumn(format="%.0f", min_value=0.0, step=10.0),
+                "Tara (kg)": st.column_config.NumberColumn(format="%.0f", min_value=0.0, step=10.0),
                 "Neto portería (kg)": st.column_config.NumberColumn(format="%.0f"),
                 "Dif (kg) rem−port": st.column_config.NumberColumn(format="%.0f"),
                 "Dif %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Ticket portería": st.column_config.NumberColumn(format="%d"),
+                "Ticket portería": st.column_config.NumberColumn(format="%d", min_value=0, step=1,
+                                                                 help="N° de ticket de balanza. Vacío = sin ticket."),
+                "Procedencia": st.column_config.TextColumn(help="Origen de la carga según el remito. Vacío = null."),
                 "Estado": st.column_config.SelectboxColumn(options=["PENDIENTE", "CONFIRMADO", "SIN_TICKET", "ANULADO"]),
             })
         if st.button("💾 Guardar cambios de la tabla", type="primary", key="rh_save_edits"):
-            _orig = df_show.reset_index(drop=True); _new = _edited.reset_index(drop=True)
+            _orig = _view.reset_index(drop=True); _new = _edited.reset_index(drop=True)
             _n = 0
             try:
                 with conectar(USR["id_usuario"]) as (conn, _a):
@@ -765,20 +816,34 @@ def render(USR, conectar):
                         cur.execute("SELECT set_config('app.usuario', %s, true)", (str(USR.get("nombre") or "app"),))
                         for i in range(len(_new)):
                             _chg = {db: _new.iloc[i][disp] for disp, db in _edit_map.items()
-                                    if str(_orig.iloc[i][disp]) != str(_new.iloc[i][disp])}
+                                    if disp in _new.columns
+                                    and str(_orig.iloc[i][disp]) != str(_new.iloc[i][disp])}
                             if not _chg:
                                 continue
-                            _rid = int(_orig.iloc[i]["id"])
+                            _rid = int(df.iloc[i]["id"])
                             _cols = list(_chg.keys()); _vals = []
                             for c in _cols:
                                 v = _chg[c]
-                                if pd.isna(v) or v == "":
+                                if v is None or (not isinstance(v, (list, tuple)) and pd.isna(v)) \
+                                        or (isinstance(v, str) and not v.strip()):
                                     v = None
-                                elif c == "neto_kg":
+                                elif c in ("neto_kg", "bruto_kg", "tara_kg"):
                                     v = float(v)
                                 elif c == "ticket_balanza":
                                     v = int(float(v))
+                                elif isinstance(v, str):
+                                    v = v.strip()
                                 _vals.append(v)
+                            if "nro_remito" in _chg:  # mantener la clave normalizada anti-duplicados
+                                _cols.append("nro_remito_norm")
+                                _vals.append(_norm_remito(_chg["nro_remito"]))
+                            if "ticket_balanza" in _chg:  # coherencia del estado con el vínculo
+                                _tkv = _vals[_cols.index("ticket_balanza")]
+                                if _tkv and str(_orig.iloc[i].get("Estado")) == "SIN_TICKET" \
+                                        and "estado" not in _chg:
+                                    _cols.append("estado"); _vals.append("CONFIRMADO")
+                                elif _tkv is None and "estado" not in _chg:
+                                    _cols.append("estado"); _vals.append("SIN_TICKET")
                             cur.execute("UPDATE produccion.fact_remito SET " + ", ".join(f"{c}=%s" for c in _cols) +
                                         " WHERE id=%s", _vals + [_rid])
                             _n += 1
