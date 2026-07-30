@@ -2019,7 +2019,7 @@ _TK_CALIDAD_FAMILIA = {
     "SEBO": ["A-1RA", "A-2DA", "B-1RA", "B-2DA", "C-2DA", "FUERA DE ESPECIFICACION"],
     "AG": ["A", "B", "C", "D", "E", "FUERA DE ESPECIFICACION"],
     "ARE": ["A", "B", "FUERA DE ESPECIFICACION"],
-    "AFE": ["S", "SG", "G", "P", "AL", "FUERA DE ESPECIFICACION"],
+    "AFE": ["S", "SG", "G", "P", "AL", "M", "FUERA DE ESPECIFICACION"],
     "BORRA": ["A", "B", "ANIMAL", "PES", "FUERA DE ESPECIFICACION"],
 }
 

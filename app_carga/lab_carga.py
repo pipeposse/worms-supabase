@@ -101,7 +101,7 @@ CORRIENTE = ["VEGETAL", "ANIMAL"]
 # Calidades por familia — alineadas al maestro_final (revisado dirección 2026-07-07)
 FUERA = "FUERA DE ESPECIFICACION"
 CAL_AG    = ["A", "B", "C", "D", "E", FUERA]                 # AG-A..E
-CAL_AFE   = ["S", "SG", "G", "P", "AL", FUERA]               # variantes AFE del maestro
+CAL_AFE   = ["S", "SG", "G", "P", "AL", "M", FUERA]          # variantes AFE del maestro (M = maíz)
 CAL_ARE   = ["A", "B", FUERA]                                # ARE-A / ARE-B
 CAL_EFLU  = ["LIQUIDO"]
 CAL_BORRA = ["A", "B", "ANIMAL", "PES", FUERA]               # BORRA-A/B (V) + animal + pescado
