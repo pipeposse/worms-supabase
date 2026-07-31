@@ -55,6 +55,7 @@ def _batches(cat):
         "SELECT b.id_batch, b.identificador_unidad AS ident, b.estado, b.etapa_actual, "
         "       bu.nombre_ui AS reactor, "
         "       b.desg_reposo_modo, b.desg_id_tanque_reposo, b.desg_reposo_ini_ts, "
+        "       b.reposo_plan_modo, "
         "       b.desg_agua_sed_pct, b.desg_lab_ok, b.desg_id_tanque_destino, "
         "       b.desg_recipiente_vacio, b.desg_confirmada_ts, b.id_producto_buscado, b.desg_incidente, b.desg_incidente_motivo, "
         "       b.parametros_proceso, b.litros_inicial, b.kg_inicial "
@@ -70,6 +71,7 @@ def _batch_one(cat, id_batch):
         "SELECT b.id_batch, b.identificador_unidad AS ident, b.estado, b.etapa_actual, "
         "       bu.nombre_ui AS reactor, "
         "       b.desg_reposo_modo, b.desg_id_tanque_reposo, b.desg_reposo_ini_ts, "
+        "       b.reposo_plan_modo, "
         "       b.desg_agua_sed_pct, b.desg_lab_ok, b.desg_id_tanque_destino, "
         "       b.desg_recipiente_vacio, b.desg_confirmada_ts, b.id_producto_buscado, b.desg_incidente, b.desg_incidente_motivo, "
         "       b.parametros_proceso, b.litros_inicial, b.kg_inicial "
@@ -169,8 +171,13 @@ def planificacion(USR, cat, conectar):
     st.markdown("##### 1 · Reposo")
     if not b["desg_reposo_modo"]:
         st.info(f"Elegí dónde reposa **{reposo_hs:.0f} h**. La decantación se hará en ese mismo recipiente.")
+        _plan = str(b.get("reposo_plan_modo") or "")
+        if _plan:
+            st.caption("🛌 Dirección lo planificó reposando en **%s**. Podés cambiarlo si hizo falta."
+                       % ("Cónico 60" if _plan == "CONICO60" else "el mismo reactor"))
         modo = st.radio("¿Dónde reposa?",
                         ["🛢️ Transferir a Cónico 60", "⚗️ Queda en el reactor"],
+                        index=(0 if _plan == "CONICO60" else 1) if _plan else 0,
                         key="desg_modo")
         if st.button("💾 Confirmar reposo (arranca el conteo de 12 h)", type="primary", key="desg_modo_ok"):
             es_conico = modo.startswith("🛢️")

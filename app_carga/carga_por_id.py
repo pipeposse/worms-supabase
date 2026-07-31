@@ -97,6 +97,9 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
         "       p.nombre_producto AS producto, b.corriente, b.parametros_proceso, "
         "       b.tiempo_estimado_horas, "
         "       to_char(b.creado_en AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS creado_fmt, "
+        "       b.reposo_plan_modo, "
+        "       (SELECT dt.nombre FROM produccion.dim_tanque dt "
+        "          WHERE dt.id_tanque=b.reposo_plan_id_tanque) AS reposo_plan_tanque, "
         "       COALESCE(mp.mp,'—') AS mp, COALESCE(mp.mp_tn,0) AS mp_tn, "
         "       (SELECT inicio_ts FROM produccion.fact_etapa_evento e "
         "          WHERE e.id_batch=b.id_batch AND e.etapa='REPOSANDO' "
@@ -274,6 +277,19 @@ def _paso_arrancar(USR, cat, conectar, b):
             st.error(f"No se pudo arrancar: {e}")
 
 
+def _reposo_plan_txt(b):
+    """Dónde planificó dirección que repose esta reacción (None si no se definió)."""
+    _m = str(b.get("reposo_plan_modo") or "")
+    if not _m:
+        return None
+    if _m == "REACTOR":
+        return "en el MISMO reactor (%s), sin transferir" % (b.get("reactor") or "este reactor")
+    _tk = b.get("reposo_plan_tanque")
+    if _tk is None or (hasattr(_tk, "__class__") and str(_tk) in ("nan", "None", "NaT")):
+        _tk = "Cónico 60" if _m == "CONICO60" else "Cónico 20"
+    return "transfiriendo al **%s**" % _tk
+
+
 # --------------------------------------------------------------- PASO: REACCIÓN
 def _paso_reaccion(USR, cat, conectar, b):
     id_batch = int(b["id_batch"])
@@ -284,6 +300,10 @@ def _paso_reaccion(USR, cat, conectar, b):
     else:
         _cartel("Cada tanto medí la TEMPERATURA. Cuando llegue a 85°C o más, la reacción corta y pasa a reposo.",
                 "#dc2626", "#fee2e2", "🔥")
+    _rp = _reposo_plan_txt(b)
+    if _rp:
+        _cartel("Cuando pase a reposo, el reposo va %s (lo definió dirección al planificar)." % _rp,
+                "#6d28d9", "#ede9fe", "🛌")
 
     # próxima medición programada
     try:
@@ -346,6 +366,9 @@ def _paso_reposo(USR, cat, conectar, b):
             eta = pd.to_datetime(b["reposo_ini"]) + pd.Timedelta(hours=float(b["reposo_horas"]))
         except Exception:
             eta = None
+    _rp = _reposo_plan_txt(b)
+    if _rp:
+        _cartel("El reposo va %s." % _rp, "#6d28d9", "#ede9fe", "🛌")
     listo = True
     if eta is not None:
         _now = pd.Timestamp.now(tz=getattr(eta, "tz", None))

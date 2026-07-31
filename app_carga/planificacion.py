@@ -3644,6 +3644,20 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             else:
                 st.warning("No hay tanques de glicerina recuperada.")
 
+    # ---------- Tanque de reposo: se define al planificar y el operario lo ve en el proceso ----------
+    st.markdown("#### 🛌 Tanque de reposo")
+    _rep_ops = {"⚗️ Mismo reactor": ("REACTOR", None), "🛢️ Cónico 60": ("CONICO60", 82)}
+    if proc == "PRODUCCION_ARE":
+        _rep_ops["🛢️ Cónico 20-1"] = ("CONICO20", 87)
+        _rep_ops["🛢️ Cónico 20-2"] = ("CONICO20", 88)
+    _rep_sel = st.radio("¿Dónde reposa cuando termine la reacción?", list(_rep_ops.keys()),
+                        horizontal=True, key="pl_reposo_tk",
+                        help=("Desgomado: el mismo reactor o el Cónico 60. Producción ARE: el mismo "
+                              "reactor, el Cónico 60 o un Cónico 20. El operario lo ve durante el "
+                              "proceso y al pasar a reposo; en desgomado, la decisión de reposo sale "
+                              "precargada con esto."))
+    reposo_modo, reposo_idt = _rep_ops[_rep_sel]
+
     motivo_ajuste = ""
     if ajustes:
         st.warning("✏️ Cambiaste a mano: **" + ", ".join(ajustes.keys()) +
@@ -3718,11 +3732,13 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                         "(fecha, sector, id_usuario_carga, identificador_unidad, id_bien_uso, tipo_proceso, "
                         " id_producto_buscado, calidad_buscada, corriente, catalizador_tipo, "
                         " tiempo_estimado_horas, parametros_proceso, id_tanque_are_final, id_tanque_gli_recup, "
+                        " reposo_plan_modo, reposo_plan_id_tanque, "
                         " estado, id_usuario_estado, motivo_estado, observaciones) "
-                        "VALUES (CURRENT_DATE,'REACTORES',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,"
+                        "VALUES (CURRENT_DATE,'REACTORES',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,"
                         " 'PLANIFICADO',%s,'Planificado por dirección',%s) RETURNING id_batch",
                         (uid, ident, int(fila["id_bien_uso"]), proc, pf_id, calidad, corr, catal,
-                         horas, _json.dumps(params), dest_are_final, dest_gli_recup, uid, (obs or None)))
+                         horas, _json.dumps(params), dest_are_final, dest_gli_recup,
+                         reposo_modo, reposo_idt, uid, (obs or None)))
                     id_b = cur.fetchone()[0]
                     n_mov = 0
                     if _carga_baja:
