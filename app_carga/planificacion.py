@@ -2879,29 +2879,38 @@ def _reacciones_terminadas(USR, cat, conectar):
 
 def _gestion_reacciones(USR, cat, conectar):
     st.subheader("🛠️ Gestión de reacciones")
-    _g0, _g1, _g2, _g3, _g5, _g4 = st.tabs(["🎛️ Tablero", "⏯️ Trabajar (arrancar / cargar muestras / decantar)",
-                                            "📋 En marcha & nombres", "🕐 Etapas & horarios",
-                                            "⏱️ Horarios & TN finales (masivo)", "🧫 Evaluaciones internas"])
-    with _g0:
+    # Antes esto era st.tabs, pero st.tabs vuelve SIEMPRE a la primera pestaña en cada rerun:
+    # al elegir una reacción en el detalle, la vista "se cerraba" y había que reabrirla.
+    # Un control con key guarda la elección en session_state y sobrevive a los reruns.
+    _opts = ["⏱️ Gestión total", "🎛️ Tablero", "⏯️ Trabajar", "📋 En marcha & nombres",
+             "🕐 Etapas & horarios", "🧫 Evaluaciones internas"]
+    try:
+        _t = st.segmented_control("Vista", _opts, default=_opts[0], key="pl_gr_sc",
+                                  label_visibility="collapsed")
+    except Exception:
+        _t = st.radio("Vista", _opts, horizontal=True, key="pl_gr_rd")
+    _t = _t or _opts[0]
+    st.write("")
+    if _t.startswith("⏱️"):
+        try:
+            import editor_horarios
+            editor_horarios.render(USR, cat, conectar)
+        except Exception as e:
+            st.error("No se pudo cargar Gestión total."); st.exception(e)
+    elif _t.startswith("🎛️"):
         _panel_tablero(USR, cat, conectar)
-    with _g1:
+    elif _t.startswith("⏯️"):
         st.caption("Mismo flujo que **Producción en planta**: arrancar la reacción, cargar muestras de evaluación interna y decantar.")
         try:
             import carga_por_id
             carga_por_id.render(USR, cat, conectar)
         except Exception as e:
             st.error("No se pudo cargar el flujo de producción."); st.exception(e)
-    with _g2:
+    elif _t.startswith("📋"):
         _panel_en_marcha(USR, cat, conectar)
-    with _g3:
+    elif _t.startswith("🕐"):
         _panel_etapas(USR, cat, conectar)
-    with _g5:
-        try:
-            import editor_horarios
-            editor_horarios.render(USR, cat, conectar)
-        except Exception as e:
-            st.error("No se pudo cargar el editor de horarios y TN finales."); st.exception(e)
-    with _g4:
+    else:
         _panel_evals(USR, cat, conectar)
 
 
@@ -3111,7 +3120,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # Aprobaciones dejó de renderizarse acá arriba: era lo primero que veía el
     # director al entrar y le tapaba lo que realmente hace la sección (planificar).
     # Ahora es la última opción del menú, como cualquier otra.
-    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administrar en curso", "📅 Cronogramas",
+    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administración de reacciones", "📅 Cronogramas",
                    "🚚 Despachos", "🛂 Aprobaciones"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
