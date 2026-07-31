@@ -78,7 +78,7 @@ SQL_TK_CAND = (
     "ORDER BY tx.fecha_entrada DESC NULLS LAST, tx.transaccion DESC LIMIT 200")
 
 FRACCIONES = {"Entero (1/1)": 1.0, "Mitad (1/2)": 0.5, "Un tercio (1/3)": 1.0 / 3.0,
-              "Otra…": None}
+              "Un cuarto (1/4)": 0.25, "Otra…": None}
 
 
 # ===================== helpers =====================
