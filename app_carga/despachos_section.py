@@ -711,27 +711,23 @@ def _armar(USR, cat, conectar):
     st.markdown("#### 3 · Formulación por tanque")
     _formulado = len(_fam) > 1
     if _formulado:
-        ca, cb, ce, cd, cc = st.columns([1.05, 0.85, 1, 1, 1.3])
-        _maxb = ce.checkbox("📐 Máx. %s" % _fam[0], value=bool(ss.get("dsp_maxb", True)),
-                            key="dsp_maxb",
-                            help="Busca la MAYOR cantidad de %s que sigue cumpliendo la especificación. "
-                                 "El %s es más barato que el AFE-S: conviene maximizar su participación "
-                                 "en la carga." % (_fam[0], _fam[0]))
-        _lb = cd.number_input("Litros de %s" % _fam[0], min_value=0.0, step=500.0,
+        ca, cb, cd, cc = st.columns([1.1, 0.9, 1.1, 1.5])
+        _lb = cd.number_input("Litros de %s (0 = máximo)" % _fam[0], min_value=0.0, step=500.0,
                               value=float(ss.get("dsp_lbase", 0.0)), key="dsp_lbase",
-                              disabled=_maxb,
-                              help="Litros del componente base a mano (sólo si desactivás el máximo). "
-                                   "0 = todo lo que haya en el tanque de %s con más stock, topeado "
-                                   "al objetivo." % _fam[0])
+                              help="En 0, la sugerencia calcula sola el MÁXIMO de %s que sigue "
+                                   "cumpliendo la especificación (el %s es más barato que el AFE-S, "
+                                   "conviene maximizar su participación). Con un valor, usa esos "
+                                   "litros exactos." % (_fam[0], _fam[0]))
     else:
         ca, cb, cc = st.columns([1, 1, 2.4])
-        _lb, _maxb = 0.0, False
-    _hlp = ("Arma la formulación: el componente %s (al máximo que cumpla la spec, o los litros que "
-            "pongas) y después los AFE que lo diluyen (AFE-S primero, mayor margen primero)."
+        _lb = 0.0
+    _hlp = ("Arma la formulación: mete el MÁXIMO de %s que cumpla la spec (o los litros que pongas) "
+            "y completa con los AFE (AFE-S primero, mayor margen primero)."
             % _fam[0]) if _formulado else \
            "Propone tanques del producto elegido, priorizando los de mayor margen contra la spec."
     if ca.button("🎯 Sugerir mezcla", use_container_width=True, help=_hlp):
-        _sug, _msg = _sugerir(tks, prod_cod, lit_obj, spec, prods, (_lb or None), maximizar=_maxb)
+        _sug, _msg = _sugerir(tks, prod_cod, lit_obj, spec, prods, (_lb or None),
+                              maximizar=(_formulado and not _lb))
         if _sug.empty:
             cc.warning(_msg)
         else:
