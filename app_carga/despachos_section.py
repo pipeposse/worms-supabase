@@ -276,17 +276,20 @@ def _estructura(res, prod_cod, prods=None):
 
 # ------------------------------------------------------------------ sugerencia de mezcla
 
-def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, min_l=1000.0):
-    """Propone la carga RESPETANDO la formulación: primero el componente base, después los AFE.
+def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar=False,
+             min_l=1000.0):
+    """Propone la carga respetando la formulación: primero el componente base, después los AFE.
 
-    No optimiza nada: toma los litros de base que le indicás (por defecto, lo que haya en el
-    tanque de base con más stock, topeado al objetivo) y completa el objetivo con los diluyentes,
-    AFE-S primero y dentro de cada producto los de mayor margen contra la spec
-    (score = peor ratio val/límite; menor score = más margen). El cumplimiento real lo decide
-    el panel de specs con los promedios ponderados por kg.
+    Con maximizar=True busca el MÁXIMO de componente base (AG-E) que sigue cumpliendo la
+    especificación: el AG-E es más barato que el AFE-S, así que conviene la mayor participación
+    posible. La búsqueda es binaria sobre los litros de base; en cada punto se completa el
+    objetivo con los AFE (AFE-S primero, mejor margen primero) y se evalúa la mezcla ponderada
+    por kg, igual que el panel de specs. La masa sin laboratorio no se puede evaluar y queda
+    afuera del promedio (el panel ya lo avisa).
     """
     fam = _familia(prod_cod, prods)
     base_cod = fam[0]
+    formulado = len(fam) > 1
     up = tks["producto_principal"].astype(str).str.strip().str.upper()
     dis = tks["litros_actual"].fillna(0)
 
@@ -302,10 +305,17 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, min_l=100
         return {"Tanque": r["etq"], "Litros": round(float(litros), 0), "Acidez %": _NAN,
                 "Fósforo ppm": _NAN, "Azufre ppm": _NAN, "AyS %": _NAN}
 
-    out, acum, notas = [], 0.0, []
+    # pool de diluyentes: AFE-S primero, después el resto, por margen contra la spec
+    cod_dil = fam[1:] if formulado else [base_cod]
+    d = tks[up.isin(cod_dil) & (dis >= min_l)].copy()
+    if not d.empty:
+        d["score"] = d.apply(_score, axis=1)
+        d["_pref"] = up[d.index].apply(lambda c: PREFERIDOS.index(c) if c in PREFERIDOS else 99)
+        d = d.sort_values(["_pref", "score", "litros_actual"], ascending=[True, True, False])
 
-    # 1 · componente base (el AG-E). Va siempre primero y en una sola línea.
-    if len(fam) > 1:
+    # tanque del componente base: el de más stock
+    rb, hay = None, 0.0
+    if formulado:
         b = tks[up == base_cod].copy()
         if b.empty:
             return (pd.DataFrame(),
@@ -313,46 +323,88 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, min_l=100
                     % (base_cod, base_cod))
         b["_d"] = b["litros_actual"].fillna(0)
         b = b.sort_values("_d", ascending=False)
-        r0 = b.iloc[0]
-        _hay = float(r0["_d"])
-        toma = float(l_base) if l_base else (min(_hay, litros_obj) if _hay > 0 else 0.0)
-        toma = max(0.0, min(toma, float(litros_obj)))
-        if toma > 0:
-            out.append(_linea(r0, toma))
-            acum += toma
-            if _hay > 0 and toma > _hay + 0.5:
-                notas.append("%s tiene %s L y se piden %s L"
-                             % (r0["nombre"], "{:,.0f}".format(_hay), "{:,.0f}".format(toma)))
-        else:
-            notas.append("el tanque de %s (%s) está sin medición: poné los litros a mano"
-                         % (base_cod, r0["nombre"]))
-        cod_dil = fam[1:]
-    else:
-        cod_dil = [base_cod]
+        rb = b.iloc[0]
+        hay = float(rb["_d"])
 
-    # 2 · diluyentes: AFE-S primero, después el resto de los AFE, por margen contra la spec.
-    d = tks[up.isin(cod_dil) & (dis >= min_l)].copy()
-    if d.empty and not out:
-        return pd.DataFrame(), "No hay tanques con ese producto y stock suficiente."
-    if not d.empty:
-        d["score"] = d.apply(_score, axis=1)
-        d["_pref"] = up[d.index].apply(lambda c: PREFERIDOS.index(c) if c in PREFERIDOS else 99)
-        d = d.sort_values(["_pref", "score", "litros_actual"], ascending=[True, True, False])
+    def _armar_mezcla(lb):
+        """[(fila_tanque, litros)] con el base primero; completa el objetivo con el pool."""
+        out, acum = [], 0.0
+        if formulado and lb > 0:
+            out.append((rb, float(lb)))
+            acum = float(lb)
         for _, r in d.iterrows():
             if acum >= litros_obj:
                 break
             toma = min(float(r["litros_actual"]), litros_obj - acum)
             if toma < min_l * 0.2:
                 continue
-            out.append(_linea(r, toma))
+            out.append((r, toma))
             acum += toma
-    if not out:
+        return out, acum
+
+    def _cumple(lineas):
+        """Promedios ponderados por kg de la masa medida vs los máximos de la spec."""
+        for c, lim in (("acidez", spec["acidez"]), ("agua_sedimento", spec["ays"]),
+                       ("azufre", spec["azufre"]), ("fosforo", spec["fosforo"])):
+            if not lim:
+                continue
+            num = den = 0.0
+            for r, lts in lineas:
+                if pd.isna(r[c]):
+                    continue
+                _dn = float(r["densidad"]) if pd.notna(r.get("densidad")) else 0.91
+                kg = lts * _dn
+                num += float(r[c]) * kg
+                den += kg
+            if den > 0 and num / den > float(lim) + 1e-9:
+                return False
+        return True
+
+    notas = []
+    lb = 0.0
+    if formulado:
+        if maximizar:
+            tope = min(hay, float(litros_obj))
+            if tope <= 0:
+                notas.append("el tanque de %s (%s) no tiene stock medido: no se puede maximizar, "
+                             "poné los litros a mano" % (base_cod, rb["nombre"]))
+            elif _cumple(_armar_mezcla(tope)[0]):
+                lb = tope
+                notas.append("entra TODO el stock de %s (%s L) y la mezcla sigue en spec"
+                             % (base_cod, "{:,.0f}".format(tope)))
+            elif not _cumple(_armar_mezcla(0.0)[0]):
+                notas.append("ni siquiera sin %s la mezcla cumple la spec con estos AFE: "
+                             "cambiá los tanques diluyentes" % base_cod)
+            else:
+                lo, hi = 0.0, tope
+                for _ in range(30):
+                    mid = (lo + hi) / 2.0
+                    if _cumple(_armar_mezcla(mid)[0]):
+                        lo = mid
+                    else:
+                        hi = mid
+                lb = float(int(lo // 10) * 10)  # redondeo hacia abajo: margen, no exceso
+        else:
+            lb = float(l_base) if l_base else (min(hay, litros_obj) if hay > 0 else 0.0)
+            lb = max(0.0, min(lb, float(litros_obj)))
+            if lb <= 0 and not l_base:
+                notas.append("el tanque de %s (%s) está sin medición: poné los litros a mano"
+                             % (base_cod, rb["nombre"]))
+            elif hay > 0 and lb > hay + 0.5:
+                notas.append("%s tiene %s L y se piden %s L"
+                             % (rb["nombre"], "{:,.0f}".format(hay), "{:,.0f}".format(lb)))
+
+    lineas, acum = _armar_mezcla(lb)
+    if not lineas:
         return pd.DataFrame(), "No se pudo armar una mezcla con el stock disponible."
+    out = [_linea(r, lts) for r, lts in lineas]
     falta = litros_obj - acum
     msg = "Propuesta con %d tanque(s) — %s L." % (len(out), "{:,.0f}".format(acum))
-    if len(fam) > 1:
-        msg += (" La primera línea es el componente %s; el resto son AFE (primero AFE-S)."
-                % base_cod)
+    if formulado and maximizar:
+        msg += (" Máximo %s que cumple la spec: %s L (%.1f%% de la carga)."
+                % (base_cod, "{:,.0f}".format(lb), (100.0 * lb / acum if acum else 0.0)))
+    elif formulado:
+        msg += " La primera línea es el componente %s; el resto son AFE (primero AFE-S)." % base_cod
     if falta > 1:
         msg += " Faltan %s L: no alcanza el stock." % "{:,.0f}".format(falta)
     if notas:
@@ -456,7 +508,15 @@ def render(USR, cat, conectar):
         st.warning("Sección exclusiva de dirección.")
         return
 
-    _opts = ["🧪 Armar / editar despacho", "🎟️ Tickets de portería", "📋 Despachos cargados"]
+    ss = st.session_state
+    _opts = ["🧪 Armar / editar despacho", "🔬 Control y confirmación", "🎟️ Tickets de portería",
+             "📋 Despachos cargados"]
+    # "Modificar en el armador" pide cambiar de vista: va vía dsp_tab_next porque el estado de
+    # un widget ya instanciado no se puede pisar dentro del mismo run.
+    _nx = ss.pop("dsp_tab_next", None)
+    if _nx in _opts:
+        ss["dsp_tab_sc"] = _nx
+        ss["dsp_tab"] = _nx
     try:
         _t = st.segmented_control("Vista", _opts, default=_opts[0], key="dsp_tab_sc",
                                   label_visibility="collapsed")
@@ -469,6 +529,8 @@ def render(USR, cat, conectar):
         _listado(USR, cat, conectar)
     elif _t.startswith("🎟️"):
         _tickets(USR, cat, conectar)
+    elif _t.startswith("🔬"):
+        _control(USR, cat, conectar)
     else:
         _armar(USR, cat, conectar)
 
@@ -480,6 +542,42 @@ def _armar(USR, cat, conectar):
         st.error("No se pudieron leer los tanques.")
         return
     prods = _productos(cat)
+
+    # líneas de un despacho guardado que se mandó a editar (ver _editar_despacho)
+    _pend = ss.pop("dsp_load_pend", None)
+    if _pend is not None:
+        _mapa = {int(r["id_tanque"]): r["etq"] for _, r in tks.iterrows()}
+        _filas, _sk, _algun_manual = [], [], False
+        for _ln in _pend:
+            _e = _mapa.get(int(_ln["id_tanque"])) if pd.notna(_ln.get("id_tanque")) else None
+            if not _e:
+                _sk.append(str(_ln.get("id_tanque")))
+                continue
+            _man = str(_ln.get("lab_origen") or "") == "MANUAL"
+            _algun_manual = _algun_manual or _man
+            _filas.append({
+                "Tanque": _e,
+                "Litros": float(_ln.get("litros") or 0),
+                "Acidez %": (float(_ln["acidez"]) if _man and _ln.get("acidez") is not None else _NAN),
+                "Fósforo ppm": (float(_ln["fosforo"]) if _man and _ln.get("fosforo") is not None else _NAN),
+                "Azufre ppm": (float(_ln["azufre"]) if _man and _ln.get("azufre") is not None else _NAN),
+                "AyS %": (float(_ln["agua_sedimento"]) if _man and _ln.get("agua_sedimento") is not None
+                          else _NAN),
+            })
+        ss["dsp_lineas"] = pd.DataFrame(_filas) if _filas else _base_vacia(_COLS_ED)
+        if _algun_manual:
+            ss["dsp_pisar"] = True
+        if _sk:
+            st.warning("Quedaron afuera %d línea(s) de tanques que ya no están activos (id: %s)."
+                       % (len(_sk), ", ".join(_sk)))
+
+    if ss.get("dsp_edit_id"):
+        _ci, _cx = st.columns([4, 1])
+        _ci.info("✏️ Estás **editando el despacho #%d**: al guardar se pisa el existente y sus "
+                 "líneas se reemplazan por lo que quede acá." % int(ss["dsp_edit_id"]))
+        if _cx.button("✖ Cancelar edición", key="dsp_edit_cancel", use_container_width=True):
+            ss["dsp_edit_id"] = None
+            st.rerun()
 
     # ---------- 1 · Cabecera ----------
     st.markdown("#### 1 · Datos del despacho")
@@ -613,20 +711,27 @@ def _armar(USR, cat, conectar):
     st.markdown("#### 3 · Formulación por tanque")
     _formulado = len(_fam) > 1
     if _formulado:
-        ca, cb, cd, cc = st.columns([1.1, 0.9, 1, 1.6])
+        ca, cb, ce, cd, cc = st.columns([1.05, 0.85, 1, 1, 1.3])
+        _maxb = ce.checkbox("📐 Máx. %s" % _fam[0], value=bool(ss.get("dsp_maxb", True)),
+                            key="dsp_maxb",
+                            help="Busca la MAYOR cantidad de %s que sigue cumpliendo la especificación. "
+                                 "El %s es más barato que el AFE-S: conviene maximizar su participación "
+                                 "en la carga." % (_fam[0], _fam[0]))
         _lb = cd.number_input("Litros de %s" % _fam[0], min_value=0.0, step=500.0,
                               value=float(ss.get("dsp_lbase", 0.0)), key="dsp_lbase",
-                              help="Litros del componente base para la sugerencia. 0 = lo que haya "
-                                   "en el tanque de %s con más stock, topeado al objetivo." % _fam[0])
+                              disabled=_maxb,
+                              help="Litros del componente base a mano (sólo si desactivás el máximo). "
+                                   "0 = todo lo que haya en el tanque de %s con más stock, topeado "
+                                   "al objetivo." % _fam[0])
     else:
         ca, cb, cc = st.columns([1, 1, 2.4])
-        _lb = 0.0
-    _hlp = ("Arma la formulación: primero el componente %s y después los AFE que lo diluyen "
-            "(AFE-S primero, y dentro de cada producto los de mayor margen contra la spec)."
+        _lb, _maxb = 0.0, False
+    _hlp = ("Arma la formulación: el componente %s (al máximo que cumpla la spec, o los litros que "
+            "pongas) y después los AFE que lo diluyen (AFE-S primero, mayor margen primero)."
             % _fam[0]) if _formulado else \
            "Propone tanques del producto elegido, priorizando los de mayor margen contra la spec."
     if ca.button("🎯 Sugerir mezcla", use_container_width=True, help=_hlp):
-        _sug, _msg = _sugerir(tks, prod_cod, lit_obj, spec, prods, (_lb or None))
+        _sug, _msg = _sugerir(tks, prod_cod, lit_obj, spec, prods, (_lb or None), maximizar=_maxb)
         if _sug.empty:
             cc.warning(_msg)
         else:
@@ -851,6 +956,11 @@ def _listado(USR, cat, conectar):
                          "Restante (L)"]], hide_index=True, use_container_width=True)
         st.caption("*Disp. hoy* es el stock actual del tanque, no el del momento de la carga.")
 
+    if st.button("✏️ Modificar en el armador", key="dsp_ed_open",
+                 help="Precarga cabecera y líneas en la vista de armado; al guardar se pisa este despacho."):
+        _editar_despacho(cat, st.session_state, int(sel))
+        st.rerun()
+
     r = df[df["id_despacho"] == sel].iloc[0]
     c1, c2, c3 = st.columns([1.2, 1, 2])
     _nuevo = c1.selectbox("Cambiar estado", ESTADOS, index=ESTADOS.index(r["estado"]), key="dsp_est_up")
@@ -885,6 +995,197 @@ def _listado(USR, cat, conectar):
             cat.clear(); st.success("Despacho borrado."); st.rerun()
         except Exception as e:
             st.error(f"No se pudo borrar: {e}")
+
+
+def _editar_despacho(cat, ss, id_despacho):
+    """Precarga un despacho guardado en el armador (cabecera + líneas) para modificarlo."""
+    cab = cat("SELECT titulo, destino, cliente, producto_codigo, tipo_carga, fecha_despacho, "
+              "n_contenedores, litros_por_contenedor, spec_acidez_max, spec_ays_max, "
+              "spec_azufre_max, spec_fosforo_max, estado, observaciones "
+              "FROM produccion.fact_despacho WHERE id_despacho=%s", (int(id_despacho),))
+    if cab is None or cab.empty:
+        st.error("No encontré el despacho #%d." % int(id_despacho))
+        return
+    r = cab.iloc[0]
+    lin = cat("SELECT id_tanque, litros, acidez, fosforo, azufre, agua_sedimento, lab_origen "
+              "FROM produccion.fact_despacho_linea WHERE id_despacho=%s ORDER BY orden",
+              (int(id_despacho),))
+    prods = _productos(cat)
+    if not prods.empty:
+        _m = prods[prods["codigo_producto"] == r["producto_codigo"]]
+        if not _m.empty:
+            ss["dsp_prod"] = _m.iloc[0]["producto"]
+    ss["dsp_titulo"] = r["titulo"] or ""
+    ss["dsp_destino"] = r["destino"] or ""
+    ss["dsp_cliente"] = r["cliente"] or ""
+    if r["tipo_carga"] in TIPOS_CARGA:
+        ss["dsp_tipo"] = r["tipo_carga"]
+    if pd.notna(r["fecha_despacho"]):
+        ss["dsp_fecha"] = pd.to_datetime(r["fecha_despacho"]).date()
+    ss["dsp_ncont"] = int(r["n_contenedores"] or 1)
+    ss["dsp_lcont"] = float(r["litros_por_contenedor"] or 26000.0)
+    for _k, _c in (("dsp_spac", "spec_acidez_max"), ("dsp_spays", "spec_ays_max"),
+                   ("dsp_spaz", "spec_azufre_max"), ("dsp_spfos", "spec_fosforo_max")):
+        if pd.notna(r[_c]):
+            ss[_k] = float(r[_c])
+    if r["estado"] in ESTADOS:
+        ss["dsp_estado"] = r["estado"]
+    ss["dsp_obs"] = r["observaciones"] or ""
+    ss["dsp_load_pend"] = [] if lin is None else lin.to_dict("records")
+    ss["dsp_edit_id"] = int(id_despacho)
+    ss["dsp_tab_next"] = "🧪 Armar / editar despacho"
+
+
+# ------------------------------------------------------------------ control y confirmación
+
+def _control(USR, cat, conectar):
+    """Repaso de los despachos pre-cargados: refrescar laboratorio, verificar spec, confirmar."""
+    ss = st.session_state
+    st.markdown("#### 🔬 Control y confirmación")
+    st.caption("Los **borradores se guardan aunque no cumplan** la especificación (el laboratorio "
+               "de los tanques suele estar desactualizado al armarlos). Acá se actualizan los "
+               "parámetros con el último análisis, se controla la spec y, cuando cumple, se "
+               "confirma: el despacho queda **iniciado**.")
+
+    df = cat("SELECT id_despacho, titulo, destino, producto, fecha_despacho, estado, litros_total, "
+             "tn_total FROM produccion.v_despacho_resumen WHERE estado IN ('BORRADOR','CONFIRMADO') "
+             "ORDER BY (estado='BORRADOR') DESC, fecha_despacho DESC NULLS LAST, id_despacho DESC")
+    if df is None or df.empty:
+        st.info("No hay despachos en borrador ni confirmados para controlar.")
+        return
+    _lbl = {int(r["id_despacho"]): ("#%d · %s · %s · %s" % (int(r["id_despacho"]),
+             r["titulo"] or "s/título", r["estado"], r["fecha_despacho"] or "s/fecha"))
+            for _, r in df.iterrows()}
+    sel = st.selectbox("Despacho a controlar", df["id_despacho"].tolist(),
+                       format_func=lambda i: _lbl.get(int(i), str(i)), key="dsp_ctl_sel")
+    if sel is None:
+        return
+    _estado = str(df[df["id_despacho"] == sel].iloc[0]["estado"])
+
+    cabx = cat("SELECT spec_acidez_max, spec_ays_max, spec_azufre_max, spec_fosforo_max "
+               "FROM produccion.fact_despacho WHERE id_despacho=%s", (int(sel),))
+    _rs = cabx.iloc[0] if cabx is not None and not cabx.empty else {}
+    spec = {"acidez": float(_rs.get("spec_acidez_max") or SPEC_DEFAULT["acidez"]),
+            "ays": float(_rs.get("spec_ays_max") or SPEC_DEFAULT["ays"]),
+            "azufre": float(_rs.get("spec_azufre_max") or SPEC_DEFAULT["azufre"]),
+            "fosforo": float(_rs.get("spec_fosforo_max") or SPEC_DEFAULT["fosforo"])}
+
+    lin = cat("SELECT l.id_linea, l.orden, l.id_tanque, l.producto_codigo, l.litros, l.densidad, "
+              "l.acidez, l.fosforo, l.azufre, l.agua_sedimento, l.lab_origen, "
+              "t.nombre AS tanque, t.acidez AS acidez_tk, t.fosforo AS fosforo_tk, "
+              "t.azufre AS azufre_tk, t.agua_sedimento AS ays_tk, t.densidad AS dens_tk, "
+              "t.lab_actualizado_en "
+              "FROM produccion.fact_despacho_linea l "
+              "LEFT JOIN produccion.vw_tanque_panel t ON t.id_tanque = l.id_tanque "
+              "WHERE l.id_despacho=%s ORDER BY l.orden", (int(sel),))
+    if lin is None or lin.empty:
+        st.info("Este despacho no tiene líneas cargadas. Editalo en el armador.")
+        return
+    lin = lin.copy()
+    for _c in ("litros", "densidad", "acidez", "fosforo", "azufre", "agua_sedimento",
+               "acidez_tk", "fosforo_tk", "azufre_tk", "ays_tk", "dens_tk"):
+        lin[_c] = pd.to_numeric(lin[_c], errors="coerce")
+    _man = lin["lab_origen"].astype(str).eq("MANUAL")
+
+    # ---- comparación guardado vs tanque hoy ----
+    def _dif(a, b, tol):
+        if pd.isna(a) and pd.isna(b):
+            return False
+        if pd.isna(a) or pd.isna(b):
+            return True
+        return abs(float(a) - float(b)) > tol
+
+    _chg = lin.apply(lambda r: (_dif(r["acidez"], r["acidez_tk"], 0.005)
+                                or _dif(r["fosforo"], r["fosforo_tk"], 0.5)
+                                or _dif(r["azufre"], r["azufre_tk"], 0.5)
+                                or _dif(r["agua_sedimento"], r["ays_tk"], 0.005)), axis=1)
+    _v = pd.DataFrame({
+        "Tanque": lin["tanque"].fillna("(id %s)" % 0),
+        "Prod.": lin["producto_codigo"], "Litros": lin["litros"],
+        "Origen lab": lin["lab_origen"].fillna("TANQUE"),
+        "Acidez guard.": lin["acidez"], "Acidez hoy": lin["acidez_tk"],
+        "P guard.": lin["fosforo"], "P hoy": lin["fosforo_tk"],
+        "S guard.": lin["azufre"], "S hoy": lin["azufre_tk"],
+        "AyS guard.": lin["agua_sedimento"], "AyS hoy": lin["ays_tk"],
+        "Lab del": lin["lab_actualizado_en"],
+        "¿Cambió?": ["🔄 sí" if x else "" for x in _chg],
+    })
+    st.dataframe(_v, hide_index=True, use_container_width=True,
+                 column_config={"Litros": st.column_config.NumberColumn(format="%.0f"),
+                                "Lab del": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")})
+    _nch = int(_chg.sum())
+    if _nch:
+        st.warning("🔄 %d línea(s) tienen el laboratorio del tanque distinto al guardado en el "
+                   "despacho. Actualizá antes de confirmar." % _nch)
+
+    # ---- cumplimiento: guardado y como quedaría con el lab de hoy ----
+    def _mk(actual):
+        if actual:
+            dens = lin["dens_tk"].fillna(lin["densidad"])
+            cols = {"Acidez %": lin["acidez_tk"].where(~_man, lin["acidez"]),
+                    "AyS %": lin["ays_tk"].where(~_man, lin["agua_sedimento"]),
+                    "Azufre ppm": lin["azufre_tk"].where(~_man, lin["azufre"]),
+                    "Fósforo ppm": lin["fosforo_tk"].where(~_man, lin["fosforo"])}
+        else:
+            dens = lin["densidad"]
+            cols = {"Acidez %": lin["acidez"], "AyS %": lin["agua_sedimento"],
+                    "Azufre ppm": lin["azufre"], "Fósforo ppm": lin["fosforo"]}
+        out = pd.DataFrame(cols)
+        out["kg"] = lin["litros"].fillna(0) * dens.fillna(0.91)
+        return out
+
+    st.markdown("**Cumplimiento con el laboratorio guardado en el despacho**")
+    ok_g = _panel_specs(_mk(False), spec)
+    if _nch:
+        st.markdown("**Como quedaría con el laboratorio de hoy** (sin pisar lo cargado a mano)")
+        _panel_specs(_mk(True), spec)
+
+    # ---- acciones ----
+    c1, c2, c3 = st.columns([1.3, 1.1, 1.3])
+    _pm = c1.checkbox("Pisar también los valores cargados a mano", value=False, key="dsp_ctl_pm",
+                      help="Por defecto las líneas con lab_origen MANUAL se respetan.")
+    if c1.button("🔄 Actualizar lab desde los tanques", key="dsp_ctl_upd", use_container_width=True):
+        try:
+            _sqlu = ("UPDATE produccion.fact_despacho_linea l "
+                     "SET acidez=t.acidez, fosforo=t.fosforo, azufre=t.azufre, "
+                     "agua_sedimento=t.agua_sedimento, densidad=COALESCE(t.densidad, l.densidad), "
+                     "lab_origen='TANQUE' "
+                     "FROM produccion.vw_tanque_panel t "
+                     "WHERE t.id_tanque=l.id_tanque AND l.id_despacho=%s")
+            if not _pm:
+                _sqlu += " AND COALESCE(l.lab_origen,'TANQUE') <> 'MANUAL'"
+            with conectar(USR["id_usuario"]) as (conn, _a):
+                with conn.cursor() as cur:
+                    cur.execute(_sqlu, (int(sel),))
+                    _nu = cur.rowcount
+            cat.clear()
+            st.success("%d línea(s) actualizadas con el último análisis de su tanque." % _nu)
+            st.rerun()
+        except Exception as e:
+            st.error("No se pudo actualizar: %s" % e)
+    if c2.button("✏️ Modificar en el armador", key="dsp_ctl_edit", use_container_width=True):
+        _editar_despacho(cat, ss, int(sel))
+        st.rerun()
+    if _estado == "BORRADOR":
+        if ok_g:
+            if c3.button("✅ Cumple — confirmar e iniciar", type="primary", key="dsp_ctl_go",
+                         use_container_width=True):
+                try:
+                    with conectar(USR["id_usuario"]) as (conn, _a):
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE produccion.fact_despacho SET estado='CONFIRMADO', "
+                                        "actualizado_en=now() WHERE id_despacho=%s", (int(sel),))
+                    cat.clear()
+                    st.success("Despacho #%d CONFIRMADO: queda iniciado." % int(sel))
+                    st.rerun()
+                except Exception as e:
+                    st.error("No se pudo confirmar: %s" % e)
+        else:
+            c3.button("✅ Confirmar e iniciar", disabled=True, use_container_width=True,
+                      help="No cumple la spec con los valores guardados: actualizá el laboratorio "
+                           "o modificá la mezcla en el armador.")
+    else:
+        c3.caption("Ya está **CONFIRMADO**. El estado se maneja desde *Despachos cargados*.")
 
 
 # ------------------------------------------------------------------ tickets de portería
