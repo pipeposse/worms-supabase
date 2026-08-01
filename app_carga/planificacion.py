@@ -1391,6 +1391,55 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                "(laboratorio confirma el corte de purga; destino y glicerina recuperada se definen acá).")
     uid = int(USR["id_usuario"])
 
+    def _retroceder_block():
+        """Deshace un avance equivocado: DECANTACION→REPOSO o REPOSO→REACCION."""
+        _prev = {"REPOSO": "REACCION", "DECANTACION": "REPOSO"}.get(est)
+        if not _prev:
+            return
+        with st.expander("↩️ Retroceder a %s (si el avance fue una equivocación)" % _prev,
+                         expanded=False):
+            st.caption("Vuelve la reacción a **%s**: borra la entrada errónea del cronograma real, "
+                       "reabre la etapa anterior y queda registrado quién y por qué. Los tickets de "
+                       "laboratorio ya generados no se tocan." % _prev)
+            _rm = st.text_input("Motivo del retroceso *", key="av_retro_mot_%d" % int(idb),
+                                placeholder="ej. se avanzó por error, sigue en reposo")
+            if st.button("↩️ Volver a %s" % _prev, key="av_retro_go_%d" % int(idb),
+                         use_container_width=True):
+                if not (_rm or "").strip():
+                    st.error("Poné el motivo del retroceso.")
+                    return
+                _etp_prev = {"REACCION": "REACCION", "REPOSO": "REPOSANDO"}[_prev]
+                _etp_act = {"REPOSO": "REPOSANDO", "DECANTACION": "DECANTACION"}[est]
+                try:
+                    _mot = "Retroceso desde ficha: " + _rm.strip()
+                    with conectar(uid) as (conn, audit):
+                        with conn.cursor() as cur:
+                            # el evento abierto de la etapa a la que se entró por error se borra…
+                            cur.execute("DELETE FROM produccion.fact_etapa_evento "
+                                        "WHERE id_batch=%s AND etapa=%s AND fin_ts IS NULL",
+                                        (int(idb), _etp_act))
+                            # …y se reabre el último evento de la etapa anterior (o se crea si no hay)
+                            cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=NULL "
+                                        "WHERE id_evento_etapa=(SELECT id_evento_etapa "
+                                        "  FROM produccion.fact_etapa_evento "
+                                        "  WHERE id_batch=%s AND etapa=%s "
+                                        "  ORDER BY inicio_ts DESC LIMIT 1)",
+                                        (int(idb), _etp_prev))
+                            if cur.rowcount == 0:
+                                cur.execute("INSERT INTO produccion.fact_etapa_evento "
+                                            "(id_batch,etapa,inicio_ts,id_usuario) VALUES (%s,%s,now(),%s)",
+                                            (int(idb), _etp_prev, uid))
+                            cur.execute("UPDATE produccion.fact_batch_proceso SET estado=%s, "
+                                        "etapa_actual=%s, id_usuario_estado=%s, motivo_estado=%s "
+                                        "WHERE id_batch=%s",
+                                        (_prev, _etp_prev, uid, _mot, int(idb)))
+                        audit.log("U", "fact_batch_proceso", int(idb),
+                                  {"retroceso": _prev, "motivo": _rm.strip()})
+                    st.success("Reacción devuelta a **%s**." % _prev)
+                    cat.clear(); st.rerun()
+                except Exception as e:
+                    st.exception(e)
+
     if est == "FINALIZADO":
         st.success("✅ Reacción finalizada (en tanque)."); return
 
@@ -1458,11 +1507,13 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                 st.success(f"Pasada a {_next}."); cat.clear(); st.rerun()
             except Exception as e:
                 st.exception(e)
+        _retroceder_block()
         if _es_are:
             st.divider(); _destinos_are_ficha(USR, cat, conectar, idb, b)
         return
 
     if est == "DECANTACION":
+        _retroceder_block()
         with st.expander("🔬 Cargar lab de decantación (rápido)", expanded=False):
             st.caption("Cargá acá el resultado que define el corte, para agilizar sin ir a Laboratorio. "
                        "(Acidez/temperatura y demás evaluaciones internas van en la solapa 🧫 Evaluación.)")
@@ -1822,6 +1873,9 @@ def _panel_tablero(USR, cat, conectar):
              " round((COALESCE(NULLIF(b.parametros_proceso->>'are_objetivo_kg','')::numeric, "
              "         NULLIF(b.parametros_proceso->>'afe_objetivo_kg','')::numeric, "
              "         NULLIF(b.parametros_proceso->>'kg_objetivo','')::numeric, b.kg_obtenido, 0)/1000.0)::numeric,2) AS obj_tn, "
+             " b.desg_reposo_modo, b.reposo_plan_modo, "
+             " (SELECT dt.nombre FROM produccion.dim_tanque dt WHERE dt.id_tanque=b.desg_id_tanque_reposo) AS reposo_tk, "
+             " (SELECT dt2.nombre FROM produccion.dim_tanque dt2 WHERE dt2.id_tanque=b.reposo_plan_id_tanque) AS reposo_plan_tk, "
              " b.parametros_proceso "
              "FROM produccion.fact_batch_proceso b "
              "LEFT JOIN produccion.v_reaccion_etiqueta et ON et.id_batch=b.id_batch "
@@ -1870,7 +1924,22 @@ def _panel_tablero(USR, cat, conectar):
                     sem = "🟡"
                 else:
                     sem = "🟢"
+        # dónde reposa: la decisión operativa (desgomado) le gana al plan de carga
+        _rm_ = str(r.get("desg_reposo_modo") or "")
+        _pm_ = str(r.get("reposo_plan_modo") or "")
+        if _rm_ == "REACTOR":
+            _rep_lbl = "⚗️ " + str(r["reactor"] or "reactor")
+        elif _rm_:
+            _rep_lbl = "🛢️ " + str(r.get("reposo_tk") or "Cónico 60")
+        elif _pm_ == "REACTOR":
+            _rep_lbl = "⚗️ %s (plan)" % (r["reactor"] or "reactor")
+        elif _pm_:
+            _rep_lbl = "🛢️ %s (plan)" % (r.get("reposo_plan_tk")
+                                          or ("Cónico 60" if _pm_ == "CONICO60" else "Cónico 20"))
+        else:
+            _rep_lbl = "—"
         rows.append({"⚑": sem, "N°": r["ident"], "Reacción": r["etiqueta"], "Estado": r["estado"],
+                     "Reposo en": _rep_lbl,
                      "MP": r["mp"], "MP (t)": float(r["mp_tn"] or 0), "→ Producto": r["producto"],
                      "Obj (t)": float(r["obj_tn"] or 0), "Próxima etapa": prox, "ETA": eta,
                      "Atraso (h)": atraso_h})
