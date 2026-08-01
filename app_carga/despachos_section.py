@@ -26,7 +26,7 @@ ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 SPEC_DEFAULT = {"acidez": 5.0, "ays": 2.0, "azufre": 50.0, "fosforo": 150.0}
 # Por debajo de esto un tanque no entra en la formulación: suele ser fondo de tanque
 # (borra/sedimento decantado), que arruina la calidad de la mezcla.
-MIN_L_DESPACHO = 3000.0
+MIN_L_DESPACHO = 3500.0
 TIPOS_CARGA = ["FLEX", "ISO TANK", "BULK", "CAMION", "TAMBORES"]
 ESTADOS = ["BORRADOR", "CONFIRMADO", "DESPACHADO", "ANULADO"]
 
