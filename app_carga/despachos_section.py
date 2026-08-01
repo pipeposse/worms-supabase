@@ -24,6 +24,9 @@ import streamlit as st
 ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 
 SPEC_DEFAULT = {"acidez": 5.0, "ays": 2.0, "azufre": 50.0, "fosforo": 150.0}
+# Por debajo de esto un tanque no entra en la formulación: suele ser fondo de tanque
+# (borra/sedimento decantado), que arruina la calidad de la mezcla.
+MIN_L_DESPACHO = 3000.0
 TIPOS_CARGA = ["FLEX", "ISO TANK", "BULK", "CAMION", "TAMBORES"]
 ESTADOS = ["BORRADOR", "CONFIRMADO", "DESPACHADO", "ANULADO"]
 
@@ -277,7 +280,7 @@ def _estructura(res, prod_cod, prods=None):
 # ------------------------------------------------------------------ sugerencia de mezcla
 
 def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar=False,
-             min_l=1000.0):
+             min_l=MIN_L_DESPACHO):
     """Propone la carga respetando la formulación: primero el componente base, después los AFE.
 
     Con maximizar=True busca el MÁXIMO de componente base (AG-E) que sigue cumpliendo la
@@ -323,7 +326,10 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                     % (base_cod, base_cod))
         b["_d"] = b["litros_actual"].fillna(0)
         b = b.sort_values("_d", ascending=False)
-        rb = b.iloc[0]
+        # fondo de tanque (<min_l) tampoco sirve como base; sin medición (0) se permite
+        # porque es el caso del tanque de formulación, que se llena al armar la carga
+        _bok = b[(b["_d"] >= min_l) | (b["_d"] <= 0)]
+        rb = (_bok if not _bok.empty else b).iloc[0]
         hay = float(rb["_d"])
 
     def _armar_mezcla(lb):
@@ -653,17 +659,41 @@ def _armar(USR, cat, conectar):
     # Un tanque sin stock medido igual puede ser el origen del despacho: el de formulación
     # (FORM-AG-E) se llena al momento de armar la carga, así que casi siempre figura en 0 y aun
     # así es de donde sale el producto. Antes se lo excluía del selector y la opción no aparecía.
-    _con = _tp[_tp["litros_actual"].fillna(0) > 0].copy()
-    _s0 = _tp[_tp["litros_actual"].fillna(0) <= 0].copy()
+    _lts = _tp["litros_actual"].fillna(0)
+    _con = _tp[_lts >= MIN_L_DESPACHO].copy()
+    _fondo = _tp[(_lts > 0) & (_lts < MIN_L_DESPACHO)].copy()
+    _s0 = _tp[_lts <= 0].copy()
     if _con.empty and _s0.empty:
         st.error(f"Hay tanques de **{prod_lbl}** pero ninguno disponible. "
                  "Revisá el panel de tanques.")
         return
     _sin_lab = _con[_con.apply(lambda r: len(_faltan_lab(r)) > 0, axis=1)]
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Tanques con stock", f"{len(_con)}")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Tanques usables", f"{len(_con)}",
+              help="Con al menos %s L. Menos que eso suele ser fondo de tanque y no entra."
+                   % f"{MIN_L_DESPACHO:,.0f}")
     k2.metric("Stock disponible", f"{_con['litros_actual'].fillna(0).sum():,.0f} L")
     k3.metric("Con lab completo", f"{len(_con) - len(_sin_lab)} de {len(_con)}")
+    k4.metric("Fondos excluidos", f"{len(_fondo)}",
+              help="Tanques con menos de %s L: no se ofrecen ni se sugieren."
+                   % f"{MIN_L_DESPACHO:,.0f}")
+    if not _fondo.empty:
+        st.caption("🛢️ **Quedan afuera por fondo de tanque (<%s L):** " % f"{MIN_L_DESPACHO:,.0f}"
+                   + ", ".join(f"{r['nombre']} ({r['litros_actual']:,.0f} L)"
+                               for _, r in _fondo.sort_values("litros_actual").iterrows()))
+
+    # Stock a la vista: cuánto hay en cada tanque usable, ordenado de mayor a menor.
+    _stk = _con.sort_values("litros_actual", ascending=False)[
+        ["nombre", "producto_principal", "litros_actual", "capacidad_litros"]].copy()
+    _stk["% lleno"] = (100.0 * _stk["litros_actual"] / _stk["capacidad_litros"].replace(0, pd.NA)).fillna(0.0).round(0)
+    _stk = _stk.rename(columns={"nombre": "Tanque", "producto_principal": "Producto",
+                                "litros_actual": "Stock (L)", "capacidad_litros": "Capacidad (L)"})
+    st.dataframe(_stk, hide_index=True, use_container_width=True, height=min(38 * (len(_stk) + 1), 320),
+                 column_config={
+                     "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "% lleno": st.column_config.ProgressColumn("% lleno", format="%.0f%%",
+                                                                min_value=0, max_value=100)})
     if not _s0.empty:
         st.caption("Sin medición de nivel cargada, pero igual seleccionables: **" +
                    "**, **".join(_s0["nombre"].astype(str).tolist()) +
