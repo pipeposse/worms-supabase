@@ -2067,8 +2067,29 @@ def _form_param_tanque(cat, conectar, USR):
                        "antes de cargar parámetros (los parámetros van por tanque + producto).")
         else:
             _ev = _lr.get("ultima_evaluacion_ts")
-            st.caption(f"Producto actual: **{_lr['prod']}** · última evaluación: "
+            st.caption(f"Producto actual (maestro): **{_lr['prod']}** · última evaluación: "
                        f"{pd.to_datetime(_ev).strftime('%d/%m/%Y %H:%M') if pd.notna(_ev) else 'sin evaluación'}")
+            # En cada evaluación el laboratorio CONFIRMA qué producto tiene el tanque hoy.
+            # Si declara otro, el maestro del tanque se actualiza al guardar (queda auditado).
+            _pall = cat("SELECT id_producto, codigo_producto FROM produccion.dim_producto "
+                        "WHERE COALESCE(activo,true) ORDER BY codigo_producto")
+            _cur_cod = str(_lr["prod"] or "")
+            _pcods = (_pall["codigo_producto"].tolist()
+                      if _pall is not None and not _pall.empty else [_cur_cod])
+            if _cur_cod and _cur_cod not in _pcods:
+                _pcods = [_cur_cod] + _pcods
+            _pconf = st.selectbox(
+                "✅ Producto que tiene el tanque HOY *", _pcods,
+                index=(_pcods.index(_cur_cod) if _cur_cod in _pcods else 0),
+                key=f"lab_pconf_{_lidt}",
+                help="Confirmalo en cada evaluación: es lo que asegura que los parámetros "
+                     "queden colgados del producto correcto. Si elegís otro, el producto "
+                     "principal del tanque se actualiza al guardar.")
+            _cambio_prod = bool(_cur_cod) and (_pconf != _cur_cod)
+            if _cambio_prod:
+                st.warning("Estás declarando que el tanque tiene **%s** y el maestro dice **%s**. "
+                           "Al guardar se actualiza el producto principal del tanque."
+                           % (_pconf, _cur_cod))
             def _pv(col, d=0.0):
                 v = _lr.get(col)
                 return float(v) if pd.notna(v) else float(d)
@@ -2084,8 +2105,8 @@ def _form_param_tanque(cat, conectar, USR):
             _gl = lc7.number_input("Glicerina %", min_value=0.0, value=_pv("glicerina_pct"), step=0.1, format="%.2f", key="lab_gl")
             _pr = lc8.number_input("Producto %", min_value=0.0, value=_pv("producto_pct"), step=0.1, format="%.2f", key="lab_pr")
 
-            # ---- parámetros específicos del producto (según el maestro) ----
-            _fam = str(_lr["prod"] or "").split("-")[0].upper()
+            # ---- parámetros específicos del producto (según lo confirmado) ----
+            _fam = str(_pconf or "").split("-")[0].upper()
             _pe = _lr.get("parametros_extra")
             if isinstance(_pe, str):
                 try: _pe = __import__("json").loads(_pe)
@@ -2116,27 +2137,53 @@ def _form_param_tanque(cat, conectar, USR):
                     except (TypeError, ValueError): _dv = None
                     _extra_vals[_k] = _xc[_i % 3].number_input(_l, value=_dv, step=0.1, format="%g", key=f"lab_x_{_lidt}_{_k}")
             _cal_opts = _TK_CALIDAD_FAMILIA.get(_fam)
-            if "PES" in str(_lr["prod"] or "").upper():
+            if "PES" in str(_pconf or "").upper():
                 _cal_opts = ["UNICA"]
             _calidad = None
             if _cal_opts:
                 _cur_cal = str(_pe.get("calidad") or "")
                 _cal_list = [""] + _cal_opts
-                _calidad = st.selectbox("Calidad", _cal_list,
-                                        index=_cal_list.index(_cur_cal) if _cur_cal in _cal_list else 0, key=f"lab_cal_{_lidt}")
+                _calidad = st.selectbox("Calidad *", _cal_list,
+                                        index=_cal_list.index(_cur_cal) if _cur_cal in _cal_list else 0,
+                                        key=f"lab_cal_{_lidt}",
+                                        help="Obligatoria: en cada evaluación se confirma producto Y calidad.")
 
             _corr_opts = ["", "VEGETAL", "ANIMAL", "INSUMO", "MIXTA"]
             _corr_cur = str(_lr.get("corriente")).upper() if pd.notna(_lr.get("corriente")) else ""
             _co = st.selectbox("Corriente", _corr_opts,
                                index=_corr_opts.index(_corr_cur) if _corr_cur in _corr_opts else 0, key="lab_co")
             _cm = st.text_input("Comentario", max_chars=200, key="lab_cm")
-            if st.button("💾 Guardar parámetros", type="primary", use_container_width=True, key="lab_save"):
+            _falta_cal = bool(_cal_opts) and not _calidad
+            _conf_txt = "✔ Confirmo que el tanque tiene **%s**" % _pconf
+            if _calidad:
+                _conf_txt += " calidad **%s**" % _calidad
+            _ok_conf = st.checkbox(_conf_txt, key=f"lab_conf_{_lidt}",
+                                   help="Sin esta confirmación no se guardan los parámetros.")
+            if _falta_cal:
+                st.error("Falta elegir la **calidad** del producto: es obligatoria en cada evaluación.")
+            if st.button("💾 Guardar parámetros", type="primary", use_container_width=True,
+                         key="lab_save", disabled=(not _ok_conf or _falta_cal),
+                         help=None if (_ok_conf and not _falta_cal)
+                         else "Confirmá producto y calidad para poder guardar."):
                 _extra_save = {k: float(v) for k, v in _extra_vals.items() if v is not None}
                 if _calidad: _extra_save["calidad"] = _calidad
+                _extra_save["producto_confirmado"] = _pconf
                 if _cm: _extra_save["comentario"] = _cm
                 try:
+                    _pid_save = int(_lpid)
                     with conectar(USR["id_usuario"]) as (conn, audit):
                         with conn.cursor() as cur:
+                            if _cambio_prod and _pall is not None and not _pall.empty:
+                                _mnp = _pall[_pall["codigo_producto"] == _pconf]
+                                if not _mnp.empty:
+                                    _pid_save = int(_mnp.iloc[0]["id_producto"])
+                                    cur.execute("UPDATE produccion.dim_tanque "
+                                                "SET id_producto_principal=%s WHERE id_tanque=%s",
+                                                (_pid_save, _lidt))
+                                    audit.log("U", "dim_tanque", _lidt,
+                                              {"id_producto_principal": _pid_save,
+                                               "confirmado_por_lab": _pconf,
+                                               "producto_anterior": _cur_cod})
                             cur.execute(
                                 "INSERT INTO produccion.fact_param_tanque "
                                 "(id_tanque,id_producto,corriente,evaluado,ultima_evaluacion_ts,"
@@ -2151,13 +2198,15 @@ def _form_param_tanque(cat, conectar, USR):
                                 " glicerina_pct=EXCLUDED.glicerina_pct, producto_pct=EXCLUDED.producto_pct, "
                                 " parametros_extra=COALESCE(produccion.fact_param_tanque.parametros_extra,'{}'::jsonb)||EXCLUDED.parametros_extra, "
                                 " actualizado_en=now()",
-                                (_lidt, int(_lpid), (_co or None),
+                                (_lidt, _pid_save, (_co or None),
                                  float(_ac), float(_ag), float(_se), float(_de), float(_az), float(_fo),
                                  float(_gl), float(_pr),
                                  __import__("json").dumps(_extra_save)))
                         audit.log("U", "fact_param_tanque", _lidt,
                                   {"acidez_pct": float(_ac), "ppm_azufre": float(_az), "ppm_fosforo": float(_fo)})
-                    st.success(f"Parámetros guardados para {_lr['nombre']} · {_lr['prod']}.")
+                    st.success(f"Parámetros guardados para {_lr['nombre']} · {_pconf}"
+                               + (f" (producto del tanque actualizado: {_cur_cod} → {_pconf})."
+                                  if _cambio_prod else "."))
                     st.session_state["param_tk_celebrar"] = True
                     cat.clear()
                     st.rerun()
