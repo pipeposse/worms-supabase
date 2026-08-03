@@ -44,9 +44,10 @@ def render(USR, cat, conectar):
     st.markdown(
         "<div style='background:linear-gradient(90deg,#7c2d12,#ca8a04);border-radius:14px;"
         "padding:16px 20px;margin:0 0 12px'>"
-        "<div style='color:#fff;font-size:1.4rem;font-weight:900'>🧮 Balance AFE-S ↔ Exportación</div>"
-        "<div style='color:#fef3c7;font-size:.88rem;margin-top:3px'>Qué calidad de AFE-S entra, cuánto "
-        "AG-E se exporta y si el AFE-S bueno alcanza para sostener el ritmo.</div></div>",
+        "<div style='color:#fff;font-size:1.4rem;font-weight:900'>🧮 Balance</div>"
+        "<div style='color:#fef3c7;font-size:.88rem;margin-top:3px'>Qué AFE entra y con qué calidad, "
+        "qué AG-E sale a exportación, qué producen los reactores, y si el AFE-S bueno alcanza "
+        "para sostener el ritmo.</div></div>",
         unsafe_allow_html=True)
     if USR.get("rol") not in ROLES_DIRECCION and "PLANIFICACION" not in (USR.get("secciones_app") or []):
         st.warning("Sección exclusiva de dirección.")
@@ -163,8 +164,45 @@ def render(USR, cat, conectar):
             _x1.dataframe(_em, hide_index=True, use_container_width=True)
             _x2.dataframe(_ed, hide_index=True, use_container_width=True)
 
-    # ---------------- 3 · stock actual por banda ----------------
-    st.markdown("#### 3 · Stock actual de AFE-S y AG-E por banda")
+    # ---------------- 3 · producido en reactores ----------------
+    st.markdown("#### 3 · Producido en reactores")
+    st.caption("Reacciones **finalizadas** (desgomados → AFE-S y producción ARE), por semana y "
+               "producto, con los kg reales (`kg_obtenido`: tickets de pesada o cierre manual).")
+    prod = cat(
+        "SELECT to_char(COALESCE(b.fin_ts, b.fecha::timestamp),'IYYY·\"S\"IW') AS semana, "
+        "to_char(COALESCE(b.fin_ts, b.fecha::timestamp),'YYYY-MM') AS mes, "
+        "COALESCE(dp.codigo_producto,'—') AS producto, "
+        "sum(COALESCE(b.kg_obtenido,0))/1000.0 AS tn, count(*) AS n "
+        "FROM produccion.fact_batch_proceso b "
+        "LEFT JOIN produccion.dim_producto dp ON dp.id_producto=b.id_producto_buscado "
+        "WHERE b.sector='REACTORES' AND COALESCE(b.anulado,false)=false "
+        "AND b.estado='FINALIZADO' AND COALESCE(b.fin_ts, b.fecha::timestamp) >= %s "
+        "GROUP BY 1,2,3", (_desde,))
+    if prod is None or prod.empty:
+        st.info("No hay reacciones finalizadas en la ventana.")
+    else:
+        prod = prod.copy()
+        prod["tn"] = pd.to_numeric(prod["tn"], errors="coerce").fillna(0.0)
+        _tp = float(prod["tn"].sum())
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Producido total", "%.0f t" % _tp, "%.0f t/sem" % (_tp / sem_h))
+        _afe_p = float(prod.loc[prod["producto"].str.upper().str.startswith("AFE"), "tn"].sum())
+        r2.metric("AFE producido", "%.0f t" % _afe_p, "%.0f t/sem" % (_afe_p / sem_h))
+        r3.metric("Reacciones", "%d" % int(pd.to_numeric(prod["n"], errors="coerce").fillna(0).sum()))
+        _pw = prod.pivot_table(index="semana", columns="producto", values="tn", aggfunc="sum").fillna(0.0).round(1)
+        st.bar_chart(_pw, use_container_width=True)
+        with st.expander("Por semana y por mes (tabla)"):
+            _y1, _y2 = st.columns(2)
+            _y1.dataframe(_pw.assign(TOTAL=_pw.sum(axis=1).round(1)).reset_index(),
+                          hide_index=True, use_container_width=True)
+            _pmm = prod.pivot_table(index="mes", columns="producto", values="tn", aggfunc="sum").fillna(0.0).round(1)
+            _y2.dataframe(_pmm.assign(TOTAL=_pmm.sum(axis=1).round(1)).reset_index(),
+                          hide_index=True, use_container_width=True)
+        st.caption("El desgomado propio también alimenta el pool de AFE-S para exportar: si el "
+                   "producido cae, la dependencia del AFE-S comprado (sección 1) sube.")
+
+    # ---------------- 4 · stock actual por banda ----------------
+    st.markdown("#### 4 · Stock actual de AFE-S y AG-E por banda")
     tk = cat("SELECT nombre, producto_principal, litros_actual, capacidad_litros, densidad, "
              "azufre, fosforo, codigo FROM produccion.vw_tanque_panel "
              "WHERE activo AND upper(producto_principal) IN ('AFE-S','AG-E')")
@@ -200,8 +238,8 @@ def render(USR, cat, conectar):
                                             "azufre": "S ppm", "fosforo": "P ppm"}).round(1),
                          hide_index=True, use_container_width=True)
 
-    # ---------------- 4 · proyección ----------------
-    st.markdown("#### 4 · ¿Alcanza el AFE-S bueno? (proyección)")
+    # ---------------- 5 · proyección ----------------
+    st.markdown("#### 5 · ¿Alcanza el AFE-S bueno? (proyección)")
     _lab_in = ing[ing["banda"] != "SIN LAB"]
     _bue = _lab_in[_lab_in["banda"] == "BUENO"]
     _mal = _lab_in[_lab_in["banda"].isin(["MEDIO", "MALO"])]
@@ -271,7 +309,7 @@ def render(USR, cat, conectar):
         st.error("🔴 Con el ingreso actual de AFE-S bueno, **ningún nivel de AG-E es sostenible** a "
                  "%.0f t/sem: hay que conseguir más AFE-S bueno o bajar la exportación." % exp_obj)
 
-    # ---------------- 5 · cómo ajusta la fórmula de despacho ----------------
+    # ---------------- 6 · cómo ajusta la fórmula de despacho ----------------
     with st.expander("📐 Cómo ajusta esto la fórmula de despacho", expanded=True):
         st.markdown(
             "1. **El AG-E sigue al máximo** que la spec tolere (es lo más barato): eso no cambia.\n"

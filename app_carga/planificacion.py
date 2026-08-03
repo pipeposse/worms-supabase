@@ -3190,7 +3190,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # director al entrar y le tapaba lo que realmente hace la sección (planificar).
     # Ahora es la última opción del menú, como cualquier otra.
     _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administración de reacciones", "📅 Cronogramas",
-                   "🚚 Despachos", "🧮 Balance AFE-S", "🛂 Aprobaciones"]
+                   "🚚 Despachos", "🧮 Balance", "🛂 Aprobaciones"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
