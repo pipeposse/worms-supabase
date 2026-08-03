@@ -99,6 +99,17 @@ def _tanques(cat):
     for c in ["densidad", "capacidad_litros", "litros_actual", "kg_actual", "nivel_pct_actual",
               "acidez", "fosforo", "azufre", "agua_sedimento"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
+    # Regla de fondo de tanque: los CÓNICOS se usan al 100%, pero en BASE PLANA sólo se puede
+    # usar hasta el 90% de la CAPACIDAD (el 10% queda siempre como fondo). De acá en adelante
+    # "litros_actual" es el disponible ÚTIL; el medido crudo queda en litros_brutos.
+    _nm = (df["nombre"].astype(str) + " " + df["codigo"].astype(str)).str.upper()
+    df["es_conico"] = _nm.str.contains("CONIC") | _nm.str.contains("C-NICO") | _nm.str.contains("CÓNICO")
+    df["litros_brutos"] = df["litros_actual"]
+    df["reserva_fondo"] = (0.10 * df["capacidad_litros"].fillna(0)).where(~df["es_conico"], 0.0)
+    df["litros_actual"] = df["litros_actual"] - df["reserva_fondo"]
+    df.loc[df["litros_actual"] < 0, "litros_actual"] = 0.0
+    df.loc[df["litros_brutos"].isna(), "litros_actual"] = pd.NA
+    df["litros_actual"] = pd.to_numeric(df["litros_actual"], errors="coerce")
     df["etq"] = df.apply(lambda r: _etq_tanque(r), axis=1)
     return df
 
@@ -308,13 +319,17 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         return {"Tanque": r["etq"], "Litros": round(float(litros), 0), "Acidez %": _NAN,
                 "Fósforo ppm": _NAN, "Azufre ppm": _NAN, "AyS %": _NAN}
 
-    # pool de diluyentes: AFE-S primero, después el resto, por margen contra la spec
+    # pool de diluyentes: AFE-S primero. "d" queda MEJOR→peor (para saber qué es posible);
+    # "d_peor" queda PEOR→mejor (para gastar primero el AFE-S malo y reservar el bueno,
+    # que es el que escasea: ver Balance AFE-S ↔ Exportación).
     cod_dil = fam[1:] if formulado else [base_cod]
     d = tks[up.isin(cod_dil) & (dis >= min_l)].copy()
+    d_peor = d
     if not d.empty:
         d["score"] = d.apply(_score, axis=1)
         d["_pref"] = up[d.index].apply(lambda c: PREFERIDOS.index(c) if c in PREFERIDOS else 99)
         d = d.sort_values(["_pref", "score", "litros_actual"], ascending=[True, True, False])
+        d_peor = d.sort_values(["_pref", "score", "litros_actual"], ascending=[True, False, False])
 
     # tanque del componente base: el de más stock
     rb, hay = None, 0.0
@@ -332,13 +347,24 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         rb = (_bok if not _bok.empty else b).iloc[0]
         hay = float(rb["_d"])
 
-    def _armar_mezcla(lb):
-        """[(fila_tanque, litros)] con el base primero; completa el objetivo con el pool."""
+    def _armar_mezcla(lb, k_mejores=None):
+        """[(fila_tanque, litros)] con el base primero; completa el objetivo con el pool.
+
+        k_mejores=None → llena de MEJOR a peor (cota de factibilidad: qué es posible).
+        k_mejores=k    → fuerza los k mejores tanques y el resto lo llena de PEOR a mejor:
+                          es la mezcla que gasta el máximo de AFE-S malo con sólo k buenos.
+        """
         out, acum = [], 0.0
         if formulado and lb > 0:
             out.append((rb, float(lb)))
             acum = float(lb)
-        for _, r in d.iterrows():
+        if k_mejores is None:
+            _orden = list(d.index)
+        else:
+            _mej = list(d.index[:k_mejores])
+            _orden = _mej + [i for i in d_peor.index if i not in _mej]
+        for i in _orden:
+            r = d.loc[i]
             if acum >= litros_obj:
                 break
             toma = min(float(r["litros_actual"]), litros_obj - acum)
@@ -400,7 +426,21 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                 notas.append("%s tiene %s L y se piden %s L"
                              % (rb["nombre"], "{:,.0f}".format(hay), "{:,.0f}".format(lb)))
 
-    lineas, acum = _armar_mezcla(lb)
+    # Con los litros de base decididos, elegir los diluyentes gastando primero el AFE-S de
+    # PEOR calidad y sumando tanques buenos sólo hasta que la mezcla cierre en spec.
+    k_usado = None
+    if formulado and not d.empty:
+        lineas, acum = None, 0.0
+        for k in range(0, len(d) + 1):
+            _cand, _ac = _armar_mezcla(lb, k_mejores=k)
+            if _cumple(_cand):
+                lineas, acum, k_usado = _cand, _ac, k
+                break
+        if lineas is None:  # ni con todos los mejores cierra: devolver la mejor posible
+            lineas, acum = _armar_mezcla(lb)
+            k_usado = len(d)
+    else:
+        lineas, acum = _armar_mezcla(lb)
     if not lineas:
         return pd.DataFrame(), "No se pudo armar una mezcla con el stock disponible."
     out = [_linea(r, lts) for r, lts in lineas]
@@ -411,6 +451,9 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                 % (base_cod, "{:,.0f}".format(lb), (100.0 * lb / acum if acum else 0.0)))
     elif formulado:
         msg += " La primera línea es el componente %s; el resto son AFE (primero AFE-S)." % base_cod
+    if formulado and k_usado is not None:
+        msg += (" Diluyentes: primero los AFE-S de PEOR calidad (se reserva el bueno, que escasea); "
+                "hicieron falta %d tanque(s) de los mejores para cerrar la spec." % k_usado)
     if falta > 1:
         msg += " Faltan %s L: no alcanza el stock." % "{:,.0f}".format(falta)
     if notas:
@@ -684,16 +727,27 @@ def _armar(USR, cat, conectar):
 
     # Stock a la vista: cuánto hay en cada tanque usable, ordenado de mayor a menor.
     _stk = _con.sort_values("litros_actual", ascending=False)[
-        ["nombre", "producto_principal", "litros_actual", "capacidad_litros"]].copy()
-    _stk["% lleno"] = (100.0 * _stk["litros_actual"] / _stk["capacidad_litros"].replace(0, pd.NA)).fillna(0.0).round(0)
+        ["nombre", "producto_principal", "litros_brutos", "reserva_fondo", "litros_actual",
+         "capacidad_litros", "es_conico"]].copy()
+    _stk["Tipo"] = _stk["es_conico"].map({True: "Cónico (100%)", False: "Base plana (90%)"})
+    _stk["% lleno"] = (100.0 * _stk["litros_brutos"] / _stk["capacidad_litros"].replace(0, pd.NA)).fillna(0.0).round(0)
     _stk = _stk.rename(columns={"nombre": "Tanque", "producto_principal": "Producto",
-                                "litros_actual": "Stock (L)", "capacidad_litros": "Capacidad (L)"})
-    st.dataframe(_stk, hide_index=True, use_container_width=True, height=min(38 * (len(_stk) + 1), 320),
+                                "litros_brutos": "Medido (L)", "reserva_fondo": "Fondo 10% (L)",
+                                "litros_actual": "Útil (L)", "capacidad_litros": "Capacidad (L)"})
+    st.dataframe(_stk[["Tanque", "Producto", "Tipo", "Medido (L)", "Fondo 10% (L)", "Útil (L)",
+                       "Capacidad (L)", "% lleno"]],
+                 hide_index=True, use_container_width=True, height=min(38 * (len(_stk) + 1), 320),
                  column_config={
-                     "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "Medido (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "Fondo 10% (L)": st.column_config.NumberColumn(
+                         format="%.0f", help="En base plana el 10% de la capacidad queda siempre "
+                                             "en el tanque como fondo; los cónicos se usan al 100%."),
+                     "Útil (L)": st.column_config.NumberColumn(format="%.0f"),
                      "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
                      "% lleno": st.column_config.ProgressColumn("% lleno", format="%.0f%%",
                                                                 min_value=0, max_value=100)})
+    st.caption("**Útil (L)** es lo que la formulación puede tomar: en base plana ya está descontado "
+               "el 10% de capacidad que queda como fondo de tanque; cónicos al 100%.")
     if not _s0.empty:
         st.caption("Sin medición de nivel cargada, pero igual seleccionables: **" +
                    "**, **".join(_s0["nombre"].astype(str).tolist()) +

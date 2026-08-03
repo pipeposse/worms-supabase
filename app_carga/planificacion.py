@@ -3190,7 +3190,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # director al entrar y le tapaba lo que realmente hace la sección (planificar).
     # Ahora es la última opción del menú, como cualquier otra.
     _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administración de reacciones", "📅 Cronogramas",
-                   "🚚 Despachos", "🛂 Aprobaciones"]
+                   "🚚 Despachos", "🧮 Balance AFE-S", "🛂 Aprobaciones"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3225,6 +3225,14 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     if _grupo.startswith("📅"):
         _render_cronogramas(USR, cat, conectar)
+        return
+
+    if _grupo.startswith("🧮"):
+        try:
+            import balance_afes
+            balance_afes.render(USR, cat, conectar)
+        except Exception as _e:
+            st.error("No se pudo cargar Balance AFE-S: %s" % _e)
         return
 
     if _grupo.startswith("🚚"):
