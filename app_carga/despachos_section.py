@@ -793,6 +793,27 @@ def _armar(USR, cat, conectar):
 
     # ---------- 3 · Formulación ----------
     st.markdown("#### 3 · Formulación por tanque")
+    if len(_fam) > 1:
+        with st.expander("📖 Cómo arma la mezcla el botón *Sugerir* (la nueva formulación)", expanded=False):
+            st.markdown(
+                "**Objetivo:** cumplir la spec gastando lo más barato y lo que sobra, y cuidando lo que escasea.\n\n"
+                "1. **%(b)s al máximo.** Busca (por bisección) la mayor cantidad de %(b)s que la spec tolera "
+                "con los AFE disponibles: el %(b)s es más barato que el AFE-S, cada litro extra es margen. "
+                "Si preferís fijarlo vos (ej. el %% sostenible que indica 🧮 Balance), cargalo en "
+                "*Litros de %(b)s* y respeta ese valor.\n"
+                "2. **AFE-S de peor calidad primero.** Con el %(b)s fijado, llena el resto empezando por los "
+                "tanques de azufre/fósforo más altos, y agrega tanques *buenos* sólo los necesarios para que "
+                "la mezcla ponderada cierre en spec. Así el AFE-S bueno se reserva para los próximos despachos "
+                "(es el que se agota: ver 🧮 Balance).\n"
+                "3. **Restricciones:** promedios ponderados por **kg** (no por litros); tanques con menos de "
+                "%(m)s L no entran (fondo de tanque); en base plana sólo se usa el 90%% de la capacidad "
+                "(cónicos al 100%%); mismo total que el objetivo (contenedores × litros).\n"
+                "4. **La sugerencia es un borrador**: el panel de *Cumplimiento* de abajo es el que manda, "
+                "y todo se puede pisar a mano línea por línea.\n\n"
+                "⚠️ *Trade-off a saber:* maximizar %(b)s y ahorrar AFE-S bueno compiten por el mismo margen "
+                "de spec. Al máximo de %(b)s se usan todos los buenos disponibles; si querés reservar buenos, "
+                "bajá un punto el %(b)s (la tabla de 🧮 Balance dice cuánto es sostenible)."
+                % {"b": _fam[0], "m": f"{MIN_L_DESPACHO:,.0f}"})
     _formulado = len(_fam) > 1
     if _formulado:
         ca, cb, cd, cc = st.columns([1.1, 0.9, 1.1, 1.5])
