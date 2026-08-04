@@ -137,7 +137,26 @@ def render(USR, cat, conectar):
     st.caption("⚠️ La banda se conoce sólo en lo medido: el **SIN LAB** puede esconder bueno o malo. "
                "Cuanto más mida laboratorio los ingresos, mejor la proyección.")
 
-    _piv = ing.pivot_table(index="semana", columns="banda", values="tn", aggfunc="sum").fillna(0.0)
+    # mini filtros del gráfico (afectan gráfico y tablas; las métricas de arriba y la
+    # proyección de abajo siguen calculadas sobre el total de la ventana)
+    fA, fB, fC = st.columns(3)
+    _f_sem = fA.multiselect("🗓️ Semana", sorted(ing["semana"].unique().tolist(), reverse=True),
+                            key="ba_f_sem", placeholder="todas")
+    _f_prov = fB.multiselect("🚚 Proveedor", sorted(ing["proveedor"].unique().tolist()),
+                             key="ba_f_prov", placeholder="todos")
+    _f_ban = fC.multiselect("🎨 Banda", BANDAS, key="ba_f_ban", placeholder="todas")
+    ing_f = ing
+    if _f_sem:
+        ing_f = ing_f[ing_f["semana"].isin(_f_sem)]
+    if _f_prov:
+        ing_f = ing_f[ing_f["proveedor"].isin(_f_prov)]
+    if _f_ban:
+        ing_f = ing_f[ing_f["banda"].isin(_f_ban)]
+    if ing_f.empty:
+        st.info("Ningún camión cumple los mini filtros.")
+        ing_f = ing
+
+    _piv = ing_f.pivot_table(index="semana", columns="banda", values="tn", aggfunc="sum").fillna(0.0)
     for _c in BANDAS:
         if _c not in _piv.columns:
             _piv[_c] = 0.0
@@ -154,7 +173,7 @@ def render(USR, cat, conectar):
             "tn": d["tn"].sum(), "camiones": len(d),
             "s_prom": _pond(d, "s"), "p_prom": _pond(d, "p"), "ac_prom": _pond(d, "ac"),
             "proveedores": _txt})
-    _lg = ing.groupby(["semana", "banda"]).apply(_grp).reset_index()
+    _lg = ing_f.groupby(["semana", "banda"]).apply(_grp).reset_index()
     _tot_sem = _lg.groupby("semana")["tn"].transform("sum")
     _lg["pct"] = (100.0 * _lg["tn"] / _tot_sem).round(1)
     _orden_b = {b: i for i, b in enumerate(BANDAS)}
@@ -176,7 +195,7 @@ def render(USR, cat, conectar):
                  alt.Tooltip("proveedores:N", title="Camiones por proveedor")],
     ).properties(height=340)
     st.altair_chart(_ch, use_container_width=True)
-    st.caption("🖱️ Pasá el mouse por cada tramo de barra: %% de la semana, promedios ponderados de "
+    st.caption("🖱️ Pasá el mouse por cada tramo de barra: % de la semana, promedios ponderados de "
                "azufre/fósforo/acidez de esa banda y camiones por proveedor.")
 
     ta, tb, tc = st.tabs(["📅 Por semana", "🗓️ Por mes", "🚚 Por proveedor"])
@@ -184,11 +203,11 @@ def render(USR, cat, conectar):
         st.dataframe(_piv.assign(TOTAL=_piv.sum(axis=1).round(1)).reset_index(),
                      hide_index=True, use_container_width=True)
     with tb:
-        _pm2 = ing.pivot_table(index="mes", columns="banda", values="tn", aggfunc="sum").fillna(0.0).round(1)
+        _pm2 = ing_f.pivot_table(index="mes", columns="banda", values="tn", aggfunc="sum").fillna(0.0).round(1)
         st.dataframe(_pm2.assign(TOTAL=_pm2.sum(axis=1).round(1)).reset_index(),
                      hide_index=True, use_container_width=True)
     with tc:
-        _g = ing.groupby("proveedor").apply(lambda d: pd.Series({
+        _g = ing_f.groupby("proveedor").apply(lambda d: pd.Series({
             "t": d["tn"].sum(), "t/sem": d["tn"].sum() / sem_h,
             "S pond (ppm)": _pond(d, "s"), "P pond (ppm)": _pond(d, "p"),
             "% con lab": 100.0 * d.loc[d["banda"] != "SIN LAB", "tn"].sum() / max(d["tn"].sum(), 1e-9),
