@@ -139,6 +139,18 @@ def render(USR, cat, conectar):
         st.info("Ningún camión cumple los filtros.")
         return
 
+    # a qué recorte corresponden los KPIs (los filtros activos, explícitos)
+    _fil = ["📅 %s → %s" % (d1.strftime("%d/%m/%y"), d2.strftime("%d/%m/%y"))]
+    _fil.append("🗓️ " + (", ".join(f_sem) if f_sem else "todas las semanas del rango"))
+    _fil.append("🚚 " + (", ".join(f_prov) if f_prov else "todos los proveedores (%d)"
+                         % df["proveedor"].nunique()))
+    if not f_lab.startswith("Todos"):
+        _fil.append(f_lab)
+    st.markdown("<div style='background:#f0fdfa;border:1px solid #99f6e4;border-radius:10px;"
+                "padding:6px 12px;margin:2px 0 8px;font-size:.85rem;color:#134e4a'>"
+                "<b>KPIs calculados sobre:</b> " + " · ".join(_fil) + "</div>",
+                unsafe_allow_html=True)
+
     _kg = float(df["kg"].sum())
     def _pond(col):
         d = df[pd.notna(df[col])]
