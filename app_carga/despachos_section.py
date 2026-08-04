@@ -493,16 +493,24 @@ def _guardar(conectar, USR, cab, res, id_despacho=None):
                      cab["sp_fos"], cab["estado"], cab["obs"], USR.get("nombre")))
                 _id = int(cur.fetchone()[0])
             for _, r in res.iterrows():
+                # constancia: si el tanque figuraba con menos stock útil que lo cargado (o vacío),
+                # queda escrito en la línea que se cargó con stock desactualizado
+                _nota = None
+                if bool(r.get("Excede")):
+                    _nota = ("STOCK DESACTUALIZADO al armar: útil según sistema %s L, cargado %s L"
+                             % ("{:,.0f}".format(float(r.get("Disp. (L)") or 0)),
+                                "{:,.0f}".format(float(r["Litros"]))))
                 cur.execute(
                     "INSERT INTO produccion.fact_despacho_linea (id_despacho,orden,id_tanque,"
-                    "producto_codigo,litros,densidad,acidez,fosforo,azufre,agua_sedimento,lab_origen) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    "producto_codigo,litros,densidad,acidez,fosforo,azufre,agua_sedimento,lab_origen,nota) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                     (_id, int(r["orden"]), int(r["id_tanque"]), (r["Producto"] or None),
                      float(r["Litros"]), float(r["Densidad"]),
                      _n(r.get("Acidez %")), _n(r.get("Fósforo ppm")), _n(r.get("Azufre ppm")),
                      _n(r.get("AyS %")),
                      "MANUAL" if "manual" in {r.get("Acidez %_src"), r.get("Fósforo ppm_src"),
-                                              r.get("Azufre ppm_src"), r.get("AyS %_src")} else "TANQUE"))
+                                              r.get("Azufre ppm_src"), r.get("AyS %_src")} else "TANQUE",
+                     _nota))
     return _id
 
 
@@ -720,8 +728,15 @@ def _armar(USR, cat, conectar):
     k4.metric("Fondos excluidos", f"{len(_fondo)}",
               help="Tanques con menos de %s L: no se ofrecen ni se sugieren."
                    % f"{MIN_L_DESPACHO:,.0f}")
+    _inc_vacios = st.checkbox(
+        "🔓 Permitir tanques vacíos o con fondo (<%s L) — el stock a veces está desactualizado"
+        % f"{MIN_L_DESPACHO:,.0f}", key="dsp_incv",
+        help="Los habilita en el selector aunque figuren sin stock útil. Si les cargás litros, "
+             "queda CONSTANCIA en la línea del despacho de que el stock del sistema no alcanzaba "
+             "(medido vs cargado), para poder auditar después.")
     if not _fondo.empty:
-        st.caption("🛢️ **Quedan afuera por fondo de tanque (<%s L):** " % f"{MIN_L_DESPACHO:,.0f}"
+        st.caption("🛢️ **%s por fondo de tanque (<%s L):** "
+                   % (("Habilitados igual" if _inc_vacios else "Quedan afuera"), f"{MIN_L_DESPACHO:,.0f}")
                    + ", ".join(f"{r['nombre']} ({r['litros_actual']:,.0f} L)"
                                for _, r in _fondo.sort_values("litros_actual").iterrows()))
 
@@ -855,6 +870,8 @@ def _armar(USR, cat, conectar):
         base[_c] = pd.to_numeric(base[_c], errors="coerce")
 
     _o = _con["etq"].tolist() + _s0["etq"].tolist()
+    if _inc_vacios and not _fondo.empty:
+        _o += _fondo["etq"].tolist()
     _cfg = {
         "Tanque": st.column_config.SelectboxColumn("Tanque", options=_o, width="large", required=True,
                                                    help="Tanques con " + " / ".join(_fam) + "."),
@@ -939,11 +956,14 @@ def _armar(USR, cat, conectar):
         if not _sm.empty:
             avisos.append("Sin medición de nivel cargada: " +
                           ", ".join(_sm["Tanque"].astype(str).tolist()) +
-                          " — se toman los litros que pusiste a mano, sin control contra stock.")
+                          " — se toman los litros que pusiste a mano, sin control contra stock. "
+                          "Queda **constancia en la línea** al guardar.")
     if not _ex.empty:
-        avisos.append("Estos tanques no tienen tanto stock: " +
+        avisos.append("Estos tanques no tienen tanto stock según el sistema: " +
                       ", ".join(f"{r['Tanque']} (pide {r['Litros']:,.0f} L, hay {r['Disp. (L)']:,.0f} L)"
-                                for _, r in _ex.iterrows()))
+                                for _, r in _ex.iterrows()) +
+                      ". Se puede guardar igual (stock desactualizado), y queda **constancia en la "
+                      "línea** con lo medido vs lo cargado.")
     if abs(dif) > max(500.0, 0.02 * lit_obj):
         avisos.append(f"La formulación difiere del objetivo en {dif:+,.0f} L "
                       f"({100*dif/lit_obj:+.1f}%).")
