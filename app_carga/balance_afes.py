@@ -64,9 +64,13 @@ def render(USR, cat, conectar):
                              help="Semanas hacia atrás."))
     exp_obj = c4.number_input("Exportación objetivo (t/sem)", 100.0, 3000.0, 900.0, 50.0, key="ba_e",
                               help="Te dicen 800–1000 t semanales.")
-    st.caption("Bandas: **BUENO** = S ≤ %g y P ≤ %g · **MEDIO** = dentro de spec pero no bueno · "
-               "**MALO** = ya fuera de spec por sí solo (S > %g o P > %g) · **SIN LAB** = el ticket "
-               "no tiene análisis." % (s_b, p_b, SPEC_S, SPEC_P))
+    st.caption("Bandas (por azufre y fósforo del análisis): "
+               "**BUENO** = S ≤ %g **y** P ≤ %g — diluye fuerte, es el que banca el AG-E · "
+               "**MEDIO** = todavía cumple la spec de venta (S ≤ %g y P ≤ %g) pero supera alguno de "
+               "los umbrales de bueno (S entre %g–%g o P entre %g–%g): sirve, aunque aporta poco "
+               "margen · **MALO** = por sí solo ya está fuera de spec (S > %g o P > %g): sólo entra "
+               "mezclado · **SIN LAB** = el ticket no tiene análisis, banda desconocida."
+               % (s_b, p_b, SPEC_S, SPEC_P, s_b, SPEC_S, p_b, SPEC_P, SPEC_S, SPEC_P))
 
     _desde = (pd.Timestamp.today() - pd.Timedelta(weeks=sem_h)).date()
 
