@@ -54,11 +54,12 @@ def _datos(cat, d1, d2):
 def _tabla_vista(df):
     v = df.sort_values("fecha", ascending=False).copy()
     v["Lab"] = v["tiene_lab"].map({True: "✅", False: "❌ sin lab"})
+    v["tn"] = (v["kg"] / 1000.0).round(2)
     v = v.rename(columns={"fecha": "Fecha", "dia": "Día", "semana": "Semana",
-                          "proveedor": "Proveedor", "ticket": "Ticket", "kg": "kg",
+                          "proveedor": "Proveedor", "ticket": "Ticket", "tn": "TN",
                           "acidez": "Acidez %", "ppm_fosforo": "Fósforo ppm",
                           "ppm_azufre": "Azufre ppm", "calidad_final_lab": "Calidad"})
-    return v[["Fecha", "Día", "Semana", "Proveedor", "Ticket", "kg", "Acidez %",
+    return v[["Fecha", "Día", "Semana", "Proveedor", "Ticket", "TN", "Acidez %",
               "Fósforo ppm", "Azufre ppm", "Calidad", "Lab"]]
 
 
@@ -80,8 +81,9 @@ def _imagen_bytes(v, max_filas=60):
     import matplotlib.pyplot as plt
     x = v.head(max_filas).copy()
     x["Fecha"] = pd.to_datetime(x["Fecha"]).dt.strftime("%d/%m")
-    for c in ("Acidez %", "Fósforo ppm", "Azufre ppm", "kg"):
+    for c in ("Acidez %", "Fósforo ppm", "Azufre ppm"):
         x[c] = x[c].map(lambda z: ("%.1f" % z) if pd.notna(z) else "—")
+    x["TN"] = x["TN"].map(lambda z: ("%.2f" % z) if pd.notna(z) else "—")
     x = x.fillna("—").astype(str)
     fig, ax = plt.subplots(figsize=(13, 0.32 * (len(x) + 2) + 1))
     ax.axis("off")
@@ -153,7 +155,7 @@ def render(USR, cat, conectar):
     st.dataframe(v, hide_index=True, use_container_width=True,
                  column_config={
                      "Fecha": st.column_config.DatetimeColumn(format="DD/MM/YY"),
-                     "kg": st.column_config.NumberColumn(format="%.0f"),
+                     "TN": st.column_config.NumberColumn(format="%.2f"),
                      "Acidez %": st.column_config.NumberColumn(format="%.2f"),
                      "Fósforo ppm": st.column_config.NumberColumn(format="%.1f"),
                      "Azufre ppm": st.column_config.NumberColumn(format="%.1f")})
@@ -199,8 +201,8 @@ def render_sin_lab(USR, cat, conectar, key="pl"):
                  hide_index=True, use_container_width=True, height=160)
 
     pend = pend.sort_values("fecha", ascending=False)
-    _lbl = {int(r["id_transaccion"]): "%s · %s · tk %s · %s · %.0f kg" % (
-        r["fecha"].strftime("%d/%m"), r["semana"], r["ticket"], r["proveedor"], r["kg"] or 0)
+    _lbl = {int(r["id_transaccion"]): "%s · %s · tk %s · %s · %.2f t" % (
+        r["fecha"].strftime("%d/%m"), r["semana"], r["ticket"], r["proveedor"], (r["kg"] or 0) / 1000.0)
         for _, r in pend.iterrows()}
     sel = st.selectbox("Camión a evaluar", pend["id_transaccion"].tolist(),
                        format_func=lambda i: _lbl.get(int(i), str(i)), key="aafe_qsel_%s" % key)
