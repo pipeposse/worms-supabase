@@ -298,7 +298,9 @@ def render(USR, cat, conectar):
     # ---- calidad del AFE producido por desgomado, en bandas, comparable con lo comprado ----
     st.markdown("**Calidad del AFE producido por desgomado** (misma escala de bandas que lo comprado)")
     st.caption("La calidad de cada reacción sale del análisis de laboratorio de su **ticket de "
-               "pesada final**. Sin ese análisis, la reacción cae en SIN LAB.")
+               "pesada final** (o del registrado con el ID de la reacción). **SIN LAB** = la "
+               "reacción no tiene ticket final asociado, o su análisis no midió azufre/fósforo: "
+               "se resuelve en ⏱️ Gestión total → Tickets de pesada final.")
     dprod = cat(
         "SELECT to_char(COALESCE(b.fin_ts, b.fecha::timestamp),'IYYY·\"S\"IW') AS semana, "
         "b.identificador_unidad AS ident, "
@@ -310,11 +312,15 @@ def render(USR, cat, conectar):
         "           WHERE COALESCE(anulado,false)=false GROUP BY 1) t ON t.id_batch=b.id_batch "
         "LEFT JOIN produccion.dim_producto dp ON dp.id_producto=b.id_producto_buscado "
         "LEFT JOIN LATERAL (SELECT pl.ppm_azufre AS s, pl.ppm_fosforo AS p, pl.prc_acidez AS ac0 "
-        "  FROM produccion.fact_batch_ticket_final ft "
-        "  JOIN produccion.procesos_lab pl ON btrim(pl.ticket)=btrim(ft.ticket) "
-        "  WHERE ft.id_batch=b.id_batch AND COALESCE(ft.anulado,false)=false "
-        "    AND COALESCE(pl.anulado,false)=false AND pl.ppm_azufre IS NOT NULL "
-        "  ORDER BY pl.fecha DESC NULLS LAST LIMIT 1) l ON true "
+        "  FROM produccion.procesos_lab pl "
+        "  WHERE COALESCE(pl.anulado,false)=false "
+        "    AND (btrim(pl.ticket) IN (SELECT btrim(ft.ticket) "
+        "           FROM produccion.fact_batch_ticket_final ft "
+        "           WHERE ft.id_batch=b.id_batch AND COALESCE(ft.anulado,false)=false) "
+        "         OR upper(btrim(pl.ticket)) = upper(btrim(b.identificador_unidad))) "
+        "    AND (pl.ppm_azufre IS NOT NULL OR pl.ppm_fosforo IS NOT NULL) "
+        "  ORDER BY (pl.ppm_azufre IS NOT NULL AND pl.ppm_fosforo IS NOT NULL) DESC, "
+        "           pl.fecha DESC NULLS LAST LIMIT 1) l ON true "
         "WHERE b.sector='REACTORES' AND b.tipo_proceso='DESGOMADO_ACUOSO' "
         "AND b.estado='FINALIZADO' AND COALESCE(b.anulado,false)=false "
         "AND dp.codigo_producto LIKE 'AFE%%' "
