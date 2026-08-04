@@ -276,6 +276,95 @@ def render(USR, cat, conectar):
         st.caption("El desgomado propio también alimenta el pool de AFE-S para exportar: si el "
                    "producido cae, la dependencia del AFE-S comprado (sección 1) sube.")
 
+    # ---- calidad del AFE producido por desgomado, en bandas, comparable con lo comprado ----
+    st.markdown("**Calidad del AFE producido por desgomado** (misma escala de bandas que lo comprado)")
+    st.caption("La calidad de cada reacción sale del análisis de laboratorio de su **ticket de "
+               "pesada final**. Sin ese análisis, la reacción cae en SIN LAB.")
+    dprod = cat(
+        "SELECT to_char(COALESCE(b.fin_ts, b.fecha::timestamp),'IYYY·\"S\"IW') AS semana, "
+        "b.identificador_unidad AS ident, "
+        "COALESCE(NULLIF(b.kg_obtenido,0), c.real_kg, t.kg, 0) AS kg, "
+        "l.s, l.p, l.ac0 "
+        "FROM produccion.fact_batch_proceso b "
+        "LEFT JOIN produccion.fact_reaccion_cierre c ON c.id_batch=b.id_batch "
+        "LEFT JOIN (SELECT id_batch, sum(kg) AS kg FROM produccion.fact_batch_ticket_final "
+        "           WHERE COALESCE(anulado,false)=false GROUP BY 1) t ON t.id_batch=b.id_batch "
+        "LEFT JOIN produccion.dim_producto dp ON dp.id_producto=b.id_producto_buscado "
+        "LEFT JOIN LATERAL (SELECT pl.ppm_azufre AS s, pl.ppm_fosforo AS p, pl.prc_acidez AS ac0 "
+        "  FROM produccion.fact_batch_ticket_final ft "
+        "  JOIN produccion.procesos_lab pl ON btrim(pl.ticket)=btrim(ft.ticket) "
+        "  WHERE ft.id_batch=b.id_batch AND COALESCE(ft.anulado,false)=false "
+        "    AND COALESCE(pl.anulado,false)=false AND pl.ppm_azufre IS NOT NULL "
+        "  ORDER BY pl.fecha DESC NULLS LAST LIMIT 1) l ON true "
+        "WHERE b.sector='REACTORES' AND b.tipo_proceso='DESGOMADO_ACUOSO' "
+        "AND b.estado='FINALIZADO' AND COALESCE(b.anulado,false)=false "
+        "AND dp.codigo_producto LIKE 'AFE%%' "
+        "AND COALESCE(b.fin_ts, b.fecha::timestamp) >= %s", (_desde,))
+    if dprod is None or dprod.empty:
+        st.info("No hay desgomados finalizados con kilos en la ventana.")
+    else:
+        dprod = dprod.copy()
+        for _c in ("kg", "s", "p", "ac0"):
+            dprod[_c] = pd.to_numeric(dprod[_c], errors="coerce")
+        dprod = dprod[dprod["kg"].fillna(0) > 0]
+        dprod["tn"] = dprod["kg"] / 1000.0
+        dprod["banda"] = [(_banda(a, b)) for a, b in zip(dprod["s"], dprod["p"])]
+        dprod["ac"] = dprod["ac0"].map(
+            lambda v: (v * 100.0 if v < 0.2 else v) if pd.notna(v) else None)
+        dprod["ac"] = pd.to_numeric(dprod["ac"], errors="coerce")
+
+        # comparación compra vs producción propia, en cantidad y calidad
+        _tp2 = float(dprod["tn"].sum())
+        _pbp = float(dprod.loc[dprod["banda"].isin(BUENAS), "tn"].sum())
+        _lbp = dprod[dprod["banda"] != "SIN LAB"]
+        _pct_b_prod = (100.0 * _pbp / float(_lbp["tn"].sum())) if not _lbp.empty and _lbp["tn"].sum() > 0 else 0.0
+        _tn_comp_lab = float(_clab["tn"].sum())
+        _pct_b_comp = (100.0 * float(_clab.loc[_clab["banda"].isin(BUENAS), "tn"].sum())
+                       / _tn_comp_lab) if _tn_comp_lab > 0 else 0.0
+        d1_, d2_, d3_, d4_ = st.columns(4)
+        d1_.metric("Producido (desgomado)", "%.0f t" % _tp2, "%.0f t/sem" % (_tp2 / sem_h))
+        d2_.metric("Comprado", "%.0f t" % _tot, "%.0f t/sem" % (_tot / sem_h))
+        d3_.metric("%% EXC+BUENO producido", "%.0f %%" % _pct_b_prod,
+                   help="Sobre lo producido CON análisis del ticket final.")
+        d4_.metric("%% EXC+BUENO comprado", "%.0f %%" % _pct_b_comp,
+                   help="Sobre lo comprado con análisis.")
+        _s_pr = _pond(dprod, "s", "tn"); _p_pr = _pond(dprod, "p", "tn")
+        if _s_pr is not None:
+            st.caption("Calidad ponderada del producido: **S %.1f / P %.1f** vs comprado "
+                       "S %.1f / P %.1f. El desgomado propio pesa un %.0f%% del total de AFE."
+                       % (_s_pr, _p_pr or 0,
+                          _pond(_clab, "s") or 0, _pond(_clab, "p") or 0,
+                          100.0 * _tp2 / (_tp2 + _tot) if (_tp2 + _tot) else 0))
+
+        def _grp2(d):
+            _tt = " · ".join(sorted(d["ident"].astype(str))[:5])
+            if len(d) > 5:
+                _tt += " (+%d)" % (len(d) - 5)
+            return pd.Series({"tn": d["tn"].sum(), "reacciones": len(d),
+                              "s_prom": _pond(d, "s", "tn"), "p_prom": _pond(d, "p", "tn"),
+                              "ac_prom": _pond(d, "ac", "tn"), "cuales": _tt})
+        _lg2 = dprod.groupby(["semana", "banda"]).apply(_grp2).reset_index()
+        _tot2 = _lg2.groupby("semana")["tn"].transform("sum")
+        _lg2["pct"] = (100.0 * _lg2["tn"] / _tot2).round(1)
+        _lg2["orden"] = _lg2["banda"].map({b: i for i, b in enumerate(BANDAS)})
+        _ch2 = alt.Chart(_lg2).mark_bar().encode(
+            x=alt.X("semana:N", sort=None, title=None),
+            y=alt.Y("tn:Q", title="toneladas producidas"),
+            color=alt.Color("banda:N", title="Banda",
+                            scale=alt.Scale(domain=BANDAS, range=_B_COLORES)),
+            order=alt.Order("orden:Q"),
+            tooltip=[alt.Tooltip("semana:N", title="Semana"),
+                     alt.Tooltip("banda:N", title="Banda"),
+                     alt.Tooltip("tn:Q", format=".1f", title="Toneladas"),
+                     alt.Tooltip("pct:Q", format=".1f", title="% de la semana"),
+                     alt.Tooltip("s_prom:Q", format=".1f", title="Azufre prom. (ppm)"),
+                     alt.Tooltip("p_prom:Q", format=".1f", title="Fósforo prom. (ppm)"),
+                     alt.Tooltip("ac_prom:Q", format=".2f", title="Acidez prom. (%)"),
+                     alt.Tooltip("reacciones:Q", title="Reacciones"),
+                     alt.Tooltip("cuales:N", title="Cuáles")],
+        ).properties(height=300)
+        st.altair_chart(_ch2, use_container_width=True)
+
     # ---------------- 4 · stock actual por banda ----------------
     st.markdown("#### 4 · Stock actual de AFE-S y AG-E por banda")
     tk = cat("SELECT nombre, producto_principal, litros_actual, capacidad_litros, densidad, "
