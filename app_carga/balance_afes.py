@@ -3,7 +3,8 @@
 Responde una sola pregunta: ¿alcanza el AFE-S BUENO para sostener la exportación de AG-E?
 
   - Entradas de AFE por proveedor (portería, clases OTRO/INGRESO de familia AFE), cruzadas
-    con el laboratorio del ticket (azufre y fósforo) y clasificadas en BUENO / MEDIO / MALO.
+    con el laboratorio del ticket (azufre y fósforo) y clasificadas por índice de calidad
+    en EXCELENTE / BUENO / JUSTO / MALO.
   - Exportación: las salidas que portería registra como "AG" con procedencia EGNITRADE S.L.
     hacia las terminales (SOUTHCROSS, PADILLA, LIBRA, MERCOMAR, INTERALMAR…) SON el AG-E
     comercial. Laboratorio no mide cada contenedor porque comparten fórmula.
@@ -22,16 +23,30 @@ SPEC_S, SPEC_P = 50.0, 150.0          # spec de venta AG-E (máximos)
 DENS_AFE = 0.89
 
 
-def _banda(s, p, s_b, p_b):
+# Índice de calidad IC = max(S/50, P/150): el peor de los dos parámetros relativo a la spec
+# de venta. Es el MISMO score que usa el algoritmo de despacho para ordenar tanques, así la
+# clasificación y la fórmula hablan el mismo idioma.
+IC_EXC = 0.80   # EXCELENTE: IC <= 0.80 -> S <= 40 y P <= 120 (banca ~7% de AG-E por sí solo)
+IC_BUE = 0.90   # BUENO:     IC <= 0.90 -> S <= 45 y P <= 135 (banca ~4%)
+#               JUSTO:      IC <= 1.00 -> cumple spec pero casi sin margen (~0-3%)
+#               MALO:       IC >  1.00 -> fuera de spec por sí solo: sólo entra mezclado
+BANDAS = ["EXCELENTE", "BUENO", "JUSTO", "MALO", "SIN LAB"]
+_B_COLORES = ["#166534", "#1d4ed8", "#f59e0b", "#dc2626", "#94a3b8"]
+BUENAS = ("EXCELENTE", "BUENO")   # el "pool bueno" para la proyección
+
+
+def _banda(s, p):
     if pd.isna(s) and pd.isna(p):
         return "SIN LAB"
-    s = float(s) if pd.notna(s) else 0.0
-    p = float(p) if pd.notna(p) else 0.0
-    if s > SPEC_S or p > SPEC_P:
-        return "MALO"
-    if s <= s_b and p <= p_b:
+    ic = max((float(s) / SPEC_S) if pd.notna(s) else 0.0,
+             (float(p) / SPEC_P) if pd.notna(p) else 0.0)
+    if ic <= IC_EXC:
+        return "EXCELENTE"
+    if ic <= IC_BUE:
         return "BUENO"
-    return "MEDIO"
+    if ic <= 1.0:
+        return "JUSTO"
+    return "MALO"
 
 
 def _pond(df, col, kgcol="kg"):
@@ -55,22 +70,23 @@ def render(USR, cat, conectar):
         return
 
     # ---------------- configuración ----------------
-    c1, c2, c3, c4 = st.columns(4)
-    s_b = c1.number_input("Azufre máx. para BUENO (ppm)", 0.0, SPEC_S, 45.0, 1.0, key="ba_sb",
-                          help="Un AFE-S es BUENO si su azufre y su fósforo quedan por debajo de "
-                               "estos umbrales: es el que banca la dilución del AG-E.")
-    p_b = c2.number_input("Fósforo máx. para BUENO (ppm)", 0.0, SPEC_P, 130.0, 5.0, key="ba_pb")
+    c3, c4 = st.columns(2)
     sem_h = int(c3.selectbox("Ventana de análisis", [8, 13, 26, 52], index=1, key="ba_h",
                              help="Semanas hacia atrás."))
     exp_obj = c4.number_input("Exportación objetivo (t/sem)", 100.0, 3000.0, 900.0, 50.0, key="ba_e",
                               help="Te dicen 800–1000 t semanales.")
-    st.caption("Bandas (por azufre y fósforo del análisis): "
-               "**BUENO** = S ≤ %g **y** P ≤ %g — diluye fuerte, es el que banca el AG-E · "
-               "**MEDIO** = todavía cumple la spec de venta (S ≤ %g y P ≤ %g) pero supera alguno de "
-               "los umbrales de bueno (S entre %g–%g o P entre %g–%g): sirve, aunque aporta poco "
-               "margen · **MALO** = por sí solo ya está fuera de spec (S > %g o P > %g): sólo entra "
-               "mezclado · **SIN LAB** = el ticket no tiene análisis, banda desconocida."
-               % (s_b, p_b, SPEC_S, SPEC_P, s_b, SPEC_S, p_b, SPEC_P, SPEC_S, SPEC_P))
+    st.markdown(
+        "**Umbrales de calidad** — se clasifica por el peor de los dos parámetros contra la spec "
+        "de venta (S 50 / P 150), el mismo criterio que usa el algoritmo de despacho:\n\n"
+        "| Banda | Margen contra la spec | En números | Cuánto AG-E banca solo* |\n"
+        "|---|---|---|---|\n"
+        "| 🟢 **EXCELENTE** | 20% o más | S ≤ 40 **y** P ≤ 120 | ~7% |\n"
+        "| 🔵 **BUENO** | 10–20% | S ≤ 45 **y** P ≤ 135 | ~4% |\n"
+        "| 🟠 **JUSTO** | cumple, sin margen | S ≤ 50 y P ≤ 150 | ~0–3% |\n"
+        "| 🔴 **MALO** | fuera de spec | S > 50 **o** P > 150 | 0 — sólo entra mezclado |\n"
+        "| ⚪ **SIN LAB** | desconocido | sin análisis | desconocido |")
+    st.caption("*Con AG-E típico (S ≈ 180 ppm): %% máximo de AG-E que ese AFE-S soporta él solo sin "
+               "salirse de spec. Para la proyección, el **pool bueno** = EXCELENTE + BUENO.")
 
     _desde = (pd.Timestamp.today() - pd.Timedelta(weeks=sem_h)).date()
 
@@ -94,7 +110,7 @@ def render(USR, cat, conectar):
     for _c in ("kg", "s", "p"):
         ing[_c] = pd.to_numeric(ing[_c], errors="coerce")
     ing["tn"] = ing["kg"] / 1000.0
-    ing["banda"] = [(_banda(a, b, s_b, p_b)) for a, b in zip(ing["s"], ing["p"])]
+    ing["banda"] = [(_banda(a, b)) for a, b in zip(ing["s"], ing["p"])]
     # acidez de Access con unidades mezcladas: < 0.2 es fracción (x100), el resto ya es %
     ing["ac0"] = pd.to_numeric(ing["ac0"], errors="coerce")
     ing["ac"] = ing["ac0"].map(lambda v: (v * 100.0 if v < 0.2 else v) if pd.notna(v) else None)
@@ -106,20 +122,20 @@ def render(USR, cat, conectar):
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Ingreso total", "%.0f t" % _tot, "%.0f t/sem" % (_tot / sem_h))
     k2.metric("Con lab (S y P)", "%.0f %%" % (100.0 * float(_clab["tn"].sum()) / _tot if _tot else 0))
-    _pb = float(ing.loc[ing["banda"] == "BUENO", "tn"].sum())
-    k3.metric("BUENO", "%.0f t (%.0f%%)" % (_pb, 100.0 * _pb / _tot if _tot else 0),
+    _pb = float(ing.loc[ing["banda"].isin(BUENAS), "tn"].sum())
+    k3.metric("EXCELENTE + BUENO", "%.0f t (%.0f%%)" % (_pb, 100.0 * _pb / _tot if _tot else 0),
               "%.0f t/sem" % (_pb / sem_h))
-    _pm = float(ing.loc[ing["banda"].isin(["MEDIO", "MALO"]), "tn"].sum())
-    k4.metric("MEDIO + MALO", "%.0f t (%.0f%%)" % (_pm, 100.0 * _pm / _tot if _tot else 0),
+    _pm = float(ing.loc[ing["banda"].isin(["JUSTO", "MALO"]), "tn"].sum())
+    k4.metric("JUSTO + MALO", "%.0f t (%.0f%%)" % (_pm, 100.0 * _pm / _tot if _tot else 0),
               "%.0f t/sem" % (_pm / sem_h))
     st.caption("⚠️ La banda se conoce sólo en lo medido: el **SIN LAB** puede esconder bueno o malo. "
                "Cuanto más mida laboratorio los ingresos, mejor la proyección.")
 
     _piv = ing.pivot_table(index="semana", columns="banda", values="tn", aggfunc="sum").fillna(0.0)
-    for _c in ("BUENO", "MEDIO", "MALO", "SIN LAB"):
+    for _c in BANDAS:
         if _c not in _piv.columns:
             _piv[_c] = 0.0
-    _piv = _piv[["BUENO", "MEDIO", "MALO", "SIN LAB"]].round(1)
+    _piv = _piv[BANDAS].round(1)
 
     # barra compuesta con tooltip: t, % de la semana, S/P/acidez ponderados y camiones por proveedor
     def _grp(d):
@@ -135,14 +151,13 @@ def render(USR, cat, conectar):
     _lg = ing.groupby(["semana", "banda"]).apply(_grp).reset_index()
     _tot_sem = _lg.groupby("semana")["tn"].transform("sum")
     _lg["pct"] = (100.0 * _lg["tn"] / _tot_sem).round(1)
-    _orden_b = {"BUENO": 0, "MEDIO": 1, "MALO": 2, "SIN LAB": 3}
+    _orden_b = {b: i for i, b in enumerate(BANDAS)}
     _lg["orden"] = _lg["banda"].map(_orden_b)
     _ch = alt.Chart(_lg).mark_bar().encode(
         x=alt.X("semana:N", sort=None, title=None),
         y=alt.Y("tn:Q", title="toneladas"),
         color=alt.Color("banda:N", title="Banda",
-                        scale=alt.Scale(domain=["BUENO", "MEDIO", "MALO", "SIN LAB"],
-                                        range=["#1d4ed8", "#f59e0b", "#dc2626", "#94a3b8"])),
+                        scale=alt.Scale(domain=BANDAS, range=_B_COLORES)),
         order=alt.Order("orden:Q"),
         tooltip=[alt.Tooltip("semana:N", title="Semana"),
                  alt.Tooltip("banda:N", title="Banda"),
@@ -171,12 +186,12 @@ def render(USR, cat, conectar):
             "t": d["tn"].sum(), "t/sem": d["tn"].sum() / sem_h,
             "S pond (ppm)": _pond(d, "s"), "P pond (ppm)": _pond(d, "p"),
             "% con lab": 100.0 * d.loc[d["banda"] != "SIN LAB", "tn"].sum() / max(d["tn"].sum(), 1e-9),
-            "% BUENO (de lo medido)": (100.0 * d.loc[d["banda"] == "BUENO", "tn"].sum()
-                                       / max(d.loc[d["banda"] != "SIN LAB", "tn"].sum(), 1e-9)),
+            "% EXC+BUENO (de lo medido)": (100.0 * d.loc[d["banda"].isin(BUENAS), "tn"].sum()
+                                           / max(d.loc[d["banda"] != "SIN LAB", "tn"].sum(), 1e-9)),
         })).reset_index().sort_values("t", ascending=False)
         st.dataframe(_g.round(1), hide_index=True, use_container_width=True,
                      column_config={"% con lab": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
-                                    "% BUENO (de lo medido)": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
+                                    "% EXC+BUENO (de lo medido)": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
         st.caption("Con esto se ve **qué proveedor trae el AFE-S bueno** y a quién conviene pedirle "
                    "más volumen (o más análisis de laboratorio).")
 
@@ -266,13 +281,13 @@ def render(USR, cat, conectar):
         _resv = (0.10 * tk["capacidad_litros"].fillna(0)).where(~_con, 0.0)
         tk["util_l"] = (tk["litros_actual"].fillna(0) - _resv).clip(lower=0)
         tk["tn"] = tk["util_l"] * tk["densidad"].fillna(DENS_AFE) / 1000.0
-        tk["banda"] = [(_banda(a, b, s_b, p_b)) for a, b in zip(tk["azufre"], tk["fosforo"])]
+        tk["banda"] = [(_banda(a, b)) for a, b in zip(tk["azufre"], tk["fosforo"])]
         _afe = tk[tk["producto_principal"].str.upper() == "AFE-S"]
         _age = tk[tk["producto_principal"].str.upper() == "AG-E"]
-        stock_bueno_t = float(_afe.loc[_afe["banda"] == "BUENO", "tn"].sum())
+        stock_bueno_t = float(_afe.loc[_afe["banda"].isin(BUENAS), "tn"].sum())
         s1, s2, s3, s4 = st.columns(4)
-        s1.metric("AFE-S BUENO", "%.0f t" % stock_bueno_t)
-        s2.metric("AFE-S MEDIO/MALO", "%.0f t" % float(_afe.loc[_afe["banda"].isin(["MEDIO", "MALO"]), "tn"].sum()))
+        s1.metric("AFE-S EXC+BUENO", "%.0f t" % stock_bueno_t)
+        s2.metric("AFE-S JUSTO/MALO", "%.0f t" % float(_afe.loc[_afe["banda"].isin(["JUSTO", "MALO"]), "tn"].sum()))
         s3.metric("AFE-S sin lab", "%.0f t" % float(_afe.loc[_afe["banda"] == "SIN LAB", "tn"].sum()))
         s4.metric("AG-E en tanques", "%.0f t" % float(_age["tn"].sum()))
         st.caption("Toneladas **útiles**: en base plana ya se descontó el 10%% de capacidad que queda "
@@ -288,8 +303,8 @@ def render(USR, cat, conectar):
     # ---------------- 5 · proyección ----------------
     st.markdown("#### 5 · ¿Alcanza el AFE-S bueno? (proyección)")
     _lab_in = ing[ing["banda"] != "SIN LAB"]
-    _bue = _lab_in[_lab_in["banda"] == "BUENO"]
-    _mal = _lab_in[_lab_in["banda"].isin(["MEDIO", "MALO"])]
+    _bue = _lab_in[_lab_in["banda"].isin(BUENAS)]
+    _mal = _lab_in[_lab_in["banda"].isin(["JUSTO", "MALO"])]
     s_bueno = _pond(_bue, "s") or 40.0
     p_bueno = _pond(_bue, "p") or 110.0
     s_malo = _pond(_mal, "s") or 47.0
