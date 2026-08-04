@@ -76,6 +76,12 @@ def render(USR, cat, conectar):
     exp_obj = c4.number_input("Exportación objetivo (t/sem)", 100.0, 3000.0, 900.0, 50.0, key="ba_e",
                               help="Te dicen 800–1000 t semanales.")
     st.markdown(
+        "**¿Qué es una banda?** El AG-E que se exporta se vende con una especificación máxima de "
+        "impurezas (azufre ≤ 50 ppm, fósforo ≤ 150 ppm). Como el AG-E crudo viene muy sucio, se "
+        "diluye con AFE-S — y no cualquier AFE-S sirve igual: uno limpio *absorbe* mucho AG-E "
+        "sin que la mezcla se pase de la spec; uno al límite no absorbe nada. La **banda** resume, "
+        "con el análisis de laboratorio de cada camión, cuánta capacidad de dilución tiene ese "
+        "AFE-S.\n\n"
         "**Umbrales de calidad** — se clasifica por el peor de los dos parámetros contra la spec "
         "de venta (S 50 / P 150), el mismo criterio que usa el algoritmo de despacho:\n\n"
         "| Banda | Margen contra la spec | En números | Cuánto AG-E banca solo* |\n"
@@ -229,13 +235,20 @@ def render(USR, cat, conectar):
     # ---------------- 3 · producido en reactores ----------------
     st.markdown("#### 3 · Producido en reactores")
     st.caption("Reacciones **finalizadas** (desgomados → AFE-S y producción ARE), por semana y "
-               "producto, con los kg reales (`kg_obtenido`: tickets de pesada o cierre manual).")
+               "producto. Los kg reales salen de la mejor fuente disponible: tickets de pesada, "
+               "cierre manual de la reacción, o kg_obtenido.")
+    # el real de una reacción puede vivir en kg_obtenido (recomputado por tickets), en el
+    # cierre manual (fact_reaccion_cierre.real_kg — el caso típico del ARE) o en los tickets
+    # de pesada: se toma la mejor fuente disponible, si no el ARE aparecía en cero.
     prod = cat(
         "SELECT to_char(COALESCE(b.fin_ts, b.fecha::timestamp),'IYYY·\"S\"IW') AS semana, "
         "to_char(COALESCE(b.fin_ts, b.fecha::timestamp),'YYYY-MM') AS mes, "
         "COALESCE(dp.codigo_producto,'—') AS producto, "
-        "sum(COALESCE(b.kg_obtenido,0))/1000.0 AS tn, count(*) AS n "
+        "sum(COALESCE(NULLIF(b.kg_obtenido,0), c.real_kg, t.kg, 0))/1000.0 AS tn, count(*) AS n "
         "FROM produccion.fact_batch_proceso b "
+        "LEFT JOIN produccion.fact_reaccion_cierre c ON c.id_batch=b.id_batch "
+        "LEFT JOIN (SELECT id_batch, sum(kg) AS kg FROM produccion.fact_batch_ticket_final "
+        "           WHERE COALESCE(anulado,false)=false GROUP BY 1) t ON t.id_batch=b.id_batch "
         "LEFT JOIN produccion.dim_producto dp ON dp.id_producto=b.id_producto_buscado "
         "WHERE b.sector='REACTORES' AND COALESCE(b.anulado,false)=false "
         "AND b.estado='FINALIZADO' AND COALESCE(b.fin_ts, b.fecha::timestamp) >= %s "
@@ -269,6 +282,8 @@ def render(USR, cat, conectar):
              "azufre, fosforo, codigo FROM produccion.vw_tanque_panel "
              "WHERE activo AND upper(producto_principal) IN ('AFE-S','AG-E')")
     stock_bueno_t = 0.0
+    _afe = pd.DataFrame()
+    _age = pd.DataFrame()
     if tk is None or tk.empty:
         st.info("Sin tanques de AFE-S / AG-E.")
     else:
@@ -290,8 +305,8 @@ def render(USR, cat, conectar):
         s2.metric("AFE-S JUSTO/MALO", "%.0f t" % float(_afe.loc[_afe["banda"].isin(["JUSTO", "MALO"]), "tn"].sum()))
         s3.metric("AFE-S sin lab", "%.0f t" % float(_afe.loc[_afe["banda"] == "SIN LAB", "tn"].sum()))
         s4.metric("AG-E en tanques", "%.0f t" % float(_age["tn"].sum()))
-        st.caption("Toneladas **útiles**: en base plana ya se descontó el 10%% de capacidad que queda "
-                   "como fondo de tanque; los cónicos se usan al 100%%.")
+        st.caption("Toneladas **útiles**: en base plana ya se descontó el 10% de capacidad que queda "
+                   "como fondo de tanque; los cónicos se usan al 100%.")
         with st.expander("Detalle por tanque"):
             _d = tk.sort_values(["producto_principal", "tn"], ascending=[True, False])[
                 ["nombre", "producto_principal", "banda", "util_l", "tn", "azufre", "fosforo"]]
@@ -300,76 +315,186 @@ def render(USR, cat, conectar):
                                             "azufre": "S ppm", "fosforo": "P ppm"}).round(1),
                          hide_index=True, use_container_width=True)
 
-    # ---------------- 5 · proyección ----------------
-    st.markdown("#### 5 · ¿Alcanza el AFE-S bueno? (proyección)")
+    # ---------------- 5 · simulación stock + flujo ----------------
+    st.markdown("#### 5 · ¿Alcanza el AFE-S bueno? (simulación de stock + flujo)")
+    st.caption("Modelo de tres pools de diluyente (**EXC+BUENO**, **JUSTO**, **MALO**): cada semana "
+               "se despacha usando primero el MALO, después el JUSTO y recién al final el BUENO "
+               "(la misma política que el botón *Sugerir* de Despachos), contra el stock útil en "
+               "tanques más lo que entra por semana (compras + producción propia). El SIN LAB se "
+               "prorratea con la proporción de lo medido.")
+
+    # --- calidades ponderadas por pool: entrada (ventana) + stock en tanques
+    def _qpool(bandas, s_def, p_def):
+        parts = []
+        d1 = ing[ing["banda"].isin(bandas)]
+        if not d1.empty:
+            parts.append(pd.DataFrame({"s": d1["s"], "p": d1["p"], "w": d1["tn"]}))
+        if not _afe.empty:
+            d2 = _afe[_afe["banda"].isin(bandas)]
+            if not d2.empty:
+                parts.append(pd.DataFrame({"s": d2["azufre"], "p": d2["fosforo"], "w": d2["tn"]}))
+        if not parts:
+            return s_def, p_def
+        dd = pd.concat(parts, ignore_index=True)
+        _s = _pond(dd, "s", "w")
+        _p = _pond(dd, "p", "w")
+        return (_s if _s is not None else s_def), (_p if _p is not None else p_def)
+
+    q = {"BUENO": _qpool(BUENAS, 42.0, 115.0),
+         "JUSTO": _qpool(("JUSTO",), 48.0, 142.0),
+         "MALO": _qpool(("MALO",), 47.0, 220.0)}
+    s_age = (_pond(_age, "azufre", "tn") if not _age.empty else None) or 180.0
+    p_age = (_pond(_age, "fosforo", "tn") if not _age.empty else None) or 300.0
+
+    # --- proporciones medidas (para prorratear SIN LAB y la producción propia)
     _lab_in = ing[ing["banda"] != "SIN LAB"]
-    _bue = _lab_in[_lab_in["banda"].isin(BUENAS)]
-    _mal = _lab_in[_lab_in["banda"].isin(["JUSTO", "MALO"])]
-    s_bueno = _pond(_bue, "s") or 40.0
-    p_bueno = _pond(_bue, "p") or 110.0
-    s_malo = _pond(_mal, "s") or 47.0
-    p_malo = _pond(_mal, "p") or 220.0
-    _age_lab = None
-    try:
-        _age_lab = tk[tk["producto_principal"].str.upper() == "AG-E"]
-    except Exception:
-        pass
-    s_age = (_pond(_age_lab, "azufre", "tn") if _age_lab is not None and not _age_lab.empty else None) or 180.0
-    p_age = (_pond(_age_lab, "fosforo", "tn") if _age_lab is not None and not _age_lab.empty else None) or 300.0
-
-    # flujo de bueno: entrada semanal medida + prorrateo del SIN LAB con la misma proporción
     _tn_lab = float(_lab_in["tn"].sum())
-    _frac_bueno = (float(_bue["tn"].sum()) / _tn_lab) if _tn_lab > 0 else 0.0
-    in_bueno_sem = _frac_bueno * (_tot / sem_h)
-
-    st.caption("Calidades ponderadas medidas — AFE-S bueno: S %.1f / P %.1f · AFE-S medio+malo: "
-               "S %.1f / P %.1f · AG-E (tanques): S %.1f / P %.1f. El SIN LAB se prorratea con la "
-               "proporción de lo medido (%.0f%% bueno)."
-               % (s_bueno, p_bueno, s_malo, p_malo, s_age, p_age, 100 * _frac_bueno))
-
-    filas = []
-    for x_pct in (2, 4, 6, 8, 10, 12):
-        x = x_pct / 100.0
-        # blend en masa: x·AGE + (1-x)·(f·bueno + (1-f)·malo) <= spec  →  f mínima por S y por P
-        def _fmin(sa, sb2, sm, lim):
-            t = (lim - x * sa) / (1.0 - x)
-            if sm <= t:
-                return 0.0            # con puro malo alcanza
-            if sb2 >= t:
-                return None           # ni con puro bueno alcanza
-            return (sm - t) / (sm - sb2)
-        f_s = _fmin(s_age, s_bueno, s_malo, SPEC_S)
-        f_p = _fmin(p_age, p_bueno, p_malo, SPEC_P)
-        if f_s is None or f_p is None:
-            filas.append({"% AG-E": x_pct, "AFE-S total (t/sem)": round(exp_obj * (1 - x)),
-                          "% bueno mín.": None, "Bueno req. (t/sem)": None,
-                          "Bueno que entra (t/sem)": round(in_bueno_sem),
-                          "Balance (t/sem)": None, "Autonomía stock bueno": "INVIABLE"})
-            continue
-        f = max(f_s, f_p)
-        need = exp_obj * (1 - x) * f
-        bal = in_bueno_sem - need
-        if bal >= 0:
-            auto = "∞ (entra más de lo que se usa)"
-        else:
-            auto = ("%.1f semanas" % (stock_bueno_t / -bal)) if stock_bueno_t > 0 else "0 semanas"
-        filas.append({"% AG-E": x_pct, "AFE-S total (t/sem)": round(exp_obj * (1 - x)),
-                      "% bueno mín.": round(100 * f, 1), "Bueno req. (t/sem)": round(need),
-                      "Bueno que entra (t/sem)": round(in_bueno_sem),
-                      "Balance (t/sem)": round(bal), "Autonomía stock bueno": auto})
-    st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True)
-    st.caption("Lectura: para exportar **%.0f t/sem**, cada fila muestra cuánto AFE-S **bueno** exige "
-               "ese %% de AG-E. Balance negativo = se consume más bueno del que entra y el stock "
-               "bueno se agota en las semanas indicadas." % exp_obj)
-
-    _ok = [f for f in filas if isinstance(f["Balance (t/sem)"], (int, float)) and f["Balance (t/sem)"] >= 0]
-    if _ok:
-        _mx = max(_ok, key=lambda f: f["% AG-E"])
-        st.success("✅ **%% de AG-E sostenible: hasta ~%d%%.** Por encima, el bueno que entra no "
-                   "alcanza y se come el stock." % _mx["% AG-E"])
+    if _tn_lab > 0:
+        _prop = {pl: float(_lab_in.loc[_lab_in["banda"].isin(bs), "tn"].sum()) / _tn_lab
+                 for pl, bs in (("BUENO", BUENAS), ("JUSTO", ("JUSTO",)), ("MALO", ("MALO",)))}
     else:
-        st.error("🔴 Con el ingreso actual de AFE-S bueno, **ningún nivel de AG-E es sostenible** a "
-                 "%.0f t/sem: hay que conseguir más AFE-S bueno o bajar la exportación." % exp_obj)
+        _prop = {"BUENO": 0.3, "JUSTO": 0.3, "MALO": 0.4}
+
+    # --- stock inicial por pool (t útiles), con el sin-lab de tanques prorrateado
+    def _stk_pool(bandas):
+        return float(_afe.loc[_afe["banda"].isin(bandas), "tn"].sum()) if not _afe.empty else 0.0
+    _stk_sin = _stk_pool(("SIN LAB",))
+    stk0 = {pl: _stk_pool(bs) + _stk_sin * _prop[pl]
+            for pl, bs in (("BUENO", BUENAS), ("JUSTO", ("JUSTO",)), ("MALO", ("MALO",)))}
+
+    # --- flujo semanal por pool: compras (medido + sin-lab prorrateado) + producción propia AFE-S
+    _in_sem = {pl: float(ing.loc[ing["banda"].isin(bs), "tn"].sum()) / sem_h
+               for pl, bs in (("BUENO", BUENAS), ("JUSTO", ("JUSTO",)), ("MALO", ("MALO",)))}
+    _in_sin = float(ing.loc[ing["banda"] == "SIN LAB", "tn"].sum()) / sem_h
+    try:
+        _prod_afe_sem = float(prod.loc[prod["producto"].str.upper().str.startswith("AFE-S"), "tn"].sum()) / sem_h
+    except Exception:
+        _prod_afe_sem = 0.0
+    flujo = {pl: _in_sem[pl] + (_in_sin + _prod_afe_sem) * _prop[pl] for pl in ("BUENO", "JUSTO", "MALO")}
+
+    st.caption("Calidades ponderadas — BUENO: S %.1f / P %.1f · JUSTO: S %.1f / P %.1f · MALO: "
+               "S %.1f / P %.1f · AG-E: S %.1f / P %.1f. Flujo semanal estimado: BUENO %.0f t · "
+               "JUSTO %.0f t · MALO %.0f t (incluye %.0f t/sem de producción propia de AFE-S y "
+               "%.0f t/sem sin lab, prorrateadas)."
+               % (q["BUENO"][0], q["BUENO"][1], q["JUSTO"][0], q["JUSTO"][1], q["MALO"][0],
+                  q["MALO"][1], s_age, p_age, flujo["BUENO"], flujo["JUSTO"], flujo["MALO"],
+                  _prod_afe_sem, _in_sin))
+
+    # --- mezcla óptima: mínimo BUENO (y dentro de eso, mínimo JUSTO) que cumple S y P
+    def _mix_min_bueno(D, disp, Ts, Tp):
+        if D <= 0:
+            return {"BUENO": 0.0, "JUSTO": 0.0, "MALO": 0.0}
+        if Ts < 0 or Tp < 0 or (disp["BUENO"] + disp["JUSTO"] + disp["MALO"]) < D - 1e-6:
+            return None
+        sB, pB = q["BUENO"]; sJ, pJ = q["JUSTO"]; sM, pM = q["MALO"]
+
+        def _fact(b):
+            resto = D - b
+            lo = max(0.0, resto - disp["MALO"])
+            hi = min(disp["JUSTO"], resto)
+            if lo > hi + 1e-9:
+                return None
+            for (vB, vJ, vM, T) in ((sB, sJ, sM, Ts), (pB, pJ, pM, Tp)):
+                rhs = T * D - vB * b - vM * resto
+                coef = vJ - vM
+                if abs(coef) < 1e-12:
+                    if rhs < -1e-9:
+                        return None
+                elif coef > 0:
+                    hi = min(hi, rhs / coef)
+                else:
+                    lo = max(lo, rhs / coef)
+            return lo if lo <= hi + 1e-9 else None
+
+        b_hi = min(disp["BUENO"], D)
+        if _fact(b_hi) is None:
+            return None
+        if _fact(0.0) is not None:
+            b = 0.0
+        else:
+            lo_b, hi_b = 0.0, b_hi
+            for _ in range(40):
+                mid = (lo_b + hi_b) / 2.0
+                if _fact(mid) is None:
+                    lo_b = mid
+                else:
+                    hi_b = mid
+            b = hi_b
+        j = min(max(_fact(b) or 0.0, 0.0), D - b)
+        return {"BUENO": b, "JUSTO": j, "MALO": max(0.0, D - b - j)}
+
+    def _targets(x):
+        return ((SPEC_S - x * s_age) / (1.0 - x), (SPEC_P - x * p_age) / (1.0 - x))
+
+    # --- techo sostenible de AG-E usando SOLO el flujo semanal (régimen permanente)
+    def _sostenible(x):
+        Ts, Tp = _targets(x)
+        return _mix_min_bueno(exp_obj * (1.0 - x), dict(flujo), Ts, Tp) is not None
+    x_sost = 0.0
+    if _sostenible(0.0):
+        lo_x, hi_x = 0.0, 0.25
+        for _ in range(40):
+            mx = (lo_x + hi_x) / 2.0
+            if _sostenible(mx):
+                lo_x = mx
+            else:
+                hi_x = mx
+        x_sost = lo_x
+
+    c1, c2 = st.columns([1, 2])
+    x_pct = c1.slider("% de AG-E en la carga", 0.0, 15.0, round(min(max(x_sost * 100, 2.0), 15.0), 1),
+                      0.5, key="ba_x", help="Arranca en el techo sostenible calculado. Subilo para "
+                                            "ver cuándo se rompe el stock.")
+    x = x_pct / 100.0
+    if _sostenible(0.0):
+        c2.metric("📐 Techo sostenible de AG-E (sólo con el flujo semanal)", "%.1f %%" % (x_sost * 100),
+                  "a %.0f t/sem de exportación" % exp_obj, delta_color="off")
+    else:
+        _volf = flujo["BUENO"] + flujo["JUSTO"] + flujo["MALO"]
+        _motf = ("falta VOLUMEN: entran %.0f t/sem de AFE-S y hacen falta %.0f"
+                 % (_volf, exp_obj) if _volf < exp_obj else
+                 "falta CALIDAD: con lo que entra, ni la mejor mezcla cumple la spec")
+        c2.error("Ni con 0%% de AG-E el flujo semanal sostiene %.0f t/sem — %s. La simulación de "
+                 "abajo muestra cuántas semanas aguanta el stock." % (exp_obj, _motf))
+
+    # --- simulación semanal hacia adelante (8 semanas): stock + flujo, mezcla óptima
+    D_sem = exp_obj * (1.0 - x)
+    Ts, Tp = _targets(x)
+    stk_c = dict(stk0)
+    filas, rotura = [], None
+    for w in range(1, 9):
+        disp = {pl: stk_c[pl] + flujo[pl] for pl in stk_c}
+        uso = _mix_min_bueno(D_sem, disp, Ts, Tp)
+        if uso is None:
+            rotura = w
+            _vol = disp["BUENO"] + disp["JUSTO"] + disp["MALO"]
+            _mot = ("falta VOLUMEN: %d t disponibles vs %d t necesarias" % (_vol, D_sem)
+                    if _vol < D_sem - 1e-6 else
+                    "falta CALIDAD: ni la mejor mezcla posible cumple S/P")
+            filas.append({"Semana": "+%d" % w, "AG-E (t)": round(exp_obj * x), "BUENO usado": "—",
+                          "JUSTO usado": "—", "MALO usado": "—",
+                          "Stock BUENO fin": round(disp["BUENO"]), "Stock JUSTO fin": round(disp["JUSTO"]),
+                          "Estado": "🔴 " + _mot})
+            break
+        stk_c = {pl: max(0.0, disp[pl] - uso[pl]) for pl in disp}
+        filas.append({"Semana": "+%d" % w, "AG-E (t)": round(exp_obj * x),
+                      "BUENO usado": round(uso["BUENO"]), "JUSTO usado": round(uso["JUSTO"]),
+                      "MALO usado": round(uso["MALO"]),
+                      "Stock BUENO fin": round(stk_c["BUENO"]), "Stock JUSTO fin": round(stk_c["JUSTO"]),
+                      "Estado": "✅"})
+    st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True)
+    if rotura:
+        st.error("🔴 Con **%.1f%% de AG-E** a %.0f t/sem, la mezcla deja de cerrar en la "
+                 "**semana +%d**: el stock de AFE-S bueno/justo se agota antes de que el flujo lo "
+                 "reponga. Bajá el %% de AG-E, conseguí AFE-S bueno (mirá la pestaña por proveedor) "
+                 "o bajá la exportación." % (x_pct, exp_obj, rotura))
+    else:
+        _fin_b = filas[-1]["Stock BUENO fin"]
+        st.success("✅ Con **%.1f%% de AG-E** a %.0f t/sem, las 8 semanas cierran. Stock de BUENO "
+                   "al final: %s t (hoy: %.0f t)." % (x_pct, exp_obj, _fin_b, stk0["BUENO"]))
+    st.caption("La mezcla de cada semana usa el mínimo de BUENO posible (primero MALO, después "
+               "JUSTO): es exactamente lo que hace *Sugerir mezcla* en Despachos. Si acá se rompe, "
+               "en la planta se rompe igual — esto solo lo anticipa.")
 
     # ---------------- 6 · cómo ajusta la fórmula de despacho ----------------
     with st.expander("📐 Cómo ajusta esto la fórmula de despacho", expanded=True):
