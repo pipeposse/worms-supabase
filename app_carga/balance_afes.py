@@ -13,6 +13,7 @@ Responde una sola pregunta: ¿alcanza el AFE-S BUENO para sostener la exportaci�
 La misma clasificación explica el algoritmo de despacho: maximizar AG-E y, entre los AFE-S,
 usar primero los de PEOR calidad que la spec tolere, reservando los buenos.
 """
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -74,9 +75,10 @@ def render(USR, cat, conectar):
     ing = cat(
         "SELECT p.fecha, to_char(p.fecha,'IYYY·\"S\"IW') AS semana, to_char(p.fecha,'YYYY-MM') AS mes, "
         "COALESCE(p.procedencia,'—') AS proveedor, abs(p.kg) AS kg, "
-        "l.ppm_azufre AS s, l.ppm_fosforo AS p "
+        "l.ppm_azufre AS s, l.ppm_fosforo AS p, l.prc_acidez AS ac0 "
         "FROM produccion.v_porteria_ticket p "
-        "LEFT JOIN LATERAL (SELECT pl.ppm_azufre, pl.ppm_fosforo FROM produccion.procesos_lab pl "
+        "LEFT JOIN LATERAL (SELECT pl.ppm_azufre, pl.ppm_fosforo, pl.prc_acidez "
+        "  FROM produccion.procesos_lab pl "
         "  WHERE btrim(pl.ticket)=p.ticket::text AND COALESCE(pl.anulado,false)=false "
         "  ORDER BY pl.fecha DESC NULLS LAST LIMIT 1) l ON true "
         "WHERE p.familia='AFE' AND p.clase IN ('OTRO','INGRESO') AND p.kg IS NOT NULL "
@@ -89,6 +91,11 @@ def render(USR, cat, conectar):
         ing[_c] = pd.to_numeric(ing[_c], errors="coerce")
     ing["tn"] = ing["kg"] / 1000.0
     ing["banda"] = [(_banda(a, b, s_b, p_b)) for a, b in zip(ing["s"], ing["p"])]
+    # acidez de Access con unidades mezcladas: < 0.2 es fracción (x100), el resto ya es %
+    ing["ac0"] = pd.to_numeric(ing["ac0"], errors="coerce")
+    ing["ac"] = ing["ac0"].map(lambda v: (v * 100.0 if v < 0.2 else v) if pd.notna(v) else None)
+    ing.loc[pd.to_numeric(ing["ac"], errors="coerce") > 100, "ac"] = None
+    ing["ac"] = pd.to_numeric(ing["ac"], errors="coerce")
 
     _tot = float(ing["tn"].sum())
     _clab = ing[ing["banda"] != "SIN LAB"]
@@ -109,7 +116,43 @@ def render(USR, cat, conectar):
         if _c not in _piv.columns:
             _piv[_c] = 0.0
     _piv = _piv[["BUENO", "MEDIO", "MALO", "SIN LAB"]].round(1)
-    st.bar_chart(_piv, use_container_width=True)
+
+    # barra compuesta con tooltip: t, % de la semana, S/P/acidez ponderados y camiones por proveedor
+    def _grp(d):
+        _k = float(d["kg"].sum())
+        _pv = d.groupby("proveedor").size().sort_values(ascending=False)
+        _txt = " · ".join("%s ×%d" % (i, c) for i, c in _pv.head(4).items())
+        if len(_pv) > 4:
+            _txt += " (+%d prov.)" % (len(_pv) - 4)
+        return pd.Series({
+            "tn": d["tn"].sum(), "camiones": len(d),
+            "s_prom": _pond(d, "s"), "p_prom": _pond(d, "p"), "ac_prom": _pond(d, "ac"),
+            "proveedores": _txt})
+    _lg = ing.groupby(["semana", "banda"]).apply(_grp).reset_index()
+    _tot_sem = _lg.groupby("semana")["tn"].transform("sum")
+    _lg["pct"] = (100.0 * _lg["tn"] / _tot_sem).round(1)
+    _orden_b = {"BUENO": 0, "MEDIO": 1, "MALO": 2, "SIN LAB": 3}
+    _lg["orden"] = _lg["banda"].map(_orden_b)
+    _ch = alt.Chart(_lg).mark_bar().encode(
+        x=alt.X("semana:N", sort=None, title=None),
+        y=alt.Y("tn:Q", title="toneladas"),
+        color=alt.Color("banda:N", title="Banda",
+                        scale=alt.Scale(domain=["BUENO", "MEDIO", "MALO", "SIN LAB"],
+                                        range=["#1d4ed8", "#f59e0b", "#dc2626", "#94a3b8"])),
+        order=alt.Order("orden:Q"),
+        tooltip=[alt.Tooltip("semana:N", title="Semana"),
+                 alt.Tooltip("banda:N", title="Banda"),
+                 alt.Tooltip("tn:Q", format=".1f", title="Toneladas"),
+                 alt.Tooltip("pct:Q", format=".1f", title="% de la semana"),
+                 alt.Tooltip("s_prom:Q", format=".1f", title="Azufre prom. (ppm)"),
+                 alt.Tooltip("p_prom:Q", format=".1f", title="Fósforo prom. (ppm)"),
+                 alt.Tooltip("ac_prom:Q", format=".2f", title="Acidez prom. (%)"),
+                 alt.Tooltip("camiones:Q", title="Camiones"),
+                 alt.Tooltip("proveedores:N", title="Camiones por proveedor")],
+    ).properties(height=340)
+    st.altair_chart(_ch, use_container_width=True)
+    st.caption("🖱️ Pasá el mouse por cada tramo de barra: %% de la semana, promedios ponderados de "
+               "azufre/fósforo/acidez de esa banda y camiones por proveedor.")
 
     ta, tb, tc = st.tabs(["📅 Por semana", "🗓️ Por mes", "🚚 Por proveedor"])
     with ta:

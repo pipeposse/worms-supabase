@@ -2579,6 +2579,10 @@ def _variacion_semanal(USR, cat, conectar):
 
 
 def _reacciones_terminadas(USR, cat, conectar):
+    _fx = st.session_state.pop("term_celebrar", None)
+    if _fx:
+        st.balloons()
+        st.success("🎈 **Edición confirmada:** " + _fx)
     st.subheader("🏁 Reacciones terminadas — objetivo vs real")
     st.caption("Máximo por reactor · objetivo/fórmula · real por tickets de pesada · real por variación de tanque. "
                "Para ARE sin tickets, la variación del tanque se **sugiere** (prorrateada por fórmula si comparten tanque) y es **editable**. "
@@ -2731,7 +2735,15 @@ def _reacciones_terminadas(USR, cat, conectar):
                                 " fin_ts = CASE WHEN %s IS NULL THEN fin_ts ELSE (%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires') END "
                                 "WHERE id_batch=%s", (_isoi, _isoi, _isof, _isof, idb))
                     audit.log("U", "fact_batch_proceso", idb, {"inicio": _isoi, "fin": _isof})
-            st.success("Inicio/fin actualizados."); cat.clear(); st.rerun()
+            _viejo = "%s → %s" % (
+                _il.strftime("%d/%m %H:%M") if _il is not None else "—",
+                _fl.strftime("%d/%m %H:%M") if _fl is not None else "—")
+            _nuevo = "%s → %s" % (
+                ("%s %s" % (_id2.strftime("%d/%m"), _ih2.strftime("%H:%M"))) if (_id2 and _ih2) else "—",
+                ("%s %s" % (_fd2.strftime("%d/%m"), _fh2.strftime("%H:%M"))) if (_fd2 and _fh2) else "—")
+            st.session_state["term_celebrar"] = ("se cambió el **inicio/fin** de %s: antes %s, ahora %s."
+                                                 % (r["ident"], _viejo, _nuevo))
+            cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
 
@@ -2765,7 +2777,13 @@ def _reacciones_terminadas(USR, cat, conectar):
                                         "VALUES (%s,'EN_TANQUE',(%s::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires'),%s)",
                                         (idb, _iso, int(USR["id_usuario"])))
                         audit.log("U", "fact_etapa_evento", idb, {"acopio_final": _iso})
-                st.success("Horario de acopio final guardado (recalcula la variación sugerida)."); cat.clear(); st.rerun()
+                st.session_state["term_celebrar"] = (
+                    "se cambió el **horario de acopio final** de %s: antes %s, ahora %s %s "
+                    "(recalcula la variación de tanque sugerida)."
+                    % (r["ident"],
+                       _cts_ts.strftime("%d/%m %H:%M") if _cts_ts is not None else "sin horario",
+                       _cd.strftime("%d/%m"), _ch.strftime("%H:%M")))
+                cat.clear(); st.rerun()
             except Exception as e:
                 st.exception(e)
 
@@ -2798,7 +2816,12 @@ def _reacciones_terminadas(USR, cat, conectar):
                                 " obs=EXCLUDED.obs, id_usuario=EXCLUDED.id_usuario, actualizado_en=now()",
                                 (idb, float(_real_t*1000), _met, ((_obs or "").strip() or None), int(USR["id_usuario"])))
                     audit.log("U", "fact_reaccion_cierre", idb, {"real_kg": float(_real_t*1000), "metodo": _met})
-            st.success(f"Producción real guardada: {_real_t:.2f} t ({_met})."); cat.clear(); st.rerun()
+            st.session_state["term_celebrar"] = (
+                "se guardó la **producción real** de %s: %s → **%.2f t** (método: %s)."
+                % (r["ident"],
+                   ("%.2f t" % (_real0 / 1000.0)) if _real0 is not None else "sin valor",
+                   _real_t, _met))
+            cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
 
@@ -3190,7 +3213,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # director al entrar y le tapaba lo que realmente hace la sección (planificar).
     # Ahora es la última opción del menú, como cualquier otra.
     _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administración de reacciones", "📅 Cronogramas",
-                   "🚚 Despachos", "🧮 Balance", "🛂 Aprobaciones"]
+                   "🚚 Despachos", "🧮 Balance", "🔬 Análisis AFE", "🛂 Aprobaciones"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3233,6 +3256,14 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             balance_afes.render(USR, cat, conectar)
         except Exception as _e:
             st.error("No se pudo cargar Balance AFE-S: %s" % _e)
+        return
+
+    if _grupo.startswith("🔬"):
+        try:
+            import analisis_afe
+            analisis_afe.render(USR, cat, conectar)
+        except Exception as _e:
+            st.error("No se pudo cargar Análisis AFE: %s" % _e)
         return
 
     if _grupo.startswith("🚚"):

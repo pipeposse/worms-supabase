@@ -2676,7 +2676,7 @@ if st.session_state.section != "CARGAS":
     if st.session_state.section == "LAB":
         # =================== LABORATORIO ===================
         st.title("🧪 Laboratorio")
-        _lab_view = st.radio("Vista", ["➕ Carga / Edición", "🛢️ Parámetros por tanque", "🚛 Entrada diaria", "📦 Asignación a tanque", "📊 Resultados", "🚦 Sin evaluación", "🔬 Producciones en marcha"],
+        _lab_view = st.radio("Vista", ["➕ Carga / Edición", "🛢️ Parámetros por tanque", "🚛 Entrada diaria", "📦 Asignación a tanque", "📊 Resultados", "🚦 Sin evaluación", "🚨 AFEs sin analizar", "🔬 Producciones en marcha"],
                              horizontal=True, key="lab_view_sel", label_visibility="collapsed")
         if _lab_view.startswith("🔬"):
             _pm_tipo = st.radio("Tipo de proceso", ["🧴 ARE (decantación)", "🫧 Desgomado acuoso"],
@@ -2726,6 +2726,12 @@ if st.session_state.section != "CARGAS":
                              hide_index=True, use_container_width=True)
                 st.caption("ARE → asignales la muestra de lab. Desgomado sin ticket → cargá el ticket final de pesada. "
                            "Desgomado con ticket → pedile a laboratorio el análisis de esa pesada.")
+        elif _lab_view.startswith("🚨"):
+            try:
+                import analisis_afe
+                analisis_afe.render_sin_lab(USR, cat, conectar, key="lab")
+            except Exception as _e_afe:
+                st.error(f"No se pudo cargar AFEs sin analizar: {_e_afe}")
         elif _lab_view.startswith("🛢️"):
             _form_param_tanque(cat, conectar, USR)
         elif _lab_view.startswith("🚛"):
