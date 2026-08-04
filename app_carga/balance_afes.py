@@ -324,9 +324,9 @@ def render(USR, cat, conectar):
         d1_, d2_, d3_, d4_ = st.columns(4)
         d1_.metric("Producido (desgomado)", "%.0f t" % _tp2, "%.0f t/sem" % (_tp2 / sem_h))
         d2_.metric("Comprado", "%.0f t" % _tot, "%.0f t/sem" % (_tot / sem_h))
-        d3_.metric("%% EXC+BUENO producido", "%.0f %%" % _pct_b_prod,
+        d3_.metric("% EXC+BUENO producido", "%.0f %%" % _pct_b_prod,
                    help="Sobre lo producido CON análisis del ticket final.")
-        d4_.metric("%% EXC+BUENO comprado", "%.0f %%" % _pct_b_comp,
+        d4_.metric("% EXC+BUENO comprado", "%.0f %%" % _pct_b_comp,
                    help="Sobre lo comprado con análisis.")
         _s_pr = _pond(dprod, "s", "tn"); _p_pr = _pond(dprod, "p", "tn")
         if _s_pr is not None:
