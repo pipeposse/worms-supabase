@@ -3758,13 +3758,15 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     if proc == "PRODUCCION_ARE":
         _rep_ops["🛢️ Cónico 20-1"] = ("CONICO20", 87)
         _rep_ops["🛢️ Cónico 20-2"] = ("CONICO20", 88)
-    _rep_sel = st.radio("¿Dónde reposa cuando termine la reacción?", list(_rep_ops.keys()),
-                        horizontal=True, key="pl_reposo_tk",
-                        help=("Desgomado: el mismo reactor o el Cónico 60. Producción ARE: el mismo "
-                              "reactor, el Cónico 60 o un Cónico 20. El operario lo ve durante el "
-                              "proceso y al pasar a reposo; en desgomado, la decisión de reposo sale "
-                              "precargada con esto."))
-    reposo_modo, reposo_idt = _rep_ops[_rep_sel]
+    _rep_sel = st.radio("¿Dónde reposa cuando termine la reacción? *", list(_rep_ops.keys()),
+                        index=None, horizontal=True, key="pl_reposo_tk",
+                        help=("OBLIGATORIO. Desgomado: el mismo reactor o el Cónico 60. Producción "
+                              "ARE: el mismo reactor, el Cónico 60 o un Cónico 20. El operario lo ve "
+                              "durante el proceso y al pasar a reposo; en desgomado, la decisión de "
+                              "reposo sale precargada con esto."))
+    if _rep_sel is None:
+        st.warning("🛌 **Elegí dónde reposa** — sin esto no se puede generar la reacción.")
+    reposo_modo, reposo_idt = _rep_ops.get(_rep_sel, (None, None))
 
     motivo_ajuste = ""
     if ajustes:
@@ -3795,6 +3797,10 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             return
         if proc == "PRODUCCION_ARE" and (insumo_tanque.get("POTASIO") is None or insumo_tanque.get("FUEL_OIL") is None):
             st.error("Elegí el **tanque de KOH** y el **tanque de fuel oil** (sección 4) para descontar stock.")
+            return
+        if not reposo_modo:
+            st.error("Falta elegir el 🛌 **tanque de reposo** (mismo reactor o cónico): es "
+                     "obligatorio para todas las reacciones.")
             return
         mp_id = int(mp_df[mp_df["codigo_producto"] == mp].iloc[0]["id_producto"])
         _nm = (_nombre_manual or "").strip()
