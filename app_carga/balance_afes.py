@@ -198,6 +198,30 @@ def render(USR, cat, conectar):
     st.caption("🖱️ Pasá el mouse por cada tramo de barra: % de la semana, promedios ponderados de "
                "azufre/fósforo/acidez de esa banda y camiones por proveedor.")
 
+    # 🥧 tortas por banda de las últimas semanas (mismos datos y tooltips que las barras)
+    _ult4 = sorted(_lg["semana"].unique().tolist())[-4:]
+    _pie = _lg[_lg["semana"].isin(_ult4)]
+    if not _pie.empty:
+        st.markdown("**🥧 Composición por banda — últimas %d semanas**" % len(_ult4))
+        _chp = alt.Chart(_pie).mark_arc(innerRadius=32).encode(
+            theta=alt.Theta("tn:Q"),
+            color=alt.Color("banda:N", title="Banda",
+                            scale=alt.Scale(domain=BANDAS, range=_B_COLORES)),
+            order=alt.Order("orden:Q"),
+            tooltip=[alt.Tooltip("semana:N", title="Semana"),
+                     alt.Tooltip("banda:N", title="Banda"),
+                     alt.Tooltip("tn:Q", format=".1f", title="Toneladas"),
+                     alt.Tooltip("pct:Q", format=".1f", title="% de la semana"),
+                     alt.Tooltip("s_prom:Q", format=".1f", title="Azufre prom. (ppm)"),
+                     alt.Tooltip("p_prom:Q", format=".1f", title="Fósforo prom. (ppm)"),
+                     alt.Tooltip("ac_prom:Q", format=".2f", title="Acidez prom. (%)"),
+                     alt.Tooltip("camiones:Q", title="Camiones"),
+                     alt.Tooltip("proveedores:N", title="Camiones por proveedor")],
+        ).properties(width=170, height=170).facet(
+            column=alt.Column("semana:N", title=None, sort=_ult4))
+        st.altair_chart(_chp)
+        st.caption("Cada torta es una semana; los mini filtros de arriba también aplican acá.")
+
     ta, tb, tc = st.tabs(["📅 Por semana", "🗓️ Por mes", "🚚 Por proveedor"])
     with ta:
         st.dataframe(_piv.assign(TOTAL=_piv.sum(axis=1).round(1)).reset_index(),

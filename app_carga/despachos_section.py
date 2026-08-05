@@ -202,13 +202,22 @@ def _ponderar(df: pd.DataFrame, col: str):
     return float((d[col] * d["kg"]).sum() / kg_c), 100.0 * kg_c / kg_tot
 
 
+TOL_DESVIO = 0.10   # hasta 10% por encima de la spec se permite, con alarma y registro
+
+
 def _panel_specs(res: pd.DataFrame, spec: dict):
-    """Tarjetas de cumplimiento. Devuelve True si todo lo medible cumple."""
+    """Tarjetas de cumplimiento. Devuelve (ok, desvios).
+
+    ok = True si todo lo medible está dentro de spec O dentro de la tolerancia del 10%.
+    desvios = parámetros que superan la spec pero entran en la tolerancia: se permiten,
+    con alarma en pantalla y registro en produccion.fact_despacho_desvio.
+    """
     filas = [("Acidez %", "Acidez %", spec["acidez"], "{:.2f}"),
              ("AyS %", "AyS %", spec["ays"], "{:.2f}"),
              ("Azufre ppm", "Azufre ppm", spec["azufre"], "{:.1f}"),
              ("Fósforo ppm", "Fósforo ppm", spec["fosforo"], "{:.1f}")]
     ok_total = True
+    desvios = []
     cols = st.columns(4)
     for (titulo, col, lim, fmt), c in zip(filas, cols):
         val, cob = _ponderar(res, col)
@@ -218,21 +227,27 @@ def _panel_specs(res: pd.DataFrame, spec: dict):
                        f"<div style='font-size:.72rem;color:#94a3b8'>sin dato de lab</div>",
                        unsafe_allow_html=True)
             continue
-        cumple = val <= float(lim)
-        margen = 100.0 * (float(lim) - val) / float(lim)
-        if not cumple:
-            clr, nota = "#dc2626", f"EXCEDE por {fmt.format(val - float(lim))}"
-        elif margen < 5:
-            clr, nota = "#b45309", f"al límite ({margen:.1f}% de margen)"
+        lim = float(lim)
+        margen = 100.0 * (lim - val) / lim
+        if val <= lim:
+            if margen < 5:
+                clr, nota = "#b45309", f"al límite ({margen:.1f}% de margen)"
+            else:
+                clr, nota = "#16a34a", f"margen {margen:.1f}%"
+        elif val <= lim * (1.0 + TOL_DESVIO):
+            _exc = 100.0 * (val - lim) / lim
+            clr, nota = "#c2410c", f"🚨 DESVÍO +{_exc:.1f}% (tolerado hasta {TOL_DESVIO*100:.0f}%)"
+            desvios.append({"param": titulo, "valor": float(val), "limite": lim,
+                            "exceso": _exc})
         else:
-            clr, nota = "#16a34a", f"margen {margen:.1f}%"
-        ok_total = ok_total and cumple
+            clr, nota = "#dc2626", f"EXCEDE por {fmt.format(val - lim)} (más del {TOL_DESVIO*100:.0f}%)"
+            ok_total = False
         _av = "" if cob >= 99.5 else f" · sólo {cob:.0f}% de la masa medida"
-        c.markdown(f"<div style='font-size:.78rem;color:#666'>{titulo} · máx {fmt.format(float(lim))}</div>"
+        c.markdown(f"<div style='font-size:.78rem;color:#666'>{titulo} · máx {fmt.format(lim)}</div>"
                    f"<div style='font-size:1.3rem;font-weight:800;color:{clr}'>{fmt.format(val)}</div>"
                    f"<div style='font-size:.72rem;color:{clr}'>{nota}{_av}</div>",
                    unsafe_allow_html=True)
-    return ok_total
+    return ok_total, desvios
 
 
 def _estructura(res, prod_cod, prods=None):
@@ -463,7 +478,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
 
 # ------------------------------------------------------------------ persistencia
 
-def _guardar(conectar, USR, cab, res, id_despacho=None):
+def _guardar(conectar, USR, cab, res, id_despacho=None, desvios=None):
     with conectar(USR["id_usuario"]) as (conn, _a):
         with conn.cursor() as cur:
             if id_despacho:
@@ -511,6 +526,15 @@ def _guardar(conectar, USR, cab, res, id_despacho=None):
                      "MANUAL" if "manual" in {r.get("Acidez %_src"), r.get("Fósforo ppm_src"),
                                               r.get("Azufre ppm_src"), r.get("AyS %_src")} else "TANQUE",
                      _nota))
+            # registro de desvíos de spec tolerados (visible para dirección)
+            cur.execute("DELETE FROM produccion.fact_despacho_desvio WHERE id_despacho=%s "
+                        "AND origen='ARMADO'", (_id,))
+            for d in (desvios or []):
+                cur.execute("INSERT INTO produccion.fact_despacho_desvio "
+                            "(id_despacho, parametro, valor, limite, exceso_pct, origen, usuario) "
+                            "VALUES (%s,%s,%s,%s,%s,'ARMADO',%s)",
+                            (_id, d["param"], d["valor"], d["limite"], round(d["exceso"], 2),
+                             USR.get("nombre")))
     return _id
 
 
@@ -763,6 +787,40 @@ def _armar(USR, cat, conectar):
                                                                 min_value=0, max_value=100)})
     st.caption("**Útil (L)** es lo que la formulación puede tomar: en base plana ya está descontado "
                "el 10% de capacidad que queda como fondo de tanque; cónicos al 100%.")
+
+    with st.expander("⚡ Actualizar el stock de un tanque acá mismo (sin ir a Tanques)"):
+        st.caption("Carga una **medición nueva** en el historial del tanque — el mismo canal que "
+                   "Tanques → Cargar medición — y pisa el stock que ve toda la app al instante.")
+        _u1, _u2, _u3 = st.columns([2, 1, 1])
+        _opu = _tp.apply(lambda r: "%s · medido: %s" % (
+            r["nombre"], ("{:,.0f} L".format(r["litros_brutos"]) if pd.notna(r["litros_brutos"])
+                          else "sin medición")), axis=1).tolist()
+        _selu = _u1.selectbox("Tanque", _opu, key="dsp_up_tk")
+        _ru = _tp.iloc[_opu.index(_selu)]
+        _lu = _u2.number_input("Litros medidos", min_value=0.0, step=500.0, key="dsp_up_l")
+        _du = float(_ru["densidad"]) if pd.notna(_ru["densidad"]) else 0.91
+        _u3.metric("kg (× dens. %.2f)" % _du, f"{_lu * _du:,.0f}")
+        if st.button("💾 Guardar medición del tanque", key="dsp_up_go", use_container_width=True):
+            try:
+                with conectar(USR["id_usuario"]) as (conn, audit):
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT id_producto_principal FROM produccion.dim_tanque "
+                                    "WHERE id_tanque=%s", (int(_ru["id_tanque"]),))
+                        _rowp = cur.fetchone()
+                        _pidu = int(_rowp[0]) if _rowp and _rowp[0] is not None else None
+                        cur.execute("INSERT INTO produccion.fact_stock_tanque "
+                                    "(id_tanque, id_producto, medido_en, litros, kg, id_usuario, "
+                                    " observaciones) VALUES (%s,%s,now(),%s,%s,%s,%s)",
+                                    (int(_ru["id_tanque"]), _pidu, float(_lu),
+                                     round(float(_lu) * _du, 1), int(USR["id_usuario"]),
+                                     "Actualizado desde Despachos (armado de carga)"))
+                    audit.log("I", "fact_stock_tanque", int(_ru["id_tanque"]),
+                              {"litros": float(_lu), "desde": "despachos"})
+                cat.clear()
+                st.success("Stock de %s actualizado a %s L." % (_ru["nombre"], f"{_lu:,.0f}"))
+                st.rerun()
+            except Exception as e:
+                st.error("No se pudo actualizar: %s" % e)
     if not _s0.empty:
         st.caption("Sin medición de nivel cargada, pero igual seleccionables: **" +
                    "**, **".join(_s0["nombre"].astype(str).tolist()) +
@@ -944,7 +1002,17 @@ def _armar(USR, cat, conectar):
     ok_est, _msg_est = _estructura(res, prod_cod, prods)
 
     st.markdown("**Cumplimiento de especificación** (promedios ponderados por kg)")
-    ok_spec = _panel_specs(res, spec)
+    ok_spec, _desv = _panel_specs(res, spec)
+    if _desv:
+        st.error("🚨 **ALARMA — DESVÍO DE ESPECIFICACIÓN** (tolerancia %.0f%%): " % (TOL_DESVIO * 100)
+                 + " · ".join("%s = %.2f vs máx %.2f (**+%.1f%%**)"
+                              % (d["param"], d["valor"], d["limite"], d["exceso"]) for d in _desv)
+                 + ". Se puede guardar y confirmar igual, pero el desvío queda **registrado con "
+                   "usuario y fecha** y visible para dirección en 🔬 Control y confirmación.")
+        try:
+            st.toast("🚨 Despacho con desvío de especificación", icon="🚨")
+        except Exception:
+            pass
     ok = ok_spec and ok_est
 
     # ---------- 4 · Avisos ----------
@@ -990,8 +1058,9 @@ def _armar(USR, cat, conectar):
         st.error("La carga **no respeta la formulación** de un despacho de %s: siempre es un "
                  "componente de %s más los AFE que lo diluyen." % (prod_lbl, _fam[0]))
     if not ok_spec:
-        st.error("La mezcla **no cumple** la especificación. Reemplazá los tanques de peor calidad "
-                 "o bajá su participación antes de confirmar.")
+        st.error("La mezcla se pasa de la especificación en **más del %.0f%%** de tolerancia: no se "
+                 "puede confirmar. Reemplazá los tanques de peor calidad o bajá su participación."
+                 % (TOL_DESVIO * 100))
 
     # ---------- 5 · Guardar ----------
     st.markdown("#### 5 · Guardar")
@@ -1009,7 +1078,7 @@ def _armar(USR, cat, conectar):
                   help="No cumple la spec: sólo se puede guardar como BORRADOR.")
     elif g2.button("💾 Guardar", type="primary", use_container_width=True):
         try:
-            _id = _guardar(conectar, USR, cab, res, ss.get("dsp_edit_id"))
+            _id = _guardar(conectar, USR, cab, res, ss.get("dsp_edit_id"), desvios=_desv)
             cat.clear()
             ss["dsp_edit_id"] = None
             st.success(f"Despacho guardado (id {_id}).")
@@ -1256,10 +1325,20 @@ def _control(USR, cat, conectar):
         return out
 
     st.markdown("**Cumplimiento con el laboratorio guardado en el despacho**")
-    ok_g = _panel_specs(_mk(False), spec)
+    ok_g, _dv_g = _panel_specs(_mk(False), spec)
     if _nch:
         st.markdown("**Como quedaría con el laboratorio de hoy** (sin pisar lo cargado a mano)")
         _panel_specs(_mk(True), spec)
+
+    _dvh = cat("SELECT parametro, valor, limite, exceso_pct, origen, usuario, "
+               "to_char(creado_en AT TIME ZONE 'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS cuando "
+               "FROM produccion.fact_despacho_desvio WHERE id_despacho=%s ORDER BY creado_en DESC",
+               (int(sel),))
+    if _dvh is not None and not _dvh.empty:
+        st.error("🚨 **Este despacho tiene %d desvío(s) de especificación registrados:** " % len(_dvh)
+                 + " · ".join("%s +%.1f%% (%s, %s, %s)"
+                              % (r["parametro"], float(r["exceso_pct"] or 0), r["origen"],
+                                 r["usuario"] or "—", r["cuando"]) for _, r in _dvh.iterrows()))
 
     # ---- acciones ----
     c1, c2, c3 = st.columns([1.3, 1.1, 1.3])
@@ -1289,22 +1368,32 @@ def _control(USR, cat, conectar):
         st.rerun()
     if _estado == "BORRADOR":
         if ok_g:
-            if c3.button("✅ Cumple — confirmar e iniciar", type="primary", key="dsp_ctl_go",
-                         use_container_width=True):
+            _lbl_go = ("🚨 Confirmar CON DESVÍO e iniciar" if _dv_g else "✅ Cumple — confirmar e iniciar")
+            if c3.button(_lbl_go, type="primary", key="dsp_ctl_go", use_container_width=True,
+                         help=("Queda registrado el desvío con tu usuario." if _dv_g else None)):
                 try:
                     with conectar(USR["id_usuario"]) as (conn, _a):
                         with conn.cursor() as cur:
                             cur.execute("UPDATE produccion.fact_despacho SET estado='CONFIRMADO', "
                                         "actualizado_en=now() WHERE id_despacho=%s", (int(sel),))
+                            cur.execute("DELETE FROM produccion.fact_despacho_desvio "
+                                        "WHERE id_despacho=%s AND origen='CONTROL'", (int(sel),))
+                            for d in (_dv_g or []):
+                                cur.execute("INSERT INTO produccion.fact_despacho_desvio "
+                                            "(id_despacho, parametro, valor, limite, exceso_pct, "
+                                            " origen, usuario) VALUES (%s,%s,%s,%s,%s,'CONTROL',%s)",
+                                            (int(sel), d["param"], d["valor"], d["limite"],
+                                             round(d["exceso"], 2), USR.get("nombre")))
                     cat.clear()
-                    st.success("Despacho #%d CONFIRMADO: queda iniciado." % int(sel))
+                    st.success("Despacho #%d CONFIRMADO%s." % (int(sel),
+                               " con desvío registrado" if _dv_g else ""))
                     st.rerun()
                 except Exception as e:
                     st.error("No se pudo confirmar: %s" % e)
         else:
             c3.button("✅ Confirmar e iniciar", disabled=True, use_container_width=True,
-                      help="No cumple la spec con los valores guardados: actualizá el laboratorio "
-                           "o modificá la mezcla en el armador.")
+                      help="Se pasa de la spec en más del 10% de tolerancia: actualizá el "
+                           "laboratorio o modificá la mezcla en el armador.")
     else:
         c3.caption("Ya está **CONFIRMADO**. El estado se maneja desde *Despachos cargados*.")
 
