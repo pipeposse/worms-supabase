@@ -198,16 +198,19 @@ def render(USR, cat, conectar):
     st.caption("🖱️ Pasá el mouse por cada tramo de barra: % de la semana, promedios ponderados de "
                "azufre/fósforo/acidez de esa banda y camiones por proveedor.")
 
-    # 🥧 tortas por banda de las últimas semanas (mismos datos y tooltips que las barras)
+    # 🥧 tortas por banda de las últimas semanas, con % en cada gajo y TN totales en el título
     _ult4 = sorted(_lg["semana"].unique().tolist())[-4:]
-    _pie = _lg[_lg["semana"].isin(_ult4)]
+    _pie = _lg[_lg["semana"].isin(_ult4)].copy()
     if not _pie.empty:
         st.markdown("**🥧 Composición por banda — últimas %d semanas**" % len(_ult4))
-        _chp = alt.Chart(_pie).mark_arc(innerRadius=32).encode(
-            theta=alt.Theta("tn:Q"),
+        _tot_w = _pie.groupby("semana")["tn"].sum()
+        _pie["sem_lbl"] = _pie["semana"].map(lambda w: "%s · %s t" % (w, f"{_tot_w[w]:,.0f}"))
+        _orden_lbl = ["%s · %s t" % (w, f"{_tot_w[w]:,.0f}") for w in _ult4]
+        _base = alt.Chart(_pie).encode(
+            theta=alt.Theta("tn:Q", stack=True),
+            order=alt.Order("orden:Q"),
             color=alt.Color("banda:N", title="Banda",
                             scale=alt.Scale(domain=BANDAS, range=_B_COLORES)),
-            order=alt.Order("orden:Q"),
             tooltip=[alt.Tooltip("semana:N", title="Semana"),
                      alt.Tooltip("banda:N", title="Banda"),
                      alt.Tooltip("tn:Q", format=".1f", title="Toneladas"),
@@ -216,11 +219,18 @@ def render(USR, cat, conectar):
                      alt.Tooltip("p_prom:Q", format=".1f", title="Fósforo prom. (ppm)"),
                      alt.Tooltip("ac_prom:Q", format=".2f", title="Acidez prom. (%)"),
                      alt.Tooltip("camiones:Q", title="Camiones"),
-                     alt.Tooltip("proveedores:N", title="Camiones por proveedor")],
-        ).properties(width=170, height=170).facet(
-            column=alt.Column("semana:N", title=None, sort=_ult4))
+                     alt.Tooltip("proveedores:N", title="Camiones por proveedor")])
+        _arc = _base.mark_arc(innerRadius=34, outerRadius=78)
+        _txt = (_base.mark_text(radius=97, size=11, fontWeight="bold")
+                .transform_calculate(etq='format(datum.pct, ".0f") + "%"')
+                .transform_filter("datum.pct >= 5")
+                .encode(text=alt.Text("etq:N"), color=alt.value("#334155")))
+        _chp = alt.layer(_arc, _txt).properties(width=195, height=195).facet(
+            column=alt.Column("sem_lbl:N", title=None, sort=_orden_lbl))
         st.altair_chart(_chp)
-        st.caption("Cada torta es una semana; los mini filtros de arriba también aplican acá.")
+        st.caption("Cada torta es una semana (el título trae las **TN totales**); el % de cada "
+                   "banda está sobre el gajo y el detalle completo en el tooltip. Los mini filtros "
+                   "de arriba también aplican acá.")
 
     ta, tb, tc = st.tabs(["📅 Por semana", "🗓️ Por mes", "🚚 Por proveedor"])
     with ta:
