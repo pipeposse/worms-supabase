@@ -1101,6 +1101,20 @@ def _listado(USR, cat, conectar):
         return
     df = df.copy()
 
+    # tickets de pesada (salidas a exportación) asignados a cada despacho, a simple vista
+    _tkr = cat("SELECT id_despacho, COALESCE(tickets_salida,0) AS n_tk, "
+               "COALESCE(kg_salida,0) AS kg_tk FROM produccion.v_despacho_ticket_resumen")
+    if _tkr is not None and not _tkr.empty:
+        df = df.merge(_tkr, on="id_despacho", how="left")
+    if "n_tk" not in df.columns:
+        df["n_tk"] = 0
+        df["kg_tk"] = 0.0
+    df["n_tk"] = pd.to_numeric(df["n_tk"], errors="coerce").fillna(0).astype(int)
+    df["kg_tk"] = pd.to_numeric(df["kg_tk"], errors="coerce").fillna(0.0)
+    df["_pes"] = df["n_tk"].map(lambda v: ("🎫 %d" % v) if v else "—")
+    df["_pes_tn"] = (df["kg_tk"] / 1000.0).round(1)
+    df["cliente"] = df["cliente"].fillna("").replace("", "EGNITRADE")
+
     def _est(r):
         p = []
         for v, lim in ((r["acidez_pond"], r["spec_acidez_max"]), (r["fosforo_pond"], r["spec_fosforo_max"]),
@@ -1111,15 +1125,27 @@ def _listado(USR, cat, conectar):
 
     df["Spec"] = df.apply(_est, axis=1)
     _t = df.rename(columns={"id_despacho": "ID", "titulo": "Despacho", "destino": "Destino",
+                            "cliente": "Cliente",
                             "producto": "Producto", "tipo_carga": "Carga", "fecha_despacho": "Fecha",
                             "semana_iso": "Sem", "n_contenedores": "Cont.", "litros_total": "Litros",
                             "tn_total": "TN", "pct_cubierto": "% objetivo", "estado": "Estado",
                             "n_lineas": "Tanques", "acidez_pond": "Acidez %",
-                            "fosforo_pond": "Fósforo ppm", "azufre_pond": "Azufre ppm"})
-    st.dataframe(_t[["ID", "Despacho", "Fecha", "Sem", "Destino", "Producto", "Carga", "Cont.",
-                     "Litros", "TN", "% objetivo", "Acidez %", "Fósforo ppm", "Azufre ppm",
-                     "Spec", "Estado", "Tanques"]],
-                 hide_index=True, use_container_width=True)
+                            "fosforo_pond": "Fósforo ppm", "azufre_pond": "Azufre ppm",
+                            "_pes": "Pesadas", "_pes_tn": "Pesado (TN)"})
+    st.dataframe(_t[["ID", "Despacho", "Fecha", "Sem", "Cliente", "Destino", "Producto", "Carga",
+                     "Cont.", "Pesadas", "Pesado (TN)", "Litros", "TN", "% objetivo", "Acidez %",
+                     "Fósforo ppm", "Azufre ppm", "Spec", "Estado", "Tanques"]],
+                 hide_index=True, use_container_width=True,
+                 column_config={
+                     "Pesadas": st.column_config.TextColumn(
+                         "🎫 Pesadas", help="Tickets de pesada de salida (portería) asignados al "
+                                            "despacho. — = todavía sin tickets."),
+                     "Pesado (TN)": st.column_config.NumberColumn(format="%.1f")})
+    _sin_tk = df[(df["estado"].isin(["CONFIRMADO", "DESPACHADO"])) & (df["n_tk"] == 0)]
+    if not _sin_tk.empty:
+        st.warning("🎫 %d despacho(s) confirmados/despachados **sin tickets de pesada** asignados: %s. "
+                   "Se asignan en la vista 🎟️ Tickets de portería."
+                   % (len(_sin_tk), ", ".join("#%d" % int(x) for x in _sin_tk["id_despacho"])))
 
     st.markdown("---")
     _ids = df["id_despacho"].tolist()
@@ -1128,6 +1154,21 @@ def _listado(USR, cat, conectar):
     sel = st.selectbox("Ver detalle", _ids, format_func=lambda i: _lbl.get(int(i), str(i)), key="dsp_sel")
     if sel is None:
         return
+    _tks_det = cat("SELECT ticket, fecha, kg, destino, nro_contenedor "
+                   "FROM produccion.v_despacho_ticket WHERE id_despacho=%s AND rol='SALIDA' "
+                   "ORDER BY fecha, ticket", (int(sel),))
+    if _tks_det is not None and not _tks_det.empty:
+        _kgt = pd.to_numeric(_tks_det["kg"], errors="coerce").fillna(0).sum()
+        st.success("🎫 **%d ticket(s) de pesada · %.1f TN** → cliente %s: "
+                   % (len(_tks_det), _kgt / 1000.0,
+                      str(df[df["id_despacho"] == sel].iloc[0]["cliente"]))
+                   + ", ".join("#%s (%s kg)" % (("%d" % t) if pd.notna(t) else "s/n",
+                                                f"{k:,.0f}" if pd.notna(k) else "—")
+                               for t, k in zip(_tks_det["ticket"],
+                                               pd.to_numeric(_tks_det["kg"], errors="coerce"))))
+    else:
+        st.caption("🎫 Sin tickets de pesada asignados todavía (vista 🎟️ Tickets de portería).")
+
     det = cat("SELECT orden, tanque_nombre, tanque_sector, producto, litros, densidad, kg, tn, "
               "acidez, fosforo, azufre, agua_sedimento, tanque_litros_actual, litros_restantes, "
               "excede_stock FROM produccion.v_despacho_linea WHERE id_despacho=%s ORDER BY orden",
@@ -1587,15 +1628,13 @@ def _tickets(USR, cat, conectar):
     _ns = int(r.get("tickets_salida") or 0)
     _nc = int(cab.get("n_contenedores") or 0)
     _ks = float(r.get("kg_salida") or 0)
-    _km = float(r.get("kg_mp") or 0)
     _tn = float(cab.get("tn_total") or 0)
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Contenedores", f"{_ns} de {_nc}", delta=(None if _ns == _nc else f"{_ns - _nc:+d}"))
     m2.metric("Salida despachada", f"{_ks / 1000:,.1f} TN".replace(",", "."))
     m3.metric("Objetivo formulación", f"{_tn:,.1f} TN".replace(",", "."))
-    m4.metric("MP cargada", f"{_km / 1000:,.1f} TN".replace(",", "."),
-              delta=(f"{(_km - _ks) / 1000:+.1f} TN vs salida" if _ks and _km else None))
+    m4.metric("Cliente", str(cab.get("cliente") or "EGNITRADE"))
 
     if _tn and _ks:
         _dif = (_ks / 1000) - _tn
@@ -1607,12 +1646,6 @@ def _tickets(USR, cat, conectar):
         st.error(f"⛔ {int(r['tickets_error'])} ticket(s) con error de pesada — ver detalle abajo.")
 
     st.markdown("---")
-    _o = ["🚚 Salidas a exportación", "🛢️ Materia prima"]
-    try:
-        _r = st.segmented_control("Rol", _o, default=_o[0], key="dsp_tk_rol_sc",
-                                  label_visibility="collapsed")
-    except Exception:
-        _r = st.radio("Rol", _o, horizontal=True, key="dsp_tk_rol")
-    _r = _r or _o[0]
-    st.write("")
-    _tk_panel(USR, cat, conectar, cab, "SALIDA" if _r.startswith("🚚") else "MP")
+    # La materia prima NO se asigna por ticket: los movimientos internos no se pesan camión
+    # por camión (van "a ojo" por tanque). Acá sólo se asignan las SALIDAS a exportación.
+    _tk_panel(USR, cat, conectar, cab, "SALIDA")
