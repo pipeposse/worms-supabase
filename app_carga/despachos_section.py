@@ -1078,10 +1078,20 @@ def _armar(USR, cat, conectar):
                   help="No cumple la spec: sólo se puede guardar como BORRADOR.")
     elif g2.button("💾 Guardar", type="primary", use_container_width=True):
         try:
+            _era_edicion = bool(ss.get("dsp_edit_id"))
             _id = _guardar(conectar, USR, cab, res, ss.get("dsp_edit_id"), desvios=_desv)
             cat.clear()
             ss["dsp_edit_id"] = None
-            st.success(f"Despacho guardado (id {_id}).")
+            st.balloons()
+            if _era_edicion:
+                st.success("🎈 Despacho **#%d actualizado**: %s · %s · %s L en %d tanque(s), "
+                           "estado %s." % (_id, cab["titulo"], cab["producto_codigo"],
+                                           f"{tot_l:,.0f}", len(res), cab["estado"]))
+            else:
+                st.success("🎈 **Despacho nuevo #%d creado**: %s · %s · %s L en %d tanque(s), "
+                           "estado %s. Lo ves en 📋 Despachos cargados y se confirma en "
+                           "🔬 Control y confirmación." % (_id, cab["titulo"], cab["producto_codigo"],
+                                                          f"{tot_l:,.0f}", len(res), cab["estado"]))
         except Exception as e:
             st.error(f"No se pudo guardar: {e}")
 
@@ -1141,6 +1151,18 @@ def _listado(USR, cat, conectar):
                          "🎫 Pesadas", help="Tickets de pesada de salida (portería) asignados al "
                                             "despacho. — = todavía sin tickets."),
                      "Pesado (TN)": st.column_config.NumberColumn(format="%.1f")})
+    # posibles duplicados: mismo título, o misma fecha + producto + litros objetivo
+    _dup = df[df.duplicated(subset=["titulo"], keep=False) & df["titulo"].notna()]
+    if _dup.empty:
+        _dup = df[df.duplicated(subset=["fecha_despacho", "producto", "litros_objetivo"], keep=False)
+                  & df["fecha_despacho"].notna()]
+    if not _dup.empty:
+        st.warning("👯 **Posibles duplicados** (mismo título o misma fecha/producto/objetivo): "
+                   + ", ".join("#%d %s" % (int(r["id_despacho"]), r["titulo"] or "")
+                               for _, r in _dup.iterrows())
+                   + ". Para borrar uno: elegilo abajo en *Ver detalle*, tildá **Habilitar "
+                     "borrado** y tocá 🗑️ Borrar despacho. Para corregirlo: ✏️ Modificar en el armador.")
+
     _sin_tk = df[(df["estado"].isin(["CONFIRMADO", "DESPACHADO"])) & (df["n_tk"] == 0)]
     if not _sin_tk.empty:
         st.warning("🎫 %d despacho(s) confirmados/despachados **sin tickets de pesada** asignados: %s. "
