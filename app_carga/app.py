@@ -257,7 +257,7 @@ USR = st.session_state.user
 # ---- Permisos por usuario sobre las secciones de la página ----
 SECCIONES_APP = [
     ("INICIAR", "👷 Producción en planta"),
-    ("LAB", "🧪 Laboratorio"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"), ("REMITOS", "📸 Remitos"),
+    ("LAB", "🧪 Laboratorio"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"), ("REPUESTOS", "🔧 Repuestos"), ("REMITOS", "📸 Remitos"),
     ("ESTADO", "📈 Estado de planta"), ("ANALISIS", "🔬 Análisis de reacciones"),
     ("PLANIFICACION", "🗓️ Centro de Planificación"), ("CONDICIONALES", "🧮 Condicionales"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
     ("CIERRES", "💰 Cierres mensuales"), ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
@@ -267,7 +267,7 @@ SECCIONES_APP = [
 def _secciones_default(rol):
     base = ["INICIAR", "LAB", "TANQUES", "STOCK", "REMITOS", "ESTADO"]
     if rol in ("SUPERVISOR", "ADMIN"):
-        base += ["ANALISIS", "PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT", "CIERRES"]
+        base += ["REPUESTOS", "ANALISIS", "PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT", "CIERRES"]
     if rol == "ADMIN":
         base += ["DIRECCION", "ADMIN"]
     return base
@@ -453,6 +453,7 @@ if st.session_state.section is None:
         ("📸", "Remitos", "Sacá o arrastrá la foto del remito: se leen los datos con IA, los revisás y quedan en la base junto al ticket de balanza.", "REMITOS", "land_remitos", False),
         ("📈", "Estado de planta", "Tablero de reacciones, bandeja de laboratorio, trazabilidad de lote, mermas y alertas.", "ESTADO", "land_estado", False),
     ]
+    tiles.append(("🔧", "Repuestos", "Pañol de mantenimiento: ingresos y egresos rápidos, stock actual, mínimos y alertas de reposición.", "REPUESTOS", "land_repuestos", False))
     tiles.append(("🔬", "Análisis de reacciones", "Semana a semana: toneladas, desvíos vs tiempo estimado, laboratorio del producto final y eficiencia de reactores.", "ANALISIS", "land_analisis", False))
     tiles.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
     tiles.append(("🧪", "Fórmulas", "Fórmulas con nombre por proceso/MP/producto: creá, editá y elegí la default que usa Planificación.", "FORMULAS", "land_formulas", False))
@@ -4017,6 +4018,16 @@ if st.session_state.section != "CARGAS":
                 st.error(f"No se pudo cargar Ingresos: {_e}")
                 with st.expander("Detalle"):
                     st.code(_tbp.format_exc())
+
+    elif st.session_state.section == "REPUESTOS":
+        try:
+            from repuestos_section import render as _render_rep
+            _render_rep(USR, cat, conectar)
+        except Exception as _e:
+            import traceback as _tbrp
+            st.error(f"No se pudo cargar Repuestos: {_e}")
+            with st.expander("Detalle"):
+                st.code(_tbrp.format_exc())
 
     elif st.session_state.section == "REMITOS":
         try:
