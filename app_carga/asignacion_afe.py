@@ -37,8 +37,8 @@ PARES_PARAM = [
 ]
 
 W_HIST, W_AFIN, W_CAP, W_CONS = 0.25, 0.40, 0.20, 0.15
-W_DEG = 0.20              # penalización por degradar la acidez del tanque
-DEG_TOL = 2.0             # +2,0 puntos de acidez = penalización máxima
+DEG_TOL = 2.0             # +2,0 puntos de acidez = degradación máxima (1.0)
+DEG_FACTOR = 0.85         # la degradación DESCUENTA el score (no resta): casi veto
 
 MOTIVOS = ["", "DISPONIBILIDAD", "PARAMETROS", "MATERIA_PRIMA", "LOGISTICA", "OTRO"]
 
@@ -213,6 +213,44 @@ def _degradacion(tq, tk, kg_antes, kg_add):
     return min(1.0, delta / DEG_TOL), "acidez %s → %s" % (_n(a, 2), _n(post, 2))
 
 
+def _medianas(filas):
+    """Mediana de cada parámetro sobre los tanques CON líquido y valor medido.
+
+    Sirve para imputar tanques sin medición: sin esto un tanque sin datos
+    puntúa neutro y puede recibir carga que lo degrade sin penalización.
+    """
+    med = {}
+    for col_tq, _ck, _tol, _w in PARES_PARAM:
+        vals = []
+        for r in filas:
+            if (_f(r.get("kg_est")) or 0.0) < VACIO_KG:
+                continue                      # tanque vacío: su valor no representa nada
+            v = _f(r.get(col_tq))
+            if v is not None:
+                vals.append(v)
+        if vals:
+            vals.sort()
+            n = len(vals)
+            med[col_tq] = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+    return med
+
+
+def _imputar(filas):
+    """Rellena parámetros faltantes con la mediana. Marca lo imputado en _imput."""
+    med = _medianas(filas)
+    for r in filas:
+        falt = []
+        if (_f(r.get("kg_est")) or 0.0) < VACIO_KG:
+            r["_imput"] = []                  # tanque vacío: no se imputa nada
+            continue
+        for col_tq, _ck, _tol, _w in PARES_PARAM:
+            if _f(r.get(col_tq)) is None and col_tq in med:
+                r[col_tq] = med[col_tq]
+                falt.append(col_tq.replace("_pct", "").replace("ppm_", ""))
+        r["_imput"] = falt
+    return filas
+
+
 def _rankear(df_cand, tk, litros, kg=None):
     """Devuelve lista de dicts ordenada por score desc."""
     if df_cand is None or df_cand.empty:
@@ -220,7 +258,7 @@ def _rankear(df_cand, tk, litros, kg=None):
     if kg is None:
         kg = 0.0
     dens_tk = (kg / litros) if (litros and litros > 0) else 0.91
-    filas = df_cand.to_dict("records")
+    filas = _imputar(df_cand.to_dict("records"))
     tot_n = sum(_f(r.get("hist_n")) or 0.0 for r in filas)
     k = len(filas) or 1
     p_max = 0.0
@@ -249,9 +287,11 @@ def _rankear(df_cand, tk, litros, kg=None):
                         _cap_kg=disp * dens_tk))
     for r in out:
         r["_hist"] = (r["_p"] / p_max) if p_max > 0 else 0.0
-        r["_score"] = (W_HIST * r["_hist"] + W_AFIN * r["_afin"] +
-                       W_CAP * r["_cap"] + W_CONS * r["_cons"] - W_DEG * r["_deg"])
-        r["_score"] = max(0.001, r["_score"])
+        r["_base"] = (W_HIST * r["_hist"] + W_AFIN * r["_afin"] +
+                      W_CAP * r["_cap"] + W_CONS * r["_cons"])
+        # la degradación descuenta proporcionalmente: un tanque limpio que se
+        # ensucia pierde casi todo el puntaje aunque tenga historial y espacio.
+        r["_score"] = max(0.001, r["_base"] * (1.0 - DEG_FACTOR * r["_deg"]))
         if not r["_ok"]:
             r["_score"] = -1.0
         elif r["_disp"] < DISP_MIN_LTS:
@@ -263,30 +303,34 @@ def _rankear(df_cand, tk, litros, kg=None):
 def _sugerir(rank, kg, dens):
     """1 o 2 tanques. Con dos, primero se llena el más cargado (regla de planta).
 
-    El reparto respeta SIEMPRE el espacio disponible de cada tanque: si el más
-    cargado no absorbe todo, el resto va al otro, y si aun así no entra se marca
-    el faltante en '_falta' para que el operario lo vea.
+    El reparto respeta SIEMPRE el espacio disponible de cada tanque: nunca se
+    asignan más kg de los que el tanque puede recibir. Lo que no entra queda en
+    '_falta' y bloquea la confirmación hasta que el operario lo resuelva.
     """
     viables = [r for r in rank if r["_score"] > 0]
     if not viables:
         return []
     litros = (kg / dens) if dens else 0.0
     t1 = viables[0]
-    if t1["_disp"] >= litros or len(viables) == 1:
+    if t1["_disp"] >= litros:
         return [dict(t1, _kg=round(kg, 1), _orden=1, _falta=0.0)]
+    if len(viables) == 1:
+        _c = round(max(0.0, t1["_disp"] * dens), 1)
+        return [dict(t1, _kg=_c, _orden=1, _falta=round(max(0.0, kg - _c), 1))]
 
-    # segundo tanque: el mejor puntuado que COMPLETE la capacidad; si ninguno
-    # alcanza, el que más espacio aporte.
-    resto_lts = litros - t1["_disp"]
+    # Segundo tanque: se pondera el score por cuánto del resto absorbe. Cubrir el
+    # 100% no puede imponerse sobre la calidad — un tanque que tapa el 97% sin
+    # degradar es mejor que uno que tapa el 100% arruinando el contenido.
+    resto_lts = max(0.0, litros - t1["_disp"])
     t2 = None
-    for r in viables[1:]:
-        if r["_disp"] >= resto_lts:
-            t2 = r
-            break
+    if len(viables) > 1 and resto_lts > 0:
+        def _sel(x):
+            cob = min(1.0, x["_disp"] / resto_lts) if resto_lts > 0 else 1.0
+            return x["_score"] * (0.5 + 0.5 * cob)
+        t2 = max(viables[1:], key=_sel)
     if t2 is None:
-        t2 = max(viables[1:], key=lambda x: x["_disp"]) if len(viables) > 1 else None
-    if t2 is None:
-        return [dict(t1, _kg=round(kg, 1), _orden=1, _falta=0.0)]
+        _c = round(max(0.0, t1["_disp"] * dens), 1)
+        return [dict(t1, _kg=_c, _orden=1, _falta=round(max(0.0, kg - _c), 1))]
 
     par = sorted([t1, t2], key=lambda x: x["_lts_est"], reverse=True)  # el más cargado primero
     cap0 = max(0.0, par[0]["_disp"] * dens)
@@ -299,10 +343,10 @@ def _sugerir(rank, kg, dens):
     falta = round(max(0.0, kg - kg0 - kg1), 1)
     kg0, kg1 = round(kg0, 1), round(kg1, 1)
     if kg1 <= 0.5:
-        return [dict(par[0], _kg=round(kg0 + falta, 1), _orden=1, _falta=falta)]
+        return [dict(par[0], _kg=kg0, _orden=1, _falta=falta)]
     if kg0 <= 0.5:
-        return [dict(par[1], _kg=round(kg1 + falta, 1), _orden=1, _falta=falta)]
-    return [dict(par[0], _kg=round(kg0 + falta, 1), _orden=1, _falta=falta),
+        return [dict(par[1], _kg=kg1, _orden=1, _falta=falta)]
+    return [dict(par[0], _kg=kg0, _orden=1, _falta=falta),
             dict(par[1], _kg=kg1, _orden=2, _falta=0.0)]
 
 
@@ -313,7 +357,9 @@ def _porque(r):
                "{:.0%}".format(r["_afin"]),
                _n(r["_disp"], 0),
                (" · " + r["_nota"]) if r.get("_nota") else "",
-               (" · ⚠️ " + r["_deg_nota"]) if r.get("_deg_nota") else ""))
+               (" · ⚠️ " + r["_deg_nota"]) if r.get("_deg_nota") else "")
+            + ((" · ≈ %s por mediana (sin medición)" % ", ".join(r["_imput"]))
+               if r.get("_imput") else ""))
 
 
 # ---------------------------------------------------------------- escritura
@@ -339,7 +385,7 @@ def _mezclar(tq, tk, kg_antes, kg_add):
     return antes, aporte, despues, vacio
 
 
-def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs):
+def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
     """Escribe todo en una transacción. lineas: [{id_tanque,label,kg,fue_sugerido,motivo}]"""
     uid = int(USR.get("id_usuario") or 0)
     dens = cab["dens_prod"]
@@ -410,6 +456,14 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs):
                 if _p:
                     tq = {"acidez_pct": _p[0], "agua_pct": _p[1], "sedimentos_pct": _p[2],
                           "densidad_g_ml": _p[3], "ppm_azufre": _p[4], "ppm_fosforo": _p[5]}
+                # tanque con líquido pero sin medición: se usa la mediana del parque
+                # como valor previo, para que el ponderado no ignore la masa existente.
+                _imp = []
+                if med and kg_antes >= VACIO_KG:
+                    for _c, _v in med.items():
+                        if _f(tq.get(_c)) is None and _v is not None:
+                            tq[_c] = _v
+                            _imp.append(_c)
 
                 antes, aporte, despues, vacio = _mezclar(tq, cab, kg_antes, kg)
 
@@ -437,7 +491,8 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs):
                 # 5) parámetros del tanque (ponderado)
                 extra = json.dumps({"mezcla_ticket": tk, "mezcla_kg": kg,
                                     "mezcla_kg_antes": round(kg_antes, 1),
-                                    "mezcla_vacio": vacio, "mezcla_mov": id_mov}, default=str)
+                                    "mezcla_vacio": vacio, "mezcla_mov": id_mov,
+                                    "mezcla_imputados": _imp}, default=str)
                 cur.execute(
                     "INSERT INTO produccion.fact_param_tanque "
                     "(id_tanque, id_producto, corriente, evaluado, ultima_evaluacion_ts, id_procesos_lab, "
@@ -468,7 +523,7 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs):
                      bool(ln.get("fue_sugerido")), (ln.get("motivo") or None),
                      json.dumps({"kg_antes": round(kg_antes, 1), "kg_aporte": kg,
                                  "vacio": vacio, "antes": antes, "aporte": aporte,
-                                 "despues": despues}, default=str)))
+                                 "despues": despues, "imputados": _imp}, default=str)))
                 detalle.append({"tanque": idt, "kg": kg, "mov": id_mov})
 
         audit.log("U", "fact_asignacion_afe", int(id_asig),
@@ -555,6 +610,7 @@ def _pendientes(USR, cat, conectar, contexto):
     if cand is None or cand.empty:
         st.error("No hay tanques de acopio habilitados para este producto.")
         return
+    med = _medianas(cand.to_dict("records"))
     rank = _rankear(cand, tk_par, litros, kg)
     sug = _sugerir(rank, kg, dens)
     if not sug:
@@ -571,8 +627,9 @@ def _pendientes(USR, cat, conectar, contexto):
                    % _n(litros, 0))
     _falta = sum(_f(s.get("_falta")) or 0.0 for s in sug)
     if _falta > 0.5:
-        st.warning("⚠️ Faltan **%s kg** de espacio: los tanques sugeridos no absorben todo el "
-                   "ticket. Elegí otro tanque, sumá un segundo, o descargá parcial." % _n(_falta, 0))
+        st.warning("⚠️ **%s kg no entran** en los tanques sugeridos: no hay espacio suficiente. "
+                   "Elegí otros tanques o bajá los kg a descargar — la confirmación queda "
+                   "bloqueada hasta que la suma cierre." % _n(_falta, 0))
 
     with st.expander("📊 Ranking completo de tanques (por qué se eligió)", expanded=False):
         _rk = pd.DataFrame([{
@@ -584,6 +641,7 @@ def _pendientes(USR, cat, conectar, contexto):
             "Espacio L": round(x["_disp"], 0),
             "Nivel %": round(x["_cons"] * 100, 1),
             "Degrada": x.get("_deg_nota") or "",
+            "Estimado": ", ".join(x.get("_imput") or []),
             "Acidez tq": _f(x.get("acidez_pct")),
             "Fósforo tq": _f(x.get("ppm_fosforo")),
             "Azufre tq": _f(x.get("ppm_azufre")),
@@ -649,6 +707,9 @@ def _pendientes(USR, cat, conectar, contexto):
                         % (_t["nombre"], _n(_t.get("kg_est"), 0), _n(ln["kg"], 0),
                            "  ·  _tanque vacío: toma los parámetros del ticket_" if vacio else
                            "  ·  _promedio ponderado por kg_"))
+            if _t.get("_imput"):
+                st.caption("≈ El tanque no tiene medición de %s: se usa la mediana del parque "
+                           "como valor previo para el ponderado." % ", ".join(_t["_imput"]))
             _tabla = []
             for _c, _et in [("acidez_pct", "Acidez %"), ("ppm_fosforo", "Fósforo ppm"),
                             ("ppm_azufre", "Azufre ppm"), ("agua_pct", "Agua %"),
@@ -673,7 +734,8 @@ def _pendientes(USR, cat, conectar, contexto):
                                "afinidad": round(s["_afin"], 3)} for s in sug]}
         try:
             _limpias = [{k: v for k, v in x.items() if k != "_tq"} for x in lineas]
-            _confirmar(conectar, USR, str(r["tk"]), cab, _limpias, contexto, _obs)
+            _confirmar(conectar, USR, str(r["tk"]), cab, _limpias, contexto, _obs,
+                       med)
             st.success("Asignación confirmada para el ticket %s." % r["tk"])
             cat.clear()
             st.rerun()
