@@ -25,12 +25,16 @@ _EST_ICONO = {"SIN STOCK": "⛔", "BAJO MINIMO": "🚨", "AL LIMITE": "⚠️", 
 def _stock(cat):
     df = cat(
         "SELECT id_repuesto, codigo, detalle, categoria, unidad, stock_minimo, ubicacion, "
-        "       proveedor, equipo, activo, stock_actual, margen, estado, ultimo_mov, movimientos "
+        "       proveedor, equipo, activo, costo_referencia, stock_actual, margen, estado, "
+        "       ultimo_mov, movimientos, costo_promedio, costo_ultimo, fecha_ult_costo, "
+        "       costo_usado, origen_costo, valorizado, valor_minimo, valor_faltante "
         "FROM produccion.v_repuesto_stock ORDER BY detalle")
     if df is None:
         return pd.DataFrame()
-    for c in ("stock_actual", "stock_minimo", "margen"):
+    for c in ("stock_actual", "stock_minimo", "margen", "valorizado", "valor_minimo", "valor_faltante"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    for c in ("costo_referencia", "costo_promedio", "costo_ultimo", "costo_usado"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
 
@@ -48,6 +52,18 @@ def _categorias(df):
     if df is None or df.empty:
         return []
     return sorted([c for c in df["categoria"].dropna().unique().tolist() if str(c).strip()])
+
+
+def _fmt_money(x):
+    try:
+        v = float(x)
+    except Exception:
+        return "-"
+    if v != v:
+        return "-"
+    if abs(v) >= 1000:
+        return "{:,.0f}".format(v).replace(",", ".")
+    return "{:,.2f}".format(v).replace(",", "")
 
 
 def _xlsx(df, hoja="Datos"):
@@ -102,12 +118,12 @@ def _alta_repuesto(conectar, USR, d):
             cur.execute(
                 "INSERT INTO produccion.dim_repuesto "
                 "(codigo, detalle, categoria, unidad, stock_minimo, ubicacion, proveedor, equipo, "
-                " observaciones, creado_por) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                " observaciones, costo_referencia, creado_por) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "ON CONFLICT (detalle_norm) DO NOTHING RETURNING id_repuesto",
                 (d.get("codigo"), d["detalle"], d.get("categoria"), d.get("unidad") or "UN",
                  float(d.get("stock_minimo") or 0), d.get("ubicacion"), d.get("proveedor"),
-                 d.get("equipo"), d.get("observaciones"), USR.get("nombre")))
+                 d.get("equipo"), d.get("observaciones"), d.get("costo_referencia"), USR.get("nombre")))
             r = cur.fetchone()
         if r:
             audit.log("I", "dim_repuesto", r[0], d)
@@ -118,7 +134,7 @@ def _update_repuestos(conectar, USR, cambios):
     """cambios: lista de dicts {id_repuesto, campo: valor, ...}"""
     n = 0
     campos = ("codigo", "detalle", "categoria", "unidad", "stock_minimo",
-              "ubicacion", "proveedor", "equipo", "activo")
+              "ubicacion", "proveedor", "equipo", "activo", "costo_referencia")
     with conectar(USR["id_usuario"]) as (conn, audit):
         with conn.cursor() as cur:
             for c in cambios:
@@ -314,10 +330,12 @@ def _vista_stock(USR, cat, conectar, df):
     vis = v.copy()
     vis["alerta"] = vis["estado"].map(lambda e: _EST_ICONO.get(e, ""))
     cols = ["alerta", "codigo", "detalle", "categoria", "stock_actual", "unidad", "stock_minimo",
-            "margen", "ubicacion", "equipo", "proveedor", "ultimo_mov", "movimientos", "activo", "id_repuesto"]
+            "margen", "costo_usado", "valorizado", "costo_referencia", "ubicacion", "equipo",
+            "proveedor", "ultimo_mov", "movimientos", "activo", "id_repuesto"]
     ed = st.data_editor(
         vis[cols], use_container_width=True, hide_index=True, key="rep_st_ed",
-        disabled=["alerta", "stock_actual", "margen", "ultimo_mov", "movimientos", "id_repuesto"],
+        disabled=["alerta", "stock_actual", "margen", "costo_usado", "valorizado",
+                  "ultimo_mov", "movimientos", "id_repuesto"],
         column_config={
             "alerta": st.column_config.TextColumn("", width="small"),
             "codigo": st.column_config.TextColumn("Código", width="small"),
@@ -327,6 +345,11 @@ def _vista_stock(USR, cat, conectar, df):
             "unidad": st.column_config.SelectboxColumn("Un.", options=UNIDADES, width="small"),
             "stock_minimo": st.column_config.NumberColumn("Mínimo", min_value=0.0, step=1.0, format="%.2f"),
             "margen": st.column_config.NumberColumn("Margen", format="%.2f", help="Stock - mínimo"),
+            "costo_usado": st.column_config.NumberColumn("$ unit.", format="%.2f",
+                help="Costo usado para valorizar: promedio de compras > última compra > referencia manual"),
+            "valorizado": st.column_config.NumberColumn("$ stock", format="%.2f", help="Stock x costo unitario"),
+            "costo_referencia": st.column_config.NumberColumn("$ referencia", min_value=0.0, step=1.0,
+                format="%.2f", help="Costo manual, solo se usa si el repuesto todavia no tiene compras cargadas"),
             "ubicacion": st.column_config.TextColumn("Ubicación"),
             "equipo": st.column_config.TextColumn("Equipo / máquina"),
             "ultimo_mov": st.column_config.DateColumn("Últ. mov."),
@@ -339,7 +362,8 @@ def _vista_stock(USR, cat, conectar, df):
     if c1.button("💾 Guardar cambios de la tabla", key="rep_st_save", use_container_width=True):
         orig = vis[cols].set_index("id_repuesto")
         new = ed.set_index("id_repuesto")
-        campos = ["codigo", "detalle", "categoria", "unidad", "stock_minimo", "ubicacion", "equipo", "activo"]
+        campos = ["codigo", "detalle", "categoria", "unidad", "stock_minimo", "ubicacion",
+                  "equipo", "activo", "costo_referencia"]
         cambios = []
         for i in new.index:
             if i not in orig.index:
@@ -412,12 +436,23 @@ def _vista_alertas(USR, cat, conectar, df):
         al["prioridad"] = al["estado"].map({"SIN STOCK": 0, "BAJO MINIMO": 1, "AL LIMITE": 2})
         al = al.sort_values(["prioridad", "detalle"])
         al["alerta"] = al["estado"].map(lambda e: _EST_ICONO.get(e, ""))
+        al["costo_rep"] = pd.to_numeric(al["costo_usado"], errors="coerce").fillna(0.0)
+        al["$ reponer"] = (al["reponer"] * al["costo_rep"]).round(2)
+        _tot_rep = float(al["$ reponer"].sum())
+        _tot_falt = float(pd.to_numeric(al["valor_faltante"], errors="coerce").fillna(0.0).sum())
+        rc1, rc2 = st.columns(2)
+        rc1.metric("💵 Costo de llevar todo al mínimo", "$ %s" % _fmt_money(_tot_falt))
+        rc2.metric("💵 Costo de reponer al doble del mínimo", "$ %s" % _fmt_money(_tot_rep))
+        if _tot_rep <= 0:
+            st.caption("Los montos dan $0 porque todavía no hay costos cargados. "
+                       "Cargá el costo unitario en los ingresos, o el costo de referencia en 📊 Stock actual.")
         st.dataframe(al[["alerta", "codigo", "detalle", "categoria", "stock_actual", "unidad",
-                         "stock_minimo", "reponer", "ubicacion", "equipo", "proveedor", "ultimo_mov"]],
+                         "stock_minimo", "reponer", "costo_usado", "$ reponer",
+                         "ubicacion", "equipo", "proveedor", "ultimo_mov"]],
                      use_container_width=True, hide_index=True)
         _dl(al[["codigo", "detalle", "categoria", "stock_actual", "unidad", "stock_minimo",
-                "reponer", "proveedor", "equipo"]], "reposicion_repuestos.xlsx", "rep_al_dl",
-            "⬇️ Excel de reposición")
+                "reponer", "costo_usado", "$ reponer", "proveedor", "equipo"]],
+            "reposicion_repuestos.xlsx", "rep_al_dl", "⬇️ Excel de reposición")
 
     sin_min = act[act["stock_minimo"] <= 0]
     if not sin_min.empty:
@@ -525,6 +560,9 @@ def _vista_nuevo(USR, cat, conectar, df):
         uni = d2.selectbox("Unidad", UNIDADES, index=0)
         mini = d3.number_input("Stock mínimo", min_value=0.0, step=1.0, value=0.0)
         ini = d4.number_input("Stock inicial", min_value=0.0, step=1.0, value=0.0)
+        f1, f2 = st.columns([1, 3])
+        cref = f1.number_input("Costo de referencia ($)", min_value=0.0, step=1.0, value=0.0,
+                               help="Opcional. Se usa para valorizar hasta que cargues una compra con costo.")
         e1, e2, e3 = st.columns(3)
         ubi = e1.text_input("Ubicación (estantería, pañol)")
         equ = e2.text_input("Equipo / máquina")
@@ -542,7 +580,8 @@ def _vista_nuevo(USR, cat, conectar, df):
                 "codigo": (cod.strip().upper() or None), "detalle": det.strip(), "categoria": categoria,
                 "unidad": uni, "stock_minimo": mini, "ubicacion": (ubi.strip() or None),
                 "equipo": (equ.strip() or None), "proveedor": (prov.strip() or None),
-                "observaciones": (obs.strip() or None)})
+                "observaciones": (obs.strip() or None),
+                "costo_referencia": (float(cref) if cref and cref > 0 else None)})
             if nid is None:
                 st.warning("Ya existía un repuesto con ese mismo detalle. No se duplicó.")
             else:
@@ -602,6 +641,106 @@ def _vista_nuevo(USR, cat, conectar, df):
 
 
 # -------------------------------------------------------------------- main --
+def _vista_valor(USR, cat, conectar, df):
+    st.subheader("💵 Valorización del pañol")
+    if df.empty:
+        st.info("Sin datos.")
+        return
+
+    act = df[df["activo"] == True].copy()  # noqa: E712
+    act["costo_usado_n"] = pd.to_numeric(act["costo_usado"], errors="coerce")
+    total = float(act["valorizado"].sum())
+    sin_costo = act[act["costo_usado_n"].isna() & (act["stock_actual"] > 0)]
+    falt = float(act["valor_faltante"].sum())
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("💵 Valor del stock", "$ %s" % _fmt_money(total))
+    k2.metric("📦 Ítems con stock", "%d" % int((act["stock_actual"] > 0).sum()))
+    k3.metric("❓ Con stock y sin costo", "%d" % len(sin_costo))
+    k4.metric("🚨 Falta para el mínimo", "$ %s" % _fmt_money(falt))
+
+    if total <= 0:
+        st.warning("Todavía no hay costos cargados, así que la valorización da $0. Se llena sola a medida que "
+                   "cargues **ingresos con costo unitario**; si querés valorizar ya, poné el **costo de "
+                   "referencia** en 📊 Stock actual o en el editor de acá abajo.")
+    elif len(sin_costo):
+        st.info("%d ítem(s) tienen stock pero no tienen costo: no suman al total." % len(sin_costo))
+
+    st.markdown("**Por categoría**")
+    g = (act.groupby("categoria", dropna=False)
+            .agg(items=("id_repuesto", "count"),
+                 con_stock=("stock_actual", lambda s: int((s > 0).sum())),
+                 valorizado=("valorizado", "sum"),
+                 falta_minimo=("valor_faltante", "sum"))
+            .reset_index().sort_values("valorizado", ascending=False))
+    g["% del total"] = (g["valorizado"] / total * 100).round(1) if total > 0 else 0.0
+    st.dataframe(g, use_container_width=True, hide_index=True,
+                 column_config={"categoria": st.column_config.TextColumn("Categoría"),
+                                "items": st.column_config.NumberColumn("Ítems", format="%d"),
+                                "con_stock": st.column_config.NumberColumn("Con stock", format="%d"),
+                                "valorizado": st.column_config.NumberColumn("$ stock", format="%.2f"),
+                                "falta_minimo": st.column_config.NumberColumn("$ falta p/ mínimo", format="%.2f")})
+
+    st.markdown("**Dónde está la plata (top 30)**")
+    top = act[act["valorizado"] > 0].sort_values("valorizado", ascending=False).head(30)
+    if top.empty:
+        st.caption("Sin ítems valorizados todavía.")
+    else:
+        st.dataframe(top[["codigo", "detalle", "categoria", "stock_actual", "unidad",
+                          "costo_usado", "valorizado", "origen_costo", "fecha_ult_costo"]],
+                     use_container_width=True, hide_index=True,
+                     column_config={"codigo": st.column_config.TextColumn("Código", width="small"),
+                                    "detalle": st.column_config.TextColumn("Detalle", width="large"),
+                                    "stock_actual": st.column_config.NumberColumn("Stock", format="%.2f"),
+                                    "costo_usado": st.column_config.NumberColumn("$ unit.", format="%.2f"),
+                                    "valorizado": st.column_config.NumberColumn("$ stock", format="%.2f"),
+                                    "origen_costo": st.column_config.TextColumn("Origen del costo"),
+                                    "fecha_ult_costo": st.column_config.DateColumn("Últ. costo")})
+
+    d1, d2 = st.columns(2)
+    with d1:
+        _dl(act[["codigo", "detalle", "categoria", "stock_actual", "unidad", "costo_usado",
+                 "valorizado", "origen_costo", "stock_minimo", "valor_minimo", "valor_faltante"]],
+            "valorizacion_repuestos.xlsx", "rep_val_dl", "⬇️ Excel de valorización")
+    with d2:
+        _dl(g, "valorizacion_por_categoria.xlsx", "rep_val_dl2", "⬇️ Excel por categoría")
+
+    with st.expander("💲 Cargar costos de referencia en lote", expanded=False):
+        st.caption("Solo para los que **no** tienen compras cargadas. Apenas cargues un ingreso con costo real, "
+                   "el sistema usa el promedio de compras y deja de mirar este número.")
+        base = act[act["costo_promedio"].isna() & act["costo_ultimo"].isna()][
+            ["id_repuesto", "codigo", "detalle", "categoria", "unidad", "stock_actual", "costo_referencia"]].copy()
+        solo_stock = st.checkbox("Mostrar solo los que tienen stock", value=True, key="rep_val_solo")
+        if solo_stock:
+            base = base[base["stock_actual"] > 0]
+        if base.empty:
+            st.caption("No hay ítems pendientes con ese filtro.")
+        else:
+            base["costo_referencia"] = pd.to_numeric(base["costo_referencia"], errors="coerce").fillna(0.0)
+            ed = st.data_editor(base, use_container_width=True, hide_index=True, key="rep_val_ed",
+                                disabled=["id_repuesto", "codigo", "detalle", "categoria", "unidad", "stock_actual"],
+                                column_config={"costo_referencia": st.column_config.NumberColumn(
+                                    "$ referencia", min_value=0.0, step=1.0, format="%.2f")})
+            if st.button("💾 Guardar costos de referencia", key="rep_val_go", use_container_width=True):
+                cambios = []
+                for _, r in ed.iterrows():
+                    v = float(r["costo_referencia"] or 0)
+                    prev = float(base[base["id_repuesto"] == r["id_repuesto"]].iloc[0]["costo_referencia"] or 0)
+                    if abs(v - prev) > 1e-9:
+                        cambios.append({"id_repuesto": int(r["id_repuesto"]),
+                                        "costo_referencia": (v if v > 0 else None)})
+                if not cambios:
+                    st.info("No cambiaste ningún costo.")
+                else:
+                    try:
+                        _update_repuestos(conectar, USR, cambios)
+                        cat.clear()
+                        st.success("✅ %d costo(s) guardado(s)." % len(cambios))
+                        st.rerun()
+                    except Exception as e:
+                        st.error("No se pudo guardar: %s" % e)
+
+
 def render(USR, cat, conectar):
     st.title("🔧 Repuestos")
     st.caption("Pañol de mantenimiento: ingresos, egresos, stock actual, mínimos y alertas.")
@@ -616,7 +755,8 @@ def render(USR, cat, conectar):
     _banner_alertas(df)
 
     vista = st.segmented_control(
-        "Vista", ["⚡ Movimiento", "📊 Stock actual", "🚨 Alertas", "🕐 Histórico", "➕ Nuevo repuesto"],
+        "Vista", ["⚡ Movimiento", "📊 Stock actual", "🚨 Alertas", "💵 Valorización",
+                  "🕐 Histórico", "➕ Nuevo repuesto"],
         default="⚡ Movimiento", key="rep_view", label_visibility="collapsed")
     if not vista:
         vista = "⚡ Movimiento"
@@ -627,6 +767,8 @@ def render(USR, cat, conectar):
         _vista_stock(USR, cat, conectar, df)
     elif vista.startswith("🚨"):
         _vista_alertas(USR, cat, conectar, df)
+    elif vista.startswith("💵"):
+        _vista_valor(USR, cat, conectar, df)
     elif vista.startswith("🕐"):
         _vista_historial(USR, cat, conectar, df)
     else:
