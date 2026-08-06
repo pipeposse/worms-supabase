@@ -552,13 +552,16 @@ def _trafico_real(cat, anio, mes):
     q = """
         SELECT t.fecha, t.hora, t.area, t.procedencia, t.destino, t.producto,
                t.patente, t.patente_acopl, t.pesoneto,
-               m.producto_iscc, COALESCE(f.costo, 0) AS costo
+               m.producto_iscc, COALESCE(f.costo, 0) AS costo,
+               r.nro_remito, r.neto_kg AS neto_remito, r.chofer
           FROM produccion.v_porteria_ticket t
           JOIN produccion.iscc_producto_map m
             ON upper(trim(m.producto_porteria)) = upper(trim(t.producto))
            AND m.incluir = true
           LEFT JOIN produccion.iscc_tarifa f
             ON upper(trim(f.nombre_cliente)) = upper(trim(t.procedencia))
+          LEFT JOIN produccion.fact_remito r
+            ON r.ticket_balanza = t.ticket
          WHERE t.fecha BETWEEN %s AND %s
          ORDER BY t.fecha, t.hora
     """
@@ -570,22 +573,51 @@ def _trafico_real(cat, anio, mes):
     out["HORARIO ENTRADA"] = d["hora"].astype(str).str[:8]
     out["PROCEDENCIA"] = d["area"]
     out["CLIENTE"] = d["procedencia"]
-    out["DOCUMENTO"] = ""
-    out["NÚMERO"] = ""
+    nro = d["nro_remito"].fillna("").astype(str)
+    out["DOCUMENTO"] = ["REMITO" if x.strip() else "" for x in nro]
+    out["NÚMERO"] = nro
     out["PRODUCTO"] = d["producto_iscc"]
     neto = pd.to_numeric(d["pesoneto"], errors="coerce").fillna(0).abs()
-    out["NETO REMITO"] = float("nan")
+    out["NETO REMITO"] = pd.to_numeric(d["neto_remito"], errors="coerce")
     out["NETO WORMS"] = neto
     out["COSTO"] = pd.to_numeric(d["costo"], errors="coerce").fillna(0)
     out["TOTAL"] = (neto * out["COSTO"]).round(2)
-    out["DIFERENCIA DE PESO"] = float("nan")
+    out["DIFERENCIA DE PESO"] = out["NETO REMITO"] - out["NETO WORMS"]
     out["TRANSPORTE"] = d["destino"]
     pat = d["patente"].fillna("").astype(str)
     aco = d["patente_acopl"].fillna("").astype(str)
     out["PAT. CHASIS/ACOP."] = [
         (a + "/" + b) if b.strip() else a for a, b in zip(pat, aco)]
-    out["CHOFER"] = ""
+    out["CHOFER"] = d["chofer"].fillna("").astype(str)
     return out[COLS_EXPORT]
+
+
+def _leer_bloque_excel(archivo):
+    """Lee un bloque real subido a mano y lo normaliza a COLS_EXPORT."""
+    d = pd.read_excel(archivo)
+    d.columns = [str(c).strip().upper() for c in d.columns]
+    alias = {"CLIENTE ": "CLIENTE", "HORA": "HORARIO ENTRADA",
+             "NUMERO": "NÚMERO", "N°": "NÚMERO", "NRO": "NÚMERO",
+             "PATENTE": "PAT. CHASIS/ACOP.", "PAT. CHASIS/ACOP": "PAT. CHASIS/ACOP.",
+             "DIFERENCIA": "DIFERENCIA DE PESO"}
+    d = d.rename(columns=alias)
+    for c in COLS_EXPORT:
+        if c not in d.columns:
+            d[c] = ""
+    d = d[COLS_EXPORT].copy()
+    d["FECHA"] = pd.to_datetime(d["FECHA"], errors="coerce").dt.date
+    d["HORARIO ENTRADA"] = d["HORARIO ENTRADA"].astype(str).str[:8]
+    for c in ("NETO REMITO", "NETO WORMS", "COSTO", "TOTAL", "DIFERENCIA DE PESO"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    falta = d["TOTAL"].isna()
+    d.loc[falta, "TOTAL"] = (d.loc[falta, "NETO WORMS"] * d.loc[falta, "COSTO"]).round(2)
+    falta = d["DIFERENCIA DE PESO"].isna()
+    d.loc[falta, "DIFERENCIA DE PESO"] = (d.loc[falta, "NETO REMITO"]
+                                          - d.loc[falta, "NETO WORMS"])
+    nro = d["NÚMERO"].fillna("").astype(str).str.strip()
+    doc = d["DOCUMENTO"].fillna("").astype(str).str.strip()
+    d["DOCUMENTO"] = [("REMITO" if (n and not v) else v) for n, v in zip(nro, doc)]
+    return d
 
 
 # --------------------------------------------------------------------------
@@ -785,17 +817,40 @@ def _vista_corridas(USR, cat, conectar):
     m3.metric("Facturado", _fmt_money(d["TOTAL"].sum()))
 
     modo = st.radio("Contenido del Excel",
-                    ["Solo bloque ISCC", "ISCC + trafico real de porteria"],
+                    ["Solo bloque ISCC",
+                     "ISCC + trafico real de porteria",
+                     "ISCC + bloque real subido en Excel"],
                     horizontal=True, key="iscc_modo_exp")
     final = d[COLS_EXPORT]
-    if modo.startswith("ISCC +"):
+    if modo == "ISCC + trafico real de porteria":
         real = _trafico_real(cat, int(fila["anio"]), int(fila["mes"]))
         st.caption("%d filas de porteria mapeadas a productos ISCC." % len(real))
         if len(real):
+            sin_rem = int(real["NÚMERO"].astype(str).str.strip().eq("").sum())
+            if sin_rem:
+                st.info("%d de %d filas reales no tienen remito cargado en la base: "
+                        "DOCUMENTO, NÚMERO, NETO REMITO y DIFERENCIA DE PESO van vacios. "
+                        "Si los necesitas completos, usa el modo de bloque subido." % (
+                            sin_rem, len(real)))
+            sin_tar = int((real["COSTO"] == 0).sum())
+            if sin_tar:
+                st.warning("%d filas reales quedaron con costo 0: falta la tarifa del "
+                           "cliente en la solapa Tarifas." % sin_tar)
             final = pd.concat([d[COLS_EXPORT], real], ignore_index=True)
             final = final.sort_values(["FECHA", "HORARIO ENTRADA"]).reset_index(drop=True)
-        st.info("El bloque real no tiene remito asociado en la base: DOCUMENTO, NÚMERO, "
-                "NETO REMITO y DIFERENCIA DE PESO van vacios.")
+    elif modo == "ISCC + bloque real subido en Excel":
+        st.caption("Subi el bloque real ya armado. Se aceptan las mismas columnas del "
+                   "archivo final; las que falten quedan vacias.")
+        up = st.file_uploader("Bloque real (xlsx)", type=["xlsx", "xls"],
+                              key="iscc_up_real")
+        if up is not None:
+            try:
+                real = _leer_bloque_excel(up)
+                st.caption("%d filas leidas del archivo." % len(real))
+                final = pd.concat([d[COLS_EXPORT], real], ignore_index=True)
+                final = final.sort_values(["FECHA", "HORARIO ENTRADA"]).reset_index(drop=True)
+            except Exception as e:
+                st.error("No se pudo leer el bloque: %s" % e)
 
     st.dataframe(final.head(300), hide_index=True, use_container_width=True)
     st.download_button(
