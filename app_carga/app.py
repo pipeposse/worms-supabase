@@ -29,9 +29,31 @@ from contextlib import contextmanager as _lab_cm
 
 @st.cache_resource
 def _lab_pool():
-    """Pool de conexiones reutilizable para Laboratorio (evita reconectar en cada query)."""
+    """Pool de conexiones reutilizable (evita un handshake SSL por query).
+
+    Mismos timeouts defensivos que etl.db: una conexión del pool que Supabase cortó
+    por idle se detecta en segundos (keepalives) en vez de colgar la app, y ninguna
+    query de lectura puede bloquear un worker más de 45 s.
+    """
     from psycopg2.pool import ThreadedConnectionPool
-    return ThreadedConnectionPool(1, 8, DATABASE_URL)
+    from etl.db import CONN_KW
+    kw = dict(CONN_KW)
+    kw["options"] = "-c statement_timeout=45000"
+    return ThreadedConnectionPool(1, 10, DATABASE_URL, **kw)
+
+
+def _pool_getconn(pool):
+    """getconn con espera: con todos los slots ocupados, antes explotaba con PoolError
+    en la cara del usuario; ahora espera hasta ~6 s a que se libere uno."""
+    import time as _t
+    ult = None
+    for _ in range(12):
+        try:
+            return pool.getconn()
+        except Exception as e:
+            ult = e
+            _t.sleep(0.5)
+    raise ult
 
 _LAB_SET = "SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'"
 
@@ -39,7 +61,7 @@ _LAB_SET = "SET search_path TO produccion, public; SET TIME ZONE 'America/Argent
 def _lab_conn():
     """Conexion de Laboratorio: toma una del pool (sin handshake) y la devuelve al terminar."""
     pool = _lab_pool()
-    c = pool.getconn()
+    c = _pool_getconn(pool)
     try:
         try:
             with c.cursor() as cur:
@@ -50,7 +72,7 @@ def _lab_conn():
                 pool.putconn(c, close=True)
             except Exception:
                 pass
-            c = pool.getconn()
+            c = _pool_getconn(pool)
             with c.cursor() as cur:
                 cur.execute(_LAB_SET)
         yield c
@@ -179,7 +201,8 @@ inject_global_css()
 def usuarios_disponibles():
     if not DATABASE_URL: return []
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        from etl.db import db_connect
+        conn = db_connect()
         try:
             with conn.cursor() as cur:
                 cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
@@ -242,7 +265,19 @@ if st.session_state.pop("_clear_cookie", False):
 # Restaurar sesion desde cookie firmada (sobrevive bloqueo del celular / recarga)
 if "user" not in st.session_state and not st.session_state.get("_logged_out"):
     _u_rest = _auth.restaurar_sesion()
+    if _u_rest == _auth.RETRY:
+        # La DB no respondió: NO es un token inválido. Antes este caso tiraba al
+        # operario al login por un hipo de red; ahora se reintenta unos segundos.
+        _n = int(st.session_state.get("_rest_intentos", 0)) + 1
+        if _n <= 5:
+            st.session_state._rest_intentos = _n
+            st.info("🔄 Reconectando con la base… (intento %d de 5)" % _n)
+            import time as _t
+            _t.sleep(2)
+            st.rerun()
+        _u_rest = None   # 5 intentos (~10 s) sin DB: recién ahí, login
     if _u_rest is not None:
+        st.session_state.pop("_rest_intentos", None)
         st.session_state.user = _u_rest
         # volver a la sección donde estaba trabajando (cookie worms_section)
         _sec_rest = _auth.get_section_cookie()
@@ -535,7 +570,7 @@ if st.session_state.get("show_chg_pin"):
                     st.error(str(e))
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=400)
 def cat(query, params=None):
     # Pool compartido: evita un handshake SSL (~0,5 s) por CADA cache-miss.
     with _lab_conn() as conn:

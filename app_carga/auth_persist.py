@@ -54,12 +54,24 @@ def validar_token(tok: str) -> int | None:
         return None
 
 
-def usuario_por_id(id_usuario: int) -> dict | None:
-    """Carga el usuario desde la DB. None si no existe o está desactivado."""
+RETRY = "___retry___"   # sentinela: la DB no respondió — reintentar, NO desloguear
+
+
+def usuario_por_id(id_usuario: int):
+    """Carga el usuario desde la DB.
+
+    Devuelve el dict del usuario, None si no existe o está desactivado, o RETRY si
+    la DB no respondió. La distinción importa: antes un hipo de red se trataba igual
+    que un token inválido y tiraba al operario a la pantalla de login sin motivo.
+    """
     if not DATABASE_URL:
-        return None
+        return RETRY
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        from etl.db import db_connect
+        conn = db_connect()
+    except Exception:
+        return RETRY
+    try:
         try:
             with conn.cursor() as cur:
                 cur.execute("SET search_path TO produccion, public")
@@ -69,15 +81,15 @@ def usuario_por_id(id_usuario: int) -> dict | None:
                     (id_usuario,),
                 )
                 row = cur.fetchone()
-            if not row:
-                return None
-            return {"id_usuario": row[0], "nombre": row[1], "nombre_full": row[2],
-                    "rol": row[3], "sector": row[4], "sectores": row[5] or [],
-                    "secciones_app": row[6] or None}
         finally:
             conn.close()
     except Exception:
+        return RETRY
+    if not row:
         return None
+    return {"id_usuario": row[0], "nombre": row[1], "nombre_full": row[2],
+            "rol": row[3], "sector": row[4], "sectores": row[5] or [],
+            "secciones_app": row[6] or None}
 
 
 def set_cookie(token: str, dias: int = DIAS_SESION) -> None:
@@ -130,8 +142,8 @@ def get_section_cookie() -> str | None:
         return None
 
 
-def restaurar_sesion() -> dict | None:
-    """Lee la cookie del request actual y devuelve el usuario si el token es válido."""
+def restaurar_sesion():
+    """Lee la cookie del request actual. Usuario, None (token inválido) o RETRY (DB caída)."""
     try:
         tok = st.context.cookies.get(COOKIE)
     except Exception:

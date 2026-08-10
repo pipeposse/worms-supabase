@@ -1,8 +1,37 @@
 """worms_supabase / etl / db.py · PostgreSQL Supabase + login + admin + anulación."""
 from contextlib import contextmanager
-import hashlib, json
+import hashlib, json, time
 import psycopg2
 from .config import DATABASE_URL
+
+# Parámetros de conexión defensivos: sin esto, un hipo de red deja el connect o una
+# query colgados minutos (timeout TCP default), el script de Streamlit se bloquea y
+# Cloud termina matando el proceso — que es lo que los usuarios ven como "se colgó"
+# y "me cerró la sesión". Con esto, cualquier problema de red falla RÁPIDO y se
+# reintenta, en vez de congelar la app.
+CONN_KW = dict(
+    connect_timeout=8,          # handshake: 8 s y error, no 2 minutos colgado
+    keepalives=1,               # detectar conexiones muertas (Supabase corta idle)
+    keepalives_idle=30,
+    keepalives_interval=10,
+    keepalives_count=3,
+    options="-c statement_timeout=60000",   # ninguna query puede colgar >60 s
+)
+
+
+def db_connect(reintentos=2):
+    """Conexión con timeouts + reintento ante errores transitorios de red."""
+    if not DATABASE_URL:
+        raise RuntimeError("Falta DATABASE_URL en .env")
+    ult = None
+    for i in range(reintentos + 1):
+        try:
+            return psycopg2.connect(DATABASE_URL, **CONN_KW)
+        except psycopg2.OperationalError as e:
+            ult = e
+            if i < reintentos:
+                time.sleep(0.6 * (i + 1))
+    raise ult
 
 
 def hash_pin(pin):
@@ -15,7 +44,7 @@ def conectar(id_usuario):
         raise RuntimeError("Falta DATABASE_URL en .env")
     if id_usuario is None:
         raise RuntimeError("Sesión sin login. No se permite escribir.")
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = db_connect()
     conn.autocommit = False
     try:
         with conn.cursor() as cur:
@@ -34,7 +63,7 @@ def login(nombre, pin):
     if not nombre or not pin or not DATABASE_URL:
         return None
     h = hash_pin(pin)
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = db_connect()
     try:
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
@@ -71,7 +100,7 @@ def _rol_de(conn, id_usuario):
 
 def crear_usuario(id_usuario_admin, nombre, nombre_full, pin, rol="OPERADOR", sector=None):
     h = hash_pin(pin)
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = db_connect()
     try:
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
@@ -99,7 +128,7 @@ def crear_usuario(id_usuario_admin, nombre, nombre_full, pin, rol="OPERADOR", se
 def _admin_update(id_usuario_admin, id_usuario_target, sql, args, audit_diff):
     if id_usuario_admin == id_usuario_target and "activo" in audit_diff:
         raise PermissionError("No te podés desactivar a vos mismo")
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = db_connect()
     try:
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
@@ -166,7 +195,7 @@ def set_activo(id_usuario_admin, id_usuario_target, activo):
 
 def cambiar_mi_pin(id_usuario, pin_actual, pin_nuevo):
     h_act = hash_pin(pin_actual); h_new = hash_pin(pin_nuevo)
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = db_connect()
     try:
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
@@ -201,7 +230,7 @@ VENTANA_SUPERVISOR_DIAS   = 7
 
 def listar_mis_cargas(id_usuario, rol, dias_atras=7):
     """Lista cargas de producción. OPERADOR ve solo las suyas."""
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = db_connect()
     try:
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
@@ -259,7 +288,7 @@ def anular_registro(id_usuario, tabla, pk_valor, motivo):
     if not motivo or len(motivo.strip()) < 5:
         raise ValueError("El motivo es obligatorio (min 5 caracteres)")
     pk_col = TABLAS_ANULABLES[tabla]
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = db_connect()
     try:
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")

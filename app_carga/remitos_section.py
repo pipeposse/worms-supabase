@@ -151,7 +151,8 @@ def _norm_remito(nro: str | None) -> str | None:
 
 
 def _read_df(sql: str, params=None) -> pd.DataFrame:
-    with psycopg2.connect(DATABASE_URL) as conn:
+    from etl.db import db_connect
+    with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public")
         return pd.read_sql(sql, conn, params=params)
