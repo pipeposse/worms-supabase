@@ -3213,7 +3213,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # director al entrar y le tapaba lo que realmente hace la sección (planificar).
     # Ahora es la última opción del menú, como cualquier otra.
     _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administración de reacciones", "📅 Cronogramas",
-                   "🚚 Despachos", "🧮 Balance", "🔬 Análisis AFE", "🎯 Asignación AFE", "🛂 Aprobaciones"]
+                   "🚚 Despachos", "🧮 Balance", "🔬 Análisis AFE", "🎯 Asignación AFE",
+                   "♻️ Recuperación AG", "🛂 Aprobaciones"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3284,6 +3285,17 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         except Exception as _e:
             import traceback as _tb
             st.error("No se pudo cargar Asignación AFE: %s" % _e)
+            with st.expander("🔧 Detalle técnico"):
+                st.code(_tb.format_exc())
+        return
+
+    if _grupo.startswith("♻️"):
+        try:
+            from recuperacion_section import render as _render_recu
+            _render_recu(USR, cat, conectar, "PLANIFICACION")
+        except Exception as _e:
+            import traceback as _tb
+            st.error("No se pudo cargar Recuperación AG: %s" % _e)
             with st.expander("🔧 Detalle técnico"):
                 st.code(_tb.format_exc())
         return

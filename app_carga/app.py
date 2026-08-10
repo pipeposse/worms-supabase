@@ -292,6 +292,7 @@ USR = st.session_state.user
 # ---- Permisos por usuario sobre las secciones de la página ----
 SECCIONES_APP = [
     ("INICIAR", "👷 Producción en planta"),
+    ("RECUPERACION", "♻️ Recuperación AG"),
     ("LAB", "🧪 Laboratorio"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"), ("REPUESTOS", "🔧 Repuestos"), ("ISCC", "📑 ISCC"), ("REMITOS", "📸 Remitos"),
     ("ESTADO", "📈 Estado de planta"), ("ANALISIS", "🔬 Análisis de reacciones"),
     ("PLANIFICACION", "🗓️ Centro de Planificación"), ("CONDICIONALES", "🧮 Condicionales"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
@@ -4065,6 +4066,16 @@ if st.session_state.section != "CARGAS":
             with st.expander("Detalle"):
                 st.code(_tbis.format_exc())
 
+    elif st.session_state.section == "RECUPERACION":
+        try:
+            from recuperacion_section import render as _render_recu
+            _render_recu(USR, cat, conectar, "PLANTA")
+        except Exception as _e:
+            import traceback as _tbrc
+            st.error(f"No se pudo cargar Recuperación AG: {_e}")
+            with st.expander("Detalle"):
+                st.code(_tbrc.format_exc())
+
     elif st.session_state.section == "REPUESTOS":
         try:
             from repuestos_section import render as _render_rep
@@ -4126,7 +4137,7 @@ if st.session_state.section != "CARGAS":
 
     elif st.session_state.section == "INICIAR":
         # =================== PRODUCCIÓN EN PLANTA ===================
-        _ip_view = st.radio("Vista", ["👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🎯 Asignación AFE", "🛢️ Tanques"],
+        _ip_view = st.radio("Vista", ["👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🎯 Asignación AFE", "♻️ Recuperación AG", "🛢️ Tanques"],
                             horizontal=True, key="iniciar_view", label_visibility="collapsed")
         if _ip_view.startswith("👷"):
             try:
@@ -4186,6 +4197,12 @@ if st.session_state.section != "CARGAS":
             try:
                 from asignacion_afe import render as _render_asig_afe
                 _render_asig_afe(USR, cat, conectar, "PLANTA")
+            except Exception as _e:
+                st.exception(_e)
+        elif _ip_view.startswith("♻️"):
+            try:
+                from recuperacion_section import render as _render_recu
+                _render_recu(USR, cat, conectar, "PLANTA")
             except Exception as _e:
                 st.exception(_e)
         else:
