@@ -807,12 +807,26 @@ def _borr_restaurar(cat, USR):
     """
     ss = st.session_state
     try:
-        df = cat("SELECT payload, to_char(actualizado AT TIME ZONE 'America/Argentina/Buenos_Aires',"
-                 "'DD/MM HH24:MI') AS ts FROM produccion.despacho_borrador "
-                 "WHERE id_usuario=%s AND actualizado > now() - interval '36 hours'",
-                 (int(USR["id_usuario"]),))
-        if df is None or df.empty:
+        # SIEMPRE directo a la base, NUNCA por cat(): el cache de 5 minutos guardaba el
+        # "no hay borrador" de la primera entrada, y al volver dentro de esa ventana la
+        # restauración leía el vacío cacheado aunque el borrador existiera. Ese era el
+        # "salí, volví y no había nada".
+        from etl.db import db_connect
+        conn = db_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT payload, to_char(actualizado AT TIME ZONE "
+                    "'America/Argentina/Buenos_Aires','DD/MM HH24:MI') "
+                    "FROM produccion.despacho_borrador "
+                    "WHERE id_usuario=%s AND actualizado > now() - interval '36 hours'",
+                    (int(USR["id_usuario"]),))
+                _row = cur.fetchone()
+        finally:
+            conn.close()
+        if not _row:
             return
+        df = pd.DataFrame([{"payload": _row[0], "ts": _row[1]}])
         pl = df.iloc[0]["payload"]
         if isinstance(pl, str):
             pl = json.loads(pl)
