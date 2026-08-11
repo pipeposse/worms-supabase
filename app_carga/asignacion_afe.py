@@ -667,19 +667,44 @@ def _pendientes(USR, cat, conectar, contexto):
                      horizontal=True, key="asg_ntq_%s" % r["tk"])
     lineas = []
     cols = st.columns(int(_n_tq))
+    # 1º los tanques (hacen falta los DOS elegidos para calcular el reparto por defecto)
+    _sel = []
     for i in range(int(_n_tq)):
         with cols[i]:
             _def = sug[i] if i < len(sug) else (sug[0] if sug else _todos[0])
             _k = st.selectbox("Tanque %d" % (i + 1), _keys,
                               index=_keys.index(_key_de(_def["id_tanque"])),
                               key="asg_tq%d_%s" % (i, r["tk"]))
-            _t = _lbl[_k]
-            _kgdef = float(_def.get("_kg", kg)) if i < len(sug) else round(max(kg - sum(x["kg"] for x in lineas), 0.0), 1)
-            if int(_n_tq) == 1:
-                _kgdef = kg
-            _kgi = st.number_input("Kg a tanque %d" % (i + 1), 0.0, 200000.0, float(round(_kgdef, 1)),
-                                   step=10.0, key="asg_kg%d_%s" % (i, r["tk"]))
-            _fue = any(int(s["id_tanque"]) == int(_t["id_tanque"]) for s in sug)
+            _sel.append(_lbl[_k])
+
+    # Reparto por defecto con 2 tanques: se LLENA el más cargado (menos espacio libre)
+    # hasta su capacidad y el resto va al más vacío — la regla operativa de planta.
+    # Si los tanques elegidos son exactamente los sugeridos, se respeta el reparto de
+    # la sugerencia (ya considera calidad además de espacio).
+    _defs = [kg] * int(_n_tq)
+    if int(_n_tq) == 2:
+        _ids_sel = {int(t["id_tanque"]) for t in _sel}
+        _ids_sug = {int(x["id_tanque"]) for x in sug} if len(sug) == 2 else set()
+        if _ids_sel == _ids_sug and len(_ids_sel) == 2:
+            _map = {int(x["id_tanque"]): float(x.get("_kg", 0.0)) for x in sug}
+            _defs = [_map.get(int(t["id_tanque"]), 0.0) for t in _sel]
+        else:
+            _i_lleno = 0 if float(_sel[0]["_disp"]) <= float(_sel[1]["_disp"]) else 1
+            _cap = max(0.0, float(_sel[_i_lleno]["_disp"]) * dens)
+            _kg1 = round(min(kg, _cap), 1)
+            _defs = [0.0, 0.0]
+            _defs[_i_lleno] = _kg1
+            _defs[1 - _i_lleno] = round(max(kg - _kg1, 0.0), 1)
+    # el key incluye los tanques elegidos: al cambiar un tanque, los kg vuelven al
+    # reparto por defecto de la nueva combinación (si no, arrastraban valores viejos)
+    _sig = "_".join(str(int(t["id_tanque"])) for t in _sel)
+    for i in range(int(_n_tq)):
+        with cols[i]:
+            _t = _sel[i]
+            _kgi = st.number_input("Kg a tanque %d" % (i + 1), 0.0, 200000.0,
+                                   float(round(_defs[i], 1)), step=10.0,
+                                   key="asg_kg%d_%s_%s" % (i, r["tk"], _sig))
+            _fue = any(int(x["id_tanque"]) == int(_t["id_tanque"]) for x in sug)
             _mot = ""
             if not _fue:
                 _mot = st.selectbox("Motivo del desvío", MOTIVOS, key="asg_mot%d_%s" % (i, r["tk"]))
