@@ -119,11 +119,58 @@ def _tanques(cat):
     df.loc[df["litros_actual"] < 0, "litros_actual"] = 0.0
     df.loc[df["litros_brutos"].isna(), "litros_actual"] = pd.NA
     df["litros_actual"] = pd.to_numeric(df["litros_actual"], errors="coerce")
+    # Stock COMPROMETIDO: lo designado en despachos CONFIRMADOS que todavía no
+    # terminaron de pesar en portería NO está disponible para despachos nuevos.
+    # El descuento es proporcional a los contenedores sin ticket, así se libera
+    # solo a medida que los camiones salen (y el stock medido refleja la salida).
+    df["litros_sin_comp"] = df["litros_actual"]
+    df["comprometido_l"] = 0.0
+    try:
+        _cmp = _comprometidos(cat)
+        if not _cmp.empty:
+            _tot = _cmp.groupby("id_tanque")["litros_comp"].sum()
+            df["comprometido_l"] = pd.to_numeric(
+                df["id_tanque"].map(_tot), errors="coerce").fillna(0.0)
+            _m = pd.notna(df["litros_actual"]) & (df["comprometido_l"] > 0)
+            df.loc[_m, "litros_actual"] = (
+                df.loc[_m, "litros_actual"] - df.loc[_m, "comprometido_l"]).clip(lower=0.0)
+    except Exception:
+        pass
     df["etq"] = df.apply(lambda r: _etq_tanque(r), axis=1)
     # clave ESTABLE para la grilla: no cambia con el stock ni con el lab. La etiqueta
     # completa (etq) queda para vistas informativas.
     df["clave"] = df["nombre"].astype(str) + " · " + df["producto_principal"].fillna("—").astype(str)
     return df
+
+
+def _comprometidos(cat):
+    """Litros comprometidos por tanque y despacho (CONFIRMADOS con tickets pendientes).
+
+    Por cada línea de un despacho CONFIRMADO se computa
+    litros x (contenedores sin ticket / contenedores): un despacho ya pesado por
+    completo no compromete nada (la salida ya está en el stock físico) y uno a
+    medio cargar compromete la parte que falta."""
+    df = cat("SELECT l.id_despacho, l.id_tanque, SUM(l.litros) AS litros, "
+             "MAX(d.n_contenedores) AS n_cont, MAX(d.titulo) AS titulo, "
+             "MAX(d.fecha_despacho::text) AS fecha, "
+             "(SELECT COUNT(*) FROM produccion.fact_despacho_ticket t "
+             " WHERE t.id_despacho = l.id_despacho) AS n_tickets "
+             "FROM produccion.fact_despacho_linea l "
+             "JOIN produccion.fact_despacho d ON d.id_despacho = l.id_despacho "
+             "WHERE d.estado = 'CONFIRMADO' "
+             "GROUP BY l.id_despacho, l.id_tanque")
+    _vacio = pd.DataFrame(columns=["id_despacho", "id_tanque", "litros_comp",
+                                   "titulo", "fecha", "n_cont", "n_tickets"])
+    if df is None or df.empty:
+        return _vacio
+    df = df.copy()
+    for c in ("litros", "n_cont", "n_tickets"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    _nc = df["n_cont"].where(df["n_cont"] > 0, 1.0)
+    df["litros_comp"] = (df["litros"] * ((_nc - df["n_tickets"]).clip(lower=0.0) / _nc)).round(0)
+    df = df[df["litros_comp"] > 0]
+    return df[["id_despacho", "id_tanque", "litros_comp", "titulo", "fecha",
+               "n_cont", "n_tickets"]] if not df.empty else _vacio
 
 
 def _etq_tanque(r):
@@ -1511,6 +1558,25 @@ def _armar(USR, cat, conectar):
         return
     prods = _productos(cat)
 
+    # Comprometidos por otros despachos confirmados. Si se está EDITANDO uno, sus
+    # propios litros vuelven a la disponibilidad (no debe descontarse a sí mismo).
+    try:
+        _cmp_pend = _comprometidos(cat)
+    except Exception:
+        _cmp_pend = pd.DataFrame(columns=["id_despacho", "id_tanque", "litros_comp",
+                                          "titulo", "fecha", "n_cont", "n_tickets"])
+    if ss.get("dsp_edit_id") and not _cmp_pend.empty:
+        _cmp_pend = _cmp_pend[pd.to_numeric(_cmp_pend["id_despacho"], errors="coerce")
+                              != int(ss["dsp_edit_id"])]
+        _tot2 = (_cmp_pend.groupby("id_tanque")["litros_comp"].sum()
+                 if not _cmp_pend.empty else None)
+        tks["comprometido_l"] = (pd.to_numeric(tks["id_tanque"].map(_tot2), errors="coerce")
+                                 .fillna(0.0) if _tot2 is not None else 0.0)
+        _mk = pd.notna(tks["litros_sin_comp"])
+        tks.loc[_mk, "litros_actual"] = (
+            tks.loc[_mk, "litros_sin_comp"] - tks.loc[_mk, "comprometido_l"]).clip(lower=0.0)
+        tks["etq"] = tks.apply(lambda r: _etq_tanque(r), axis=1)
+
     # líneas de un despacho guardado que se mandó a editar (ver _editar_despacho)
     _pend = ss.pop("dsp_load_pend", None)
     if _pend is not None:
@@ -1653,27 +1719,62 @@ def _armar(USR, cat, conectar):
 
     # Stock a la vista: cuánto hay en cada tanque usable, ordenado de mayor a menor.
     _stk = _con.sort_values("litros_actual", ascending=False)[
-        ["nombre", "producto_principal", "litros_brutos", "reserva_fondo", "litros_actual",
-         "capacidad_litros", "es_conico"]].copy()
+        ["nombre", "producto_principal", "litros_brutos", "reserva_fondo", "comprometido_l",
+         "litros_actual", "capacidad_litros", "es_conico"]].copy()
     _stk["Tipo"] = _stk["es_conico"].map({True: "Cónico (100%)", False: "Base plana (90%)"})
     _stk["% lleno"] = (100.0 * _stk["litros_brutos"] / _stk["capacidad_litros"].replace(0, pd.NA)).fillna(0.0).round(0)
     _stk = _stk.rename(columns={"nombre": "Tanque", "producto_principal": "Producto",
                                 "litros_brutos": "Medido (L)", "reserva_fondo": "Fondo 10% (L)",
+                                "comprometido_l": "Comprometido (L)",
                                 "litros_actual": "Útil (L)", "capacidad_litros": "Capacidad (L)"})
-    st.dataframe(_stk[["Tanque", "Producto", "Tipo", "Medido (L)", "Fondo 10% (L)", "Útil (L)",
-                       "Capacidad (L)", "% lleno"]],
+    st.dataframe(_stk[["Tanque", "Producto", "Tipo", "Medido (L)", "Fondo 10% (L)",
+                       "Comprometido (L)", "Útil (L)", "Capacidad (L)", "% lleno"]],
                  hide_index=True, use_container_width=True, height=min(38 * (len(_stk) + 1), 320),
                  column_config={
                      "Medido (L)": st.column_config.NumberColumn(format="%.0f"),
                      "Fondo 10% (L)": st.column_config.NumberColumn(
                          format="%.0f", help="En base plana el 10% de la capacidad queda siempre "
                                              "en el tanque como fondo; los cónicos se usan al 100%."),
+                     "Comprometido (L)": st.column_config.NumberColumn(
+                         format="%.0f", help="Designado en despachos CONFIRMADOS que todavía no "
+                                             "terminaron de pesar en portería. Ya está descontado "
+                                             "del Útil; se libera solo con cada ticket."),
                      "Útil (L)": st.column_config.NumberColumn(format="%.0f"),
                      "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
                      "% lleno": st.column_config.ProgressColumn("% lleno", format="%.0f%%",
                                                                 min_value=0, max_value=100)})
     st.caption("**Útil (L)** es lo que la formulación puede tomar: en base plana ya está descontado "
                "el 10% de capacidad que queda como fondo de tanque; cónicos al 100%.")
+    _cmp_fam = (_cmp_pend[_cmp_pend["id_tanque"].isin(_tp["id_tanque"])]
+                if not _cmp_pend.empty else _cmp_pend)
+    if not _cmp_fam.empty:
+        _tot_c = float(_cmp_fam["litros_comp"].sum())
+        _n_d = int(_cmp_fam["id_despacho"].nunique())
+        st.info("🔒 **%s L comprometidos** en %d despacho(s) confirmado(s) sin terminar de "
+                "despachar: ya están descontados de la disponibilidad de arriba, así el "
+                "despacho nuevo se arma con lo que realmente va a quedar. El descuento se "
+                "libera solo a medida que los camiones pesan en portería."
+                % ("{:,.0f}".format(_tot_c), _n_d))
+        with st.expander("Ver el detalle de lo comprometido por despacho"):
+            _nomt = {int(r["id_tanque"]): str(r["nombre"]) for _, r in tks.iterrows()}
+            _dd = _cmp_fam.copy()
+            _dd["Despacho"] = _dd.apply(
+                lambda r: "#%d · %s · %s" % (int(r["id_despacho"]),
+                                             str(r.get("titulo") or "—"),
+                                             str(r.get("fecha") or "—")), axis=1)
+            _dd["Tanque"] = _dd["id_tanque"].map(lambda x: _nomt.get(int(x), str(x)))
+            _dd["Avance tickets"] = _dd.apply(
+                lambda r: "%d/%d" % (int(r["n_tickets"]), int(r["n_cont"])), axis=1)
+            _dd = _dd.rename(columns={"litros_comp": "Comprometido (L)"})
+            st.dataframe(_dd[["Despacho", "Tanque", "Comprometido (L)", "Avance tickets"]]
+                         .sort_values(["Despacho", "Comprometido (L)"],
+                                      ascending=[True, False]),
+                         hide_index=True, use_container_width=True,
+                         column_config={"Comprometido (L)":
+                                        st.column_config.NumberColumn(format="%.0f")})
+            st.caption("Comprometido = litros de la línea × contenedores sin ticket / "
+                       "contenedores del despacho. Si un despacho confirmado no va a salir, "
+                       "anulalo o editalo para liberar el stock.")
 
     with st.expander("⚡ Actualizar el stock de un tanque acá mismo (sin ir a Tanques)"):
         st.caption("Carga una **medición nueva** en el historial del tanque — el mismo canal que "
