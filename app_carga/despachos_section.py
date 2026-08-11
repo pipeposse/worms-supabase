@@ -2190,6 +2190,12 @@ def _control(USR, cat, conectar):
 
 # ------------------------------------------------------------------ tickets de portería
 
+# NOTA: los movimientos de stock de las salidas NO se crean acá. El trigger de la base
+# fn_despacho_sync_stock (sobre fact_despacho / _linea / _ticket) regenera solo los
+# movimientos origen='despacho' por tanque, escalando los kg de cada línea por el TOTAL
+# realmente pesado en los tickets de SALIDA asignados. Asignar/quitar tickets acá ya
+# dispara ese trigger: crear movimientos propios duplicaría la salida.
+
 def _desvio_balanza(cur, id_despacho, usuario):
     """Recalcula el desvío balanza-vs-formulado del despacho y lo deja registrado.
 
@@ -2215,67 +2221,6 @@ def _desvio_balanza(cur, id_despacho, usuario):
                         "VALUES (%s,'Peso balanza (kg)',%s,%s,%s,'BALANZA',%s,%s)",
                         (int(id_despacho), round(kg_p, 1), round(kg_f, 1), round(_exc, 2),
                          usuario, "automático: salida pesada en portería vs formulado"))
-
-
-def _mov_salida_crear(cur, cab, id_transaccion, ticket, kg, fecha, uid):
-    """Movimiento de stock por un camión de SALIDA asignado: la masa deja la planta.
-
-    Un movimiento SALIDA del producto del despacho + espejo OUT prorrateado entre los
-    tanques de la formulación (el camión carga físicamente de esos tanques). Devuelve
-    id_mov_stock, que queda linkeado al ticket para poder deshacer al desasignar.
-    """
-    cur.execute("SELECT id_producto, COALESCE(densidad_g_ml,0.91) FROM produccion.dim_producto "
-                "WHERE codigo_producto=%s", (str(cab.get("producto_codigo") or "")[:30],))
-    _r = cur.fetchone()
-    if not _r:
-        return None
-    idp, dens = int(_r[0]), float(_r[1])
-    kg = abs(float(kg))
-    lts = round(kg / dens, 1)
-    cur.execute(
-        "INSERT INTO produccion.fact_movimiento_stock "
-        "(momento, tipo_movimiento, rol, sentido, id_producto, producto, fuente, "
-        " ticket_porteria, cantidad, unidad, kg, litros, id_usuario, origen, observaciones, "
-        " estado_mov, id_usuario_ejecuta, ejecutado_en) "
-        "VALUES (%s,'SALIDA','PRODUCTO_FINAL',-1,%s,%s,'PORTERIA',%s,%s,'KG',%s,%s,%s,'despacho_salida',"
-        "%s,'EJECUTADO',%s,now()) RETURNING id_mov_stock",
-        (fecha, idp, str(cab.get("producto_codigo") or ""), str(ticket or ""), kg, kg, lts,
-         uid, "Salida despacho #%s ticket %s" % (int(cab["id_despacho"]), ticket), uid))
-    id_mov = cur.fetchone()[0]
-    # espejo por tanque, prorrateado por la participación de cada tanque en la formulación
-    cur.execute("SELECT id_tanque, COALESCE(litros,0) FROM produccion.fact_despacho_linea "
-                "WHERE id_despacho=%s AND id_tanque IS NOT NULL AND COALESCE(litros,0) > 0",
-                (int(cab["id_despacho"]),))
-    _ln = cur.fetchall()
-    _tot = sum(float(x[1]) for x in _ln)
-    if _tot > 0:
-        for _idt, _lt in _ln:
-            _sh = float(_lt) / _tot
-            # sin id_mov_stock: la tabla exige 1:1 con el movimiento y acá el prorrateo
-            # es N tanques por camión. El vínculo para deshacer es el texto (despacho+ticket).
-            cur.execute(
-                "INSERT INTO produccion.fact_movimiento_tanque "
-                "(id_tanque, id_producto, tipo, litros, kg, ts, id_usuario, origen, observaciones) "
-                "VALUES (%s,%s,'OUT',%s,%s,%s,%s,'DESPACHO_SALIDA',%s)",
-                (int(_idt), idp, round(lts * _sh, 1), round(kg * _sh, 1), fecha, uid,
-                 "Salida despacho #%s ticket %s (prorrateo %.0f%%)"
-                 % (int(cab["id_despacho"]), ticket, 100 * _sh)))
-    return id_mov
-
-
-def _mov_salida_anular(cur, filas):
-    """filas: [(id_mov_stock, id_despacho, ticket)] — anula el movimiento y sus espejos."""
-    ids = [int(f[0]) for f in filas if f[0] is not None and not pd.isna(f[0])]
-    if ids:
-        cur.execute("UPDATE produccion.fact_movimiento_stock SET anulado=true, "
-                    "observaciones=COALESCE(observaciones,'') || ' | ticket desasignado del despacho' "
-                    "WHERE id_mov_stock = ANY(%s)", (ids,))
-    for _im, _d, _t in filas:
-        if _im is None or pd.isna(_im):
-            continue
-        cur.execute("DELETE FROM produccion.fact_movimiento_tanque "
-                    "WHERE origen='DESPACHO_SALIDA' AND observaciones LIKE %s",
-                    ("Salida despacho #%s ticket %s %%" % (int(_d), _t),))
 
 
 _ROLES_TK = {
@@ -2363,15 +2308,11 @@ def _tk_panel(USR, cat, conectar, cab, rol):
             try:
                 with conectar(USR["id_usuario"]) as (conn, _x):
                     with conn.cursor() as cur:
-                        cur.execute("SELECT id_mov_stock, id_despacho, ticket "
-                                    "FROM produccion.fact_despacho_ticket "
-                                    "WHERE id_dt = ANY(%s)", ([int(i) for i in _q],))
-                        _mov_salida_anular(cur, cur.fetchall())
                         cur.execute("DELETE FROM produccion.fact_despacho_ticket WHERE id_dt = ANY(%s)",
                                     ([int(i) for i in _q],))
                         if rol == "SALIDA":
                             _desvio_balanza(cur, int(cab["id_despacho"]), USR.get("nombre"))
-                cat.clear(); st.success("Tickets desasignados (y su movimiento de stock anulado)."); st.rerun()
+                cat.clear(); st.success("Tickets desasignados (el stock se resincroniza solo)."); st.rerun()
             except Exception as e:
                 st.error(f"No se pudo quitar: {e}")
     else:
@@ -2451,14 +2392,6 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                             if _rid is None:
                                 continue          # ya estaba asignado en otro despacho
                             _nok += 1
-                            # cada camión de SALIDA pesado descuenta stock (masa que se va)
-                            if rol == "SALIDA" and _fl[9] is not None and not _fl[10]:
-                                _im = _mov_salida_crear(cur, cab, _fl[2], _fl[3], _fl[9],
-                                                        _fl[5], _uid)
-                                if _im is not None:
-                                    cur.execute("UPDATE produccion.fact_despacho_ticket "
-                                                "SET id_mov_stock=%s WHERE id_dt=%s",
-                                                (_im, int(_rid[0])))
                         if rol == "SALIDA":
                             _desvio_balanza(cur, int(cab["id_despacho"]), USR.get("nombre"))
                 cat.clear(); st.success(f"{_nok} ticket(s) asignados."); st.rerun()

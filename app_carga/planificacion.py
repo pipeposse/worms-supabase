@@ -2235,9 +2235,57 @@ def _reconciliacion_profunda(USR, cat, conectar):
 
 def _desvios_semanal(USR, cat, conectar):
     """Sección Desvíos (Dirección): stock semana anterior → proyectado con producción → real → desvío."""
+    _desvios_despachos(cat)
+    st.divider()
     _desvio_stock_ledger(USR, cat, conectar)
     st.divider()
     _reconciliacion_semanal(USR, cat, conectar)
+
+
+def _desvios_despachos(cat):
+    """Desvíos de DESPACHOS con nombre y apellido: spec excedida (con motivo) y balanza.
+
+    Vienen de fact_despacho_desvio: ARMADO (se guardó fuera de spec), CONTROL (se confirmó
+    fuera de tolerancia) y BALANZA (lo pesado difiere >3% de lo formulado). Acá dirección
+    los ve todos juntos sin entrar despacho por despacho.
+    """
+    st.subheader("🚨 Desvíos de despachos — spec y balanza")
+    try:
+        df = cat(
+            "SELECT v.id_despacho, d.titulo, d.producto_codigo, d.estado, d.fecha_despacho, "
+            "       v.parametro, v.valor, v.limite, v.exceso_pct, v.origen, v.usuario, v.motivo, "
+            "       to_char(v.creado_en AT TIME ZONE 'America/Argentina/Buenos_Aires', "
+            "               'DD/MM HH24:MI') AS cuando "
+            "FROM produccion.fact_despacho_desvio v "
+            "JOIN produccion.fact_despacho d ON d.id_despacho = v.id_despacho "
+            "WHERE v.creado_en >= now() - interval '90 days' "
+            "ORDER BY v.creado_en DESC")
+    except Exception as e:
+        st.warning("No se pudieron leer los desvíos de despachos: %s" % e)
+        return
+    if df is None or df.empty:
+        st.success("Sin desvíos de despachos registrados en los últimos 90 días. ✔")
+        return
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Desvíos (90 días)", int(len(df)))
+    c2.metric("De especificación", int((df["origen"].isin(["ARMADO", "CONTROL"])).sum()))
+    c3.metric("De balanza (peso)", int((df["origen"] == "BALANZA").sum()))
+    _v = df.rename(columns={"id_despacho": "Despacho", "titulo": "Título",
+                            "producto_codigo": "Producto", "estado": "Estado",
+                            "fecha_despacho": "Fecha desp.", "parametro": "Parámetro",
+                            "valor": "Valor", "limite": "Límite", "exceso_pct": "Exceso %",
+                            "origen": "Origen", "usuario": "Usuario", "motivo": "Motivo",
+                            "cuando": "Registrado"})
+    st.dataframe(_v[["Despacho", "Título", "Producto", "Fecha desp.", "Parámetro", "Valor",
+                     "Límite", "Exceso %", "Origen", "Usuario", "Motivo", "Registrado"]],
+                 hide_index=True, use_container_width=True,
+                 column_config={"Exceso %": st.column_config.NumberColumn(format="%+.1f"),
+                                "Fecha desp.": st.column_config.DateColumn(format="DD/MM/YY")})
+    st.caption("ARMADO = se guardó fuera de spec (dentro o fuera de tolerancia, con motivo si "
+               "superó el 10%) · CONTROL = se confirmó fuera de tolerancia · BALANZA = lo pesado "
+               "en portería difiere >3% de lo formulado.")
+    st.download_button("⬇️ CSV", _v.to_csv(index=False).encode("utf-8"),
+                       file_name="desvios_despachos.csv", mime="text/csv", key="dir_dv_dl")
 
 
 def _desvio_stock_ledger(USR, cat, conectar):
