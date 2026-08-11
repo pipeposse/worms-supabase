@@ -150,27 +150,19 @@ def _comprometidos(cat):
     litros x (contenedores sin ticket / contenedores): un despacho ya pesado por
     completo no compromete nada (la salida ya está en el stock físico) y uno a
     medio cargar compromete la parte que falta."""
-    df = cat("SELECT l.id_despacho, l.id_tanque, SUM(l.litros) AS litros, "
-             "MAX(d.n_contenedores) AS n_cont, MAX(d.titulo) AS titulo, "
-             "MAX(d.fecha_despacho::text) AS fecha, "
-             "(SELECT COUNT(*) FROM produccion.fact_despacho_ticket t "
-             " WHERE t.id_despacho = l.id_despacho) AS n_tickets "
-             "FROM produccion.fact_despacho_linea l "
-             "JOIN produccion.fact_despacho d ON d.id_despacho = l.id_despacho "
-             "WHERE d.estado = 'CONFIRMADO' "
-             "GROUP BY l.id_despacho, l.id_tanque")
+    # La fórmula vive en la DB (vw_despacho_comprometido) y es la misma que usa
+    # vw_tanque_panel.litros_comprometido: una sola fuente para toda la app.
+    df = cat("SELECT id_despacho, id_tanque, litros_comprometido AS litros_comp, "
+             "titulo, fecha_despacho::text AS fecha, n_contenedores AS n_cont, n_tickets "
+             "FROM produccion.vw_despacho_comprometido WHERE litros_comprometido > 0")
     _vacio = pd.DataFrame(columns=["id_despacho", "id_tanque", "litros_comp",
                                    "titulo", "fecha", "n_cont", "n_tickets"])
     if df is None or df.empty:
         return _vacio
     df = df.copy()
-    for c in ("litros", "n_cont", "n_tickets"):
+    for c in ("litros_comp", "n_cont", "n_tickets"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-    _nc = df["n_cont"].where(df["n_cont"] > 0, 1.0)
-    df["litros_comp"] = (df["litros"] * ((_nc - df["n_tickets"]).clip(lower=0.0) / _nc)).round(0)
-    df = df[df["litros_comp"] > 0]
-    return df[["id_despacho", "id_tanque", "litros_comp", "titulo", "fecha",
-               "n_cont", "n_tickets"]] if not df.empty else _vacio
+    return df
 
 
 def _etq_tanque(r):
