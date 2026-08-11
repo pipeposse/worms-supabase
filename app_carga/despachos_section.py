@@ -361,8 +361,10 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         d = d.sort_values(["_pref", "score", "litros_actual"], ascending=[True, True, False])
         d_peor = d.sort_values(["_pref", "score", "litros_actual"], ascending=[True, False, False])
 
-    # tanque del componente base: el de más stock
-    rb, hay = None, 0.0
+    # Tanques del componente base: TODOS los que tienen stock útil, de mayor a menor.
+    # Antes se usaba uno solo ("el de más stock") y con el AG-E repartido en varios
+    # tanques la sugerencia ignoraba el resto del stock de base disponible.
+    rb, hay, bpool = None, 0.0, []
     if formulado:
         b = tks[up == base_cod].copy()
         if b.empty:
@@ -371,11 +373,28 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                     % (base_cod, base_cod))
         b["_d"] = b["litros_actual"].fillna(0)
         b = b.sort_values("_d", ascending=False)
-        # fondo de tanque (<min_l) tampoco sirve como base; sin medición (0) se permite
-        # porque es el caso del tanque de formulación, que se llena al armar la carga
-        _bok = b[(b["_d"] >= min_l) | (b["_d"] <= 0)]
-        rb = (_bok if not _bok.empty else b).iloc[0]
-        hay = float(rb["_d"])
+        _bok = b[b["_d"] >= min_l]
+        if not _bok.empty:
+            bpool = [(r, float(r["_d"])) for _, r in _bok.iterrows()]
+        else:
+            # sin stock medido: el tanque de formulación (se llena al armar la carga);
+            # absorbe los litros que se pidan a mano
+            _b0 = b[b["_d"] <= 0]
+            bpool = [((_b0 if not _b0.empty else b).iloc[0], 0.0)]
+        rb = bpool[0][0]
+        hay = sum(_dsp for _, _dsp in bpool)
+
+    def _base_lineas(lb):
+        """Reparte lb litros de base entre los tanques del pool, de mayor a menor stock."""
+        out, resto = [], float(lb)
+        for _rbase, _disp in bpool:
+            if resto <= 0.5:
+                break
+            _t = min(_disp, resto) if _disp > 0 else resto
+            if _t > 0.5:
+                out.append((_rbase, _t))
+                resto -= _t
+        return out
 
     def _cumple(lineas, _tol=0.0):
         """Promedios ponderados por kg de la masa medida vs los máximos de la spec.
@@ -409,8 +428,8 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         """
         out, acum = [], 0.0
         if formulado and lb > 0:
-            out.append((rb, float(lb)))
-            acum = float(lb)
+            out = _base_lineas(lb)
+            acum = sum(l for _, l in out)
         for i in d.index:
             r = d.loc[i]
             if acum >= litros_obj:
@@ -453,8 +472,8 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         """
         lineas, acum, usados = [], 0.0, set()
         if formulado and lb > 0:
-            lineas.append((rb, float(lb)))
-            acum = float(lb)
+            lineas = _base_lineas(lb)
+            acum = sum(l for _, l in lineas)
         for i in d_peor.index:
             if acum >= litros_obj - 0.5:
                 break
@@ -516,8 +535,8 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                 notas.append("el tanque de %s (%s) está sin medición: poné los litros a mano"
                              % (base_cod, rb["nombre"]))
             elif hay > 0 and lb > hay + 0.5:
-                notas.append("%s tiene %s L y se piden %s L"
-                             % (rb["nombre"], "{:,.0f}".format(hay), "{:,.0f}".format(lb)))
+                notas.append("los tanques de %s tienen %s L en total y se piden %s L"
+                             % (base_cod, "{:,.0f}".format(hay), "{:,.0f}".format(lb)))
 
     if d.empty:
         lineas, acum = _armar_mezcla(lb)
