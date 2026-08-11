@@ -777,7 +777,7 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
 _BORR_KEYS = ("dsp_titulo", "dsp_destino", "dsp_cliente", "dsp_prod", "dsp_tipo", "dsp_fecha",
               "dsp_ncont", "dsp_lcont", "dsp_spac", "dsp_spays", "dsp_spaz", "dsp_spfos",
               "dsp_lbase", "dsp_tolp", "dsp_incv", "dsp_pisar", "dsp_estado", "dsp_obs",
-              "dsp_motivo_desv")
+              "dsp_motivo_desv", "dsp_exc_ms")
 
 
 def _borr_guardar(conectar, USR, lineas_ed=None):
@@ -789,6 +789,8 @@ def _borr_guardar(conectar, USR, lineas_ed=None):
                 continue
             v = ss[k]
             if isinstance(v, (bool, int, float, str)):
+                campos[k] = v
+            elif isinstance(v, list) and all(isinstance(x, str) for x in v):
                 campos[k] = v
             elif isinstance(v, _dt.date):
                 campos[k] = {"__date__": v.isoformat()}
@@ -1608,12 +1610,36 @@ def _armar(USR, cat, conectar):
                                 step=1.0, value=float(ss.get("dsp_tolp", TOL_DESVIO * 100)),
                                 key="dsp_tolp", help=_thelp)
     _tol = float(_tolp or 0.0) / 100.0
+
+    # ---- exclusión de tanques: "este no, sugerime otro" ----
+    _opc_exc = tks[tks["producto_principal"].astype(str).str.strip().str.upper()
+                   .isin(_fam)]["etq"].tolist()
+    _prev_exc = [x for x in (ss.get("dsp_exc_ms") or []) if x in _opc_exc]
+    ex1, ex2 = st.columns([2.6, 1.2])
+    _exc = ex1.multiselect("🚫 Tanques excluidos de la sugerencia", _opc_exc,
+                           default=_prev_exc, key="dsp_exc_ms",
+                           help="Los tanques de esta lista NO se usan al sugerir ni en las "
+                                "propuestas ni en el trade-off. Agregá el que quieras sacar "
+                                "y tocá Re-sugerir: la mezcla se rearma sin él.")
+    tks_sug = tks[~tks["etq"].isin(set(_exc))] if _exc else tks
+    if ex2.button("🔁 Re-sugerir sin excluidos", use_container_width=True,
+                  disabled=not _exc, key="dsp_exc_go",
+                  help="Rearma la sugerencia ignorando los tanques excluidos, con los mismos "
+                       "litros de base y margen elegidos arriba."):
+        _sug2, _msg2 = _sugerir(tks_sug, prod_cod, lit_obj, spec, prods, (_lb or None),
+                                maximizar=(_formulado and not _lb), tol=_tol)
+        if _sug2.empty:
+            st.warning(_msg2)
+        else:
+            _lineas_set(ss, _sug2)
+            ss["dsp_props"] = None
+            st.rerun()
     _hlp = ("Arma la formulación: mete el MÁXIMO de %s que cumpla la spec (o los litros que pongas) "
             "y completa con los AFE (AFE-S primero, mayor margen primero)."
             % _fam[0]) if _formulado else \
            "Propone tanques del producto elegido, priorizando los de mayor margen contra la spec."
     if ca.button("🎯 Sugerir mezcla", use_container_width=True, help=_hlp):
-        _sug, _msg = _sugerir(tks, prod_cod, lit_obj, spec, prods, (_lb or None),
+        _sug, _msg = _sugerir(tks_sug, prod_cod, lit_obj, spec, prods, (_lb or None),
                               maximizar=(_formulado and not _lb), tol=_tol)
         if _sug.empty:
             cc.warning(_msg)
@@ -1656,7 +1682,7 @@ def _armar(USR, cat, conectar):
                 % (_fam[0], _fam[0], _tolp))
             if st.button("Simular", key="dsp_btn_to", use_container_width=False):
                 with st.spinner("Simulando…"):
-                    ss["dsp_tradeoff"] = _tradeoff(tks, prod_cod, lit_obj, spec, prods, _tol)
+                    ss["dsp_tradeoff"] = _tradeoff(tks_sug, prod_cod, lit_obj, spec, prods, _tol)
                     ss["dsp_tradeoff_tol"] = _tolp
             _to = ss.get("dsp_tradeoff")
             if isinstance(_to, pd.DataFrame) and not _to.empty:
@@ -1678,7 +1704,7 @@ def _armar(USR, cat, conectar):
                        % _fam[0])
             if st.button("Generar propuestas", key="dsp_btn_props"):
                 with st.spinner("Armando variantes…"):
-                    ss["dsp_props"] = _propuestas(tks, prod_cod, lit_obj, spec, prods, _tol)
+                    ss["dsp_props"] = _propuestas(tks_sug, prod_cod, lit_obj, spec, prods, _tol)
             _pr = ss.get("dsp_props")
             if _pr:
                 def _fmtv(v, dec=1):
