@@ -392,8 +392,16 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                     % (base_cod, base_cod))
         b["_d"] = b["litros_actual"].fillna(0)
         b = b.sort_values("_d", ascending=False)
-        _bok = b[b["_d"] >= min_l]
+        _bok = b[b["_d"] >= min_l].copy()
         if not _bok.empty:
+            # El base también se elige por CALIDAD: el AG-E más limpio primero — es el
+            # que menos margen de spec quema, así entra más base o más AFE-S feo. A igual
+            # calidad, el de más stock. Sin análisis de lab, al final.
+            _bok["_bsc"] = _bok.apply(
+                lambda r: (_score(r) if any(pd.notna(r.get(c)) for c in
+                                            ("acidez", "agua_sedimento", "azufre", "fosforo"))
+                           else 99.0), axis=1)
+            _bok = _bok.sort_values(["_bsc", "_d"], ascending=[True, False])
             bpool = [(r, float(r["_d"])) for _, r in _bok.iterrows()]
         else:
             # sin stock medido: el tanque de formulación (se llena al armar la carga);
