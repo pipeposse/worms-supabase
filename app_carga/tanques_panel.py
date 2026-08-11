@@ -51,7 +51,7 @@ def vista_por_sector(cat):
     st.caption("El **Stock (L)** es la **última medición física cargada** (lo que registra el operario / sensor). "
                "Si hay movimientos posteriores sin conciliar, se muestran aparte como *Estimado* — no pisan la medición. "
                "El **Comprometido** es lo designado en despachos CONFIRMADOS que aún no terminaron de pesar en "
-               "portería: no está disponible para despachos nuevos y se libera solo con cada ticket.")
+               "portería: no está disponible para despachos nuevos y se libera cuando el despacho completa todos sus tickets.")
     df = _panel(cat)
     if df.empty:
         st.info("No hay tanques cargados.")

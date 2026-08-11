@@ -121,8 +121,7 @@ def _tanques(cat):
     df["litros_actual"] = pd.to_numeric(df["litros_actual"], errors="coerce")
     # Stock COMPROMETIDO: lo designado en despachos CONFIRMADOS que todavía no
     # terminaron de pesar en portería NO está disponible para despachos nuevos.
-    # El descuento es proporcional a los contenedores sin ticket, así se libera
-    # solo a medida que los camiones salen (y el stock medido refleja la salida).
+    # Compromete el 100% de la línea hasta que el despacho completa sus tickets.
     df["litros_sin_comp"] = df["litros_actual"]
     df["comprometido_l"] = 0.0
     try:
@@ -146,10 +145,10 @@ def _tanques(cat):
 def _comprometidos(cat):
     """Litros comprometidos por tanque y despacho (CONFIRMADOS con tickets pendientes).
 
-    Por cada línea de un despacho CONFIRMADO se computa
-    litros x (contenedores sin ticket / contenedores): un despacho ya pesado por
-    completo no compromete nada (la salida ya está en el stock físico) y uno a
-    medio cargar compromete la parte que falta."""
+    Regla conservadora: un despacho CONFIRMADO compromete el 100% de sus líneas
+    hasta que TODOS sus contenedores pesaron en portería (portería no informa de
+    qué tanque cargó cada camión, así que no se puede liberar de a partes).
+    Al completarse, se libera todo: el stock medido ya refleja la salida."""
     # La fórmula vive en la DB (vw_despacho_comprometido) y es la misma que usa
     # vw_tanque_panel.litros_comprometido: una sola fuente para toda la app.
     df = cat("SELECT id_despacho, id_tanque, litros_comprometido AS litros_comp, "
@@ -1730,7 +1729,7 @@ def _armar(USR, cat, conectar):
                      "Comprometido (L)": st.column_config.NumberColumn(
                          format="%.0f", help="Designado en despachos CONFIRMADOS que todavía no "
                                              "terminaron de pesar en portería. Ya está descontado "
-                                             "del Útil; se libera solo con cada ticket."),
+                                             "del Útil; se libera al completarse los tickets."),
                      "Útil (L)": st.column_config.NumberColumn(format="%.0f"),
                      "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
                      "% lleno": st.column_config.ProgressColumn("% lleno", format="%.0f%%",
@@ -1745,7 +1744,7 @@ def _armar(USR, cat, conectar):
         st.info("🔒 **%s L comprometidos** en %d despacho(s) confirmado(s) sin terminar de "
                 "despachar: ya están descontados de la disponibilidad de arriba, así el "
                 "despacho nuevo se arma con lo que realmente va a quedar. El descuento se "
-                "libera solo a medida que los camiones pesan en portería."
+                "libera cuando el despacho termina de pesar TODOS sus contenedores."
                 % ("{:,.0f}".format(_tot_c), _n_d))
         with st.expander("Ver el detalle de lo comprometido por despacho"):
             _nomt = {int(r["id_tanque"]): str(r["nombre"]) for _, r in tks.iterrows()}
@@ -1764,9 +1763,10 @@ def _armar(USR, cat, conectar):
                          hide_index=True, use_container_width=True,
                          column_config={"Comprometido (L)":
                                         st.column_config.NumberColumn(format="%.0f")})
-            st.caption("Comprometido = litros de la línea × contenedores sin ticket / "
-                       "contenedores del despacho. Si un despacho confirmado no va a salir, "
-                       "anulalo o editalo para liberar el stock.")
+            st.caption("Un despacho confirmado compromete el 100% de sus líneas hasta pesar "
+                       "todos sus contenedores en portería (no se sabe de qué tanque cargó "
+                       "cada camión). Si un despacho confirmado no va a salir, anulalo o "
+                       "editalo para liberar el stock.")
 
     with st.expander("⚡ Actualizar el stock de un tanque acá mismo (sin ir a Tanques)"):
         st.caption("Carga una **medición nueva** en el historial del tanque — el mismo canal que "
