@@ -319,7 +319,7 @@ def _estructura(res, prod_cod, prods=None):
 # ------------------------------------------------------------------ sugerencia de mezcla
 
 def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar=False,
-             min_l=MIN_L_DESPACHO, tol=0.0, lb_min=0.0):
+             min_l=MIN_L_DESPACHO, tol=0.0, lb_min=0.0, _dos_fases=True):
     """Propone la carga respetando la formulación: primero el componente base, después los AFE.
 
     Dos palancas compiten por el MISMO margen de spec y no se pueden maximizar a la vez:
@@ -343,6 +343,27 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     fam = _familia(prod_cod, prods)
     base_cod = fam[0]
     formulado = len(fam) > 1
+
+    # FASE 1: intentar cerrar SIN los sectores no prioritarios (tanques X y demás).
+    # Regla de dirección: los X son último recurso — incluso maximizar la base se
+    # subordina a esto. Si sin ellos la mezcla cierra el volumen y la spec (aunque
+    # entre menos base), esa es la propuesta. Sólo si no cierra, FASE 2 con todo.
+    if _dos_fases and not tks.empty and "sector" in tks.columns:
+        _upx = tks["producto_principal"].astype(str).str.strip().str.upper()
+        _keep = _upx.isin([base_cod]) | tks["sector"].astype(str).str.strip().isin(
+            list(SECTORES_PRIORIDAD))
+        _tks2 = tks[_keep]
+        if len(_tks2) < len(tks) and not _tks2.empty:
+            _r2, _m2 = _sugerir(_tks2, prod_cod, litros_obj, spec, prods, l_base,
+                                maximizar, min_l, tol, lb_min, _dos_fases=False)
+            if not _r2.empty:
+                try:
+                    _st2 = _stats_sug(_r2, tks, spec, fam, tol)
+                    if _st2["ok"] and _st2["total"] >= float(litros_obj) - 1.0:
+                        return _r2, _m2
+                except Exception:
+                    pass
+            # sin los sectores extra no cierra: se sigue con el parque completo
     up = tks["producto_principal"].astype(str).str.strip().str.upper()
     dis = tks["litros_actual"].fillna(0)
 
