@@ -765,6 +765,112 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
             .drop_duplicates(subset=[_k]).reset_index(drop=True))
 
 
+# ------------------------------------------------------------------ verificacion de planta
+
+_VERIF_MAPA = {"USADO": "✅ Sí, se usó", "NO_USADO": "❌ No se usó", "PARCIAL": "🟡 Parcial"}
+_VERIF_INV = {v: k for k, v in _VERIF_MAPA.items()}
+
+
+def verificacion_planta(USR, cat, conectar):
+    """Vista para Producción en planta: dirección arma la formulación del despacho y acá
+    los operarios confirman, tanque por tanque, si la carga salió DE VERDAD de esos
+    tanques. Queda registrado con usuario y fecha, y dirección lo ve en Control y
+    confirmación. Un "no se usó" es una alerta directa de que la formulación en papel
+    y la operación real se separaron."""
+    st.markdown("#### 🚢 Verificación de despachos — ¿se usaron estos tanques?")
+    st.caption("Confirmá tanque por tanque si la carga salió de donde dice la formulación. "
+               "Todo queda con tu usuario y fecha, y lo ve dirección.")
+    df = cat("SELECT id_despacho, titulo, producto_codigo, fecha_despacho, estado, tn_total, "
+             "n_lineas FROM produccion.v_despacho_resumen "
+             "WHERE estado IN ('CONFIRMADO','DESPACHADO') "
+             "AND fecha_despacho >= current_date - 21 "
+             "ORDER BY fecha_despacho DESC, id_despacho DESC")
+    if df is None or df.empty:
+        st.info("No hay despachos confirmados en los últimos 21 días.")
+        return
+    _lbl = {int(r["id_despacho"]): "#%d · %s · %s · %s · %.1f TN"
+            % (int(r["id_despacho"]), r["titulo"], r["producto_codigo"],
+               r["fecha_despacho"], float(r["tn_total"] or 0)) for _, r in df.iterrows()}
+    sel = st.selectbox("Despacho", df["id_despacho"].tolist(),
+                       format_func=lambda i: _lbl.get(int(i), str(i)), key="vfp_desp")
+    if sel is None:
+        return
+    lin = cat("SELECT l.id_linea, COALESCE(t.nombre, 'línea ' || l.orden) AS tanque, "
+              "       l.producto_codigo, l.litros, l.verif_estado, l.verif_nota, "
+              "       l.verif_por, to_char(l.verif_en AT TIME ZONE "
+              "       'America/Argentina/Buenos_Aires', 'DD/MM HH24:MI') AS verif_cuando "
+              "FROM produccion.fact_despacho_linea l "
+              "LEFT JOIN produccion.dim_tanque t ON t.id_tanque = l.id_tanque "
+              "WHERE l.id_despacho = %s ORDER BY l.orden", (int(sel),))
+    if lin is None or lin.empty:
+        st.info("Este despacho no tiene líneas cargadas.")
+        return
+    lin = lin.copy()
+    lin["litros"] = pd.to_numeric(lin["litros"], errors="coerce")
+    _pend = int(lin["verif_estado"].isna().sum())
+    _no = int((lin["verif_estado"] == "NO_USADO").sum())
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Tanques en la formulación", int(len(lin)))
+    m2.metric("Pendientes de verificar", _pend)
+    m3.metric("Marcados NO usados", _no)
+
+    _base = pd.DataFrame({
+        "Tanque": lin["tanque"].astype(str),
+        "Producto": lin["producto_codigo"].astype(str),
+        "Litros": lin["litros"],
+        "¿Se usó?": [(_VERIF_MAPA.get(v) or "— pendiente") for v in lin["verif_estado"]],
+        "Nota": lin["verif_nota"].fillna(""),
+        "Verificó": [("%s · %s" % (p, c)) if (p is not None and pd.notna(p)) else ""
+                     for p, c in zip(lin["verif_por"], lin["verif_cuando"])],
+    })
+    ed = st.data_editor(
+        _base, hide_index=True, use_container_width=True, key="vfp_ed_%d" % int(sel),
+        disabled=["Tanque", "Producto", "Litros", "Verificó"],
+        column_config={
+            "Litros": st.column_config.NumberColumn(format="%.0f"),
+            "¿Se usó?": st.column_config.SelectboxColumn(
+                "¿Se usó?", options=["— pendiente", "✅ Sí, se usó", "❌ No se usó", "🟡 Parcial"], required=True,
+                help="Sí = la carga salió de este tanque como dice la formulación. "
+                     "Parcial = se usó pero con litros distintos (anotá en la Nota)."),
+            "Nota": st.column_config.TextColumn(
+                "Nota", help="Obligatoria si marcás No o Parcial: qué pasó de verdad."),
+        })
+    _falta_nota = [str(ed.iloc[i]["Tanque"]) for i in range(len(ed))
+                   if str(ed.iloc[i]["¿Se usó?"]) in ("❌ No se usó", "🟡 Parcial")
+                   and not str(ed.iloc[i]["Nota"] or "").strip()]
+    if _falta_nota:
+        st.warning("Falta la nota en: %s — con un No o Parcial hay que decir qué pasó."
+                   % ", ".join(_falta_nota))
+    if st.button("💾 Guardar verificación", type="primary", key="vfp_go",
+                 disabled=bool(_falta_nota)):
+        _uid = int(USR.get("id_usuario") or 0)
+        _nreg = 0
+        with conectar(_uid) as (conn, audit):
+            with conn.cursor() as cur:
+                for i in range(len(ed)):
+                    _est = _VERIF_INV.get(str(ed.iloc[i]["¿Se usó?"]))
+                    _nota = str(ed.iloc[i]["Nota"] or "").strip() or None
+                    _prev = lin.iloc[i]["verif_estado"]
+                    _prev = None if pd.isna(_prev) else _prev
+                    if _est == _prev and (_nota or None) == (
+                            None if pd.isna(lin.iloc[i]["verif_nota"]) else
+                            (str(lin.iloc[i]["verif_nota"]).strip() or None)):
+                        continue
+                    cur.execute(
+                        "UPDATE produccion.fact_despacho_linea "
+                        "SET verif_estado=%s, verif_nota=%s, verif_por=%s, "
+                        "    verif_en=CASE WHEN %s IS NULL THEN NULL ELSE now() END "
+                        "WHERE id_linea=%s",
+                        (_est, _nota, (USR.get("nombre") if _est else None), _est,
+                         int(lin.iloc[i]["id_linea"])))
+                    _nreg += 1
+            audit.log("U", "fact_despacho_linea", int(sel),
+                      {"verificacion_planta": _nreg, "despacho": int(sel)})
+        cat.clear()
+        st.success("Verificación guardada (%d línea(s) actualizadas)." % _nreg)
+        st.rerun()
+
+
 # ------------------------------------------------------------------ borrador anticaidas
 # La queja que motiva esto: "se está cargando un despacho y la página se rearma y
 # pierde todos los valores". Si la app se reinicia (deploy, corte, reinicio del
@@ -2230,6 +2336,29 @@ def _control(USR, cat, conectar):
         out = pd.DataFrame(cols)
         out["kg"] = lin["litros"].fillna(0) * dens.fillna(0.91)
         return out
+
+    _vf = cat("SELECT COALESCE(t.nombre, 'línea ' || l.orden) AS tanque, l.verif_estado, "
+              "       l.verif_por, l.verif_nota, to_char(l.verif_en AT TIME ZONE "
+              "       'America/Argentina/Buenos_Aires','DD/MM HH24:MI') AS cuando "
+              "FROM produccion.fact_despacho_linea l "
+              "LEFT JOIN produccion.dim_tanque t ON t.id_tanque = l.id_tanque "
+              "WHERE l.id_despacho=%s AND l.verif_estado IS NOT NULL ORDER BY l.orden",
+              (int(sel),))
+    if _vf is not None and not _vf.empty:
+        _vno = _vf[_vf["verif_estado"] != "USADO"]
+        if _vno.empty:
+            st.success("🏭 Planta verificó los tanques de este despacho: **todos usados como "
+                       "está formulado** (%d línea(s))." % len(_vf))
+        else:
+            st.error("🏭 **Planta marcó diferencias con la formulación:** "
+                     + " · ".join("%s: %s (%s)%s"
+                                  % (r["tanque"], _VERIF_MAPA.get(r["verif_estado"], "?"),
+                                     r["verif_por"] or "?",
+                                     (" — " + r["verif_nota"]) if r["verif_nota"] else "")
+                                  for _, r in _vno.iterrows()))
+    else:
+        st.caption("🏭 Planta todavía no verificó los tanques de este despacho "
+                   "(vista *Despachos* en Producción en planta).")
 
     st.markdown("**Cumplimiento con el laboratorio guardado en el despacho**")
     ok_g, _dv_g = _panel_specs(_mk(False), spec)
