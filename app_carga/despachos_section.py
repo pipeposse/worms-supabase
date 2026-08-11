@@ -28,6 +28,8 @@ SPEC_DEFAULT = {"acidez": 5.0, "ays": 2.0, "azufre": 50.0, "fosforo": 150.0}
 # (borra/sedimento decantado), que arruina la calidad de la mezcla.
 MIN_L_DESPACHO = 3500.0
 SECTORES_PRIORIDAD = ("Plataforma 1 (BPV)", "Plataforma 2 (BPN)", "Exportación")
+MIN_BASE_POR_CONT = 1000.0  # regla de dirección: mínimo de AG-E por contenedor.
+                            # Con N contenedores, la mezcla lleva al menos N × 1.000 L de base.
 MIN_TOMA_DESPACHO = 3000.0  # mínimo de litros que vale la pena sacar de un tanque en una
                             # carga: menos es desperdicio operativo (regla de dirección).
                             # Única excepción: la última toma que CIERRA el objetivo.
@@ -317,7 +319,7 @@ def _estructura(res, prod_cod, prods=None):
 # ------------------------------------------------------------------ sugerencia de mezcla
 
 def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar=False,
-             min_l=MIN_L_DESPACHO, tol=0.0):
+             min_l=MIN_L_DESPACHO, tol=0.0, lb_min=0.0):
     """Propone la carga respetando la formulación: primero el componente base, después los AFE.
 
     Dos palancas compiten por el MISMO margen de spec y no se pueden maximizar a la vez:
@@ -554,6 +556,23 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                 notas.append("los tanques de %s tienen %s L en total y se piden %s L"
                              % (base_cod, "{:,.0f}".format(hay), "{:,.0f}".format(lb)))
 
+    # Regla de dirección: piso de litros de base (1.000 L de AG-E por contenedor).
+    # Se aplica SIEMPRE — a la bisección, al valor manual y a las propuestas — y si la
+    # spec no cierra con ese piso, se avisa en vez de violar la regla.
+    if formulado and lb_min and float(lb_min) > 0:
+        _piso = min(float(lb_min), float(litros_obj), (hay if hay > 0 else float(lb_min)))
+        if hay > 0 and float(lb_min) > hay + 0.5:
+            notas.append("la regla pide %s L de %s (mínimo por contenedor) y el stock total "
+                         "de base es %s L: se usa todo lo que hay"
+                         % ("{:,.0f}".format(float(lb_min)), base_cod, "{:,.0f}".format(hay)))
+        if lb + 0.5 < _piso:
+            lb = float(int(_piso // 10) * 10)
+            notas.append("base subida a %s L para cumplir la regla de %s L de %s por contenedor"
+                         % ("{:,.0f}".format(lb), "{:,.0f}".format(MIN_BASE_POR_CONT), base_cod))
+            if not _cumple(_armar_mezcla(lb)[0], tol):
+                notas.append("⚠️ con ese piso de %s la spec NO cierra con estos diluyentes: "
+                             "revisá el panel de cumplimiento" % base_cod)
+
     if d.empty:
         lineas, acum = _armar_mezcla(lb)
     else:
@@ -630,7 +649,7 @@ def _stats_sug(sug, tks, spec, fam, tol):
             "total": float(m["Litros"].sum()), "ok": ok}
 
 
-def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol):
+def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol, lb_min=0.0):
     """Tres variantes del MISMO despacho, para elegir — no para acatar.
 
     A) máximo componente base con el margen elegido (el base es lo más barato);
@@ -642,7 +661,7 @@ def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol):
     fam = _familia(prod_cod, prods)
     out = []
     a_df, a_msg = _sugerir(tks, prod_cod, litros_obj, spec, prods, None,
-                           maximizar=True, tol=tol)
+                           maximizar=True, tol=tol, lb_min=lb_min)
     if not a_df.empty:
         sa = _stats_sug(a_df, tks, spec, fam, tol)
         out.append({"nombre": "A · Máximo %s" % fam[0],
@@ -651,16 +670,16 @@ def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol):
                             % (fam[0], tol * 100),
                     "df": a_df, "st": sa})
         if sa["lb"] >= 20:
-            lb_b = float(int((sa["lb"] / 2.0) // 10) * 10)
+            lb_b = max(float(int((sa["lb"] / 2.0) // 10) * 10), float(lb_min or 0.0))
             b_df, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods, lb_b,
-                                maximizar=False, tol=tol)
+                                maximizar=False, tol=tol, lb_min=lb_min)
             if not b_df.empty:
                 out.append({"nombre": "B · Mitad de %s + AFE-S feo" % fam[0],
                             "desc": "Resigna la mitad del base y usa ese margen para "
                                     "colocar el máximo de AFE-S de baja calidad.",
                             "df": b_df, "st": _stats_sug(b_df, tks, spec, fam, tol)})
     c_df, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods, None,
-                        maximizar=True, tol=0.0)
+                        maximizar=True, tol=0.0, lb_min=lb_min)
     if not c_df.empty:
         out.append({"nombre": "C · Spec estricta",
                     "desc": "Sin gastar tolerancia: la carga cumple la especificación "
@@ -670,7 +689,7 @@ def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol):
 
 
 def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
-              min_l=MIN_L_DESPACHO):
+              min_l=MIN_L_DESPACHO, lb_min=0.0):
     """Simula el canje entre litros de componente base y AFE-S feo colocado.
 
     Devuelve una fila por nivel de base: cuánto AFE fuera de spec entra, qué calidad media
@@ -702,7 +721,7 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
 
     def _fila(lb):
         sug, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods, lb,
-                           maximizar=False, min_l=min_l, tol=tol)
+                           maximizar=False, min_l=min_l, tol=tol, lb_min=lb_min)
         if sug.empty:
             return None
         m = sug[["Tanque", "Litros"]].merge(tks[_cols], left_on="Tanque", right_on="etq",
@@ -740,9 +759,12 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
         }
 
     _niv = []
+    _piso = float(int(min(float(lb_min or 0.0), tope) // 10) * 10)
+    if _piso > 0:
+        _niv.append(_piso)   # el primer nivel es el mínimo permitido por la regla
     for k in range(1, int(pasos) + 1):
         _v = float(int((tope * k / float(pasos)) // 10) * 10)
-        if _v > 0 and _v not in _niv:
+        if _v >= _piso and _v > 0 and _v not in _niv:
             _niv.append(_v)
     filas, _corte = [], None
     for lb in _niv:
@@ -1745,7 +1767,8 @@ def _armar(USR, cat, conectar):
                   help="Rearma la sugerencia ignorando los tanques excluidos, con los mismos "
                        "litros de base y margen elegidos arriba."):
         _sug2, _msg2 = _sugerir(tks_sug, prod_cod, lit_obj, spec, prods, (_lb or None),
-                                maximizar=(_formulado and not _lb), tol=_tol)
+                                maximizar=(_formulado and not _lb), tol=_tol,
+                                lb_min=MIN_BASE_POR_CONT * float(n_cont))
         if _sug2.empty:
             st.warning(_msg2)
         else:
@@ -1758,7 +1781,8 @@ def _armar(USR, cat, conectar):
            "Propone tanques del producto elegido, priorizando los de mayor margen contra la spec."
     if ca.button("🎯 Sugerir mezcla", use_container_width=True, help=_hlp):
         _sug, _msg = _sugerir(tks_sug, prod_cod, lit_obj, spec, prods, (_lb or None),
-                              maximizar=(_formulado and not _lb), tol=_tol)
+                              maximizar=(_formulado and not _lb), tol=_tol,
+                              lb_min=MIN_BASE_POR_CONT * float(n_cont))
         if _sug.empty:
             cc.warning(_msg)
         else:
@@ -1800,7 +1824,8 @@ def _armar(USR, cat, conectar):
                 % (_fam[0], _fam[0], _tolp))
             if st.button("Simular", key="dsp_btn_to", use_container_width=False):
                 with st.spinner("Simulando…"):
-                    ss["dsp_tradeoff"] = _tradeoff(tks_sug, prod_cod, lit_obj, spec, prods, _tol)
+                    ss["dsp_tradeoff"] = _tradeoff(tks_sug, prod_cod, lit_obj, spec, prods, _tol,
+                                                   lb_min=MIN_BASE_POR_CONT * float(n_cont))
                     ss["dsp_tradeoff_tol"] = _tolp
             _to = ss.get("dsp_tradeoff")
             if isinstance(_to, pd.DataFrame) and not _to.empty:
@@ -1822,7 +1847,8 @@ def _armar(USR, cat, conectar):
                        % _fam[0])
             if st.button("Generar propuestas", key="dsp_btn_props"):
                 with st.spinner("Armando variantes…"):
-                    ss["dsp_props"] = _propuestas(tks_sug, prod_cod, lit_obj, spec, prods, _tol)
+                    ss["dsp_props"] = _propuestas(tks_sug, prod_cod, lit_obj, spec, prods, _tol,
+                                                  lb_min=MIN_BASE_POR_CONT * float(n_cont))
             _pr = ss.get("dsp_props")
             if _pr:
                 def _fmtv(v, dec=1):
@@ -1959,6 +1985,16 @@ def _armar(USR, cat, conectar):
             st.toast("🚨 Despacho con desvío de especificación", icon="🚨")
         except Exception:
             pass
+    if _formulado:
+        _lb_regla = MIN_BASE_POR_CONT * float(n_cont)
+        _lb_real = float(res[res["Rol"] == "BASE"]["Litros"].fillna(0).sum())
+        if _lb_real + 0.5 < _lb_regla:
+            st.error("📏 **Regla de formulación:** mínimo %s L de %s por contenedor → "
+                     "%s L para %d contenedores. La mezcla tiene **%s L** de %s: faltan %s L."
+                     % ("{:,.0f}".format(MIN_BASE_POR_CONT), _fam[0],
+                        "{:,.0f}".format(_lb_regla), int(n_cont),
+                        "{:,.0f}".format(_lb_real), _fam[0],
+                        "{:,.0f}".format(_lb_regla - _lb_real)))
     ok = ok_spec and ok_est
 
     # ---------- 4 · Avisos ----------
