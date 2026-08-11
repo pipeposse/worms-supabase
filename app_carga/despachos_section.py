@@ -2237,7 +2237,7 @@ def _mov_salida_crear(cur, cab, id_transaccion, ticket, kg, fecha, uid):
         "(momento, tipo_movimiento, rol, sentido, id_producto, producto, fuente, "
         " ticket_porteria, cantidad, unidad, kg, litros, id_usuario, origen, observaciones, "
         " estado_mov, id_usuario_ejecuta, ejecutado_en) "
-        "VALUES (%s,'SALIDA','PF',-1,%s,%s,'PORTERIA',%s,%s,'KG',%s,%s,%s,'despacho_salida',"
+        "VALUES (%s,'SALIDA','PRODUCTO_FINAL',-1,%s,%s,'PORTERIA',%s,%s,'KG',%s,%s,%s,'despacho_salida',"
         "%s,'EJECUTADO',%s,now()) RETURNING id_mov_stock",
         (fecha, idp, str(cab.get("producto_codigo") or ""), str(ticket or ""), kg, kg, lts,
          uid, "Salida despacho #%s ticket %s" % (int(cab["id_despacho"]), ticket), uid))
@@ -2251,25 +2251,31 @@ def _mov_salida_crear(cur, cab, id_transaccion, ticket, kg, fecha, uid):
     if _tot > 0:
         for _idt, _lt in _ln:
             _sh = float(_lt) / _tot
+            # sin id_mov_stock: la tabla exige 1:1 con el movimiento y acá el prorrateo
+            # es N tanques por camión. El vínculo para deshacer es el texto (despacho+ticket).
             cur.execute(
                 "INSERT INTO produccion.fact_movimiento_tanque "
-                "(id_tanque, id_producto, tipo, litros, kg, ts, id_usuario, origen, "
-                " observaciones, id_mov_stock) "
-                "VALUES (%s,%s,'OUT',%s,%s,%s,%s,'DESPACHO_SALIDA',%s,%s)",
+                "(id_tanque, id_producto, tipo, litros, kg, ts, id_usuario, origen, observaciones) "
+                "VALUES (%s,%s,'OUT',%s,%s,%s,%s,'DESPACHO_SALIDA',%s)",
                 (int(_idt), idp, round(lts * _sh, 1), round(kg * _sh, 1), fecha, uid,
                  "Salida despacho #%s ticket %s (prorrateo %.0f%%)"
-                 % (int(cab["id_despacho"]), ticket, 100 * _sh), id_mov))
+                 % (int(cab["id_despacho"]), ticket, 100 * _sh)))
     return id_mov
 
 
-def _mov_salida_anular(cur, ids_mov):
-    ids = [int(i) for i in ids_mov if i is not None]
-    if not ids:
-        return
-    cur.execute("UPDATE produccion.fact_movimiento_stock SET anulado=true, "
-                "observaciones=COALESCE(observaciones,'') || ' | ticket desasignado del despacho' "
-                "WHERE id_mov_stock = ANY(%s)", (ids,))
-    cur.execute("DELETE FROM produccion.fact_movimiento_tanque WHERE id_mov_stock = ANY(%s)", (ids,))
+def _mov_salida_anular(cur, filas):
+    """filas: [(id_mov_stock, id_despacho, ticket)] — anula el movimiento y sus espejos."""
+    ids = [int(f[0]) for f in filas if f[0] is not None and not pd.isna(f[0])]
+    if ids:
+        cur.execute("UPDATE produccion.fact_movimiento_stock SET anulado=true, "
+                    "observaciones=COALESCE(observaciones,'') || ' | ticket desasignado del despacho' "
+                    "WHERE id_mov_stock = ANY(%s)", (ids,))
+    for _im, _d, _t in filas:
+        if _im is None or pd.isna(_im):
+            continue
+        cur.execute("DELETE FROM produccion.fact_movimiento_tanque "
+                    "WHERE origen='DESPACHO_SALIDA' AND observaciones LIKE %s",
+                    ("Salida despacho #%s ticket %s %%" % (int(_d), _t),))
 
 
 _ROLES_TK = {
@@ -2357,9 +2363,10 @@ def _tk_panel(USR, cat, conectar, cab, rol):
             try:
                 with conectar(USR["id_usuario"]) as (conn, _x):
                     with conn.cursor() as cur:
-                        cur.execute("SELECT id_mov_stock FROM produccion.fact_despacho_ticket "
+                        cur.execute("SELECT id_mov_stock, id_despacho, ticket "
+                                    "FROM produccion.fact_despacho_ticket "
                                     "WHERE id_dt = ANY(%s)", ([int(i) for i in _q],))
-                        _mov_salida_anular(cur, [r[0] for r in cur.fetchall()])
+                        _mov_salida_anular(cur, cur.fetchall())
                         cur.execute("DELETE FROM produccion.fact_despacho_ticket WHERE id_dt = ANY(%s)",
                                     ([int(i) for i in _q],))
                         if rol == "SALIDA":
