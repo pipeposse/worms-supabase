@@ -928,7 +928,7 @@ def render(USR, cat, conectar):
 
     ss = st.session_state
     _opts = ["🧪 Armar / editar despacho", "🔬 Control y confirmación", "🎟️ Tickets de portería",
-             "📋 Despachos cargados"]
+             "📋 Despachos cargados", "📊 Análisis"]
     # "Modificar en el armador" pide cambiar de vista: va vía dsp_tab_next porque el estado de
     # un widget ya instanciado no se puede pisar dentro del mismo run.
     _nx = ss.pop("dsp_tab_next", None)
@@ -945,12 +945,180 @@ def render(USR, cat, conectar):
 
     if _t.startswith("📋"):
         _listado(USR, cat, conectar)
+    elif _t.startswith("📊"):
+        _analisis(USR, cat)
     elif _t.startswith("🎟️"):
         _tickets(USR, cat, conectar)
     elif _t.startswith("🔬"):
         _control(USR, cat, conectar)
     else:
         _armar(USR, cat, conectar)
+
+
+def _analisis(USR, cat):
+    """Análisis semanal de despachos: cuánto salió, con qué calidades y en cuántos camiones.
+
+    Dos fuentes que se leen juntas: lo FORMULADO (v_despacho_resumen: litros, TN y parámetros
+    ponderados por kg de cada despacho) y lo realmente PESADO (fact_despacho_ticket rol SALIDA:
+    los camiones que pasaron por balanza). La diferencia entre ambas también es un dato: si lo
+    pesado se aleja de lo formulado, hay tickets sin asignar o densidad mal cargada.
+    """
+    st.markdown("#### 📊 Análisis de despachos por semana")
+    f1, f2, f3 = st.columns([1, 1.4, 1.6])
+    _sem = int(f1.number_input("Semanas hacia atrás", min_value=4, max_value=52, value=12,
+                               step=1, key="dsa_sem"))
+    _est = f2.multiselect("Estados", ["CONFIRMADO", "DESPACHADO", "BORRADOR"],
+                          default=["CONFIRMADO", "DESPACHADO"], key="dsa_est",
+                          help="BORRADOR queda afuera por defecto: todavía no salió nada.")
+    if not _est:
+        st.info("Elegí al menos un estado.")
+        return
+    try:
+        d = cat(
+            "SELECT id_despacho, titulo, cliente, destino, producto_codigo, estado, "
+            "       fecha_despacho, anio, semana_iso, n_contenedores, litros_total, kg_total, "
+            "       tn_total, acidez_pond, ays_pond, azufre_pond, fosforo_pond "
+            "FROM produccion.v_despacho_resumen "
+            "WHERE estado = ANY(%s) AND fecha_despacho >= current_date - %s "
+            "ORDER BY fecha_despacho", (list(_est), int(_sem * 7)))
+        cam = cat(
+            "SELECT t.id_despacho, count(*) AS camiones, "
+            "       count(*) FILTER (WHERE COALESCE(t.sin_pesada,false)) AS sin_pesada, "
+            "       COALESCE(SUM(ABS(t.kg)) FILTER (WHERE NOT COALESCE(t.sin_pesada,false)),0) AS kg_pesados "
+            "FROM produccion.fact_despacho_ticket t WHERE t.rol='SALIDA' GROUP BY 1")
+    except Exception as e:
+        st.error("No se pudieron leer los despachos: %s" % e)
+        return
+    if d is None or d.empty:
+        st.info("No hay despachos en el rango elegido.")
+        return
+    d = d.copy()
+    for c in ("litros_total", "kg_total", "tn_total", "n_contenedores",
+              "acidez_pond", "ays_pond", "azufre_pond", "fosforo_pond"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    _prods = sorted(d["producto_codigo"].dropna().astype(str).unique().tolist())
+    _selp = f3.multiselect("Productos", _prods, default=_prods, key="dsa_prod")
+    if _selp:
+        d = d[d["producto_codigo"].astype(str).isin(_selp)]
+    if d.empty:
+        st.info("Sin despachos con esos filtros.")
+        return
+    if cam is None:
+        cam = pd.DataFrame(columns=["id_despacho", "camiones", "sin_pesada", "kg_pesados"])
+    d = d.merge(cam, on="id_despacho", how="left")
+    for c in ("camiones", "sin_pesada", "kg_pesados"):
+        d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0)
+    d["Semana"] = d["anio"].astype(int).astype(str) + "-S" + \
+        d["semana_iso"].astype(int).astype(str).str.zfill(2)
+
+    # ---- KPIs del período
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Despachos", int(len(d)))
+    k2.metric("TN formuladas", "{:,.1f}".format(float(d["tn_total"].sum())))
+    k3.metric("Contenedores", int(d["n_contenedores"].fillna(0).sum()))
+    k4.metric("Camiones pesados", int(d["camiones"].sum()))
+    k5.metric("TN pesadas (balanza)", "{:,.1f}".format(float(d["kg_pesados"].sum()) / 1000.0))
+    _kgf = float(d["kg_total"].sum())
+    _kgp = float(d["kg_pesados"].sum())
+    if _kgf > 0 and _kgp > 0:
+        _dif = 100.0 * (_kgp - _kgf) / _kgf
+        if abs(_dif) > 3:
+            st.warning("⚖️ Lo pesado en balanza difiere **%+.1f%%** de lo formulado en el período: "
+                       "puede haber tickets de salida sin asignar a su despacho, o densidades "
+                       "desactualizadas en la formulación." % _dif)
+
+    # ---- resumen semanal (parámetros ponderados por kg formulado)
+    def _agg(g):
+        kg = g["kg_total"].fillna(0)
+        out = {"Despachos": int(len(g)),
+               "Contenedores": int(g["n_contenedores"].fillna(0).sum()),
+               "TN formuladas": round(float(g["tn_total"].sum()), 1),
+               "Camiones": int(g["camiones"].sum()),
+               "TN pesadas": round(float(g["kg_pesados"].sum()) / 1000.0, 1)}
+        for col, lbl in (("acidez_pond", "Acidez %"), ("ays_pond", "AyS %"),
+                         ("azufre_pond", "Azufre ppm"), ("fosforo_pond", "Fósforo ppm")):
+            v = g[pd.notna(g[col])]
+            _k = float(v["kg_total"].fillna(0).sum())
+            out[lbl] = round(float((v[col] * v["kg_total"].fillna(0)).sum()) / _k, 2) if _k > 0 else None
+        return pd.Series(out)
+
+    sem = d.groupby("Semana", sort=True).apply(_agg).reset_index()
+    st.markdown("**Resumen semanal** — parámetros ponderados por kg de lo formulado")
+    st.dataframe(sem, hide_index=True, use_container_width=True,
+                 column_config={"TN formuladas": st.column_config.NumberColumn(format="%.1f"),
+                                "TN pesadas": st.column_config.NumberColumn(format="%.1f")})
+
+    # ---- gráfico: TN por semana apiladas por producto
+    try:
+        import altair as alt
+        _g = (d.groupby(["Semana", "producto_codigo"], sort=True)["tn_total"]
+                .sum().reset_index().rename(columns={"producto_codigo": "Producto",
+                                                     "tn_total": "TN"}))
+        st.altair_chart(
+            alt.Chart(_g).mark_bar().encode(
+                x=alt.X("Semana:N", sort=None, title=None),
+                y=alt.Y("TN:Q", title="TN despachadas"),
+                color=alt.Color("Producto:N", legend=alt.Legend(orient="bottom", title=None)),
+                tooltip=["Semana", "Producto", alt.Tooltip("TN:Q", format=",.1f")]),
+            use_container_width=True)
+    except Exception:
+        st.bar_chart(d.groupby("Semana")["tn_total"].sum())
+
+    # ---- calidades: evolución semanal de los parámetros ponderados
+    with st.expander("📈 Evolución de calidades (ponderadas por kg)", expanded=False):
+        try:
+            import altair as alt
+            _q = sem.melt(id_vars=["Semana"],
+                          value_vars=["Acidez %", "AyS %", "Azufre ppm", "Fósforo ppm"],
+                          var_name="Parámetro", value_name="Valor").dropna()
+            st.altair_chart(
+                alt.Chart(_q).mark_line(point=True).encode(
+                    x=alt.X("Semana:N", sort=None, title=None),
+                    y=alt.Y("Valor:Q", title=None),
+                    color=alt.Color("Parámetro:N", legend=alt.Legend(orient="bottom", title=None)),
+                    tooltip=["Semana", "Parámetro", "Valor"]).properties(height=260)
+                .facet(facet=alt.Facet("Parámetro:N", title=None), columns=2)
+                .resolve_scale(y="independent"),
+                use_container_width=True)
+        except Exception:
+            st.dataframe(sem[["Semana", "Acidez %", "AyS %", "Azufre ppm", "Fósforo ppm"]],
+                         hide_index=True, use_container_width=True)
+
+    # ---- por producto y por cliente
+    c1, c2 = st.columns(2)
+    _pp = (d.groupby("producto_codigo")
+             .agg(Despachos=("id_despacho", "count"), TN=("tn_total", "sum"),
+                  Contenedores=("n_contenedores", "sum"), Camiones=("camiones", "sum"))
+             .reset_index().rename(columns={"producto_codigo": "Producto"})
+             .sort_values("TN", ascending=False))
+    _pp["TN"] = _pp["TN"].round(1)
+    c1.markdown("**Por producto**")
+    c1.dataframe(_pp, hide_index=True, use_container_width=True)
+    _pc = (d.assign(_cli=d["cliente"].fillna("(sin cliente)"))
+             .groupby("_cli")
+             .agg(Despachos=("id_despacho", "count"), TN=("tn_total", "sum"))
+             .reset_index().rename(columns={"_cli": "Cliente"})
+             .sort_values("TN", ascending=False))
+    _pc["TN"] = _pc["TN"].round(1)
+    c2.markdown("**Por cliente**")
+    c2.dataframe(_pc, hide_index=True, use_container_width=True)
+
+    # ---- detalle
+    with st.expander("📋 Detalle de despachos del período", expanded=False):
+        _v = d.rename(columns={"titulo": "Título", "cliente": "Cliente", "destino": "Destino",
+                               "producto_codigo": "Producto", "estado": "Estado",
+                               "fecha_despacho": "Fecha", "n_contenedores": "Cont.",
+                               "tn_total": "TN", "camiones": "Camiones",
+                               "acidez_pond": "Acidez %", "ays_pond": "AyS %",
+                               "azufre_pond": "Azufre ppm", "fosforo_pond": "Fósforo ppm"})
+        _cols = ["Semana", "Fecha", "Título", "Producto", "Cliente", "Destino", "Estado",
+                 "Cont.", "TN", "Camiones", "Acidez %", "AyS %", "Azufre ppm", "Fósforo ppm"]
+        st.dataframe(_v[_cols].sort_values("Fecha", ascending=False), hide_index=True,
+                     use_container_width=True,
+                     column_config={"TN": st.column_config.NumberColumn(format="%.1f"),
+                                    "Fecha": st.column_config.DateColumn(format="DD/MM/YY")})
+        st.download_button("⬇️ CSV", _v[_cols].to_csv(index=False).encode("utf-8"),
+                           file_name="analisis_despachos.csv", mime="text/csv", key="dsa_dl")
 
 
 def _armar(USR, cat, conectar):
