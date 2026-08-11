@@ -40,6 +40,9 @@ ESTADOS = ["BORRADOR", "CONFIRMADO", "DESPACHADO", "ANULADO"]
 # FORMULADOS: producto despachado -> prefijos de los productos que lo diluyen. Se usan prefijos
 # y no una lista fija para que un AFE nuevo (AFE-M, AFE-P…) aparezca solo, sin tocar el código.
 FORMULADOS = {"AG-E": ("AFE",)}
+# Productos que NUNCA entran en un despacho, ni como diluyente ni en el selector:
+# el AFE-SG (con goma) arruina la carga de exportación. Regla de dirección.
+EXCLUIDOS_DESPACHO = ("AFE-SG",)
 # Orden de preferencia al listar y al sugerir diluyentes; el resto va después, alfabético.
 PREFERIDOS = ("AFE-S",)
 
@@ -70,7 +73,7 @@ def _familia(prod_cod, prods=None):
     extra = []
     if prods is not None and not getattr(prods, "empty", True):
         for c in prods["codigo_producto"].astype(str).str.strip().str.upper().tolist():
-            if c != cod and any(c.startswith(x) for x in pref):
+            if c != cod and c not in EXCLUIDOS_DESPACHO and any(c.startswith(x) for x in pref):
                 extra.append(c)
     if not extra:
         extra = list(PREFERIDOS)
