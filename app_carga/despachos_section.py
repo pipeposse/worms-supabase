@@ -241,7 +241,10 @@ def _panel_specs(res: pd.DataFrame, spec: dict):
             desvios.append({"param": titulo, "valor": float(val), "limite": lim,
                             "exceso": _exc})
         else:
+            _exc = 100.0 * (val - lim) / lim
             clr, nota = "#dc2626", f"EXCEDE por {fmt.format(val - lim)} (más del {TOL_DESVIO*100:.0f}%)"
+            desvios.append({"param": titulo, "valor": float(val), "limite": lim,
+                            "exceso": _exc, "grave": True})
             ok_total = False
         _av = "" if cob >= 99.5 else f" · sólo {cob:.0f}% de la masa medida"
         c.markdown(f"<div style='font-size:.78rem;color:#666'>{titulo} · máx {fmt.format(lim)}</div>"
@@ -555,6 +558,82 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     return pd.DataFrame(out), msg
 
 
+def _stats_sug(sug, tks, spec, fam, tol):
+    """Números comparables de una sugerencia: base, AFE feo, calidad usada y promedios."""
+    _cols = ["etq", "producto_principal", "densidad", "acidez", "agua_sedimento",
+             "azufre", "fosforo"]
+    m = sug[["Tanque", "Litros"]].merge(tks[_cols], left_on="Tanque", right_on="etq",
+                                        how="left")
+    m["_kg"] = m["Litros"] * m["densidad"].fillna(0.91)
+    prom, ok = {}, True
+    for c, lim in (("acidez", spec["acidez"]), ("agua_sedimento", spec["ays"]),
+                   ("azufre", spec["azufre"]), ("fosforo", spec["fosforo"])):
+        _v = m[pd.notna(m[c])]
+        _kg = float(_v["_kg"].sum())
+        prom[c] = (float((_v[c] * _v["_kg"]).sum()) / _kg) if _kg > 0 else None
+        if lim and prom[c] is not None and prom[c] > float(lim) * (1.0 + tol) + 1e-9:
+            ok = False
+
+    def _sc(r):
+        rr = []
+        for c, lim in (("acidez", spec["acidez"]), ("agua_sedimento", spec["ays"]),
+                       ("azufre", spec["azufre"]), ("fosforo", spec["fosforo"])):
+            if lim and pd.notna(r[c]):
+                rr.append(float(r[c]) / float(lim))
+        return max(rr) if rr else 0.90
+
+    _up = m["producto_principal"].astype(str).str.strip().str.upper()
+    lb = float(m[_up == str(fam[0]).upper()]["Litros"].sum())
+    _d = m[_up != str(fam[0]).upper()].copy()
+    feo = cal = 0.0
+    _ld = float(_d["Litros"].sum())
+    if _ld > 0:
+        _d["_s"] = _d.apply(_sc, axis=1)
+        feo = float(_d[_d["_s"] > 1.0]["Litros"].sum())
+        cal = float((_d["_s"] * _d["Litros"]).sum() / _ld)
+    return {"lb": lb, "feo": feo, "cal": cal, "prom": prom, "tanques": int(len(m)),
+            "total": float(m["Litros"].sum()), "ok": ok}
+
+
+def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol):
+    """Tres variantes del MISMO despacho, para elegir — no para acatar.
+
+    A) máximo componente base con el margen elegido (el base es lo más barato);
+    B) mitad de ese base: el margen liberado se gasta en colocar AFE-S feo;
+    C) spec estricta, sin tolerancia (la carga más prolija posible).
+    Las tres compiten por el mismo margen de spec: son los tres vértices reales
+    de la decisión, con números comparables.
+    """
+    fam = _familia(prod_cod, prods)
+    out = []
+    a_df, a_msg = _sugerir(tks, prod_cod, litros_obj, spec, prods, None,
+                           maximizar=True, tol=tol)
+    if not a_df.empty:
+        sa = _stats_sug(a_df, tks, spec, fam, tol)
+        out.append({"nombre": "A · Máximo %s" % fam[0],
+                    "desc": "La mayor cantidad de %s que la spec tolera con %.0f%% de margen. "
+                            "El margen se gasta en el base, no en AFE feo."
+                            % (fam[0], tol * 100),
+                    "df": a_df, "st": sa})
+        if sa["lb"] >= 20:
+            lb_b = float(int((sa["lb"] / 2.0) // 10) * 10)
+            b_df, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods, lb_b,
+                                maximizar=False, tol=tol)
+            if not b_df.empty:
+                out.append({"nombre": "B · Mitad de %s + AFE-S feo" % fam[0],
+                            "desc": "Resigna la mitad del base y usa ese margen para "
+                                    "colocar el máximo de AFE-S de baja calidad.",
+                            "df": b_df, "st": _stats_sug(b_df, tks, spec, fam, tol)})
+    c_df, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods, None,
+                        maximizar=True, tol=0.0)
+    if not c_df.empty:
+        out.append({"nombre": "C · Spec estricta",
+                    "desc": "Sin gastar tolerancia: la carga cumple la especificación "
+                            "al pie de la letra.",
+                    "df": c_df, "st": _stats_sug(c_df, tks, spec, fam, 0.0)})
+    return out
+
+
 def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
               min_l=MIN_L_DESPACHO):
     """Simula el canje entre litros de componente base y AFE-S feo colocado.
@@ -654,6 +733,86 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
             .drop_duplicates(subset=[_k]).reset_index(drop=True))
 
 
+# ------------------------------------------------------------------ borrador anticaidas
+# La queja que motiva esto: "se está cargando un despacho y la página se rearma y
+# pierde todos los valores". Si la app se reinicia (deploy, corte, reinicio del
+# contenedor) la sesión de Streamlit nace vacía y lo tipeado muere. El borrador se
+# guarda en la base en cada rerun (sólo si cambió algo) y se restaura solo al volver.
+
+def _borr_guardar(conectar, USR):
+    ss = st.session_state
+    try:
+        campos = {}
+        for k, v in ss.items():
+            if not str(k).startswith("dsp_") or str(k) in ("dsp_props", "dsp_tradeoff"):
+                continue
+            if isinstance(v, (bool, int, float, str)):
+                campos[k] = v
+            elif isinstance(v, _dt.date):
+                campos[k] = {"__date__": v.isoformat()}
+        lineas = None
+        _df = ss.get("dsp_lineas")
+        if isinstance(_df, pd.DataFrame) and not _df.empty:
+            lineas = json.loads(_df.to_json(orient="records"))
+        payload = json.dumps({"campos": campos, "lineas": lineas}, default=str, sort_keys=True)
+        if ss.get("_dsp_borr_last") == payload:
+            return
+        ss["_dsp_borr_last"] = payload
+        with conectar(int(USR["id_usuario"])) as (conn, _a):
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO produccion.despacho_borrador (id_usuario, payload, actualizado) "
+                    "VALUES (%s,%s::jsonb,now()) "
+                    "ON CONFLICT (id_usuario) DO UPDATE SET payload=EXCLUDED.payload, actualizado=now()",
+                    (int(USR["id_usuario"]), payload))
+    except Exception:
+        pass
+
+
+def _borr_restaurar(cat, USR):
+    """Una vez por sesión: si hay borrador fresco (<36 h) y la sesión está virgen, se repone."""
+    ss = st.session_state
+    if ss.get("_dsp_borr_rest"):
+        return
+    ss["_dsp_borr_rest"] = True
+    try:
+        df = cat("SELECT payload, to_char(actualizado AT TIME ZONE 'America/Argentina/Buenos_Aires',"
+                 "'DD/MM HH24:MI') AS ts FROM produccion.despacho_borrador "
+                 "WHERE id_usuario=%s AND actualizado > now() - interval '36 hours'",
+                 (int(USR["id_usuario"]),))
+        if df is None or df.empty:
+            return
+        pl = df.iloc[0]["payload"]
+        if isinstance(pl, str):
+            pl = json.loads(pl)
+        campos = pl.get("campos") or {}
+        if any(k in ss for k in campos):
+            return                     # la sesión ya tiene datos vivos: no pisarlos
+        for k, v in campos.items():
+            if isinstance(v, dict) and "__date__" in v:
+                try:
+                    v = _dt.date.fromisoformat(v["__date__"])
+                except Exception:
+                    continue
+            ss[k] = v
+        if pl.get("lineas"):
+            ss["dsp_lineas"] = pd.DataFrame(pl["lineas"]).reindex(columns=_COLS_ED)
+        ss["_dsp_borr_ts"] = str(df.iloc[0]["ts"])
+    except Exception:
+        pass
+
+
+def _borr_limpiar(conectar, USR):
+    try:
+        with conectar(int(USR["id_usuario"])) as (conn, _a):
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM produccion.despacho_borrador WHERE id_usuario=%s",
+                            (int(USR["id_usuario"]),))
+        st.session_state.pop("_dsp_borr_last", None)
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------ persistencia
 
 def _guardar(conectar, USR, cab, res, id_despacho=None, desvios=None):
@@ -709,10 +868,10 @@ def _guardar(conectar, USR, cab, res, id_despacho=None, desvios=None):
                         "AND origen='ARMADO'", (_id,))
             for d in (desvios or []):
                 cur.execute("INSERT INTO produccion.fact_despacho_desvio "
-                            "(id_despacho, parametro, valor, limite, exceso_pct, origen, usuario) "
-                            "VALUES (%s,%s,%s,%s,%s,'ARMADO',%s)",
+                            "(id_despacho, parametro, valor, limite, exceso_pct, origen, usuario, motivo) "
+                            "VALUES (%s,%s,%s,%s,%s,'ARMADO',%s,%s)",
                             (_id, d["param"], d["valor"], d["limite"], round(d["exceso"], 2),
-                             USR.get("nombre")))
+                             USR.get("nombre"), d.get("motivo")))
     return _id
 
 
@@ -796,6 +955,17 @@ def render(USR, cat, conectar):
 
 def _armar(USR, cat, conectar):
     ss = st.session_state
+    _borr_restaurar(cat, USR)
+    if ss.get("_dsp_borr_ts"):
+        _bi, _bx = st.columns([4, 1])
+        _bi.info("🧷 Se **restauró tu borrador** de las %s: la app se había reiniciado pero no se "
+                 "perdió nada. Seguí desde donde estabas." % ss["_dsp_borr_ts"])
+        if _bx.button("🗑️ Descartar borrador", key="dsp_borr_del", use_container_width=True):
+            _borr_limpiar(conectar, USR)
+            for _k in [k for k in list(ss.keys()) if str(k).startswith("dsp_")]:
+                ss.pop(_k, None)
+            ss.pop("_dsp_borr_ts", None)
+            st.rerun()
     tks = _tanques(cat)
     if tks.empty:
         st.error("No se pudieron leer los tanques.")
@@ -1135,6 +1305,52 @@ def _armar(USR, cat, conectar):
                            "cerrar la spec ni gastando el margen. Elegí una fila, cargá esos "
                            "litros en *Litros de %s* y volvé a *Sugerir mezcla*."
                            % (_fam[0], _fam[0]))
+    if _formulado:
+        with st.expander("🎛️ Propuestas para elegir (3 variantes de la misma carga)",
+                         expanded=False):
+            st.caption("Tres formas de armar el mismo despacho con números comparables: "
+                       "A maximiza el %s, B resigna base para colocar el máximo de AFE-S "
+                       "feo, C cumple la spec sin tolerancia. Elegís una y se carga en la "
+                       "formulación — la decisión es de quien despacha, no del algoritmo."
+                       % _fam[0])
+            if st.button("Generar propuestas", key="dsp_btn_props"):
+                with st.spinner("Armando variantes…"):
+                    ss["dsp_props"] = _propuestas(tks, prod_cod, lit_obj, spec, prods, _tol)
+            _pr = ss.get("dsp_props")
+            if _pr:
+                def _fmtv(v, dec=1):
+                    return ("{:,.%df}" % dec).format(v) if v is not None else "—"
+                _pc = st.columns(len(_pr))
+                for _i, (_col, _p) in enumerate(zip(_pc, _pr)):
+                    with _col:
+                        with st.container(border=True):
+                            _s = _p["st"]
+                            st.markdown("**%s**" % _p["nombre"])
+                            st.caption(_p["desc"])
+                            _ma, _mb = st.columns(2)
+                            _ma.metric(_fam[0], "%s L" % "{:,.0f}".format(_s["lb"]))
+                            _mb.metric("AFE feo", "%s L" % "{:,.0f}".format(_s["feo"]))
+                            st.caption("Calidad AFE usada **%.2f** (1,00 = límite; más alto "
+                                       "= más stock feo colocado) · %d tanque(s)"
+                                       % (_s["cal"], _s["tanques"]))
+                            _pp = _s["prom"]
+                            st.caption("Final: ac %s%% · AyS %s%% · S %s · P %s ppm"
+                                       % (_fmtv(_pp.get("acidez"), 2),
+                                          _fmtv(_pp.get("agua_sedimento"), 2),
+                                          _fmtv(_pp.get("azufre"), 1),
+                                          _fmtv(_pp.get("fosforo"), 1)))
+                            _cierra = _s["ok"] and _s["total"] >= lit_obj - 1.0
+                            st.caption("✅ Cierra la spec" if _cierra else
+                                       "⚠️ NO cierra (%s L)" % "{:,.0f}".format(_s["total"]))
+                            if st.button("✅ Usar esta", key="dsp_usep_%d" % _i,
+                                         use_container_width=True):
+                                ss["dsp_lineas"] = _p["df"]
+                                ss["dsp_props"] = None
+                                st.rerun()
+                st.caption("Ojo: la C se calcula con 0%% de margen aunque arriba tengas otro "
+                           "valor — si la elegís, el panel de Cumplimiento no debería marcar "
+                           "ningún desvío.")
+
     _cols = _COLS_ED if pisar else _COLS_MIN
 
     base = ss.get("dsp_lineas")
@@ -1276,13 +1492,15 @@ def _armar(USR, cat, conectar):
         st.error("La carga **no respeta la formulación** de un despacho de %s: siempre es un "
                  "componente de %s más los AFE que lo diluyen." % (prod_lbl, _fam[0]))
     if not ok_spec:
-        st.error("La mezcla se pasa de la especificación en **más del %.0f%%** de tolerancia: no se "
-                 "puede confirmar. Reemplazá los tanques de peor calidad o bajá su participación."
-                 % (TOL_DESVIO * 100))
+        st.error("La mezcla se pasa de la especificación en **más del %.0f%%** de tolerancia. "
+                 "Se puede guardar y confirmar igual, pero pide un **motivo obligatorio** y el "
+                 "desvío queda registrado con usuario, fecha y motivo, visible para dirección "
+                 "en 🔬 Control y confirmación." % (TOL_DESVIO * 100))
 
     # ---------- 5 · Guardar ----------
     st.markdown("#### 5 · Guardar")
     g1, g2, g3 = st.columns([1.2, 1, 1.6])
+    _borr_guardar(conectar, USR)   # autosave anticaídas: cada rerun con cambios persiste
     estado = g1.selectbox("Estado", ESTADOS, index=0, key="dsp_estado")
     obs = g3.text_input("Observaciones", key="dsp_obs")
     cab = {"titulo": (titulo or f"DESPACHO {tipo} {fecha:%d/%m}"), "destino": destino or None,
@@ -1291,13 +1509,27 @@ def _armar(USR, cat, conectar):
            "n_cont": int(n_cont), "l_cont": float(l_cont), "sp_ac": sp_ac, "sp_ays": sp_ays,
            "sp_az": sp_az, "sp_fos": sp_fos, "estado": estado, "obs": obs or None}
 
-    if estado != "BORRADOR" and not ok:
+    _motivo_desv = None
+    if estado != "BORRADOR" and not ok_spec:
+        _motivo_desv = st.text_input(
+            "Motivo del desvío (obligatorio: queda registrado con tu usuario y lo ve dirección)",
+            key="dsp_motivo_desv",
+            placeholder="ej. pedido del cliente / sin stock alternativo / autorizado por dirección")
+        for _d in _desv:
+            _d["motivo"] = (_motivo_desv or "").strip() or None
+    if estado != "BORRADOR" and not ok_est:
         g2.button("💾 Guardar", disabled=True, use_container_width=True,
-                  help="No cumple la spec: sólo se puede guardar como BORRADOR.")
+                  help="No respeta la formulación (componente base + AFE): corregí la mezcla "
+                       "o guardá como BORRADOR.")
+    elif estado != "BORRADOR" and not ok_spec and not (_motivo_desv or "").strip():
+        g2.button("💾 Guardar", disabled=True, use_container_width=True,
+                  help="Fuera de spec por encima de la tolerancia: escribí el motivo y se "
+                       "habilita el guardado (el desvío queda registrado).")
     elif g2.button("💾 Guardar", type="primary", use_container_width=True):
         try:
             _era_edicion = bool(ss.get("dsp_edit_id"))
             _id = _guardar(conectar, USR, cab, res, ss.get("dsp_edit_id"), desvios=_desv)
+            _borr_limpiar(conectar, USR)
             cat.clear()
             ss["dsp_edit_id"] = None
             st.balloons()
@@ -1672,9 +1904,32 @@ def _control(USR, cat, conectar):
                 except Exception as e:
                     st.error("No se pudo confirmar: %s" % e)
         else:
-            c3.button("✅ Confirmar e iniciar", disabled=True, use_container_width=True,
-                      help="Se pasa de la spec en más del 10% de tolerancia: actualizá el "
-                           "laboratorio o modificá la mezcla en el armador.")
+            _mtv = c3.text_input("Motivo del desvío (obligatorio)", key="dsp_ctl_motivo",
+                                 placeholder="fuera de tolerancia: justificá para confirmar")
+            if c3.button("🚨 Confirmar FUERA DE TOLERANCIA", type="primary", key="dsp_ctl_go_ft",
+                         use_container_width=True, disabled=not (_mtv or "").strip(),
+                         help="Se pasa de la spec en más del 10%. Se confirma igual y el desvío "
+                              "queda registrado con tu usuario y el motivo."):
+                try:
+                    with conectar(USR["id_usuario"]) as (conn, _a):
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE produccion.fact_despacho SET estado='CONFIRMADO', "
+                                        "actualizado_en=now() WHERE id_despacho=%s", (int(sel),))
+                            cur.execute("DELETE FROM produccion.fact_despacho_desvio "
+                                        "WHERE id_despacho=%s AND origen='CONTROL'", (int(sel),))
+                            for d in (_dv_g or []):
+                                cur.execute("INSERT INTO produccion.fact_despacho_desvio "
+                                            "(id_despacho, parametro, valor, limite, exceso_pct, "
+                                            " origen, usuario, motivo) VALUES (%s,%s,%s,%s,%s,'CONTROL',%s,%s)",
+                                            (int(sel), d["param"], d["valor"], d["limite"],
+                                             round(d["exceso"], 2), USR.get("nombre"),
+                                             (_mtv or "").strip() or None))
+                    cat.clear()
+                    st.success("Despacho #%d CONFIRMADO fuera de tolerancia, con desvío y motivo "
+                               "registrados." % int(sel))
+                    st.rerun()
+                except Exception as e:
+                    st.error("No se pudo confirmar: %s" % e)
     else:
         c3.caption("Ya está **CONFIRMADO**. El estado se maneja desde *Despachos cargados*.")
 
