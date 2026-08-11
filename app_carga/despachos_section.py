@@ -787,6 +787,7 @@ def _borr_guardar(conectar, USR):
         if ss.get("_dsp_borr_last") == payload:
             return
         ss["_dsp_borr_last"] = payload
+        ss["_dsp_borr_has"] = True
         with conectar(int(USR["id_usuario"])) as (conn, _a):
             with conn.cursor() as cur:
                 cur.execute(
@@ -825,7 +826,9 @@ def _borr_restaurar(cat, USR):
         finally:
             conn.close()
         if not _row:
+            ss.setdefault("_dsp_borr_has", False)
             return
+        ss["_dsp_borr_has"] = True
         df = pd.DataFrame([{"payload": _row[0], "ts": _row[1]}])
         pl = df.iloc[0]["payload"]
         if isinstance(pl, str):
@@ -854,6 +857,7 @@ def _borr_limpiar(conectar, USR):
                 cur.execute("DELETE FROM produccion.despacho_borrador WHERE id_usuario=%s",
                             (int(USR["id_usuario"]),))
         st.session_state.pop("_dsp_borr_last", None)
+        st.session_state["_dsp_borr_has"] = False
     except Exception:
         pass
 
@@ -1258,6 +1262,8 @@ def _lineas_set(ss, df):
     if isinstance(_prev, pd.DataFrame) and not _prev.dropna(how="all").empty:
         ss["dsp_lineas_undo"] = _prev.copy()
     ss["dsp_lineas"] = df
+    # grilla fresca: sin esto el data_editor arrastra ediciones viejas sobre datos nuevos
+    ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
 
 
 def _armar(USR, cat, conectar):
@@ -1279,6 +1285,19 @@ def _armar(USR, cat, conectar):
                 ss.pop(_k, None)
             ss.pop("_dsp_borr_ts", None)
             st.rerun()
+    elif ss.get("_dsp_borr_has"):
+        _rr1, _rr2 = st.columns([1.4, 3.6])
+        if _rr1.button("♻️ Restablecer última carga", key="dsp_borr_re",
+                       use_container_width=True,
+                       help="Trae de vuelta el último borrador guardado (cada cambio se "
+                            "guarda solo). PISA lo que esté en pantalla ahora."):
+            for _k in list(_BORR_KEYS) + ["dsp_lineas", "dsp_lineas_undo"]:
+                ss.pop(_k, None)
+            ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
+            _borr_restaurar(cat, USR)
+            st.rerun()
+        _rr2.caption("Cada cambio del despacho se guarda solo como borrador. Si algo se ve "
+                     "vacío o distinto a lo que cargaste, este botón lo trae de vuelta.")
     tks = _tanques(cat)
     if tks.empty:
         st.error("No se pudieron leer los tanques.")
@@ -1708,8 +1727,9 @@ def _armar(USR, cat, conectar):
             "Azufre ppm": st.column_config.NumberColumn("Azufre ppm (pisar)", format="%.1f"),
             "AyS %": st.column_config.NumberColumn("AyS % (pisar)", format="%.2f"),
         })
+    _edk = ("dsp_ed_p%d" if pisar else "dsp_ed%d") % int(ss.get("dsp_ed_nonce") or 0)
     ed = st.data_editor(base, num_rows="dynamic", hide_index=True, use_container_width=True,
-                        key=("dsp_ed_p" if pisar else "dsp_ed"), column_config=_cfg)
+                        key=_edk, column_config=_cfg)
     st.caption("Elegí el tanque y los litros. Producto, densidad, acidez, fósforo, azufre y AyS "
                "se completan solos con el último análisis del tanque.")
     # Lo EDITADO en la grilla pasa a dsp_lineas en cada rerun: antes el borrador guardaba
