@@ -2296,18 +2296,24 @@ def _desvio_stock_ledger(USR, cat, conectar):
         "**La cuenta, en orden, es la fila de la tabla leída de izquierda a derecha:**\n\n"
         "`Stock ant. + Producción + Ext. entra − Ext. sale − Interno − Insumos − Despachos = Proyectado`\n\n"
         "`Desvío = Real − Proyectado`\n\n"
-        "**Ext. entra y Ext. sale — que es lo que no se entendía.** Las dos salen del **mismo lugar**: los tickets "
-        "de báscula de portería de esa semana. Lo único que las separa es **el signo del peso neto del ticket**: "
-        "peso positivo = entró material a planta → va a **Ext. entra**; peso negativo = salió → va a **Ext. sale** "
-        "(se muestra en positivo para que se lea). No hay ningún cálculo intermedio: es la suma de los pesajes. "
-        "Tres filtros: los tickets cuyo cliente empieza con *MOVIMIENTO INTERNO* no van a ninguna de las dos, van a "
-        "**Interno**; los clientes de la lista de excluidos (Calzim y demás) quedan afuera del todo; y un ticket ya "
-        "atado a un despacho CONFIRMADO/DESPACHADO tampoco suma acá, para no contarlo dos veces contra "
-        "**Despachos**.\n\n"
+        "**Ext. entra y Ext. sale** salen de los tickets de báscula de portería y el signo del peso "
+        "neto dice para qué lado fue la masa: **neto NEGATIVO = el camión descargó = ENTRA** (proveedor "
+        "de AFE: entra con 45 t, sale con 15 t, neto −30 t) y **neto POSITIVO = salió cargado = SALE** "
+        "(contenedor a exportación). El producto se resuelve con el análisis de laboratorio del ticket "
+        "(AFE + calidad S → AFE-S) o por el rótulo. La recuperación desde piletas (interno + PILETAS) "
+        "cuenta como entrada: llena tanques.\n\n"
+        "**Interno** es informativo y NO mueve el proyectado: un tanque→tanque netea cero, y la carga "
+        "tanque→contenedor ya la descuenta **Despachos** (contarla acá sería doble). Un ticket atado a "
+        "un despacho CONFIRMADO/DESPACHADO tampoco suma en Ext., por lo mismo.\n\n"
         "**El resto:** **Stock ant.** = lo medido al cierre de la semana anterior. **Producción** = reacciones "
         "terminadas (kg de tickets de pesada; si no hay tickets, el objetivo de la fórmula). **Insumos** = salidas "
         "de tanque cargadas como INSUMO o CATALIZADOR (glicerina, fuel, catalizador). **Despachos** = salidas de "
-        "tanque generadas por un despacho. **Real** = última medición de cada tanque dentro de la semana."
+        "tanque generadas por un despacho (escaladas por lo realmente pesado). **Real** = última medición de "
+        "cada tanque dentro de la semana.\n\n"
+        "⚠️ **Lo que el desvío todavía NO explica:** el consumo de AFE/AG hacia los reactores no se "
+        "registra como movimiento, así que en semanas de mucha producción el desvío da negativo por esa "
+        "masa consumida. Un desvío negativo sostenido POR ENCIMA de lo que se produjo es lo que hay que "
+        "investigar."
     )
     # Solo desde la semana 28 (2026-07-06 = lunes de S28) en adelante
     df = cat("SELECT semana, producto, codigo_producto, tipo_producto, stock_ini_t, prod_t, ext_in_t, "
@@ -2475,11 +2481,14 @@ def _reconciliacion_semanal(USR, cat, conectar):
             "portería. Si no coinciden, la diferencia es el **cuadre**: toneladas que no se explican.\n\n"
             "`ΔTanque esperado = Producción + Ext. entra − Ext. sale − Interno`\n\n"
             "`Cuadre = Δ Tanque (real, medido) − ΔTanque esperado`\n\n"
-            "**Ext. entra y Ext. sale — que es lo que no se entendía.** Las dos salen del **mismo lugar**: los "
-            "tickets de báscula de portería de esa semana. Lo único que las separa es **el signo del peso neto "
-            "del ticket**: peso positivo = entró material → **Ext. entra**; peso negativo = salió → **Ext. "
-            "sale** (se muestra en positivo para que se lea). No hay cálculo intermedio, es la suma de los "
-            "pesajes. Quedan afuera los clientes de la lista de excluidos (Calzim y demás).\n\n"
+            "**Ext. entra y Ext. sale** salen de los tickets de báscula, separados por el signo del neto: "
+            "**neto NEGATIVO = descargó = ENTRA** (proveedores de AFE) y **neto POSITIVO = salió cargado = "
+            "SALE** (contenedores de exportación). La recuperación de piletas (interno + PILETAS) suma como "
+            "entrada. Quedan afuera los clientes excluidos (Calzim y demás).\n\n"
+            "⚠️ **AG y AFE hay que leerlas JUNTAS**: el AG-E que exporta la familia AG se formula casi todo "
+            "con AFE-S de los tanques de la familia AFE. Por eso el cuadre de una da negativo y el de la "
+            "otra positivo casi por el mismo número — sumadas deberían andar cerca de cero. Si la SUMA de "
+            "las dos da un faltante sostenido, eso ya no es formulación: es masa que no está.\n\n"
             "**El resto de las columnas:**\n"
             "- **Familia**: el grupo, no el producto con calidad. Portería pesa contra 'AG', 'AFE', 'ARE' — no "
             "contra 'AG-E' ni 'ARE-B'. Por eso el balance sólo cierra a nivel familia.\n"
@@ -2487,8 +2496,9 @@ def _reconciliacion_semanal(USR, cat, conectar):
             "semana. Es el dato duro contra el que se contrasta todo lo demás.\n"
             "- **Producción (t)**: reacciones terminadas; kg de los tickets de pesada, y si no hay tickets, el "
             "objetivo de la fórmula.\n"
-            "- **Interno (t)**: tickets cuyo cliente empieza con 'MOVIMIENTO INTERNO'. Material movido dentro de "
-            "planta, típicamente AG que se consume para fabricar AG-E. Sale de la familia, por eso resta.\n"
+            "- **Interno (t)**: tickets cuyo cliente empieza con 'MOVIMIENTO INTERNO'. Informativo: ya NO "
+            "resta del esperado — un tanque→tanque netea cero, y lo que va a exportación se cuenta cuando el "
+            "contenedor sale por báscula.\n"
             "- **Cuadre %**: el cuadre en proporción al número más grande de la fila. 20 t sobre 1.000 t movidas "
             "es ruido; 20 t sobre 40 t es un problema.\n\n"
             "**Si el cuadre es grande** las causas de siempre son tres: mediciones de tanque muy espaciadas (la "
@@ -2509,7 +2519,7 @@ def _reconciliacion_semanal(USR, cat, conectar):
     for _c in ["dtank_t", "prod_t", "ext_in_t", "ext_out_t", "interno_t", "cuadre_t"]:
         dff[_c] = pd.to_numeric(dff[_c], errors="coerce")
     dff["Semana"] = pd.to_datetime(dff["semana"]).dt.strftime("S%V")
-    dff["esperado_t"] = (dff["prod_t"] + dff["ext_in_t"] - dff["ext_out_t"] - dff["interno_t"]).round(2)
+    dff["esperado_t"] = (dff["prod_t"] + dff["ext_in_t"] - dff["ext_out_t"]).round(2)
     _mag = dff[["dtank_t", "prod_t", "ext_in_t", "ext_out_t", "interno_t"]].abs().max(axis=1)
     dff["cuadre_pct"] = [(abs(c) / m * 100 if (pd.notna(c) and m and m > 0) else None) for c, m in zip(dff["cuadre_t"], _mag)]
     dff["Estado"] = [("🟢" if (pd.notna(c) and abs(c) < 5) else ("🟡" if (pd.notna(c) and abs(c) < 20) else "🔴")) for c in dff["cuadre_t"]]
@@ -2519,6 +2529,22 @@ def _reconciliacion_semanal(USR, cat, conectar):
                                 "cuadre_t": "Cuadre (t)", "cuadre_pct": "Cuadre %"})
     _disp = _disp[["Estado", "Semana", "Familia", "Δ Tanque (t)", "Producción (t)", "Ext. entra (t)", "Ext. sale (t)",
                    "Interno (t)", "ΔTanque esperado (t)", "Cuadre (t)", "Cuadre %"]]
+
+    # AG + AFE combinadas: el AG-E exportado se formula con AFE, así que el cuadre real
+    # del negocio es la SUMA de las dos familias. Esta es la fila que responde "¿falta masa?".
+    _agafe = dff[dff["familia"].isin(["AG", "AFE"])]
+    if not _agafe.empty:
+        _cmb = (_agafe.groupby("Semana", sort=False)
+                .agg(dt=("dtank_t", "sum"), pr=("prod_t", "sum"), ei=("ext_in_t", "sum"),
+                     eo=("ext_out_t", "sum")).reset_index())
+        _cmb["cuadre"] = (_cmb["dt"] - (_cmb["pr"] + _cmb["ei"] - _cmb["eo"])).round(1)
+        st.markdown("**Σ AG + AFE combinadas** — la fila que responde *¿falta masa?* "
+                    "(el AG-E exportado se arma con AFE, separadas se compensan):")
+        _cc2 = st.columns(min(6, max(1, len(_cmb))))
+        for _c2, (_, _rw) in zip(_cc2, _cmb.iterrows()):
+            _c2.metric(_rw["Semana"], "%+.1f t" % _rw["cuadre"],
+                       help="Δtanques − (producción + entradas − salidas) de AG y AFE juntas. "
+                            "Negativo sostenido = masa que no está.")
 
     def _cc(v):
         if pd.isna(v):
