@@ -1922,41 +1922,75 @@ def _armar(USR, cat, conectar):
     _borr_guardar(conectar, USR, ed)   # autosave con lo editado, aunque esté a medio cargar
 
     res = _resolver(ed, tks, prod_cod)
+    # Una línea con 0 litros simplemente NO cuenta (el resolvedor la ignora). Si no queda
+    # ninguna válida, se avisa pero la pantalla sigue entera — antes había un return que
+    # hacía desaparecer cumplimiento, avisos y Guardar, y parecía que la app se colgaba.
     if res.empty:
-        st.info("Cargá al menos una línea con tanque y litros para ver los cálculos.")
+        st.warning("⏳ Ninguna línea tiene tanque y litros (>0) todavía: los cálculos aparecen "
+                   "en cuanto cargues la primera. Las líneas en 0 se ignoran.")
         return
 
-    # Detalle por tanque: laboratorio y peso de cada tanque en la carga. Va acá, pegado al editor,
-    # y no dentro del editor, porque st.data_editor dibuja la grilla con los datos de ANTES de la
-    # edición: el % y el lab quedarían atrasados un click respecto de los litros que acabás de tocar.
+    # Tabla resuelta, pegada al editor: Tanque · Producto · Litros y la CALIDAD al lado,
+    # con semáforo contra la spec del despacho. Va como tabla aparte (y no dentro del
+    # editor) porque st.data_editor dibuja con los datos de ANTES de la edición.
     tot_l = float(res["Litros"].sum())
+    tot_kg_sem = float(res["kg"].sum()) or 1.0
     _d = res.copy()
     _d["Litros"] = _d["Litros"].round(0)
-    _d["% del total"] = (100.0 * _d["Litros"] / tot_l).round(2) if tot_l else 0.0
+    _d["%"] = (100.0 * _d["Litros"] / tot_l).round(1) if tot_l else 0.0
     _d["TN"] = _d["TN"].round(2)
-    _d["Lab"] = _d.apply(
-        lambda r: "✅" if all(pd.notna(r[c]) for c in ("Acidez %", "Fósforo ppm", "Azufre ppm"))
-        else "⚠️ falta " + ", ".join(c for c in ("Acidez %", "Fósforo ppm", "Azufre ppm")
-                                     if pd.isna(r[c])), axis=1)
-    _show = _d[["Rol", "Tanque", "Producto", "Litros", "% del total", "Acidez %", "Fósforo ppm",
-                "Azufre ppm", "AyS %", "Lab", "Densidad", "TN", "Disp. (L)", "Restante (L)"]]
-    st.dataframe(
-        _show, hide_index=True, use_container_width=True,
-        column_config={
-            "Rol": st.column_config.TextColumn("Rol", width="small",
-                                               help="BASE = el componente AG-E. DILUYENTE = los AFE."),
-            "Litros": st.column_config.NumberColumn(format="%.0f"),
-            "% del total": st.column_config.NumberColumn("% del total", format="%.2f %%",
-                                                         help="Peso de este tanque sobre los litros cargados."),
-            "Acidez %": st.column_config.NumberColumn("Acidez %", format="%.2f"),
-            "Fósforo ppm": st.column_config.NumberColumn("Fósforo ppm", format="%.1f"),
-            "Azufre ppm": st.column_config.NumberColumn("Azufre ppm", format="%.1f"),
-            "AyS %": st.column_config.NumberColumn("AyS %", format="%.2f"),
-            "Lab": st.column_config.TextColumn("Lab", help="Parámetros que faltan para controlar la spec."),
-            "Disp. (L)": st.column_config.NumberColumn(format="%.0f"),
-            "Restante (L)": st.column_config.NumberColumn(format="%.0f")})
-    st.caption("Acidez, fósforo, azufre y AyS son el último análisis del tanque. El **% del total** "
-               "es sobre los litros efectivamente cargados acá, no sobre el objetivo.")
+    _rolmap = {"BASE": "🟦 BASE", "DILUYENTE": "· AFE"}
+    _d["_rol"] = _d["Rol"].map(_rolmap).fillna("")
+
+    def _sem_css(val, lim):
+        if val is None or pd.isna(val) or not lim:
+            return "color:#94a3b8"
+        v, l = float(val), float(lim)
+        if v > l * (1.0 + TOL_DESVIO):
+            return "background-color:#fee2e2;color:#b91c1c;font-weight:700"
+        if v > l:
+            return "background-color:#ffedd5;color:#c2410c;font-weight:700"
+        if v > l * 0.9:
+            return "background-color:#fef9c3;color:#a16207"
+        return "color:#15803d"
+
+    _limcol = {"Acidez %": spec.get("acidez"), "Fósforo ppm": spec.get("fosforo"),
+               "Azufre ppm": spec.get("azufre"), "AyS %": spec.get("ays")}
+    _tabla = _d[["_rol", "Tanque", "Producto", "Litros", "%", "Acidez %", "Fósforo ppm",
+                 "Azufre ppm", "AyS %", "TN", "Restante (L)"]].rename(
+        columns={"_rol": "Rol", "Restante (L)": "Queda (L)"})
+    # fila TOTAL con los ponderados por kg (los mismos que controla la spec)
+    _pond = {}
+    for _c in ("Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %"):
+        _v = res[pd.notna(res[_c])]
+        _kgv = float(_v["kg"].sum())
+        _pond[_c] = round(float((_v[_c] * _v["kg"]).sum()) / _kgv, 2) if _kgv > 0 else None
+    _tabla = pd.concat([_tabla, pd.DataFrame([{
+        "Rol": "Σ", "Tanque": "TOTAL (ponderado por kg)", "Producto": "",
+        "Litros": round(tot_l, 0), "%": 100.0,
+        "Acidez %": _pond["Acidez %"], "Fósforo ppm": _pond["Fósforo ppm"],
+        "Azufre ppm": _pond["Azufre ppm"], "AyS %": _pond["AyS %"],
+        "TN": round(float(res["TN"].sum()), 2), "Queda (L)": None}])], ignore_index=True)
+
+    try:
+        _sty = (_tabla.style
+                .apply(lambda col: [_sem_css(v, _limcol.get(col.name)) for v in col]
+                       if col.name in _limcol else ["" for _ in col], axis=0)
+                .apply(lambda row: ["border-top:2px solid #1a1f2e;font-weight:700"
+                                    if row.name == len(_tabla) - 1 else "" for _ in row], axis=1)
+                .format({"Litros": "{:,.0f}", "%": "{:.1f}", "Acidez %": "{:.2f}",
+                         "Fósforo ppm": "{:.1f}", "Azufre ppm": "{:.1f}", "AyS %": "{:.2f}",
+                         "TN": "{:.2f}", "Queda (L)": "{:,.0f}"}, na_rep="—"))
+        st.dataframe(_sty, hide_index=True, use_container_width=True,
+                     height=int(38 * (len(_tabla) + 1) + 4))
+    except Exception:
+        st.dataframe(_tabla, hide_index=True, use_container_width=True)
+    _faltalab = _d[_d[["Acidez %", "Fósforo ppm", "Azufre ppm"]].isna().any(axis=1)]
+    st.caption("Calidad = último análisis del tanque · verde en spec, amarillo al límite, "
+               "naranja en desvío tolerado, rojo fuera de tolerancia. La fila Σ es el "
+               "ponderado por kg — el mismo número que controla la spec."
+               + ((" · ⚠️ Sin lab completo: " + ", ".join(_faltalab["Tanque"].astype(str)))
+                  if not _faltalab.empty else ""))
 
     # ---------- 4 · Resultado ----------
     st.markdown("#### 4 · Resultado de la mezcla")
