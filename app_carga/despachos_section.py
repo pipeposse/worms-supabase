@@ -27,6 +27,10 @@ SPEC_DEFAULT = {"acidez": 5.0, "ays": 2.0, "azufre": 50.0, "fosforo": 150.0}
 # Por debajo de esto un tanque no entra en la formulación: suele ser fondo de tanque
 # (borra/sedimento decantado), que arruina la calidad de la mezcla.
 MIN_L_DESPACHO = 3500.0
+SECTORES_PRIORIDAD = ("Plataforma 1 (BPV)", "Plataforma 2 (BPN)", "Exportación")
+MIN_TOMA_DESPACHO = 3000.0  # mínimo de litros que vale la pena sacar de un tanque en una
+                            # carga: menos es desperdicio operativo (regla de dirección).
+                            # Única excepción: la última toma que CIERRA el objetivo.
 TIPOS_CARGA = ["FLEX", "ISO TANK", "BULK", "CAMION", "TAMBORES"]
 ESTADOS = ["BORRADOR", "CONFIRMADO", "DESPACHADO", "ANULADO"]
 
@@ -358,8 +362,13 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     if not d.empty:
         d["score"] = d.apply(_score, axis=1)
         d["_pref"] = up[d.index].apply(lambda c: PREFERIDOS.index(c) if c in PREFERIDOS else 99)
-        d = d.sort_values(["_pref", "score", "litros_actual"], ascending=[True, True, False])
-        d_peor = d.sort_values(["_pref", "score", "litros_actual"], ascending=[True, False, False])
+        # prioridad de sector (regla de dirección): BPV -> BPN -> cónicos; el resto, excepción
+        d["_sec"] = d["sector"].astype(str).str.strip().apply(
+            lambda x: SECTORES_PRIORIDAD.index(x) if x in SECTORES_PRIORIDAD else 9)
+        d = d.sort_values(["_pref", "_sec", "score", "litros_actual"],
+                          ascending=[True, True, True, False])
+        d_peor = d.sort_values(["_pref", "_sec", "score", "litros_actual"],
+                               ascending=[True, True, False, False])
 
     # Tanques del componente base: TODOS los que tienen stock útil, de mayor a menor.
     # Antes se usaba uno solo ("el de más stock") y con el AG-E repartido en varios
@@ -435,7 +444,8 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
             if acum >= litros_obj:
                 break
             toma = min(float(r["litros_actual"]), litros_obj - acum)
-            if toma < min_l * 0.2:
+            # mínimo 3.000 L por tanque, salvo que esta toma cierre el objetivo
+            if toma < MIN_TOMA_DESPACHO and (acum + toma) < litros_obj - 0.5:
                 continue
             out.append((r, toma))
             acum += toma
@@ -456,7 +466,8 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                 continue
             r = d.loc[i]
             t = min(float(r["litros_actual"]), f)
-            if t < min_l * 0.2:
+            # mínimo 3.000 L por tanque, salvo la toma final que cierra
+            if t < MIN_TOMA_DESPACHO and t < f - 0.5:
                 continue
             out.append((r, t))
             f -= t
@@ -479,7 +490,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                 break
             r = d.loc[i]
             tope = min(float(r["litros_actual"]), litros_obj - acum)
-            if tope < min_l * 0.2:
+            if tope < MIN_TOMA_DESPACHO and tope < (litros_obj - acum) - 0.5:
                 continue
             ex = set(usados)
             ex.add(i)
@@ -495,7 +506,9 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                     else:
                         hi = mid
             toma = float(int(lo // 10) * 10)                # redondeo abajo: margen, no exceso
-            if toma >= min_l * 0.2:
+            # si la spec sólo banca menos de 3.000 L de este tanque feo, no vale la pena
+            # abrirlo (salvo que con eso se cierre el objetivo)
+            if toma >= MIN_TOMA_DESPACHO or (toma > 0.5 and acum + toma >= litros_obj - 0.5):
                 lineas.append((r, toma))
                 acum += toma
                 usados.add(i)
@@ -767,7 +780,7 @@ _BORR_KEYS = ("dsp_titulo", "dsp_destino", "dsp_cliente", "dsp_prod", "dsp_tipo"
               "dsp_motivo_desv")
 
 
-def _borr_guardar(conectar, USR):
+def _borr_guardar(conectar, USR, lineas_ed=None):
     ss = st.session_state
     try:
         campos = {}
@@ -780,7 +793,7 @@ def _borr_guardar(conectar, USR):
             elif isinstance(v, _dt.date):
                 campos[k] = {"__date__": v.isoformat()}
         lineas = None
-        _df = ss.get("dsp_lineas")
+        _df = lineas_ed if isinstance(lineas_ed, pd.DataFrame) else ss.get("dsp_lineas")
         if isinstance(_df, pd.DataFrame) and not _df.empty:
             lineas = json.loads(_df.to_json(orient="records"))
         payload = json.dumps({"campos": campos, "lineas": lineas}, default=str, sort_keys=True)
@@ -845,6 +858,7 @@ def _borr_restaurar(cat, USR):
             ss[k] = v
         if pl.get("lineas"):
             ss["dsp_lineas"] = pd.DataFrame(pl["lineas"]).reindex(columns=_COLS_ED)
+            ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
         ss["_dsp_borr_ts"] = str(df.iloc[0]["ts"])
     except Exception:
         pass
@@ -1732,14 +1746,10 @@ def _armar(USR, cat, conectar):
                         key=_edk, column_config=_cfg)
     st.caption("Elegí el tanque y los litros. Producto, densidad, acidez, fósforo, azufre y AyS "
                "se completan solos con el último análisis del tanque.")
-    # Lo EDITADO en la grilla pasa a dsp_lineas en cada rerun: antes el borrador guardaba
-    # la sugerencia original y los litros tocados a mano se perdían igual.
-    try:
-        if ed is not None and not ed.dropna(how="all").empty:
-            ss["dsp_lineas"] = ed.copy()
-    except Exception:
-        pass
-    _borr_guardar(conectar, USR)   # autosave acá: corre aunque la grilla esté a medio cargar
+    # OJO: lo editado NO se re-inyecta como input del editor (eso hacía que los valores
+    # tipeados se revirtieran y hubiera que tipear varias veces). El borrador se guarda
+    # directo desde `ed`, y dsp_lineas sólo cambia por acciones (Sugerir, Deshacer, etc.).
+    _borr_guardar(conectar, USR, ed)   # autosave con lo editado, aunque esté a medio cargar
 
     res = _resolver(ed, tks, prod_cod)
     if res.empty:
@@ -1858,7 +1868,7 @@ def _armar(USR, cat, conectar):
     # ---------- 5 · Guardar ----------
     st.markdown("#### 5 · Guardar")
     g1, g2, g3 = st.columns([1.2, 1, 1.6])
-    _borr_guardar(conectar, USR)   # autosave anticaídas: cada rerun con cambios persiste
+    _borr_guardar(conectar, USR, ed)   # segundo autosave: captura estado/observaciones
     estado = g1.selectbox("Estado", ESTADOS, index=0, key="dsp_estado")
     obs = g3.text_input("Observaciones", key="dsp_obs")
     cab = {"titulo": (titulo or f"DESPACHO {tipo} {fecha:%d/%m}"), "destino": destino or None,
