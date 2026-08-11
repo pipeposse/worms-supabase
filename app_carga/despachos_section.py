@@ -370,10 +370,15 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         # prioridad de sector (regla de dirección): BPV -> BPN -> cónicos; el resto, excepción
         d["_sec"] = d["sector"].astype(str).str.strip().apply(
             lambda x: SECTORES_PRIORIDAD.index(x) if x in SECTORES_PRIORIDAD else 9)
-        d = d.sort_values(["_pref", "_sec", "score", "litros_actual"],
+        d["_x"] = (d["_sec"] >= 9).astype(int)   # 1 = fuera de los sectores prioritarios
+        # d = orden del ORÁCULO y del relleno: calidad primero (si no, el oráculo llena
+        # con tanques de fósforo alto, concluye "no cierra" y termina abriendo tanques X).
+        # Los X van al final también acá: sólo entran si sin ellos la mezcla no cierra.
+        d = d.sort_values(["_pref", "_x", "score", "litros_actual"],
                           ascending=[True, True, True, False])
-        d_peor = d.sort_values(["_pref", "_sec", "score", "litros_actual"],
-                               ascending=[True, True, False, False])
+        # d_peor = orden del GASTO de feo: prioridad completa de sectores.
+        d_peor = d.sort_values(["_pref", "_x", "_sec", "score", "litros_actual"],
+                               ascending=[True, True, True, False, False])
 
     # Tanques del componente base: TODOS los que tienen stock útil, de mayor a menor.
     # Antes se usaba uno solo ("el de más stock") y con el AG-E repartido en varios
