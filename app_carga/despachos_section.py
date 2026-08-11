@@ -1103,6 +1103,92 @@ def _analisis(USR, cat):
     c2.markdown("**Por cliente**")
     c2.dataframe(_pc, hide_index=True, use_container_width=True)
 
+    # ---- conciliación con portería: que no se escape ningún camión
+    st.markdown("---")
+    st.markdown("**⚖️ Despachado vs lo que salió por portería** — tickets de SALIDA "
+                "(exportación, en su mayoría a EGNITRADE, producto AG)")
+    try:
+        prt = cat(
+            "SELECT p.id_transaccion, p.ticket, p.fecha, p.producto, p.destino, p.patente, "
+            "       ABS(p.kg) AS kg, p.sin_pesada, a.id_despacho, d.titulo "
+            "FROM produccion.v_porteria_ticket p "
+            "LEFT JOIN produccion.fact_despacho_ticket a ON a.id_transaccion = p.id_transaccion "
+            "LEFT JOIN produccion.fact_despacho d ON d.id_despacho = a.id_despacho "
+            "WHERE p.clase='SALIDA' AND p.fecha >= current_date - %s "
+            "ORDER BY p.fecha DESC, p.ticket DESC", (int(_sem * 7),))
+    except Exception as e:
+        prt = None
+        st.warning("No se pudo leer portería: %s" % e)
+    if prt is not None and not prt.empty:
+        prt = prt.copy()
+        prt["kg"] = pd.to_numeric(prt["kg"], errors="coerce").fillna(0)
+        _fp = pd.to_datetime(prt["fecha"], errors="coerce")
+        _iso = _fp.dt.isocalendar()
+        prt["Semana"] = _iso["year"].astype(str) + "-S" + _iso["week"].astype(int).astype(str).str.zfill(2)
+        prt["_asig"] = prt["id_despacho"].notna()
+
+        _tn_prt = float(prt["kg"].sum()) / 1000.0
+        _tn_asig = float(prt.loc[prt["_asig"], "kg"].sum()) / 1000.0
+        _huer = prt[~prt["_asig"]]
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("Salió por portería", "{:,.1f} TN".format(_tn_prt),
+                  help="Todos los tickets de SALIDA del período, asignados o no.")
+        p2.metric("Asignado a despachos", "{:,.1f} TN".format(_tn_asig))
+        p3.metric("Sin asignar", "%d tickets" % len(_huer),
+                  delta=(None if _huer.empty else "-{:,.1f} TN".format(float(_huer["kg"].sum()) / 1000.0)),
+                  delta_color="inverse")
+        p4.metric("TN formuladas (período)", "{:,.1f}".format(float(d["tn_total"].sum())))
+
+        if not _huer.empty:
+            st.error("🕳️ **%d camión(es) salieron por portería y no están asignados a ningún "
+                     "despacho** (%s TN se escapan del control). Asignalos en 🎟️ *Tickets de "
+                     "portería* — hasta que no se asignen, no descuentan stock ni suman al "
+                     "análisis por despacho."
+                     % (len(_huer), "{:,.1f}".format(float(_huer["kg"].sum()) / 1000.0)))
+            with st.expander("Ver los tickets sin asignar", expanded=False):
+                _hv = _huer.rename(columns={"ticket": "Ticket", "fecha": "Fecha",
+                                            "producto": "Producto", "destino": "Destino",
+                                            "patente": "Patente", "kg": "Kg",
+                                            "sin_pesada": "Sin pesada"})
+                st.dataframe(_hv[["Ticket", "Fecha", "Producto", "Destino", "Patente", "Kg",
+                                  "Sin pesada"]], hide_index=True, use_container_width=True,
+                             column_config={"Kg": st.column_config.NumberColumn(format="%.0f"),
+                                            "Fecha": st.column_config.DateColumn(format="DD/MM/YY")})
+                st.download_button("⬇️ CSV sin asignar",
+                                   _hv.to_csv(index=False).encode("utf-8"),
+                                   file_name="salidas_sin_asignar.csv", mime="text/csv",
+                                   key="dsa_dl_huer")
+        else:
+            st.success("✔ Todos los camiones de salida del período están asignados a un despacho.")
+
+        # comparativa semanal: formulado vs asignado vs total portería
+        _wf = d.groupby("Semana")["tn_total"].sum()
+        _wp = prt.groupby("Semana")["kg"].sum() / 1000.0
+        _wa = prt[prt["_asig"]].groupby("Semana")["kg"].sum() / 1000.0
+        _cmp = pd.DataFrame({"TN formuladas": _wf, "TN por portería": _wp,
+                             "TN asignadas": _wa}).fillna(0.0).reset_index()
+        _cmp["Dif. portería vs formulado"] = (_cmp["TN por portería"] - _cmp["TN formuladas"]).round(1)
+        for _c in ("TN formuladas", "TN por portería", "TN asignadas"):
+            _cmp[_c] = _cmp[_c].round(1)
+        st.dataframe(_cmp, hide_index=True, use_container_width=True)
+        try:
+            import altair as alt
+            _m = _cmp.melt(id_vars=["Semana"],
+                           value_vars=["TN formuladas", "TN por portería", "TN asignadas"],
+                           var_name="Serie", value_name="TN")
+            st.altair_chart(
+                alt.Chart(_m).mark_bar().encode(
+                    x=alt.X("Semana:N", sort=None, title=None),
+                    xOffset="Serie:N",
+                    y=alt.Y("TN:Q", title="TN"),
+                    color=alt.Color("Serie:N", legend=alt.Legend(orient="bottom", title=None)),
+                    tooltip=["Semana", "Serie", alt.Tooltip("TN:Q", format=",.1f")]),
+                use_container_width=True)
+        except Exception:
+            pass
+    else:
+        st.info("No hay tickets de salida por portería en el rango elegido.")
+
     # ---- detalle
     with st.expander("📋 Detalle de despachos del período", expanded=False):
         _v = d.rename(columns={"titulo": "Título", "cliente": "Cliente", "destino": "Destino",
@@ -2104,6 +2190,88 @@ def _control(USR, cat, conectar):
 
 # ------------------------------------------------------------------ tickets de portería
 
+def _desvio_balanza(cur, id_despacho, usuario):
+    """Recalcula el desvío balanza-vs-formulado del despacho y lo deja registrado.
+
+    Cada camión que sale por portería es masa que abandona la planta: si lo pesado
+    se aleja >3% de lo formulado, queda como desvío (origen BALANZA) visible para
+    dirección — igual que los desvíos de spec.
+    """
+    cur.execute("SELECT COALESCE(SUM(ABS(kg)),0) FROM produccion.fact_despacho_ticket "
+                "WHERE id_despacho=%s AND rol='SALIDA' AND NOT COALESCE(sin_pesada,false)",
+                (int(id_despacho),))
+    kg_p = float(cur.fetchone()[0] or 0)
+    cur.execute("SELECT COALESCE(kg_total,0) FROM produccion.v_despacho_resumen "
+                "WHERE id_despacho=%s", (int(id_despacho),))
+    _r = cur.fetchone()
+    kg_f = float(_r[0] or 0) if _r else 0.0
+    cur.execute("DELETE FROM produccion.fact_despacho_desvio WHERE id_despacho=%s "
+                "AND origen='BALANZA'", (int(id_despacho),))
+    if kg_f > 0 and kg_p > 0:
+        _exc = 100.0 * (kg_p - kg_f) / kg_f
+        if abs(_exc) > 3.0:
+            cur.execute("INSERT INTO produccion.fact_despacho_desvio "
+                        "(id_despacho, parametro, valor, limite, exceso_pct, origen, usuario, motivo) "
+                        "VALUES (%s,'Peso balanza (kg)',%s,%s,%s,'BALANZA',%s,%s)",
+                        (int(id_despacho), round(kg_p, 1), round(kg_f, 1), round(_exc, 2),
+                         usuario, "automático: salida pesada en portería vs formulado"))
+
+
+def _mov_salida_crear(cur, cab, id_transaccion, ticket, kg, fecha, uid):
+    """Movimiento de stock por un camión de SALIDA asignado: la masa deja la planta.
+
+    Un movimiento SALIDA del producto del despacho + espejo OUT prorrateado entre los
+    tanques de la formulación (el camión carga físicamente de esos tanques). Devuelve
+    id_mov_stock, que queda linkeado al ticket para poder deshacer al desasignar.
+    """
+    cur.execute("SELECT id_producto, COALESCE(densidad_g_ml,0.91) FROM produccion.dim_producto "
+                "WHERE codigo_producto=%s", (str(cab.get("producto_codigo") or "")[:30],))
+    _r = cur.fetchone()
+    if not _r:
+        return None
+    idp, dens = int(_r[0]), float(_r[1])
+    kg = abs(float(kg))
+    lts = round(kg / dens, 1)
+    cur.execute(
+        "INSERT INTO produccion.fact_movimiento_stock "
+        "(momento, tipo_movimiento, rol, sentido, id_producto, producto, fuente, "
+        " ticket_porteria, cantidad, unidad, kg, litros, id_usuario, origen, observaciones, "
+        " estado_mov, id_usuario_ejecuta, ejecutado_en) "
+        "VALUES (%s,'SALIDA','PF',-1,%s,%s,'PORTERIA',%s,%s,'KG',%s,%s,%s,'despacho_salida',"
+        "%s,'EJECUTADO',%s,now()) RETURNING id_mov_stock",
+        (fecha, idp, str(cab.get("producto_codigo") or ""), str(ticket or ""), kg, kg, lts,
+         uid, "Salida despacho #%s ticket %s" % (int(cab["id_despacho"]), ticket), uid))
+    id_mov = cur.fetchone()[0]
+    # espejo por tanque, prorrateado por la participación de cada tanque en la formulación
+    cur.execute("SELECT id_tanque, COALESCE(litros,0) FROM produccion.fact_despacho_linea "
+                "WHERE id_despacho=%s AND id_tanque IS NOT NULL AND COALESCE(litros,0) > 0",
+                (int(cab["id_despacho"]),))
+    _ln = cur.fetchall()
+    _tot = sum(float(x[1]) for x in _ln)
+    if _tot > 0:
+        for _idt, _lt in _ln:
+            _sh = float(_lt) / _tot
+            cur.execute(
+                "INSERT INTO produccion.fact_movimiento_tanque "
+                "(id_tanque, id_producto, tipo, litros, kg, ts, id_usuario, origen, "
+                " observaciones, id_mov_stock) "
+                "VALUES (%s,%s,'OUT',%s,%s,%s,%s,'DESPACHO_SALIDA',%s,%s)",
+                (int(_idt), idp, round(lts * _sh, 1), round(kg * _sh, 1), fecha, uid,
+                 "Salida despacho #%s ticket %s (prorrateo %.0f%%)"
+                 % (int(cab["id_despacho"]), ticket, 100 * _sh), id_mov))
+    return id_mov
+
+
+def _mov_salida_anular(cur, ids_mov):
+    ids = [int(i) for i in ids_mov if i is not None]
+    if not ids:
+        return
+    cur.execute("UPDATE produccion.fact_movimiento_stock SET anulado=true, "
+                "observaciones=COALESCE(observaciones,'') || ' | ticket desasignado del despacho' "
+                "WHERE id_mov_stock = ANY(%s)", (ids,))
+    cur.execute("DELETE FROM produccion.fact_movimiento_tanque WHERE id_mov_stock = ANY(%s)", (ids,))
+
+
 _ROLES_TK = {
     "SALIDA": {
         "titulo": "🚚 Salidas a exportación (flexi / contenedor)",
@@ -2189,9 +2357,14 @@ def _tk_panel(USR, cat, conectar, cab, rol):
             try:
                 with conectar(USR["id_usuario"]) as (conn, _x):
                     with conn.cursor() as cur:
+                        cur.execute("SELECT id_mov_stock FROM produccion.fact_despacho_ticket "
+                                    "WHERE id_dt = ANY(%s)", ([int(i) for i in _q],))
+                        _mov_salida_anular(cur, [r[0] for r in cur.fetchall()])
                         cur.execute("DELETE FROM produccion.fact_despacho_ticket WHERE id_dt = ANY(%s)",
                                     ([int(i) for i in _q],))
-                cat.clear(); st.success("Tickets desasignados."); st.rerun()
+                        if rol == "SALIDA":
+                            _desvio_balanza(cur, int(cab["id_despacho"]), USR.get("nombre"))
+                cat.clear(); st.success("Tickets desasignados (y su movimiento de stock anulado)."); st.rerun()
             except Exception as e:
                 st.error(f"No se pudo quitar: {e}")
     else:
@@ -2256,22 +2429,40 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                               (str(s.get("Precinto") or "").strip() or None),
                               USR.get("nombre")))
             try:
+                _uid = int(USR.get("id_usuario") or 0)
                 with conectar(USR["id_usuario"]) as (conn, _x):
                     with conn.cursor() as cur:
-                        cur.executemany(
-                            "INSERT INTO produccion.fact_despacho_ticket "
-                            "(id_despacho, rol, id_transaccion, ticket, empresa, fecha, producto, "
-                            " destino, patente, kg, sin_pesada, nro_contenedor, precinto, creado_por) "
-                            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                            "ON CONFLICT (id_transaccion) DO NOTHING", filas)
-                cat.clear(); st.success(f"{len(filas)} ticket(s) asignados."); st.rerun()
+                        _nok = 0
+                        for _fl in filas:
+                            cur.execute(
+                                "INSERT INTO produccion.fact_despacho_ticket "
+                                "(id_despacho, rol, id_transaccion, ticket, empresa, fecha, producto, "
+                                " destino, patente, kg, sin_pesada, nro_contenedor, precinto, creado_por) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                                "ON CONFLICT (id_transaccion) DO NOTHING RETURNING id_dt", _fl)
+                            _rid = cur.fetchone()
+                            if _rid is None:
+                                continue          # ya estaba asignado en otro despacho
+                            _nok += 1
+                            # cada camión de SALIDA pesado descuenta stock (masa que se va)
+                            if rol == "SALIDA" and _fl[9] is not None and not _fl[10]:
+                                _im = _mov_salida_crear(cur, cab, _fl[2], _fl[3], _fl[9],
+                                                        _fl[5], _uid)
+                                if _im is not None:
+                                    cur.execute("UPDATE produccion.fact_despacho_ticket "
+                                                "SET id_mov_stock=%s WHERE id_dt=%s",
+                                                (_im, int(_rid[0])))
+                        if rol == "SALIDA":
+                            _desvio_balanza(cur, int(cab["id_despacho"]), USR.get("nombre"))
+                cat.clear(); st.success(f"{_nok} ticket(s) asignados."); st.rerun()
             except Exception as e:
                 st.error(f"No se pudieron asignar: {e}")
 
 
 def _tickets(USR, cat, conectar):
-    df = cat("SELECT id_despacho, titulo, destino, cliente, producto, fecha_despacho, "
-             "n_contenedores, litros_objetivo, tn_total, estado FROM produccion.v_despacho_resumen "
+    df = cat("SELECT id_despacho, titulo, destino, cliente, producto, producto_codigo, "
+             "fecha_despacho, n_contenedores, litros_objetivo, tn_total, estado, kg_total "
+             "FROM produccion.v_despacho_resumen "
              "ORDER BY fecha_despacho DESC NULLS LAST, id_despacho DESC")
     if df is None or df.empty:
         st.info("Primero cargá un despacho en *Armar / editar despacho*.")
