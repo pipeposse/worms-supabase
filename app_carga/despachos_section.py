@@ -739,13 +739,23 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
 # contenedor) la sesión de Streamlit nace vacía y lo tipeado muere. El borrador se
 # guarda en la base en cada rerun (sólo si cambió algo) y se restaura solo al volver.
 
+# Campos del armador que el borrador persiste. LISTA CERRADA a propósito: los keys de
+# botones y del data_editor NO se pueden reponer vía session_state (Streamlit tira
+# StreamlitAPIException al instanciar el widget) — restaurarlos rompía la pantalla entera.
+_BORR_KEYS = ("dsp_titulo", "dsp_destino", "dsp_cliente", "dsp_prod", "dsp_tipo", "dsp_fecha",
+              "dsp_ncont", "dsp_lcont", "dsp_spac", "dsp_spays", "dsp_spaz", "dsp_spfos",
+              "dsp_lbase", "dsp_tolp", "dsp_incv", "dsp_pisar", "dsp_estado", "dsp_obs",
+              "dsp_motivo_desv")
+
+
 def _borr_guardar(conectar, USR):
     ss = st.session_state
     try:
         campos = {}
-        for k, v in ss.items():
-            if not str(k).startswith("dsp_") or str(k) in ("dsp_props", "dsp_tradeoff"):
+        for k in _BORR_KEYS:
+            if k not in ss:
                 continue
+            v = ss[k]
             if isinstance(v, (bool, int, float, str)):
                 campos[k] = v
             elif isinstance(v, _dt.date):
@@ -770,11 +780,13 @@ def _borr_guardar(conectar, USR):
 
 
 def _borr_restaurar(cat, USR):
-    """Una vez por sesión: si hay borrador fresco (<36 h) y la sesión está virgen, se repone."""
+    """Repone el borrador cada vez que el armador aparece con los campos vacíos.
+
+    No es sólo para reinicios de la app: Streamlit BORRA el estado de los widgets
+    cuando su pestaña no se renderiza — cambiar a Control y volver ya vaciaba todo.
+    Por eso se restaura siempre que no haya ningún campo vivo, no una vez por sesión.
+    """
     ss = st.session_state
-    if ss.get("_dsp_borr_rest"):
-        return
-    ss["_dsp_borr_rest"] = True
     try:
         df = cat("SELECT payload, to_char(actualizado AT TIME ZONE 'America/Argentina/Buenos_Aires',"
                  "'DD/MM HH24:MI') AS ts FROM produccion.despacho_borrador "
@@ -785,9 +797,9 @@ def _borr_restaurar(cat, USR):
         pl = df.iloc[0]["payload"]
         if isinstance(pl, str):
             pl = json.loads(pl)
-        campos = pl.get("campos") or {}
+        campos = {k: v for k, v in (pl.get("campos") or {}).items() if k in _BORR_KEYS}
         if any(k in ss for k in campos):
-            return                     # la sesión ya tiene datos vivos: no pisarlos
+            return                     # hay campos vivos en pantalla: no pisarlos
         for k, v in campos.items():
             if isinstance(v, dict) and "__date__" in v:
                 try:
@@ -1209,6 +1221,12 @@ def _analisis(USR, cat):
 
 def _armar(USR, cat, conectar):
     ss = st.session_state
+    # Keep-alive: re-marcar los campos como estado programático ANTES de instanciar los
+    # widgets. Sin esto, Streamlit purga el valor de todo widget que no se dibujó en el
+    # run anterior (p.ej. al pasar por Control y volver) y el formulario nacía vacío.
+    for _k in _BORR_KEYS:
+        if _k in ss:
+            ss[_k] = ss[_k]
     _borr_restaurar(cat, USR)
     if ss.get("_dsp_borr_ts"):
         _bi, _bx = st.columns([4, 1])
@@ -1636,6 +1654,14 @@ def _armar(USR, cat, conectar):
                         key=("dsp_ed_p" if pisar else "dsp_ed"), column_config=_cfg)
     st.caption("Elegí el tanque y los litros. Producto, densidad, acidez, fósforo, azufre y AyS "
                "se completan solos con el último análisis del tanque.")
+    # Lo EDITADO en la grilla pasa a dsp_lineas en cada rerun: antes el borrador guardaba
+    # la sugerencia original y los litros tocados a mano se perdían igual.
+    try:
+        if ed is not None and not ed.dropna(how="all").empty:
+            ss["dsp_lineas"] = ed.copy()
+    except Exception:
+        pass
+    _borr_guardar(conectar, USR)   # autosave acá: corre aunque la grilla esté a medio cargar
 
     res = _resolver(ed, tks, prod_cod)
     if res.empty:
