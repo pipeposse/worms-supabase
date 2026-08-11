@@ -43,6 +43,12 @@ VACIO_KG = 300.0           # menos que esto = tanque vacío: toma los parámetro
 CALIDADES = ("AG-C", "AG-D", "AG-B", "AG-A")   # C/D es lo normal; el lab a veces da B
 SIN_TANQUE = (("PLATAFORMA", "🏗️ Plataforma (sin tanque)"),
               ("OTRO", "📍 Otro destino (sin tanque)"))
+# Destinos habituales de la recuperación, EN ORDEN DE PRIORIDAD (definido por dirección):
+# se ofrecen primero y queda preseleccionado el de mayor prioridad con capacidad.
+PREF_DESTINOS = (("Tanque 4", "Reactores (Acopio)"),
+                 ("Tanque 5", "Reactores (Acopio)"),
+                 ("Tanque materia prima 3", "Reactores (Proceso)"),
+                 ("Tanque materia prima 4", "Reactores (Proceso)"))
 # orígenes de movimientos automáticos que la confirmación reemplaza
 _ORIG_AUTO = ("lab_sync", "sistema", "recuperacion_ag")
 
@@ -105,6 +111,23 @@ def _tanques_destino(cat):
         "WHERE COALESCE(t.activo,true) "
         "  AND t.sector IN ('Reactores (Acopio)','Reactores (Proceso)') "
         "ORDER BY t.sector, t.nombre")
+
+
+def _orden_destinos(tqs, kg):
+    """Tanques destino ordenados: preferidos CON espacio para el camión (en el orden
+    de dirección), después preferidos sin espacio, después el resto. (df, n_pref_ok)."""
+    def _rank(r):
+        for i, (n, sec) in enumerate(PREF_DESTINOS):
+            if str(r["nombre"]).strip() == n and str(r["sector"]).strip() == sec:
+                cap = _f(r.get("capacidad_litros")) or 0.0
+                libre = max(0.0, cap * DENS_DEFAULT - (_f(r.get("kg_actual")) or 0.0))
+                return (0, i) if libre >= float(kg or 0) else (1, i)
+        return (2, 99)
+    t = tqs.copy()
+    t["_rk"] = t.apply(_rank, axis=1)
+    t = t.sort_values("_rk")
+    n_ok = int(t["_rk"].apply(lambda x: x[0] == 0).sum())
+    return t.drop(columns=["_rk"]), n_ok
 
 
 def _producto(cat, codigo):
@@ -447,24 +470,30 @@ def _panel_bandeja(cat, conectar, USR, cand, j):
                                help="Precargada con lo que evaluó laboratorio para este ticket.")
             if _cal_def is None:
                 c2.caption("⚠️ Sin muestra de lab: calidad a criterio del responsable.")
-            _ops = ["🛢 %s (%s · %s kg)" % (t["nombre"], t["sector"], _n(t["kg_actual"]))
-                    for _, t in tqs.iterrows()] + [lbl for _c, lbl in SIN_TANQUE]
-            dst = c3.selectbox("Destino REAL de la descarga", _ops, key="rec_dst_%s" % tk,
-                               help="Adónde fue el camión de verdad. Si fue a plataforma, "
-                                    "elegí Plataforma: NO suma a ningún tanque (y se anula "
-                                    "el crédito automático que el sistema le daba al Tanque 4).")
+            _tqo, _npref = _orden_destinos(tqs, r["kg"])
+            _ops = ["%s%s (%s · %s kg)" % ("⭐ " if _j < _npref else "🛢 ", t["nombre"],
+                                           t["sector"], _n(t["kg_actual"]))
+                    for _j, (_, t) in enumerate(_tqo.iterrows())]
+            _ops += [lbl for _c, lbl in SIN_TANQUE]
+            dst = c3.selectbox("Destino REAL de la descarga", _ops, index=0,
+                               key="rec_dst_%s" % tk,
+                               help="⭐ = destinos prioritarios CON capacidad para este camión, "
+                                    "en el orden definido por dirección: Tanque 4 acopio → "
+                                    "Tanque 5 acopio → MP 3 → MP 4. Viene preseleccionado el "
+                                    "primero. Si fue a plataforma, elegí Plataforma: no suma a "
+                                    "ningún tanque y se anula el crédito automático al Tanque 4.")
             obs = st.text_input("Observaciones", key="rec_obs_%s" % tk,
                                 placeholder="opcional — ej. pileta terciaria 3")
             b1, b2, _sp = st.columns([1.1, 1.3, 2])
             if b1.button("✅ Confirmar recuperación", key="rec_ok_%s" % tk, type="primary",
                          use_container_width=True):
                 _idx = _ops.index(dst)
-                if _idx < len(tqs):
-                    tanque = tqs.iloc[_idx]
+                if _idx < len(_tqo):
+                    tanque = _tqo.iloc[_idx]
                     destino_tipo = "TANQUE"
                 else:
                     tanque = None
-                    destino_tipo = SIN_TANQUE[_idx - len(tqs)][0]
+                    destino_tipo = SIN_TANQUE[_idx - len(_tqo)][0]
                 prod = _producto(cat, cal)
                 if prod is None:
                     st.error("No existe el producto %s en dim_producto." % cal)
