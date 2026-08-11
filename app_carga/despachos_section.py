@@ -120,6 +120,9 @@ def _tanques(cat):
     df.loc[df["litros_brutos"].isna(), "litros_actual"] = pd.NA
     df["litros_actual"] = pd.to_numeric(df["litros_actual"], errors="coerce")
     df["etq"] = df.apply(lambda r: _etq_tanque(r), axis=1)
+    # clave ESTABLE para la grilla: no cambia con el stock ni con el lab. La etiqueta
+    # completa (etq) queda para vistas informativas.
+    df["clave"] = df["nombre"].astype(str) + " · " + df["producto_principal"].fillna("—").astype(str)
     return df
 
 
@@ -148,14 +151,37 @@ def _productos(cat):
 
 # ------------------------------------------------------------------ cálculo
 
+def _clave_de(val, tks):
+    """Convierte cualquier forma vieja del valor de la celda Tanque a la clave estable."""
+    v = str(val or "").strip()
+    if not v:
+        return None
+    if v in set(tks["clave"]):
+        return v
+    if v in set(tks["etq"]):
+        return tks.loc[tks["etq"] == v, "clave"].iloc[0]
+    _nom = v.split(" · ")[0].strip()
+    _hit = tks[tks["nombre"].astype(str).str.strip() == _nom]
+    return _hit["clave"].iloc[0] if not _hit.empty else None
+
+
+def _normalizar_lineas(df, tks):
+    """Mapea la columna Tanque de líneas guardadas/viejas a la clave estable."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty or tks.empty:
+        return df
+    out = df.copy()
+    out["Tanque"] = [(_clave_de(v, tks) or v) for v in out["Tanque"]]
+    return out
+
+
 def _resolver(ed: pd.DataFrame, tks: pd.DataFrame, prod_cod=None) -> pd.DataFrame:
     """Toma lo editado (Tanque + Litros + overrides) y devuelve la formulación resuelta."""
     if ed is None or ed.empty or tks.empty:
         return pd.DataFrame()
-    mapa = tks.set_index("etq")
+    mapa = tks.drop_duplicates(subset=["clave"]).set_index("clave")
     filas = []
     for i, r in ed.iterrows():
-        etq = r.get("Tanque")
+        etq = _clave_de(r.get("Tanque"), tks)
         if not etq or etq not in mapa.index:
             continue
         try:
@@ -376,7 +402,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         return max(rr) if rr else 0.90  # sin lab: prioridad media-baja
 
     def _linea(r, litros):
-        return {"Tanque": r["etq"], "Litros": round(float(litros), 0), "Acidez %": _NAN,
+        return {"Tanque": r["clave"], "Litros": round(float(litros), 0), "Acidez %": _NAN,
                 "Fósforo ppm": _NAN, "Azufre ppm": _NAN, "AyS %": _NAN}
 
     # pool de diluyentes: AFE-S primero. "d" queda MEJOR→peor (para saber qué es posible);
@@ -648,9 +674,9 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
 
 def _stats_sug(sug, tks, spec, fam, tol):
     """Números comparables de una sugerencia: base, AFE feo, calidad usada y promedios."""
-    _cols = ["etq", "producto_principal", "densidad", "acidez", "agua_sedimento",
+    _cols = ["clave", "producto_principal", "densidad", "acidez", "agua_sedimento",
              "azufre", "fosforo"]
-    m = sug[["Tanque", "Litros"]].merge(tks[_cols], left_on="Tanque", right_on="etq",
+    m = sug[["Tanque", "Litros"]].merge(tks[_cols], left_on="Tanque", right_on="clave",
                                         how="left")
     m["_kg"] = m["Litros"] * m["densidad"].fillna(0.91)
     prom, ok = {}, True
@@ -750,7 +776,7 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
                 rr.append(float(r[c]) / float(lim))
         return max(rr) if rr else 0.90
 
-    _cols = ["etq", "producto_principal", "densidad", "acidez", "agua_sedimento",
+    _cols = ["clave", "producto_principal", "densidad", "acidez", "agua_sedimento",
              "azufre", "fosforo"]
 
     def _fila(lb):
@@ -758,7 +784,7 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
                            maximizar=False, min_l=min_l, tol=tol, lb_min=lb_min)
         if sug.empty:
             return None
-        m = sug[["Tanque", "Litros"]].merge(tks[_cols], left_on="Tanque", right_on="etq",
+        m = sug[["Tanque", "Litros"]].merge(tks[_cols], left_on="Tanque", right_on="clave",
                                             how="left")
         m["_kg"] = m["Litros"] * m["densidad"].fillna(0.91)
         prom, ok = {}, True
@@ -1488,7 +1514,7 @@ def _armar(USR, cat, conectar):
     # líneas de un despacho guardado que se mandó a editar (ver _editar_despacho)
     _pend = ss.pop("dsp_load_pend", None)
     if _pend is not None:
-        _mapa = {int(r["id_tanque"]): r["etq"] for _, r in tks.iterrows()}
+        _mapa = {int(r["id_tanque"]): r["clave"] for _, r in tks.iterrows()}
         _filas, _sk, _algun_manual = [], [], False
         for _ln in _pend:
             _e = _mapa.get(int(_ln["id_tanque"])) if pd.notna(_ln.get("id_tanque")) else None
@@ -1923,14 +1949,18 @@ def _armar(USR, cat, conectar):
     base = ss.get("dsp_lineas")
     if base is None or not isinstance(base, pd.DataFrame):
         base = _base_vacia(_COLS_ED)
+    base = _normalizar_lineas(base, tks)   # líneas viejas (borrador/sesión) -> clave estable
     base = base.reindex(columns=_cols)
     base["Tanque"] = base["Tanque"].astype("object")
     for _c in _cols[1:]:
         base[_c] = pd.to_numeric(base[_c], errors="coerce")
 
-    _o = _con["etq"].tolist() + _s0["etq"].tolist()
+    # Opciones ESTABLES (nombre · producto): antes llevaban litros y lab adentro, y
+    # cada refresco de stock invalidaba los valores elegidos y el editor blanqueaba
+    # toda la designación. El stock y el lab se ven en la tabla de abajo, siempre al día.
+    _o = _con["clave"].tolist() + _s0["clave"].tolist()
     if _inc_vacios and not _fondo.empty:
-        _o += _fondo["etq"].tolist()
+        _o += _fondo["clave"].tolist()
     _cfg = {
         "Tanque": st.column_config.SelectboxColumn("Tanque", options=_o, width="large", required=True,
                                                    help="Tanques con " + " / ".join(_fam) + "."),
