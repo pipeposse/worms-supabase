@@ -1721,16 +1721,25 @@ def _armar(USR, cat, conectar):
     _tol = float(_tolp or 0.0) / 100.0
 
     # ---- exclusión de tanques: "este no, sugerime otro" ----
-    _opc_exc = tks[tks["producto_principal"].astype(str).str.strip().str.upper()
-                   .isin(_fam)]["etq"].tolist()
-    _prev_exc = [x for x in (ss.get("dsp_exc_ms") or []) if x in _opc_exc]
+    # Identidad por NOMBRE (estable), nunca por la etiqueta con litros: la etiqueta
+    # cambia con cada medición de stock y una exclusión guardada dejaba de matchear
+    # las opciones, tirando StreamlitAPIException en plena carga.
+    _opc_exc = sorted(tks[tks["producto_principal"].astype(str).str.strip().str.upper()
+                          .isin(_fam)]["nombre"].astype(str).unique().tolist())
+    # sanear estado/borrador viejo (formato etiqueta o tanques que ya no están)
+    _viejo = ss.get("dsp_exc_ms") or []
+    _limpio = [x for x in _viejo if x in _opc_exc]
+    _limpio += [n for n in _opc_exc
+                if n not in _limpio and any(str(v).startswith(n + " ·") for v in _viejo)]
+    if _limpio != _viejo:
+        ss["dsp_exc_ms"] = _limpio
     ex1, ex2 = st.columns([2.6, 1.2])
     _exc = ex1.multiselect("🚫 Tanques excluidos de la sugerencia", _opc_exc,
-                           default=_prev_exc, key="dsp_exc_ms",
+                           key="dsp_exc_ms",
                            help="Los tanques de esta lista NO se usan al sugerir ni en las "
                                 "propuestas ni en el trade-off. Agregá el que quieras sacar "
                                 "y tocá Re-sugerir: la mezcla se rearma sin él.")
-    tks_sug = tks[~tks["etq"].isin(set(_exc))] if _exc else tks
+    tks_sug = tks[~tks["nombre"].astype(str).isin(set(_exc))] if _exc else tks
     if ex2.button("🔁 Re-sugerir sin excluidos", use_container_width=True,
                   disabled=not _exc, key="dsp_exc_go",
                   help="Rearma la sugerencia ignorando los tanques excluidos, con los mismos "
