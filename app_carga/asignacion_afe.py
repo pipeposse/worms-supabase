@@ -440,12 +440,17 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
                 kg = float(ln["kg"])
                 lts = round(kg / dens, 1)
 
-                # stock y parámetros del tanque ANTES de este movimiento
+                # stock y parámetros del tanque ANTES de este movimiento — instantáneo al
+                # confirmar. Si el operario marcó "vacío en realidad", se ignora el stock
+                # del sistema (puede ser una medición vieja) y el ponderado parte de 0:
+                # el tanque toma los parámetros del ticket.
                 cur.execute(
                     "SELECT COALESCE(s.kg_estimado, s.kg_actual, 0) "
                     "FROM produccion.vw_stock_tanque_actual s WHERE s.id_tanque=%s", (idt,))
                 _r = cur.fetchone()
                 kg_antes = float(_r[0]) if _r and _r[0] is not None else 0.0
+                if ln.get("vacio_real"):
+                    kg_antes = 0.0
                 cur.execute(
                     "SELECT acidez_pct, agua_pct, sedimentos_pct, densidad_g_ml, ppm_azufre, ppm_fosforo, "
                     "       COALESCE(parametros_extra,'{}'::jsonb) "
@@ -492,6 +497,7 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
                 extra = json.dumps({"mezcla_ticket": tk, "mezcla_kg": kg,
                                     "mezcla_kg_antes": round(kg_antes, 1),
                                     "mezcla_vacio": vacio, "mezcla_mov": id_mov,
+                                    "mezcla_vacio_forzado": bool(ln.get("vacio_real")),
                                     "mezcla_imputados": _imp}, default=str)
                 cur.execute(
                     "INSERT INTO produccion.fact_param_tanque "
@@ -710,10 +716,23 @@ def _pendientes(USR, cat, conectar, contexto):
                 _mot = st.selectbox("Motivo del desvío", MOTIVOS, key="asg_mot%d_%s" % (i, r["tk"]))
             if _t["_disp"] * dens < _kgi - 1:
                 st.warning("Excede el espacio libre (%s kg máx.)" % _n(_t["_disp"] * dens, 0))
+            # transparencia del ponderado: sobre cuántos kg previos va a mezclar. El stock
+            # del sistema puede estar viejo (Cónico 4: ponderó sobre 26,5 t que ya no
+            # estaban) — el operario que tiene el tanque adelante es quien lo sabe.
+            _kg_prev = float(_t.get("_kg_est") or 0.0)
+            st.caption("Pondera sobre **%s kg previos** según el sistema." % _n(_kg_prev, 0))
+            _vac = False
+            if _kg_prev > VACIO_KG:
+                _vac = st.checkbox("⚠️ El tanque está VACÍO en realidad",
+                                   key="asg_vac%d_%s" % (i, r["tk"]),
+                                   help="Si el stock del sistema está desactualizado y el tanque "
+                                        "está vacío, marcá esto: el tanque toma los parámetros "
+                                        "del ticket tal cual, sin ponderar contra stock fantasma. "
+                                        "Queda registrado. Avisá igual que falta la medición.")
             lineas.append({"id_tanque": int(_t["id_tanque"]),
                            "label": "%d · %s" % (int(_t["id_tanque"]), _t["nombre"]),
                            "kg": float(_kgi), "fue_sugerido": _fue, "motivo": _mot,
-                           "_tq": _t})
+                           "vacio_real": bool(_vac), "_tq": _t})
 
     _suma = sum(x["kg"] for x in lineas)
     _dif = round(kg - _suma, 1)
