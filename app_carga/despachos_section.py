@@ -212,6 +212,178 @@ def _normalizar_lineas(df, tks):
     return out
 
 
+def _puntaje_calidad(r, spec):
+    """Suma de parámetros relativos a la spec (menor = mejor). Sin lab = 990."""
+    rr = []
+    for c, k in (("acidez", "acidez"), ("agua_sedimento", "ays"),
+                 ("azufre", "azufre"), ("fosforo", "fosforo")):
+        lim = spec.get(k)
+        v = r.get(c) if hasattr(r, "get") else None
+        if lim and v is not None and pd.notna(v):
+            rr.append(float(v) / float(lim))
+    return sum(rr) if rr else 990.0
+
+
+def _sem_calidad(r, spec):
+    """Semáforo por el PEOR parámetro del tanque contra la spec del despacho."""
+    peor, alguno = 0.0, False
+    for c, k in (("acidez", "acidez"), ("agua_sedimento", "ays"),
+                 ("azufre", "azufre"), ("fosforo", "fosforo")):
+        lim = spec.get(k)
+        v = r.get(c) if hasattr(r, "get") else None
+        if lim and v is not None and pd.notna(v):
+            peor = max(peor, float(v) / float(lim))
+            alguno = True
+    if not alguno:
+        return "⚪"
+    if peor > 1.1:
+        return "🔴"
+    if peor > 1.0:
+        return "🟠"
+    if peor > 0.9:
+        return "🟡"
+    return "🟢"
+
+
+def _lab_corto(r):
+    def _f(v, dec):
+        return ("%.*f" % (dec, float(v))) if v is not None and pd.notna(v) else "?"
+    return "ac %s · P %s · S %s · AyS %s" % (
+        _f(r.get("acidez"), 2), _f(r.get("fosforo"), 0),
+        _f(r.get("azufre"), 0), _f(r.get("agua_sedimento"), 2))
+
+
+def _orden_opciones(tp, fam, spec):
+    """Claves de TODA la familia, ordenadas por calidad: base primero, después AFE-S,
+    después el resto; dentro de cada grupo, mejor calidad primero y sin lab al final."""
+    df = tp.copy()
+    up = df["producto_principal"].astype(str).str.strip().str.upper()
+
+    def _rol(c):
+        if c == fam[0]:
+            return 0
+        return 1 + (PREFERIDOS.index(c) if c in PREFERIDOS else 50)
+
+    df["_rol"] = up.map(_rol)
+    df["_q"] = df.apply(lambda r: _puntaje_calidad(r, spec), axis=1)
+    df = df.sort_values(["_rol", "_q", "nombre"], ascending=[True, True, True])
+    out, seen = [], set()
+    for v in df["clave"]:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def _info_lineas(df, tks, spec):
+    """Columnas informativas (solo lectura) para el editor: Disp. (L) y Calidad."""
+    m = tks.drop_duplicates(subset=["clave"]).set_index("clave")
+    disp, cal = [], []
+    for v in df["Tanque"]:
+        k = _clave_de(v, tks)
+        if k and k in m.index:
+            r = m.loc[k]
+            d = r["litros_actual"]
+            disp.append(float(d) if pd.notna(d) else 0.0)
+            cal.append("%s %s" % (_sem_calidad(r, spec), _lab_corto(r)))
+        else:
+            disp.append(_NAN)
+            cal.append("")
+    out = df.copy()
+    out["Disp."] = disp
+    out["Calidad"] = cal
+    return out
+
+
+def _selector_tanques(ss, tp, fam, spec, tks, conectar, USR, inc_vacios):
+    """Panel visual de tanques: tarjetas por producto, click = entra/sale de la carga.
+
+    Sin HTML con estado ni components custom: cada tarjeta es un st.button nativo,
+    así el click es un rerun normal de Streamlit — no puede colgar ni resetear la
+    página. Lo que ya estaba tipeado se conserva porque la línea nueva se agrega
+    sobre lo último editado (_dsp_last_ed)."""
+    with st.expander("🖱️ **Selección rápida de tanques** — filtrá por producto y hacé click",
+                     expanded=False):
+        c1, c2, c3 = st.columns([1.6, 1.6, 1.4])
+        _fsel = c1.radio("1 · Producto", list(fam), horizontal=True, key="dsp_card_prod")
+        _lleno = c2.checkbox("🔋 Llenado total al agregar", value=True, key="dsp_card_full",
+                             help="Cada click carga TODO lo disponible del tanque. "
+                                  "Desmarcá para agregarlo en 0 y poner los litros a mano.")
+        cur = ss.get("_dsp_last_ed")
+        if cur is None or not isinstance(cur, pd.DataFrame):
+            cur = ss.get("dsp_lineas")
+        if cur is None or not isinstance(cur, pd.DataFrame):
+            cur = _base_vacia(_COLS_ED)
+        cur = _normalizar_lineas(cur.reindex(columns=_COLS_ED), tks)
+        if c3.button("⛽ Llenar líneas al máximo", key="dsp_fill_all", use_container_width=True,
+                     help="Pone en cada línea ya cargada todos los litros disponibles del tanque."):
+            _mm = tks.drop_duplicates(subset=["clave"]).set_index("clave")["litros_actual"]
+            _nl = []
+            for _, _r in cur.iterrows():
+                _k = _clave_de(_r.get("Tanque"), tks)
+                if _k and _k in _mm.index and pd.notna(_mm[_k]):
+                    _r = _r.copy()
+                    _r["Litros"] = float(int(float(_mm[_k]) // 10) * 10)
+                _nl.append(_r)
+            if _nl:
+                _df = pd.DataFrame(_nl).reindex(columns=_COLS_ED)
+                _lineas_set(ss, _df)
+                _borr_guardar(conectar, USR, _df)
+                st.rerun()
+        _sel = set(str(x) for x in cur["Tanque"].fillna("") if str(x).strip())
+        _up = tp["producto_principal"].astype(str).str.strip().str.upper()
+        _pool = tp[_up == str(_fsel)].copy()
+        if not inc_vacios:
+            _pool = _pool[_pool["litros_actual"].fillna(0) > 0]
+        if _pool.empty:
+            st.info("No hay tanques de %s con stock disponible." % _fsel)
+            return
+        _pool["_q"] = _pool.apply(lambda r: _puntaje_calidad(r, spec), axis=1)
+        _pool["_x"] = (~_pool["sector"].astype(str).str.strip()
+                       .isin(list(SECTORES_PRIORIDAD))).astype(int)
+        _pool = _pool.sort_values(["_x", "_q", "litros_actual"],
+                                  ascending=[True, True, False])
+        st.caption("2 · Ordenados de **mejor a peor calidad** (suma de acidez, P, S y AyS "
+                   "contra la spec); los de sectores no prioritarios van al final. "
+                   "Click para agregar ➕ o quitar ➖ de la carga.")
+        _ncol = 4
+        _fil = [_pool.iloc[i:i + _ncol] for i in range(0, len(_pool), _ncol)]
+        for _rw in _fil:
+            _cc = st.columns(_ncol)
+            for _j, (_, r) in enumerate(_rw.iterrows()):
+                with _cc[_j].container(border=True):
+                    _en = str(r["clave"]) in _sel
+                    _disp = float(r["litros_actual"]) if pd.notna(r["litros_actual"]) else 0.0
+                    _cap = float(r["capacidad_litros"]) if pd.notna(r["capacidad_litros"]) else 0.0
+                    _pct = int(min(100, max(0, 100.0 * _disp / _cap))) if _cap else 0
+                    st.markdown("**%s**%s" % (r["nombre"], " · ✅ en la carga" if _en else ""))
+                    st.progress(_pct, text="%s L disp." % "{:,.0f}".format(_disp))
+                    st.caption("%s %s" % (_sem_calidad(r, spec), _lab_corto(r)))
+                    if _en:
+                        _lbl = "➖ Quitar"
+                    elif _lleno and _disp > 0:
+                        _lbl = "➕ Todo (%s L)" % "{:,.0f}".format(float(int(_disp // 10) * 10))
+                    else:
+                        _lbl = "➕ Agregar"
+                    if st.button(_lbl, key="dsp_card_%d" % int(r["id_tanque"]),
+                                 use_container_width=True):
+                        df = cur.copy()
+                        if _en:
+                            df = df[df["Tanque"].astype(str) != str(r["clave"])]
+                        else:
+                            _l = float(int(_disp // 10) * 10) if _lleno else 0.0
+                            df = pd.concat([df, pd.DataFrame([{
+                                "Tanque": r["clave"], "Litros": _l, "Acidez %": _NAN,
+                                "Fósforo ppm": _NAN, "Azufre ppm": _NAN, "AyS %": _NAN}])],
+                                ignore_index=True)
+                        df = df[~(df["Tanque"].isna()
+                                  | (df["Tanque"].astype(str).str.strip() == ""))]
+                        df = df.reindex(columns=_COLS_ED)
+                        _lineas_set(ss, df)
+                        _borr_guardar(conectar, USR, df)
+                        st.rerun()
+
+
 def _resolver(ed: pd.DataFrame, tks: pd.DataFrame, prod_cod=None) -> pd.DataFrame:
     """Toma lo editado (Tanque + Litros + overrides) y devuelve la formulación resuelta."""
     if ed is None or ed.empty or tks.empty:
@@ -482,10 +654,16 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
             # El base también se elige por CALIDAD: el AG-E más limpio primero — es el
             # que menos margen de spec quema, así entra más base o más AFE-S feo. A igual
             # calidad, el de más stock. Sin análisis de lab, al final.
-            _bok["_bsc"] = _bok.apply(
-                lambda r: (_score(r) if any(pd.notna(r.get(c)) for c in
-                                            ("acidez", "agua_sedimento", "azufre", "fosforo"))
-                           else 99.0), axis=1)
+            # SUMA de parámetros relativos (no el peor solo): el máximo escondía a un
+            # tanque malo en un solo parámetro y bueno en el resto, y viceversa.
+            def _bsum(r):
+                rr = []
+                for c, lim in (("acidez", spec["acidez"]), ("agua_sedimento", spec["ays"]),
+                               ("azufre", spec["azufre"]), ("fosforo", spec["fosforo"])):
+                    if lim and pd.notna(r[c]):
+                        rr.append(float(r[c]) / float(lim))
+                return sum(rr) if rr else 990.0
+            _bok["_bsc"] = _bok.apply(_bsum, axis=1)
             _bok = _bok.sort_values(["_bsc", "_d"], ascending=[True, False])
             bpool = [(r, float(r["_d"])) for _, r in _bok.iterrows()]
         else:
@@ -664,12 +842,24 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                          "de base es %s L: se usa todo lo que hay"
                          % ("{:,.0f}".format(float(lb_min)), base_cod, "{:,.0f}".format(hay)))
         if lb + 0.5 < _piso:
-            lb = float(int(_piso // 10) * 10)
-            notas.append("base subida a %s L para cumplir la regla de %s L de %s por contenedor"
-                         % ("{:,.0f}".format(lb), "{:,.0f}".format(MIN_BASE_POR_CONT), base_cod))
-            if not _cumple(_armar_mezcla(lb)[0], tol):
-                notas.append("⚠️ con ese piso de %s la spec NO cierra con estos diluyentes: "
-                             "revisá el panel de cumplimiento" % base_cod)
+            _lb_antes = lb
+            _lb_piso = float(int(_piso // 10) * 10)
+            _ok_piso = _cumple(_armar_mezcla(_lb_piso)[0], tol)
+            if _ok_piso or _lb_antes <= 0 or not _cumple(_armar_mezcla(_lb_antes)[0], tol):
+                lb = _lb_piso
+                notas.append("base subida a %s L para cumplir la regla de %s L de %s por contenedor"
+                             % ("{:,.0f}".format(lb), "{:,.0f}".format(MIN_BASE_POR_CONT), base_cod))
+                if not _ok_piso:
+                    notas.append("⚠️ con ese piso de %s la spec NO cierra con estos diluyentes: "
+                                 "revisá el panel de cumplimiento" % base_cod)
+            else:
+                # El mínimo por contenedor es una REGLA con excepción, no un número fijo:
+                # si con el piso la spec NO cierra pero con menos base sí, gana la spec
+                # y queda avisado para validar el desvío con dirección.
+                notas.append("⚠️ %s por DEBAJO del mínimo: quedan %s L y la regla pide %s L. "
+                             "Con el piso completo la spec NO cierra con estos diluyentes — "
+                             "validá el desvío con dirección o cambiá los tanques de AFE."
+                             % (base_cod, "{:,.0f}".format(_lb_antes), "{:,.0f}".format(_piso)))
 
     if d.empty:
         lineas, acum = _armar_mezcla(lb)
@@ -767,21 +957,39 @@ def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol, lb_min=0.0):
                             "El margen se gasta en el base, no en AFE feo."
                             % (fam[0], tol * 100),
                     "df": a_df, "st": sa})
-        if sa["lb"] >= 20:
-            lb_b = max(float(int((sa["lb"] / 2.0) // 10) * 10), float(lb_min or 0.0))
+        _piso = float(lb_min or 0.0)
+        if sa["lb"] > _piso + 20:
+            # B intermedio: punto medio entre el mínimo por regla y el máximo de A.
+            lb_b = float(int((_piso + (sa["lb"] - _piso) / 2.0) // 10) * 10)
             b_df, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods, lb_b,
                                 maximizar=False, tol=tol, lb_min=lb_min)
             if not b_df.empty:
-                out.append({"nombre": "B · Mitad de %s + AFE-S feo" % fam[0],
-                            "desc": "Resigna la mitad del base y usa ese margen para "
-                                    "colocar el máximo de AFE-S de baja calidad.",
+                out.append({"nombre": "B · Intermedio de %s" % fam[0],
+                            "desc": "Punto medio entre el mínimo por regla y el máximo de A: "
+                                    "el margen restante coloca AFE-S de baja calidad.",
                             "df": b_df, "st": _stats_sug(b_df, tks, spec, fam, tol)})
-    c_df, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods, None,
-                        maximizar=True, tol=0.0, lb_min=lb_min)
+        else:
+            # A quedó pegada al piso: la spec no banca más base. B = spec primero,
+            # dejando caer el mínimo por contenedor (la propuesta lo avisa).
+            b_df, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods, None,
+                                maximizar=True, tol=tol, lb_min=0.0)
+            if not b_df.empty:
+                sb = _stats_sug(b_df, tks, spec, fam, tol)
+                if abs(float(sb["lb"]) - float(sa["lb"])) > 15:
+                    out.append({"nombre": "B · Bajo el mínimo (spec primero)",
+                                "desc": "El máximo de %s que la spec tolera AUNQUE quede por "
+                                        "debajo del mínimo de %s L por contenedor — para "
+                                        "cuando el piso no cierra. Validalo con dirección."
+                                        % (fam[0], "{:,.0f}".format(MIN_BASE_POR_CONT)),
+                                "df": b_df, "st": sb})
+    _piso_c = float(lb_min or 0.0)
+    c_df, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods,
+                        (_piso_c if _piso_c > 0 else None),
+                        maximizar=(_piso_c <= 0), tol=0.0, lb_min=lb_min)
     if not c_df.empty:
-        out.append({"nombre": "C · Spec estricta",
-                    "desc": "Sin gastar tolerancia: la carga cumple la especificación "
-                            "al pie de la letra.",
+        out.append({"nombre": "C · Mínimo de %s · spec estricta" % fam[0],
+                    "desc": "El piso justo de %s (mínimo por contenedor) y sin gastar "
+                            "tolerancia: la carga más prolija posible." % fam[0],
                     "df": c_df, "st": _stats_sug(c_df, tks, spec, fam, 0.0)})
     return out
 
@@ -1801,6 +2009,69 @@ def _armar(USR, cat, conectar):
                 st.rerun()
             except Exception as e:
                 st.error("No se pudo actualizar: %s" % e)
+
+    with st.expander("🧪 Actualizar parámetros de lab de un tanque acá mismo"):
+        st.caption("Pisa el último análisis del tanque — lo mismo que carga Laboratorio — y "
+                   "queda en el historial como AJUSTE_MANUAL con tu usuario. Usalo cuando el "
+                   "lab pasó valores nuevos y todavía no están en el sistema.")
+        _opq = _tp.apply(lambda r: "%s · %s" % (r["nombre"],
+                                                str(r.get("producto_principal") or "—")),
+                         axis=1).tolist()
+        _selq = st.selectbox("Tanque", _opq, key="dsp_lab_tk")
+        _rq = _tp.iloc[_opq.index(_selq)]
+        st.caption("Actual: %s %s" % (_sem_calidad(_rq, spec), _lab_corto(_rq)))
+        _q1, _q2, _q3, _q4 = st.columns(4)
+        _qa = _q1.number_input("Acidez %", min_value=0.0, step=0.1, format="%.2f",
+                               value=float(_rq["acidez"]) if pd.notna(_rq["acidez"]) else 0.0,
+                               key="dsp_lab_ac")
+        _qp = _q2.number_input("Fósforo ppm", min_value=0.0, step=5.0, format="%.1f",
+                               value=float(_rq["fosforo"]) if pd.notna(_rq["fosforo"]) else 0.0,
+                               key="dsp_lab_p")
+        _qs = _q3.number_input("Azufre ppm", min_value=0.0, step=5.0, format="%.1f",
+                               value=float(_rq["azufre"]) if pd.notna(_rq["azufre"]) else 0.0,
+                               key="dsp_lab_s")
+        _qy = _q4.number_input("AyS %", min_value=0.0, step=0.1, format="%.2f",
+                               value=(float(_rq["agua_sedimento"])
+                                      if pd.notna(_rq["agua_sedimento"]) else 0.0),
+                               key="dsp_lab_ays")
+        if st.button("💾 Guardar parámetros del tanque", key="dsp_lab_go",
+                     use_container_width=True):
+            try:
+                with conectar(USR["id_usuario"]) as (conn, audit):
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT id_producto_principal FROM produccion.dim_tanque "
+                                    "WHERE id_tanque=%s", (int(_rq["id_tanque"]),))
+                        _rp = cur.fetchone()
+                        if not _rp or _rp[0] is None:
+                            raise RuntimeError("el tanque no tiene producto principal asignado")
+                        cur.execute("SELECT set_config('app.param_origen','AJUSTE_MANUAL',true)")
+                        _xtra = json.dumps({"param_manual_desde": "despachos",
+                                            "usuario": USR.get("nombre") or USR["id_usuario"]},
+                                           default=str)
+                        cur.execute(
+                            "INSERT INTO produccion.fact_param_tanque "
+                            "(id_tanque, id_producto, evaluado, ultima_evaluacion_ts, "
+                            " acidez_pct, agua_pct, ppm_azufre, ppm_fosforo, "
+                            " parametros_extra, actualizado_en) "
+                            "VALUES (%s,%s,true,now(),%s,%s,%s,%s,%s::jsonb,now()) "
+                            "ON CONFLICT (id_tanque, id_producto) DO UPDATE SET "
+                            " evaluado=true, ultima_evaluacion_ts=now(), "
+                            " acidez_pct=EXCLUDED.acidez_pct, agua_pct=EXCLUDED.agua_pct, "
+                            " ppm_azufre=EXCLUDED.ppm_azufre, ppm_fosforo=EXCLUDED.ppm_fosforo, "
+                            " parametros_extra = COALESCE(produccion.fact_param_tanque."
+                            "parametros_extra,'{}'::jsonb) || EXCLUDED.parametros_extra, "
+                            " actualizado_en=now()",
+                            (int(_rq["id_tanque"]), int(_rp[0]), float(_qa), float(_qy),
+                             float(_qs), float(_qp), _xtra))
+                    audit.log("U", "fact_param_tanque", int(_rq["id_tanque"]),
+                              {"acidez": float(_qa), "fosforo": float(_qp),
+                               "azufre": float(_qs), "ays": float(_qy),
+                               "desde": "despachos"})
+                cat.clear()
+                st.success("Parámetros de %s actualizados." % _rq["nombre"])
+                st.rerun()
+            except Exception as e:
+                st.error("No se pudo actualizar el lab: %s" % e)
     if not _s0.empty:
         st.caption("Sin medición de nivel cargada, pero igual seleccionables: **" +
                    "**, **".join(_s0["nombre"].astype(str).tolist()) +
@@ -2037,6 +2308,8 @@ def _armar(USR, cat, conectar):
                            "valor — si la elegís, el panel de Cumplimiento no debería marcar "
                            "ningún desvío.")
 
+    _selector_tanques(ss, _tp, _fam, spec, tks, conectar, USR, _inc_vacios)
+
     _cols = _COLS_ED if pisar else _COLS_MIN
 
     base = ss.get("dsp_lineas")
@@ -2047,18 +2320,31 @@ def _armar(USR, cat, conectar):
     base["Tanque"] = base["Tanque"].astype("object")
     for _c in _cols[1:]:
         base[_c] = pd.to_numeric(base[_c], errors="coerce")
+    # columnas informativas (solo lectura): disponible y último lab del tanque elegido
+    base = _info_lineas(base, tks, spec)
+    base = base.reindex(columns=["Tanque", "Litros", "Disp.", "Calidad"]
+                        + [c for c in _cols if c not in ("Tanque", "Litros")])
 
-    # Opciones ESTABLES (nombre · producto): antes llevaban litros y lab adentro, y
-    # cada refresco de stock invalidaba los valores elegidos y el editor blanqueaba
-    # toda la designación. El stock y el lab se ven en la tabla de abajo, siempre al día.
-    _o = _con["clave"].tolist() + _s0["clave"].tolist()
-    if _inc_vacios and not _fondo.empty:
-        _o += _fondo["clave"].tolist()
+    # Opciones ESTABLES: TODAS las claves de la familia, SIEMPRE, y cacheadas por
+    # sesión. Si la lista cambiara con el stock (una medición nueva movía tanques
+    # entre "usables" y "fondo"), Streamlit ve columnas distintas, trata al editor
+    # como un widget NUEVO y descarta todo lo cargado ("actualicé la medida y se
+    # borró todo"). El orden es por calidad (mejor primero, AG-E adelante).
+    _oq = _orden_opciones(_tp, _fam, spec)
+    _okey = "dsp_opts_%s" % str(prod_cod or "")
+    if not ss.get(_okey) or set(ss[_okey]) != set(_oq):
+        ss[_okey] = _oq
+    _o = ss[_okey]
     _cfg = {
         "Tanque": st.column_config.SelectboxColumn("Tanque", options=_o, width="large", required=True,
                                                    help="Tanques con " + " / ".join(_fam) + "."),
         "Litros": st.column_config.NumberColumn("Litros a cargar", min_value=0.0, step=500.0,
                                                 format="%.0f"),
+        "Disp.": st.column_config.NumberColumn("Disp. (L)", format="%.0f", disabled=True,
+                                               help="Disponible AHORA del tanque elegido (ya "
+                                                    "descontado fondo y comprometidos)."),
+        "Calidad": st.column_config.TextColumn("Calidad (último lab)", disabled=True,
+                                               help="Semáforo contra la spec del despacho."),
     }
     if pisar:
         _cfg.update({
@@ -2076,7 +2362,20 @@ def _armar(USR, cat, conectar):
     # OJO: lo editado NO se re-inyecta como input del editor (eso hacía que los valores
     # tipeados se revirtieran y hubiera que tipear varias veces). El borrador se guarda
     # directo desde `ed`, y dsp_lineas sólo cambia por acciones (Sugerir, Deshacer, etc.).
-    _borr_guardar(conectar, USR, ed)   # autosave con lo editado, aunque esté a medio cargar
+    ed = ed.reindex(columns=list(_cols) + ["Disp.", "Calidad"])
+    _borr_guardar(conectar, USR, ed.reindex(columns=_cols))  # autosave sin columnas informativas
+    ss["_dsp_last_ed"] = ed.reindex(columns=_cols).copy()    # para el selector de tarjetas
+    # Si cambió un TANQUE o la cantidad de filas, dsp_lineas toma lo editado y se
+    # redibuja UNA vez: así Disp. y Calidad reflejan el tanque nuevo. Lo tipeado se
+    # conserva porque viene de `ed` (esto no es el espejo continuo que revertía valores).
+    try:
+        _tq_ed = [str(x or "").strip() for x in ed["Tanque"].fillna("")]
+        _tq_ba = [str(x or "").strip() for x in base["Tanque"].fillna("")]
+        if _tq_ed != _tq_ba:
+            _lineas_set(ss, ed.reindex(columns=_cols))
+            st.rerun()
+    except Exception:
+        pass
 
     res = _resolver(ed, tks, prod_cod)
     # Una línea con 0 litros simplemente NO cuenta (el resolvedor la ignora). Si no queda
