@@ -1219,6 +1219,14 @@ def _analisis(USR, cat):
                            file_name="analisis_despachos.csv", mime="text/csv", key="dsa_dl")
 
 
+def _lineas_set(ss, df):
+    """Toda escritura programática de la grilla pasa por acá: guarda copia para Deshacer."""
+    _prev = ss.get("dsp_lineas")
+    if isinstance(_prev, pd.DataFrame) and not _prev.dropna(how="all").empty:
+        ss["dsp_lineas_undo"] = _prev.copy()
+    ss["dsp_lineas"] = df
+
+
 def _armar(USR, cat, conectar):
     ss = st.session_state
     # Keep-alive: re-marcar los campos como estado programático ANTES de instanciar los
@@ -1265,7 +1273,7 @@ def _armar(USR, cat, conectar):
                 "AyS %": (float(_ln["agua_sedimento"]) if _man and _ln.get("agua_sedimento") is not None
                           else _NAN),
             })
-        ss["dsp_lineas"] = pd.DataFrame(_filas) if _filas else _base_vacia(_COLS_ED)
+        _lineas_set(ss, pd.DataFrame(_filas) if _filas else _base_vacia(_COLS_ED))
         if _algun_manual:
             ss["dsp_pisar"] = True
         if _sk:
@@ -1544,11 +1552,28 @@ def _armar(USR, cat, conectar):
         if _sug.empty:
             cc.warning(_msg)
         else:
-            ss["dsp_lineas"] = _sug
+            _lineas_set(ss, _sug)
             st.rerun()
-    if cb.button("🗑️ Vaciar", use_container_width=True):
-        ss["dsp_lineas"] = _base_vacia(_COLS_ED)
-        st.rerun()
+    if not ss.get("dsp_vaciar_arm"):
+        if cb.button("🗑️ Vaciar", use_container_width=True):
+            ss["dsp_vaciar_arm"] = True
+            st.rerun()
+    else:
+        if cb.button("⚠️ Sí, vaciar TODO", type="primary", use_container_width=True):
+            ss["dsp_vaciar_arm"] = False
+            _lineas_set(ss, _base_vacia(_COLS_ED))
+            st.rerun()
+        if cb.button("Cancelar", use_container_width=True):
+            ss["dsp_vaciar_arm"] = False
+            st.rerun()
+    if isinstance(ss.get("dsp_lineas_undo"), pd.DataFrame):
+        if cb.button("↩️ Deshacer", use_container_width=True,
+                     help="Vuelve la grilla a como estaba antes del último Vaciar, "
+                          "Sugerir, Usar propuesta o carga para edición."):
+            _cur = ss.get("dsp_lineas")
+            ss["dsp_lineas"] = ss["dsp_lineas_undo"]
+            ss["dsp_lineas_undo"] = _cur if isinstance(_cur, pd.DataFrame) else None
+            st.rerun()
     pisar = cc.checkbox("✏️ Pisar valores de laboratorio a mano", key="dsp_pisar",
                         help="Sólo si el lab te pasó un valor que todavía no está en el sistema. "
                              "Por defecto los parámetros salen del tanque.")
@@ -1616,7 +1641,7 @@ def _armar(USR, cat, conectar):
                                        "⚠️ NO cierra (%s L)" % "{:,.0f}".format(_s["total"]))
                             if st.button("✅ Usar esta", key="dsp_usep_%d" % _i,
                                          use_container_width=True):
-                                ss["dsp_lineas"] = _p["df"]
+                                _lineas_set(ss, _p["df"])
                                 ss["dsp_props"] = None
                                 st.rerun()
                 st.caption("Ojo: la C se calcula con 0%% de margen aunque arriba tengas otro "
