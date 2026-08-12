@@ -2941,7 +2941,8 @@ def _listado(USR, cat, conectar):
              "semana_iso, n_contenedores, litros_objetivo, litros_total, tn_total, pct_cubierto, "
              "acidez_pond, fosforo_pond, azufre_pond, ays_pond, spec_acidez_max, spec_fosforo_max, "
              "spec_azufre_max, spec_ays_max, estado, n_lineas, n_lineas_exceden_stock, creado_por, "
-             "creado_en FROM produccion.v_despacho_resumen")
+             "creado_en, fuera_spec, aprob_direccion, aprob_por, aprob_en, aprob_nota "
+             "FROM produccion.v_despacho_resumen")
     if df is None or df.empty:
         st.info("Todavía no hay despachos cargados.")
         return
@@ -2970,23 +2971,84 @@ def _listado(USR, cat, conectar):
         return "✅" if p and all(p) else ("❌" if p else "—")
 
     df["Spec"] = df.apply(_est, axis=1)
+
+    # Aprobación de dirección: sólo hace falta si la carga quedó fuera de spec.
+    _fs = (df["fuera_spec"].fillna(False).astype(bool) if "fuera_spec" in df.columns
+           else df["Spec"].eq("❌"))
+    df["_fuera"] = _fs
+    _ap = (df["aprob_direccion"].fillna("") if "aprob_direccion" in df.columns
+           else pd.Series([""] * len(df), index=df.index))
+
+    def _apr(i):
+        _v = str(_ap.loc[i] or "")
+        if not df.loc[i, "_fuera"]:
+            return "— no hace falta"
+        if _v == "APROBADO":
+            return "✅ Aprobado"
+        if _v == "RECHAZADO":
+            return "⛔ Rechazado"
+        return "⏳ Pendiente"
+
+    df["Dirección"] = [_apr(i) for i in df.index]
+    df["_dif_tn"] = (df["kg_tk"] / 1000.0) - pd.to_numeric(df["tn_total"], errors="coerce")
+    df.loc[df["n_tk"] == 0, "_dif_tn"] = None
+    df["_real_tn"] = (df["kg_tk"] / 1000.0).round(2)
+    df.loc[df["n_tk"] == 0, "_real_tn"] = None
+
     _t = df.rename(columns={"id_despacho": "ID", "titulo": "Despacho", "destino": "Destino",
                             "cliente": "Cliente",
                             "producto": "Producto", "tipo_carga": "Carga", "fecha_despacho": "Fecha",
-                            "semana_iso": "Sem", "n_contenedores": "Cont.", "litros_total": "Litros",
-                            "tn_total": "TN", "pct_cubierto": "% objetivo", "estado": "Estado",
+                            "semana_iso": "Sem", "n_contenedores": "Cont.",
+                            "litros_total": "Plan (L)", "litros_objetivo": "Objetivo (L)",
+                            "tn_total": "Plan (TN)", "pct_cubierto": "% del objetivo",
+                            "estado": "Estado",
                             "n_lineas": "Tanques", "acidez_pond": "Acidez %",
                             "fosforo_pond": "Fósforo ppm", "azufre_pond": "Azufre ppm",
-                            "_pes": "Pesadas", "_pes_tn": "Pesado (TN)"})
+                            "_pes": "Pesadas", "_real_tn": "Real (TN)", "_dif_tn": "Δ real−plan"})
     st.dataframe(_t[["ID", "Despacho", "Fecha", "Sem", "Cliente", "Destino", "Producto", "Carga",
-                     "Cont.", "Pesadas", "Pesado (TN)", "Litros", "TN", "% objetivo", "Acidez %",
-                     "Fósforo ppm", "Azufre ppm", "Spec", "Estado", "Tanques"]],
+                     "Cont.", "Objetivo (L)", "Plan (L)", "Plan (TN)", "% del objetivo",
+                     "Pesadas", "Real (TN)", "Δ real−plan", "Acidez %",
+                     "Fósforo ppm", "Azufre ppm", "Spec", "Dirección", "Estado", "Tanques"]],
                  hide_index=True, use_container_width=True,
                  column_config={
+                     "Objetivo (L)": st.column_config.NumberColumn(
+                         format="%.0f", help="Lo que hay que cargar: contenedores × litros por "
+                                             "contenedor."),
+                     "Plan (L)": st.column_config.NumberColumn(
+                         format="%.0f", help="Litros que suman los tanques de la formulación."),
+                     "Plan (TN)": st.column_config.NumberColumn(
+                         format="%.2f", help="Toneladas PLANIFICADAS: los litros de la "
+                                             "formulación por la densidad de cada tanque. "
+                                             "Es lo que dirección armó, todavía no lo pesado."),
+                     "% del objetivo": st.column_config.NumberColumn(
+                         format="%.1f %%", help="Plan (L) ÷ Objetivo (L). 100% = la formulación "
+                                                "cubre exactamente los contenedores; menos = "
+                                                "falta cargar; más = se cargó de más."),
                      "Pesadas": st.column_config.TextColumn(
                          "🎫 Pesadas", help="Tickets de pesada de salida (portería) asignados al "
                                             "despacho. — = todavía sin tickets."),
-                     "Pesado (TN)": st.column_config.NumberColumn(format="%.1f")})
+                     "Real (TN)": st.column_config.NumberColumn(
+                         format="%.2f", help="Toneladas REALES: la suma de los tickets de balanza "
+                                             "de portería. Vacío = todavía no pesó ningún camión."),
+                     "Δ real−plan": st.column_config.NumberColumn(
+                         format="%.2f", help="Real menos planificado. Negativo = salió menos de lo "
+                                             "formulado. Con los contenedores a medio pesar es "
+                                             "normal que dé negativo."),
+                     "Spec": st.column_config.TextColumn(
+                         "Spec", help="✅ los cuatro parámetros ponderados entran en la "
+                                      "especificación · ❌ alguno la excede · — sin lab."),
+                     "Dirección": st.column_config.TextColumn(
+                         "Dirección", help="Los despachos fuera de spec necesitan el OK del "
+                                           "director. Se aprueba en Dirección → Desvíos.")})
+    st.caption("**Plan** = lo que armó dirección en el armador (litros × densidad de cada tanque). "
+               "**Real** = lo que pesó la balanza de portería. Mientras falten camiones por pesar, "
+               "el Real y el Δ quedan incompletos a propósito.")
+    _pend_ap = df[df["_fuera"] & (_ap == "")]
+    if not _pend_ap.empty:
+        st.warning("🛂 **%d despacho(s) fuera de especificación esperando la aprobación de "
+                   "dirección:** %s. Se aprueban en **Dirección → Desvíos**."
+                   % (len(_pend_ap), ", ".join("#%d %s" % (int(r["id_despacho"]), r["titulo"] or "")
+                                               for _, r in _pend_ap.iterrows())))
     # posibles duplicados: mismo título, o misma fecha + producto + litros objetivo
     _dup = df[df.duplicated(subset=["titulo"], keep=False) & df["titulo"].notna()]
     if _dup.empty:

@@ -2235,11 +2235,115 @@ def _reconciliacion_profunda(USR, cat, conectar):
 
 def _desvios_semanal(USR, cat, conectar):
     """Sección Desvíos (Dirección): stock semana anterior → proyectado con producción → real → desvío."""
+    _aprobacion_despachos(USR, cat, conectar)
+    st.divider()
     _desvios_despachos(cat)
     st.divider()
     _desvio_stock_ledger(USR, cat, conectar)
     st.divider()
     _reconciliacion_semanal(USR, cat, conectar)
+
+
+def _aprobacion_despachos(USR, cat, conectar):
+    """Despachos fuera de spec: los aprueba (o rechaza) dirección, con nombre y motivo."""
+    st.subheader("🛂 Despachos fuera de especificación — aprobación de dirección")
+    st.caption("Un despacho cuya mezcla ponderada excede algún máximo de la spec **necesita el "
+               "OK del director** para salir. La decisión queda con usuario, fecha y motivo, y "
+               "se ve en Despachos → Despachos cargados, columna *Dirección*.")
+    try:
+        df = cat("SELECT id_despacho, titulo, cliente, destino, producto, fecha_despacho, estado, "
+                 "n_contenedores, tn_total, litros_total, litros_objetivo, "
+                 "acidez_pond, spec_acidez_max, fosforo_pond, spec_fosforo_max, "
+                 "azufre_pond, spec_azufre_max, ays_pond, spec_ays_max, "
+                 "aprob_direccion, aprob_por, aprob_nota, "
+                 "to_char(aprob_en AT TIME ZONE 'America/Argentina/Buenos_Aires', "
+                 "        'DD/MM/YY HH24:MI') AS aprob_cuando "
+                 "FROM produccion.v_despacho_resumen "
+                 "WHERE fuera_spec AND estado IN ('CONFIRMADO','DESPACHADO') "
+                 "ORDER BY fecha_despacho DESC, id_despacho DESC")
+    except Exception as e:
+        st.warning("No se pudo leer la aprobación de despachos: %s" % e)
+        return
+    if df is None or df.empty:
+        st.success("✅ No hay despachos fuera de especificación esperando aprobación.")
+        return
+    df = df.copy()
+    _ap = df["aprob_direccion"].fillna("")
+    _pend = df[_ap == ""]
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Fuera de spec", int(len(df)))
+    k2.metric("⏳ Sin decidir", int(len(_pend)))
+    k3.metric("✅ Aprobados", int((_ap == "APROBADO").sum()))
+
+    def _exc(r):
+        """Qué parámetro se pasó y por cuánto."""
+        _o = []
+        for _n, _v, _l, _f in (("Acidez", r["acidez_pond"], r["spec_acidez_max"], "%.2f"),
+                               ("Fósforo", r["fosforo_pond"], r["spec_fosforo_max"], "%.1f"),
+                               ("Azufre", r["azufre_pond"], r["spec_azufre_max"], "%.1f"),
+                               ("AyS", r["ays_pond"], r["spec_ays_max"], "%.2f")):
+            try:
+                if pd.notna(_v) and pd.notna(_l) and float(_l) > 0 and float(_v) > float(_l):
+                    _o.append(("%s " + _f + " > " + _f + " (+%.1f%%)")
+                              % (_n, float(_v), float(_l),
+                                 100.0 * (float(_v) / float(_l) - 1.0)))
+            except Exception:
+                pass
+        return " · ".join(_o) if _o else "—"
+
+    df["Excede"] = df.apply(_exc, axis=1)
+    df["Decisión"] = [("✅ Aprobado" if v == "APROBADO" else
+                       ("⛔ Rechazado" if v == "RECHAZADO" else "⏳ Pendiente")) for v in _ap]
+    df["Quién"] = [("%s · %s" % (p, c)) if (p and str(p) != "nan") else ""
+                   for p, c in zip(df["aprob_por"].fillna(""), df["aprob_cuando"].fillna(""))]
+    _v = df.rename(columns={"id_despacho": "ID", "titulo": "Despacho", "cliente": "Cliente",
+                            "fecha_despacho": "Fecha", "tn_total": "Plan (TN)",
+                            "estado": "Estado", "aprob_nota": "Motivo"})
+    st.dataframe(_v[["Decisión", "ID", "Despacho", "Cliente", "Fecha", "Plan (TN)", "Excede",
+                     "Quién", "Motivo", "Estado"]],
+                 hide_index=True, use_container_width=True,
+                 column_config={"Fecha": st.column_config.DateColumn(format="DD/MM/YY"),
+                                "Plan (TN)": st.column_config.NumberColumn(format="%.2f"),
+                                "Excede": st.column_config.TextColumn(
+                                    "Qué excede", help="Parámetro ponderado por kg contra su "
+                                                       "máximo, y cuánto se pasa.")})
+
+    if str(USR.get("rol") or "") not in ROLES_DIRECCION:
+        st.info("Sólo dirección puede aprobar o rechazar. Vos ves el estado.")
+        return
+    st.markdown("**Decidir sobre un despacho**")
+    _lbl = {int(r["id_despacho"]): "#%d · %s · %s · %s"
+            % (int(r["id_despacho"]), str(r["titulo"] or "—"), str(r["fecha_despacho"]),
+               r["Decisión"]) for _, r in df.iterrows()}
+    _sel = st.selectbox("Despacho", list(_lbl.keys()),
+                        format_func=lambda i: _lbl.get(int(i), str(i)), key="dir_ap_sel")
+    _r = df[df["id_despacho"] == _sel].iloc[0]
+    st.caption("Excede: **%s** · plan %.2f TN · cliente %s"
+               % (_r["Excede"], float(_r["tn_total"] or 0), str(_r["cliente"] or "—")))
+    a1, a2 = st.columns([2, 1])
+    _nota = a1.text_input("Motivo / autorización (queda registrado)",
+                          value=str(_r["aprob_nota"] or ""), key="dir_ap_nota",
+                          placeholder="Ej: cliente acepta 153 ppm de fósforo por esta carga")
+    _dec = a2.radio("Decisión", ["APROBADO", "RECHAZADO"], horizontal=False, key="dir_ap_dec")
+    if st.button("💾 Guardar decisión", type="primary", key="dir_ap_go",
+                 disabled=not _nota.strip()):
+        try:
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE produccion.fact_despacho SET aprob_direccion=%s, "
+                                "aprob_por=%s, aprob_en=now(), aprob_nota=%s, "
+                                "actualizado_en=now() WHERE id_despacho=%s",
+                                (_dec, str(USR.get("nombre") or USR["id_usuario"]),
+                                 _nota.strip(), int(_sel)))
+                audit.log("U", "fact_despacho", int(_sel),
+                          {"aprob_direccion": _dec, "motivo": _nota.strip()})
+            cat.clear()
+            st.success("Despacho #%d marcado como %s." % (int(_sel), _dec))
+            st.rerun()
+        except Exception as e:
+            st.error("No se pudo guardar: %s" % e)
+    if not _nota.strip():
+        st.caption("El motivo es obligatorio: es lo que justifica sacar una carga fuera de spec.")
 
 
 def _desvios_despachos(cat):
