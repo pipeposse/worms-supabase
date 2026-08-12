@@ -134,8 +134,17 @@ def render(USR, cat, conectar):
     f_sem = f3.multiselect("Semana", _sems, key="aafe_sem")
     _provs = sorted(df["proveedor"].unique().tolist())
     f_prov = f4.multiselect("Proveedor", _provs, key="aafe_prov")
-    f_lab = st.radio("Laboratorio", ["Todos", "✅ Con análisis", "❌ Sin análisis"],
-                     horizontal=True, key="aafe_lab")
+    _nrech_tot = int(df["es_rechazado"].sum())
+    # OJO: las etiquetas van SIN el contador. Si el número viaja en la opción, al cambiar
+    # (un rechazo nuevo) el valor guardado en sesión deja de existir entre las opciones y
+    # Streamlit tira StreamlitAPIException. El contador va en el caption.
+    f_lab = st.radio(
+        "Vista", ["Todos", "✅ Con análisis", "❌ Sin análisis", "🚫 Rechazados"],
+        horizontal=True, key="aafe_lab",
+        help="Los rechazados nunca entran en el análisis (no descargaron). Esta opción "
+             "los muestra solos, con el motivo del laboratorio y el detalle por proveedor.")
+    if _nrech_tot:
+        st.caption("🚫 %d camión(es) rechazado(s) en el rango de fechas elegido." % _nrech_tot)
     if f_sem:
         df = df[df["semana"].isin(f_sem)]
     if f_prov:
@@ -146,6 +155,11 @@ def render(USR, cat, conectar):
         df = df[~df["tiene_lab"]]
     if df.empty:
         st.info("Ningún camión cumple los filtros.")
+        return
+
+    # Vista dedicada: SOLO los rechazados (con los mismos filtros de fecha/semana/proveedor)
+    if f_lab.startswith("🚫"):
+        _seccion_rechazados(df[df["es_rechazado"]].copy(), d1, d2, solo=True)
         return
 
     # Los RECHAZADOS salen del análisis: no descargaron, así que no son ni volumen
@@ -215,9 +229,11 @@ def render(USR, cat, conectar):
     render_sin_lab(USR, cat, conectar)
 
 
-def _seccion_rechazados(r, d1, d2):
-    """Camiones de AFE rechazados por laboratorio: por qué y de quién."""
-    st.markdown("#### 🚫 Camiones rechazados")
+def _seccion_rechazados(r, d1, d2, solo=False):
+    """Camiones de AFE rechazados por laboratorio: por qué y de quién.
+
+    solo=True cuando es la vista dedicada (el usuario eligió 🚫 Rechazados arriba)."""
+    st.markdown(("### 🚫 Camiones rechazados" if solo else "#### 🚫 Camiones rechazados"))
     if r is None or r.empty:
         st.success("✅ Ningún camión rechazado en el período y los filtros elegidos.")
         return
@@ -252,6 +268,15 @@ def _seccion_rechazados(r, d1, d2):
                  column_config={"Fósforo medio ppm": st.column_config.NumberColumn(format="%.0f"),
                                 "Azufre medio ppm": st.column_config.NumberColumn(format="%.1f"),
                                 "Último rechazo": st.column_config.DatetimeColumn(format="DD/MM/YY")})
+
+    if solo:
+        _sem = (r.groupby("semana")
+                 .agg(camiones=("ticket", "count"),
+                      fosforo_medio=("ppm_fosforo", "mean"))
+                 .reset_index().sort_values("semana"))
+        if len(_sem) > 1:
+            st.markdown("**Rechazos por semana**")
+            st.bar_chart(_sem.set_index("semana")["camiones"], use_container_width=True)
 
     st.markdown("**Detalle camión por camión**")
     v = r.sort_values("fecha", ascending=False).copy()
