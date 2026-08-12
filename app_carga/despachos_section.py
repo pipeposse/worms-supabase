@@ -224,8 +224,16 @@ def _puntaje_calidad(r, spec):
     return sum(rr) if rr else 990.0
 
 
-def _sem_calidad(r, spec):
-    """Semáforo por el PEOR parámetro del tanque contra la spec del despacho."""
+# Bandas de calidad (nomenclatura de la empresa), con los mismos umbrales que el
+# Balance: índice = el PEOR parámetro relativo a la spec.
+#   A ≤ 0.80 excelente · B ≤ 0.90 bueno · C ≤ 1.00 justo · D > 1.00 fuera de spec
+BANDA_EMOJI = {"A": "🟢", "B": "🔵", "C": "🟠", "D": "🔴", "—": "⚪"}
+BANDA_DESC = {"A": "excelente", "B": "bueno", "C": "justo", "D": "fuera de spec",
+              "—": "sin análisis"}
+
+
+def _banda_tk(r, spec):
+    """Banda A/B/C/D del tanque contra la spec del despacho ('—' si no tiene lab)."""
     peor, alguno = 0.0, False
     for c, k in (("acidez", "acidez"), ("agua_sedimento", "ays"),
                  ("azufre", "azufre"), ("fosforo", "fosforo")):
@@ -235,14 +243,20 @@ def _sem_calidad(r, spec):
             peor = max(peor, float(v) / float(lim))
             alguno = True
     if not alguno:
-        return "⚪"
-    if peor > 1.1:
-        return "🔴"
-    if peor > 1.0:
-        return "🟠"
-    if peor > 0.9:
-        return "🟡"
-    return "🟢"
+        return "—"
+    if peor <= 0.80:
+        return "A"
+    if peor <= 0.90:
+        return "B"
+    if peor <= 1.00:
+        return "C"
+    return "D"
+
+
+def _sem_calidad(r, spec):
+    """Etiqueta de banda del tanque: '🔵 B' — el mismo idioma que el Balance."""
+    b = _banda_tk(r, spec)
+    return ("%s %s" % (BANDA_EMOJI.get(b, "⚪"), b)).strip()
 
 
 def _lab_corto(r):
@@ -345,7 +359,10 @@ def _selector_tanques(ss, tp, fam, spec, tks, conectar, USR, inc_vacios):
                                   ascending=[True, True, False])
         st.caption("2 · Ordenados de **mejor a peor calidad** (suma de acidez, P, S y AyS "
                    "contra la spec); los de sectores no prioritarios van al final. "
-                   "Click para agregar ➕ o quitar ➖ de la carga.")
+                   "La **banda** es la nomenclatura de la empresa: "
+                   + " · ".join("%s **%s** %s" % (BANDA_EMOJI[b], b, BANDA_DESC[b])
+                                for b in ("A", "B", "C", "D"))
+                   + ". Click para agregar ➕ o quitar ➖ de la carga.")
         _ncol = 4
         _fil = [_pool.iloc[i:i + _ncol] for i in range(0, len(_pool), _ncol)]
         for _rw in _fil:
@@ -561,17 +578,17 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     Dos palancas compiten por el MISMO margen de spec y no se pueden maximizar a la vez:
 
     * los litros de componente base (AG-E), que es el más barato, y
-    * la cantidad de AFE-S FEO que se logra colocar (el AFE-S bueno escasea y hay que
+    * la cantidad de AFE-S C+D que se logra colocar (el AFE-S A+B escasea y hay que
       reservarlo para los próximos despachos).
 
     Con maximizar=True se busca por bisección el máximo de base que la spec tolera; con
     l_base se fija a mano. Fijado el base, el resto se completa gastando el AFE-S de PEOR
-    calidad primero: por cada tanque feo se toma, por bisección, el máximo de litros que
+    calidad primero: por cada tanque C/D se toma, por bisección, el máximo de litros que
     deja el remanente todavía cerrable con los tanques buenos que quedan libres.
 
     tol es la fracción de desvío admitida sobre la spec (TOL_DESVIO = 10%): el mismo margen
     que el panel de Cumplimiento registra como desvío tolerado. Gastarlo es una decisión de
-    negocio — mover stock feo — y queda asentado, no es un error silencioso.
+    negocio — mover stock C+D — y queda asentado, no es un error silencioso.
 
     Los promedios son ponderados por kg (no por litros). La masa sin laboratorio no se puede
     evaluar y queda afuera del promedio (el panel ya lo avisa).
@@ -633,7 +650,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         # Los X van al final también acá: sólo entran si sin ellos la mezcla no cierra.
         d = d.sort_values(["_pref", "_x", "score", "litros_actual"],
                           ascending=[True, True, True, False])
-        # d_peor = orden del GASTO de feo: prioridad completa de sectores.
+        # d_peor = orden del GASTO de C+D: prioridad completa de sectores.
         d_peor = d.sort_values(["_pref", "_x", "_sec", "score", "litros_actual"],
                                ascending=[True, True, True, False, False])
 
@@ -652,7 +669,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         _bok = b[b["_d"] >= min_l].copy()
         if not _bok.empty:
             # El base también se elige por CALIDAD: el AG-E más limpio primero — es el
-            # que menos margen de spec quema, así entra más base o más AFE-S feo. A igual
+            # que menos margen de spec quema, así entra más base o más AFE-S C+D. A igual
             # calidad, el de más stock. Sin análisis de lab, al final.
             # SUMA de parámetros relativos (no el peor solo): el máximo escondía a un
             # tanque malo en un solo parámetro y bueno en el resto, y viceversa.
@@ -735,7 +752,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     def _relleno(lineas, falta, excluir):
         """Completa 'falta' litros con los MEJORES tanques libres.
 
-        Es el oráculo del llenado peor-primero: responde "si cargo este tanque feo, ¿me
+        Es el oráculo del llenado peor-primero: responde "si cargo este tanque C/D, ¿me
         queda con qué rescatar la mezcla?".
         """
         out = list(lineas)
@@ -760,7 +777,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         Recorre los diluyentes de peor a mejor y a cada uno le toma, por bisección, el
         máximo de litros que deja el remanente todavía cerrable con los buenos libres.
         (La lógica anterior cargaba primero los k mejores hasta que la spec cerraba, y por
-        eso los tanques feos se quedaban sistemáticamente sin entrar.)
+        eso los tanques C y D se quedaban sistemáticamente sin entrar.)
         """
         lineas, acum, usados = [], 0.0, set()
         if formulado and lb > 0:
@@ -787,7 +804,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                     else:
                         hi = mid
             toma = float(int(lo // 10) * 10)                # redondeo abajo: margen, no exceso
-            # si la spec sólo banca menos de 3.000 L de este tanque feo, no vale la pena
+            # si la spec sólo banca menos de 3.000 L de este tanque C/D, no vale la pena
             # abrirlo (salvo que con eso se cierre el objetivo)
             if toma >= MIN_TOMA_DESPACHO or (toma > 0.5 and acum + toma >= litros_obj - 0.5):
                 lineas.append((r, toma))
@@ -885,7 +902,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     if _ldil > 0:
         msg += (" Diluyentes: se gasta primero el de PEOR calidad — entran %s L que sueltos "
                 "estarían fuera de spec (calidad media usada %.2f, donde 1,00 = el límite; "
-                "cuanto más alto, más stock feo se colocó)."
+                "cuanto más alto, más AFE-S C+D se colocó)."
                 % ("{:,.0f}".format(_feo), _cal))
     if tol > 0:
         msg += (" Se habilitó hasta %.0f%% de desvío sobre la spec: el panel de Cumplimiento "
@@ -901,7 +918,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
 
 
 def _stats_sug(sug, tks, spec, fam, tol):
-    """Números comparables de una sugerencia: base, AFE feo, calidad usada y promedios."""
+    """Números comparables de una sugerencia: base, AFE C+D, calidad usada y promedios."""
     _cols = ["clave", "producto_principal", "densidad", "acidez", "agua_sedimento",
              "azufre", "fosforo"]
     m = sug[["Tanque", "Litros"]].merge(tks[_cols], left_on="Tanque", right_on="clave",
@@ -941,7 +958,7 @@ def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol, lb_min=0.0):
     """Tres variantes del MISMO despacho, para elegir — no para acatar.
 
     A) máximo componente base con el margen elegido (el base es lo más barato);
-    B) mitad de ese base: el margen liberado se gasta en colocar AFE-S feo;
+    B) mitad de ese base: el margen liberado se gasta en colocar AFE-S C+D;
     C) spec estricta, sin tolerancia (la carga más prolija posible).
     Las tres compiten por el mismo margen de spec: son los tres vértices reales
     de la decisión, con números comparables.
@@ -954,7 +971,7 @@ def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol, lb_min=0.0):
         sa = _stats_sug(a_df, tks, spec, fam, tol)
         out.append({"nombre": "A · Máximo %s" % fam[0],
                     "desc": "La mayor cantidad de %s que la spec tolera con %.0f%% de margen. "
-                            "El margen se gasta en el base, no en AFE feo."
+                            "El margen se gasta en el base, no en AFE C+D."
                             % (fam[0], tol * 100),
                     "df": a_df, "st": sa})
         _piso = float(lb_min or 0.0)
@@ -996,7 +1013,7 @@ def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol, lb_min=0.0):
 
 def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
               min_l=MIN_L_DESPACHO, lb_min=0.0):
-    """Simula el canje entre litros de componente base y AFE-S feo colocado.
+    """Simula el canje entre litros de componente base y AFE-S C+D colocado.
 
     Devuelve una fila por nivel de base: cuánto AFE fuera de spec entra, qué calidad media
     de AFE se consume y dónde quedan los parámetros finales. Los dos objetivos compiten por
@@ -1054,7 +1071,7 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
         return {
             "%s (L)" % fam[0]: round(lb, 0),
             "%s (%%)" % fam[0]: round(100.0 * lb / _tot, 1) if _tot else 0.0,
-            "AFE feo (L)": round(_feo, 0),
+            "AFE C+D (L)": round(_feo, 0),
             "Calidad AFE usada": round(_cal, 2),
             "Acidez %": round(prom["acidez"], 2) if prom["acidez"] is not None else None,
             "AyS %": round(prom["agua_sedimento"], 2) if prom["agua_sedimento"] is not None else None,
@@ -2457,9 +2474,9 @@ def _armar(USR, cat, conectar):
                 "Si preferís fijarlo vos (ej. el %% sostenible que indica 🧮 Balance), cargalo en "
                 "*Litros de %(b)s* y respeta ese valor.\n"
                 "2. **AFE-S de peor calidad primero.** Con el %(b)s fijado, recorre los diluyentes de PEOR a "
-                "mejor y a cada tanque feo le toma el **máximo de litros que deja el resto todavía cerrable** "
+                "mejor y a cada tanque C/D le toma el **máximo de litros que deja el resto todavía cerrable** "
                 "con los buenos que quedan libres (bisección por tanque). Sólo se agregan tanques buenos para "
-                "tapar lo que falta. Así el AFE-S bueno se reserva para los próximos despachos (es el que se "
+                "tapar lo que falta. Así el AFE-S A+B se reserva para los próximos despachos (es el que se "
                 "agota: ver 🧮 Balance).\n"
                 "3. **Restricciones:** promedios ponderados por **kg** (no por litros); tanques con menos de "
                 "%(m)s L no entran (fondo de tanque); en base plana sólo se usa el 90%% de la capacidad "
@@ -2468,14 +2485,14 @@ def _armar(USR, cat, conectar):
                 "y todo se puede pisar a mano línea por línea.\n\n"
                 "5. **Margen de spec.** El campo *Margen a gastar* habilita hasta un %(t)s%% de desvío sobre "
                 "la spec (el mismo que el panel de Cumplimiento registra como desvío tolerado). Ese margen es "
-                "el que permite meter AFE-S feo. En 0%% la sugerencia trabaja con spec estricta.\n\n"
-                "⚠️ *Trade-off a saber:* los litros de %(b)s y el AFE-S feo **compiten por el mismo margen**, "
+                "el que permite meter AFE-S C+D. En 0%% la sugerencia trabaja con spec estricta.\n\n"
+                "⚠️ *Trade-off a saber:* los litros de %(b)s y el AFE-S C+D **compiten por el mismo margen**, "
                 "no se pueden maximizar los dos. Al máximo de %(b)s entran sólo tanques buenos. Usá "
                 "🔀 *Trade-off* acá abajo para ver la tabla con datos reales y elegir el punto."
                 % {"b": _fam[0], "m": f"{MIN_L_DESPACHO:,.0f}", "t": f"{TOL_DESVIO*100:.0f}"})
     _formulado = len(_fam) > 1
     _thelp = ("Desvío admitido sobre la spec al armar la sugerencia. Es el margen que permite "
-              "colocar AFE-S feo: en 0%% sólo entran tanques buenos. El tope es %.0f%% y el panel "
+              "colocar AFE-S C+D: en 0%% sólo entran tanques A/B. El tope es %.0f%% y el panel "
               "de Cumplimiento registra el desvío real de la carga." % (TOL_DESVIO * 100))
     if _formulado:
         ca, cb, cd, ce, cc = st.columns([1.05, 0.75, 1.0, 0.95, 1.35])
@@ -2485,7 +2502,7 @@ def _armar(USR, cat, conectar):
                                    "cumpliendo la especificación (el %s es más barato que el AFE-S, "
                                    "conviene maximizar su participación). Con un valor, usa esos "
                                    "litros exactos. Ojo: al máximo de %s no queda margen para meter "
-                                   "AFE-S feo." % (_fam[0], _fam[0], _fam[0]))
+                                   "AFE-S C+D." % (_fam[0], _fam[0], _fam[0]))
         _tolp = ce.number_input("Margen a gastar (%)", min_value=0.0, max_value=TOL_DESVIO * 100,
                                 step=1.0, value=float(ss.get("dsp_tolp", TOL_DESVIO * 100)),
                                 key="dsp_tolp", help=_thelp)
@@ -2571,11 +2588,11 @@ def _armar(USR, cat, conectar):
         with st.expander("🔀 Trade-off %s ↔ AFE-S (simulación con el stock de hoy)" % _fam[0],
                          expanded=False):
             st.caption(
-                "Cada litro de %s y cada litro de AFE-S feo gastan el MISMO margen de spec. "
+                "Cada litro de %s y cada litro de AFE-S C+D gastan el MISMO margen de spec. "
                 "La tabla recorre niveles de %s y muestra cuánto AFE fuera de spec se logra "
                 "colocar en cada uno, con el margen elegido arriba (%.0f%%). "
                 "*Calidad AFE usada*: 1,00 = justo en el límite de la spec; más alto = se colocó "
-                "más stock feo; más bajo = se quemó AFE-S bueno."
+                "más AFE-S C+D colocado; más bajo = se quemó AFE-S A+B."
                 % (_fam[0], _fam[0], _tolp))
             if st.button("Simular", key="dsp_btn_to", use_container_width=False):
                 with st.spinner("Simulando…"):
@@ -2597,7 +2614,7 @@ def _armar(USR, cat, conectar):
                          expanded=False):
             st.caption("Tres formas de armar el mismo despacho con números comparables: "
                        "A maximiza el %s, B resigna base para colocar el máximo de AFE-S "
-                       "feo, C cumple la spec sin tolerancia. Elegís una y se carga en la "
+                       "C+D, C cumple la spec sin tolerancia. Elegís una y se carga en la "
                        "formulación — la decisión es de quien despacha, no del algoritmo."
                        % _fam[0])
             if st.button("Generar propuestas", key="dsp_btn_props"):
@@ -2617,9 +2634,9 @@ def _armar(USR, cat, conectar):
                             st.caption(_p["desc"])
                             _ma, _mb = st.columns(2)
                             _ma.metric(_fam[0], "%s L" % "{:,.0f}".format(_s["lb"]))
-                            _mb.metric("AFE feo", "%s L" % "{:,.0f}".format(_s["feo"]))
+                            _mb.metric("AFE C+D", "%s L" % "{:,.0f}".format(_s["feo"]))
                             st.caption("Calidad AFE usada **%.2f** (1,00 = límite; más alto "
-                                       "= más stock feo colocado) · %d tanque(s)"
+                                       "= más AFE-S C+D colocado) · %d tanque(s)"
                                        % (_s["cal"], _s["tanques"]))
                             _pp = _s["prom"]
                             st.caption("Final: ac %s%% · AyS %s%% · S %s · P %s ppm"
