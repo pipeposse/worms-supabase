@@ -1102,6 +1102,49 @@ _VERIF_MAPA = {"USADO": "✅ Sí, se usó", "NO_USADO": "❌ No se usó", "PARCI
 _VERIF_INV = {v: k for k, v in _VERIF_MAPA.items()}
 
 
+def _plan_contenedores(lineas, n_cont, base_cod):
+    """Reparte las líneas del despacho en contenedores.
+
+    La BASE (AG-E) va en partes iguales en TODOS los contenedores: la calidad queda
+    homogénea y se respeta el mínimo por contenedor. Los diluyentes (AFE) se llenan
+    secuencialmente en el orden de la formulación, para hacer pocos cambios de
+    manguera. Devuelve [(contenedor, tanque, producto, litros)]."""
+    n = max(1, int(n_cont or 1))
+    _ls = [[str(t), str(p), float(l or 0)] for t, p, l in lineas if float(l or 0) > 0]
+    tot = sum(x[2] for x in _ls)
+    if tot <= 0:
+        return []
+    _up = str(base_cod or "").strip().upper()
+    base = [x for x in _ls if x[1].strip().upper() == _up]
+    dil = [x for x in _ls if x[1].strip().upper() != _up]
+    base_tot = sum(x[2] for x in base)
+    per_cont = tot / n
+    per_base = base_tot / n
+    plan, bi, di = [], 0, 0
+    for c in range(1, n + 1):
+        resto = per_base
+        while resto > 5 and bi < len(base):
+            take = min(base[bi][2], resto)
+            if take > 5:
+                plan.append((c, base[bi][0], base[bi][1], take))
+            base[bi][2] -= take
+            resto -= take
+            if base[bi][2] <= 5:
+                bi += 1
+        resto = per_cont - per_base
+        if c == n:
+            resto = tot  # el último contenedor absorbe cualquier resto de redondeo
+        while resto > 5 and di < len(dil):
+            take = min(dil[di][2], resto)
+            if take > 5:
+                plan.append((c, dil[di][0], dil[di][1], take))
+            dil[di][2] -= take
+            resto -= take
+            if dil[di][2] <= 5:
+                di += 1
+    return plan
+
+
 def verificacion_planta(USR, cat, conectar):
     """Vista para Producción en planta: dirección arma la formulación del despacho y acá
     los operarios confirman, tanque por tanque, si la carga salió DE VERDAD de esos
@@ -1144,6 +1187,44 @@ def verificacion_planta(USR, cat, conectar):
     m1.metric("Tanques en la formulación", int(len(lin)))
     m2.metric("Pendientes de verificar", _pend)
     m3.metric("Marcados NO usados", _no)
+
+    # ---------- plan de llenado POR CONTENEDOR ----------
+    _cab = cat("SELECT n_contenedores, litros_por_contenedor, producto_codigo "
+               "FROM produccion.fact_despacho WHERE id_despacho=%s", (int(sel),))
+    _ncc = int(_cab.iloc[0]["n_contenedores"] or 0) if _cab is not None and not _cab.empty else 0
+    _pcod = (str(_cab.iloc[0]["producto_codigo"] or "")
+             if _cab is not None and not _cab.empty else "")
+    if _ncc > 1:
+        _plan = _plan_contenedores(
+            list(zip(lin["tanque"], lin["producto_codigo"], lin["litros"].fillna(0))),
+            _ncc, _pcod if _pcod.strip().upper() in FORMULADOS else "")
+        if _plan:
+            st.markdown("##### 📦 Plan de llenado por contenedor")
+            _dfp = pd.DataFrame(_plan, columns=["cont", "Tanque", "Producto", "litros"])
+            _tot_c = _dfp.groupby("cont")["litros"].sum()
+            _ordtk = list(dict.fromkeys(zip(lin["tanque"].astype(str),
+                                            lin["producto_codigo"].astype(str))))
+            _piv = _dfp.pivot_table(index=["Tanque", "Producto"], columns="cont",
+                                    values="litros", aggfunc="sum")
+            _piv = _piv.reindex(_ordtk)
+            _piv.columns = ["Cont. %d" % c for c in _piv.columns]
+            _piv["Σ Tanque"] = _piv.sum(axis=1)
+            _piv = _piv.reset_index()
+            _fila_tot = {"Tanque": "TOTAL", "Producto": ""}
+            for _c in _piv.columns[2:]:
+                _fila_tot[_c] = float(pd.to_numeric(_piv[_c], errors="coerce").fillna(0).sum())
+            _piv = pd.concat([_piv, pd.DataFrame([_fila_tot])], ignore_index=True)
+            _cfgp = {c: st.column_config.NumberColumn(c, format="%.0f")
+                     for c in _piv.columns[2:]}
+            st.dataframe(_piv, hide_index=True, use_container_width=True,
+                         column_config=_cfgp,
+                         height=int(38 * (len(_piv) + 1) + 4))
+            st.caption("Cada contenedor lleva **~%s L**: su parte igual de **%s** (así todos "
+                       "quedan con la misma calidad y se respeta el mínimo por contenedor) y "
+                       "el resto de los AFE en el orden de la formulación, para hacer pocos "
+                       "cambios de manguera. Llenar contenedor por contenedor con estos litros."
+                       % ("{:,.0f}".format(float(_tot_c.mean())),
+                          (_pcod if _pcod.strip().upper() in FORMULADOS else "base")))
 
     _base = pd.DataFrame({
         "Tanque": lin["tanque"].astype(str),
