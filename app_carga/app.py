@@ -486,6 +486,154 @@ def _panel_esperando_lab(cat, conectar=None, USR=None, pref="esp"):
                    "la calidad sin confirmar — pedile al lab el análisis de esas reacciones."
                    % ", ".join(str(x) for x in _sin["identificador_unidad"].fillna("—")))
 
+    # ---------- cargar el análisis a mano y validar ----------
+    _pend = df[~df["apto_cierre"]]
+    if _pend.empty or conectar is None or USR is None:
+        return
+    st.divider()
+    st.markdown("##### ✍️ Cargar el análisis a mano y validar")
+    st.caption("Para las que **realmente falta** algo: se guarda como una evaluación de "
+               "laboratorio (la misma tabla que carga Laboratorio, queda con tu usuario) y "
+               "la reacción queda validada en el acto. Si el análisis ya existía sin calidad, "
+               "se completa **adoptándolo**, para que la sincronización de Access no lo pise.")
+    _opts = {int(r["id_batch"]): "%s · %s · %s días · %s"
+             % (str(r["identificador_unidad"] or "s/ident"),
+                str(r["tipo_proceso"] or "—"), int(r["dias"]),
+                ("falta la calidad" if r["lab_sin_calidad"] else
+                 ("revisar: coincide con camión" if _pd.notna(r["lab_ticket"]) else "sin lab")))
+             for _, r in _pend.iterrows()}
+    _bid = st.selectbox("Reacción a completar", list(_opts.keys()),
+                        format_func=lambda i: _opts.get(int(i), str(i)),
+                        key="%s_lab_sel" % pref)
+    _r = _pend[_pend["id_batch"] == _bid].iloc[0]
+
+    _c1, _c2, _c3 = st.columns(3)
+    _c1.metric("Producto buscado", str(_r["producto_buscado"] or "—"))
+    _c2.metric("Calidad buscada", str(_r["calidad_buscada"] or "—"))
+    _c3.metric("Tanque destino", str(_r["tanque_destino"] or "—"))
+    if _pd.notna(_r["lab_ticket"]):
+        st.caption("Análisis existente: **%s** (%s) · producto %s · acidez %s · "
+                   "agua %s · sed %s · S %s · P %s"
+                   % (_r["lab_ticket"], _r["lab_via"], _r["producto_lab"] or "—",
+                      _r["lab_acidez"], _r["lab_agua"], _r["lab_sedimentos"],
+                      _r["lab_azufre"], _r["lab_fosforo"]))
+
+    _tks = [t for t in [_r["identificador_unidad"], _r["ticket_producto_final"],
+                        _r["ticket_validacion_lab"]] if _pd.notna(t) and str(t).strip()]
+    _tks = list(dict.fromkeys([str(t) for t in _tks]))
+    if _pd.notna(_r["lab_ticket"]) and str(_r["lab_ticket"]) in _tks:
+        _tks.insert(0, _tks.pop(_tks.index(str(_r["lab_ticket"]))))
+    _CAL = {"ARE": ["A", "B", "FUERA DE ESPECIFICACION"],
+            "AG": ["A", "B", "C", "D", "E", "FUERA DE ESPECIFICACION"],
+            "AFE": ["S", "SG", "G", "P", "AL", "M", "FUERA DE ESPECIFICACION"]}
+    _prod_def = str(_r["producto_lab"] or _r["producto_buscado"] or "ARE").upper()
+    _prod_def = ("AG" if _prod_def.startswith("AG") else
+                 ("AFE" if _prod_def.startswith("AFE") else
+                  ("ARE" if _prod_def.startswith("ARE") else _prod_def)))
+
+    def _v(col, d=0.0):
+        try:
+            return float(_r[col]) if _pd.notna(_r[col]) else float(d)
+        except Exception:
+            return float(d)
+
+    with st.form("%s_lab_form_%d" % (pref, int(_bid))):
+        f1, f2, f3 = st.columns(3)
+        _tk = f1.selectbox("Ticket del análisis", _tks or ["—"],
+                           help="Con qué número queda registrado el análisis. Por defecto, "
+                                "el de la reacción; en desgomado, el de la pesada final.")
+        _pl = f2.selectbox("Producto", ["ARE", "AG", "AFE"],
+                           index=(["ARE", "AG", "AFE"].index(_prod_def)
+                                  if _prod_def in ("ARE", "AG", "AFE") else 0))
+        _cal = f3.selectbox("Calidad final", _CAL.get(_prod_def, _CAL["ARE"]))
+        g1, g2, g3, g4 = st.columns(4)
+        _ac = g1.number_input("Acidez %", min_value=0.0, step=0.1, format="%.2f",
+                              value=_v("lab_acidez"))
+        _ag = g2.number_input("Agua %", min_value=0.0, step=0.1, format="%.2f",
+                              value=_v("lab_agua"))
+        _se = g3.number_input("Sedimentos %", min_value=0.0, step=0.1, format="%.2f",
+                              value=_v("lab_sedimentos"))
+        _de = g4.number_input("Densidad g/ml", min_value=0.0, step=0.01, format="%.3f",
+                              value=_v("lab_densidad", 0.91))
+        h1, h2, h3 = st.columns(3)
+        _az = h1.number_input("Azufre ppm", min_value=0.0, step=5.0, format="%.1f",
+                              value=_v("lab_azufre"))
+        _fo = h2.number_input("Fósforo ppm", min_value=0.0, step=5.0, format="%.1f",
+                              value=_v("lab_fosforo"))
+        _emp = h3.selectbox("Analista", ["Cielo", "Manu", "Rich", "Mili", "(sin definir)"],
+                            index=4)
+        _obs = st.text_input("Observación (queda en la conclusión del análisis)",
+                             value="Cargado desde la bandeja de validación")
+        _go = st.form_submit_button("💾 Guardar análisis y validar la reacción",
+                                    type="primary", use_container_width=True)
+    if _go:
+        if not _tk or _tk == "—":
+            st.error("La reacción no tiene ningún número de ticket para registrar el análisis.")
+            return
+        try:
+            # 3 caminos: si el análisis ya es de la app se EDITA (no se duplica);
+            # si vino de Access se ADOPTA (para que el sync no lo pise); si no hay
+            # nada, se crea uno nuevo.
+            _propio = (_pd.notna(_r["lab_source_id"])
+                       and str(_r["lab_source_id"]) == "app_lab_streamlit"
+                       and _pd.notna(_r["lab_id_access"]))
+            _adop = (_pd.notna(_r["lab_source_id"]) and not _propio)
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                  if _propio:
+                    cur.execute(
+                        "UPDATE produccion.lab_evaluaciones SET "
+                        "producto_lab=%s, calidad_final_lab=%s, prc_acidez=%s, prc_agua=%s, "
+                        "prc_sedimentos=%s, ppm_azufre=%s, ppm_fosforo=%s, densidad__g_ml=%s, "
+                        "empleado=COALESCE(%s, empleado), conclusion=%s, rechazado=%s, "
+                        "usuario_app=%s WHERE id=%s RETURNING id",
+                        (_pl, _cal, float(_ac), float(_ag), float(_se), float(_az),
+                         float(_fo), float(_de),
+                         (None if _emp == "(sin definir)" else _emp), (_obs or None),
+                         ("FUERA DE ESPECIFICACION" if "FUERA" in _cal else "ACEPTADO"),
+                         str(USR.get("nombre") or USR["id_usuario"]),
+                         int(_r["lab_id_access"])))
+                  else:
+                    cur.execute(
+                        "INSERT INTO produccion.lab_evaluaciones "
+                        "(tipo_formulario, usuario_app, ticket, producto_lab, "
+                        " calidad_final_lab, prc_acidez, prc_agua, prc_sedimentos, "
+                        " ppm_azufre, ppm_fosforo, densidad__g_ml, empleado, conclusion, "
+                        " rechazado, origen_source_id, origen_id_access) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                        "RETURNING id",
+                        (_pl, str(USR.get("nombre") or USR["id_usuario"]), str(_tk), _pl,
+                         _cal, float(_ac), float(_ag), float(_se), float(_az), float(_fo),
+                         float(_de), (None if _emp == "(sin definir)" else _emp),
+                         (_obs or None),
+                         ("FUERA DE ESPECIFICACION" if "FUERA" in _cal else "ACEPTADO"),
+                         (str(_r["lab_source_id"]) if _adop else None),
+                         (int(_r["lab_id_access"]) if _adop else None)))
+                  _new = cur.fetchone()[0]
+                  cur.execute(
+                        "UPDATE produccion.fact_batch_proceso SET "
+                        "esperando_validacion_lab=false, validado_lab=true, "
+                        "calidad_final=COALESCE(%s, calidad_final) "
+                        "WHERE id_batch=%s", (_cal, int(_bid)))
+                audit.log(("U" if _propio else "I"), "lab_evaluaciones", int(_new),
+                          {"ticket": str(_tk), "calidad": _cal, "id_batch": int(_bid),
+                           "adopta": bool(_adop), "edita": bool(_propio),
+                           "desde": "bandeja de validación"})
+                audit.log("U", "fact_batch_proceso", int(_bid),
+                          {"validado_lab": True, "calidad_final": _cal,
+                           "desde": "bandeja de validación"})
+            cat.clear()
+            try:
+                _landing_kpis.clear()
+            except Exception:
+                pass
+            st.success("Análisis %s %s y reacción validada%s."
+                       % (str(_tk), ("actualizado" if _propio else "cargado"),
+                          " (adoptando el registro de Access)" if _adop else ""))
+            st.rerun()
+        except Exception as _e:
+            st.error("No se pudo guardar: %s" % _e)
+
 
 def _home_df(sql, params=None):
     """Query directa para el home (cat() aun no esta definido en este punto del script)."""
