@@ -1511,7 +1511,7 @@ def render(USR, cat, conectar):
 
     ss = st.session_state
     _opts = ["🧪 Armar / editar despacho", "🔬 Control y confirmación", "🎟️ Tickets de portería",
-             "📋 Despachos cargados", "📊 Análisis"]
+             "📋 Despachos cargados", "📊 Análisis", "🔎 Baja de stock"]
     # "Modificar en el armador" pide cambiar de vista: va vía dsp_tab_next porque el estado de
     # un widget ya instanciado no se puede pisar dentro del mismo run.
     _nx = ss.pop("dsp_tab_next", None)
@@ -1526,7 +1526,9 @@ def render(USR, cat, conectar):
     _t = _t or _opts[0]
     st.write("")
 
-    if _t.startswith("📋"):
+    if _t.startswith("🔎"):
+        _monitor_baja(USR, cat, conectar)
+    elif _t.startswith("📋"):
         _listado(USR, cat, conectar)
     elif _t.startswith("📊"):
         _analisis(USR, cat)
@@ -1536,6 +1538,238 @@ def render(USR, cat, conectar):
         _control(USR, cat, conectar)
     else:
         _armar(USR, cat, conectar)
+
+
+def _monitor_baja(USR, cat, conectar):
+    """¿El producto despachado se dio de baja del stock de verdad?"""
+    st.markdown("#### 🔎 Baja de stock por despacho")
+    st.caption("Cada despacho se controla con **cuatro evidencias independientes**: lo "
+               "planificado, el asiento en el ledger de stock, los kg pesados en portería "
+               "y la caída medida en el tanque. Si las cuatro coinciden, el producto salió "
+               "y está descontado. Si no, acá se ve exactamente qué falta.")
+
+    _dias = int(st.number_input("Días hacia atrás", min_value=7, max_value=180, value=45,
+                               step=7, key="mb_dias"))
+    d = cat("SELECT d.id_despacho, d.titulo, d.fecha_despacho, d.estado, d.n_contenedores, "
+            " (SELECT COALESCE(SUM(l.litros),0) FROM produccion.fact_despacho_linea l "
+            "   WHERE l.id_despacho=d.id_despacho) AS l_plan, "
+            " (SELECT COUNT(*) FROM produccion.fact_despacho_linea l "
+            "   WHERE l.id_despacho=d.id_despacho) AS n_lin, "
+            " (SELECT COUNT(*) FROM produccion.fact_despacho_linea l "
+            "   WHERE l.id_despacho=d.id_despacho AND l.verif_estado IS NOT NULL) AS n_verif, "
+            " (SELECT COUNT(*) FROM produccion.fact_despacho_ticket t "
+            "   WHERE t.id_despacho=d.id_despacho) AS n_tk, "
+            " (SELECT COALESCE(SUM(t.kg),0) FROM produccion.fact_despacho_ticket t "
+            "   WHERE t.id_despacho=d.id_despacho) AS kg_tk, "
+            " (SELECT COUNT(*) FROM produccion.fact_movimiento_stock m "
+            "   WHERE m.id_despacho=d.id_despacho AND NOT m.anulado) AS n_mov, "
+            " (SELECT COUNT(*) FROM produccion.fact_movimiento_stock m "
+            "   WHERE m.id_despacho=d.id_despacho AND NOT m.anulado "
+            "     AND m.estado_mov='EJECUTADO') AS n_ejec, "
+            " (SELECT COALESCE(SUM(m.kg),0) FROM produccion.fact_movimiento_stock m "
+            "   WHERE m.id_despacho=d.id_despacho AND NOT m.anulado) AS kg_mov "
+            "FROM produccion.fact_despacho d "
+            "WHERE d.estado IN ('CONFIRMADO','DESPACHADO') "
+            "  AND d.fecha_despacho >= current_date - %s "
+            "ORDER BY d.fecha_despacho DESC, d.id_despacho DESC", (int(_dias),))
+    if d is None or d.empty:
+        st.info("No hay despachos confirmados en ese período.")
+        return
+    d = d.copy()
+    for c in ("l_plan", "n_lin", "n_verif", "n_tk", "kg_tk", "n_mov", "n_ejec", "kg_mov",
+              "n_contenedores"):
+        d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0)
+
+    # --- evidencia física: caída medida por tanque, despacho por despacho ---
+    med = cat("SELECT l.id_despacho, l.id_tanque, COALESCE(t.nombre,'—') AS tanque, "
+              "       l.producto_codigo, SUM(l.litros) AS litros_plan, "
+              "  (SELECT s.litros FROM produccion.fact_stock_tanque s "
+              "    WHERE s.id_tanque=l.id_tanque "
+              "      AND s.medido_en < d.fecha_despacho::timestamptz "
+              "    ORDER BY s.medido_en DESC LIMIT 1) AS l_antes, "
+              "  (SELECT s.litros FROM produccion.fact_stock_tanque s "
+              "    WHERE s.id_tanque=l.id_tanque "
+              "      AND s.medido_en >= (d.fecha_despacho::timestamptz + interval '1 day') "
+              "    ORDER BY s.medido_en ASC LIMIT 1) AS l_despues "
+              "FROM produccion.fact_despacho d "
+              "JOIN produccion.fact_despacho_linea l ON l.id_despacho=d.id_despacho "
+              "LEFT JOIN produccion.dim_tanque t ON t.id_tanque=l.id_tanque "
+              "WHERE d.estado IN ('CONFIRMADO','DESPACHADO') "
+              "  AND d.fecha_despacho >= current_date - %s "
+              "GROUP BY l.id_despacho, l.id_tanque, t.nombre, l.producto_codigo, "
+              "         d.fecha_despacho", (int(_dias),))
+    if med is None:
+        med = pd.DataFrame(columns=["id_despacho", "id_tanque", "tanque", "producto_codigo",
+                                    "litros_plan", "l_antes", "l_despues"])
+    med = med.copy()
+    for c in ("litros_plan", "l_antes", "l_despues"):
+        med[c] = pd.to_numeric(med[c], errors="coerce")
+    # caída medida: sólo cuenta si hay las dos mediciones y el tanque NO se recargó
+    med["caida"] = med["l_antes"] - med["l_despues"]
+    med["_estado_med"] = med.apply(
+        lambda r: ("sin medición posterior" if pd.isna(r["l_despues"])
+                   else ("sin medición previa" if pd.isna(r["l_antes"])
+                         else ("recargado (no concluyente)" if r["caida"] < 0
+                               else "medido"))), axis=1)
+
+    def _res_med(idd):
+        m = med[med["id_despacho"] == idd]
+        if m.empty:
+            return 0, 0, 0.0, 0.0
+        _ok = m[m["_estado_med"] == "medido"]
+        return (int(len(_ok)), int(len(m)), float(_ok["caida"].sum()),
+                float(_ok["litros_plan"].sum()))
+
+    _filas = []
+    for _, r in d.iterrows():
+        _idd = int(r["id_despacho"])
+        _nok, _ntot, _caida, _plan_ok = _res_med(_idd)
+        _tk_ok = r["n_tk"] >= max(1.0, r["n_contenedores"])
+        _ej = r["n_ejec"] > 0
+        # semáforo del ciclo completo
+        if _tk_ok and _ej:
+            _sem = "🟢 Baja cerrada"
+        elif _tk_ok and not _ej:
+            _sem = "🟡 Salió, falta cerrar"
+        elif r["n_tk"] > 0:
+            _sem = "🟡 Saliendo (parcial)"
+        elif _caida > 0:
+            _sem = "🟠 Bajó el tanque, sin tickets"
+        else:
+            _sem = "🔴 Sin evidencia de salida"
+        _filas.append({
+            "Estado del ciclo": _sem,
+            "Despacho": "#%d · %s" % (_idd, str(r["titulo"] or "—")),
+            "Fecha": str(r["fecha_despacho"]),
+            "Plan (L)": float(r["l_plan"]),
+            "Ledger": ("%d mov · %s" % (int(r["n_mov"]),
+                                        "EJECUTADO" if _ej else "planificado")),
+            "Ledger (t)": float(r["kg_mov"]) / 1000.0,
+            "Portería": "%d/%d tickets" % (int(r["n_tk"]), int(r["n_contenedores"])),
+            "Pesado (t)": float(r["kg_tk"]) / 1000.0,
+            "Medición": ("%d/%d tanques" % (_nok, _ntot)) if _ntot else "—",
+            "Caída medida (L)": _caida if _nok else None,
+            "Plan de esos (L)": _plan_ok if _nok else None,
+            "Cobertura": (round(100.0 * _caida / _plan_ok, 0)
+                          if (_nok and _plan_ok > 0) else None),
+            "Verificó planta": "%d/%d" % (int(r["n_verif"]), int(r["n_lin"])),
+            "_id": _idd,
+        })
+    _df = pd.DataFrame(_filas)
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Despachos en el período", int(len(_df)))
+    k2.metric("🟢 Baja cerrada", int((_df["Estado del ciclo"] == "🟢 Baja cerrada").sum()))
+    _pend = _df[_df["Estado del ciclo"] == "🟡 Salió, falta cerrar"]
+    k3.metric("🟡 Salieron sin cerrar", int(len(_pend)),
+              help="Pesaron todos los contenedores pero el despacho sigue CONFIRMADO: el "
+                   "asiento de stock quedó como PLANIFICADO en vez de EJECUTADO.")
+    k4.metric("🔴 Sin evidencia", int((_df["Estado del ciclo"]
+                                       == "🔴 Sin evidencia de salida").sum()))
+
+    st.dataframe(_df.drop(columns=["_id"]), hide_index=True, use_container_width=True,
+                 column_config={
+                     "Plan (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "Ledger (t)": st.column_config.NumberColumn(format="%.1f"),
+                     "Pesado (t)": st.column_config.NumberColumn(format="%.1f"),
+                     "Caída medida (L)": st.column_config.NumberColumn(
+                         format="%.0f", help="Suma de la baja medida en los tanques que "
+                                             "tienen medición antes y después y no se "
+                                             "recargaron en el medio."),
+                     "Plan de esos (L)": st.column_config.NumberColumn(
+                         format="%.0f", help="Lo planificado para ESOS mismos tanques: es "
+                                             "con lo que hay que comparar la caída medida."),
+                     "Cobertura": st.column_config.ProgressColumn(
+                         "Cobertura medida", format="%.0f%%", min_value=0, max_value=120,
+                         help="Caída medida ÷ plan de esos tanques. Cerca de 100% = la "
+                              "medición confirma la baja. Muy por debajo = el tanque no "
+                              "bajó lo que decía la formulación, o se recargó en el medio."),
+                 })
+    st.caption("**Ledger** = asiento en el stock (se genera solo al confirmar). "
+               "**Portería** = camiones pesados en balanza. **Medición** = prueba física: "
+               "cuántos tanques del despacho tienen medición antes y después sin recarga en "
+               "el medio. Comparar *Caída medida* contra *Plan de esos*, no contra el plan total.")
+
+    if not _pend.empty:
+        st.warning("🟡 **%d despacho(s) ya pesaron todos sus contenedores pero siguen "
+                   "CONFIRMADO**: %s. Su baja de stock quedó como *planificada* y nunca se "
+                   "marca como ejecutada."
+                   % (len(_pend), ", ".join(_pend["Despacho"].tolist())))
+        if st.button("✅ Cerrar los que ya pesaron todo (pasar a DESPACHADO)",
+                     key="mb_cerrar", type="primary"):
+            _ids = [int(x) for x in _pend["_id"].tolist()]
+            try:
+                with conectar(USR["id_usuario"]) as (conn, audit):
+                    with conn.cursor() as cur:
+                        for _i in _ids:
+                            cur.execute("UPDATE produccion.fact_despacho SET estado='DESPACHADO', "
+                                        "actualizado_en=now() WHERE id_despacho=%s "
+                                        "AND estado='CONFIRMADO'", (_i,))
+                            audit.log("U", "fact_despacho", _i,
+                                      {"estado": "DESPACHADO", "motivo": "tickets completos",
+                                       "desde": "monitor de baja"})
+                cat.clear()
+                st.success("%d despacho(s) cerrados: sus movimientos de stock pasan a "
+                           "EJECUTADO." % len(_ids))
+                st.rerun()
+            except Exception as e:
+                st.error("No se pudieron cerrar: %s" % e)
+
+    st.divider()
+    st.markdown("##### 🔬 Detalle tanque por tanque")
+    _lbl = {int(r["_id"]): r["Despacho"] for _, r in _df.iterrows()}
+    _sel = st.selectbox("Despacho", list(_lbl.keys()),
+                        format_func=lambda i: _lbl.get(int(i), str(i)), key="mb_sel")
+    _m = med[med["id_despacho"] == int(_sel)].copy()
+    if _m.empty:
+        st.info("Sin líneas para ese despacho.")
+        return
+    _m["Δ medido (L)"] = _m.apply(lambda r: (r["caida"] if r["_estado_med"] == "medido"
+                                             else None), axis=1)
+    _m["Diferencia (L)"] = _m.apply(
+        lambda r: ((r["caida"] - r["litros_plan"]) if r["_estado_med"] == "medido" else None),
+        axis=1)
+    _m = _m.rename(columns={"tanque": "Tanque", "producto_codigo": "Producto",
+                            "litros_plan": "Plan (L)", "l_antes": "Medición previa (L)",
+                            "l_despues": "Medición posterior (L)",
+                            "_estado_med": "Evidencia"})
+    st.dataframe(_m[["Tanque", "Producto", "Plan (L)", "Medición previa (L)",
+                     "Medición posterior (L)", "Δ medido (L)", "Diferencia (L)",
+                     "Evidencia"]],
+                 hide_index=True, use_container_width=True,
+                 column_config={
+                     "Plan (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "Medición previa (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "Medición posterior (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "Δ medido (L)": st.column_config.NumberColumn(
+                         format="%.0f", help="Cuánto bajó el tanque entre las dos mediciones."),
+                     "Diferencia (L)": st.column_config.NumberColumn(
+                         format="%.0f", help="Δ medido − Plan. Negativo = bajó MENOS de lo "
+                                             "planificado (el tanque no dio todo lo que decía "
+                                             "la formulación, o falta medir)."),
+                 })
+    _cob = _m[_m["Evidencia"] == "medido"]
+    if not _cob.empty and float(_cob["Plan (L)"].sum()) > 0:
+        _pc = 100.0 * float(_cob["Δ medido (L)"].sum()) / float(_cob["Plan (L)"].sum())
+        if _pc < 60:
+            st.error("⚠️ La medición sólo respalda el **%.0f%%** de lo planificado para esos "
+                     "tanques (%s L medidos contra %s L de plan). O el producto no salió de "
+                     "esos tanques, o entró producto nuevo entre las dos mediciones, o el "
+                     "despacho se cargó de tanques distintos a los de la formulación — "
+                     "cruzalo con la verificación de planta."
+                     % (_pc, "{:,.0f}".format(float(_cob["Δ medido (L)"].sum())),
+                        "{:,.0f}".format(float(_cob["Plan (L)"].sum()))))
+        elif _pc > 130:
+            st.warning("La caída medida (%.0f%% del plan) es bastante mayor que lo "
+                       "planificado: probablemente esos tanques alimentaron algo más además "
+                       "de este despacho." % _pc)
+    st.caption("**recargado (no concluyente)**: entre las dos mediciones el tanque recibió "
+               "producto, así que la caída no se puede atribuir al despacho. "
+               "**sin medición posterior**: nadie midió el tanque después — es el agujero "
+               "más común y el motivo por el que el stock queda inflado. Ojo: una recarga "
+               "PARCIAL (el tanque bajó 20.000 y le cargaron 19.000) se ve como una caída "
+               "chica y no como recarga — por eso una cobertura muy baja hay que "
+               "investigarla, no descartarla.")
 
 
 def _analisis(USR, cat):
