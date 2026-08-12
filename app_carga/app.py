@@ -347,7 +347,16 @@ def _landing_kpis():
         (SELECT count(*) FROM fact_batch_proceso WHERE estado='REACCION' AND NOT anulado) AS en_reaccion,
         (SELECT count(*) FROM fact_batch_proceso WHERE estado='REPOSO' AND NOT anulado) AS en_reposo,
         (SELECT count(*) FROM fact_ticket_lab WHERE estado='PENDIENTE') AS tickets_pend,
-        (SELECT count(*) FROM fact_batch_proceso WHERE esperando_validacion_lab) AS esp_valid,
+        (SELECT count(*) FROM fact_batch_proceso
+          WHERE esperando_validacion_lab AND NOT anulado) AS esp_valid,
+        (SELECT count(*) FROM fact_batch_proceso b
+          WHERE b.esperando_validacion_lab AND NOT b.anulado
+            AND EXISTS (SELECT 1 FROM produccion.v_procesos_lab_efectivo p
+                         WHERE replace(upper(p.ticket),'-','')
+                             = replace(upper(COALESCE(b.identificador_unidad,'@')),'-','')
+                            OR replace(upper(p.ticket),'-','')
+                             = replace(upper(COALESCE(b.ticket_validacion_lab,'@')),'-',''))
+        ) AS esp_con_lab,
         (SELECT count(*) FROM fact_batch_proceso WHERE fecha=CURRENT_DATE AND NOT anulado) AS hoy
     """
     try:
@@ -355,10 +364,111 @@ def _landing_kpis():
             with conn.cursor() as cur:
                 cur.execute(sql)
                 row = cur.fetchone()
-                cols = ["tanques","stock_tn","en_proceso","en_reaccion","en_reposo","tickets_pend","esp_valid","hoy"]
+                cols = ["tanques","stock_tn","en_proceso","en_reaccion","en_reposo","tickets_pend","esp_valid","esp_con_lab","hoy"]
                 return dict(zip(cols, row))
     except Exception:
         return None
+
+
+_SQL_ESP_LAB = """
+  SELECT b.id_batch, b.fecha, b.identificador_unidad, b.estado, b.etapa_actual,
+         b.tipo_proceso, b.ticket_validacion_lab, b.tanque_destino,
+         (CURRENT_DATE - b.fecha) AS dias,
+         (SELECT p.calidad_final_lab FROM produccion.v_procesos_lab_efectivo p
+           WHERE replace(upper(p.ticket),'-','')
+               = replace(upper(COALESCE(b.identificador_unidad,'@')),'-','')
+              OR replace(upper(p.ticket),'-','')
+               = replace(upper(COALESCE(b.ticket_validacion_lab,'@')),'-','')
+           ORDER BY p.fecha DESC NULLS LAST LIMIT 1) AS calidad_lab,
+         (SELECT p.producto_lab FROM produccion.v_procesos_lab_efectivo p
+           WHERE replace(upper(p.ticket),'-','')
+               = replace(upper(COALESCE(b.identificador_unidad,'@')),'-','')
+              OR replace(upper(p.ticket),'-','')
+               = replace(upper(COALESCE(b.ticket_validacion_lab,'@')),'-','')
+           ORDER BY p.fecha DESC NULLS LAST LIMIT 1) AS producto_lab
+    FROM produccion.fact_batch_proceso b
+   WHERE b.esperando_validacion_lab AND NOT b.anulado
+   ORDER BY b.fecha DESC, b.id_batch DESC
+"""
+
+
+def _panel_esperando_lab(cat, conectar=None, USR=None):
+    """Las reacciones que quedaron esperando el resultado del laboratorio."""
+    import pandas as _pd
+    st.markdown("#### ⏳ Reacciones esperando validación de laboratorio")
+    st.caption("Una reacción queda **esperando validación** cuando se cierra el proceso y se "
+               "manda la muestra al laboratorio: hasta que no vuelve el resultado, la calidad "
+               "del producto no está confirmada. Estas ya están en tanque, así que **no "
+               "aparecen en el Dashboard de reacciones** — este es el único lugar donde se ven.")
+    try:
+        df = cat(_SQL_ESP_LAB)
+    except Exception as _e:
+        st.error("No se pudo leer la bandeja: %s" % _e)
+        return
+    if df is None or df.empty:
+        st.success("✅ No hay reacciones esperando laboratorio.")
+        return
+    df = df.copy()
+    df["dias"] = _pd.to_numeric(df["dias"], errors="coerce").fillna(0).astype(int)
+    _con = df[df["calidad_lab"].notna()]
+    _sin = df[df["calidad_lab"].isna()]
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Esperando validación", int(len(df)))
+    k2.metric("✅ El lab ya respondió", int(len(_con)),
+              help="El resultado está cargado en el sistema con el ticket de la reacción. "
+                   "Sólo falta cerrar la validación: la bandera quedó pegada porque la "
+                   "reacción esperaba otro número de ticket.")
+    k3.metric("🔴 Sin resultado de lab", int(len(_sin)),
+              help="No hay ningún análisis cargado para esta reacción: el producto está en "
+                   "el tanque con la calidad sin confirmar.")
+
+    _sh = df.rename(columns={
+        "identificador_unidad": "Reacción", "fecha": "Fecha", "estado": "Estado",
+        "etapa_actual": "Etapa", "ticket_validacion_lab": "Ticket que espera",
+        "tanque_destino": "Tanque destino", "dias": "Días esperando",
+        "calidad_lab": "Calidad del lab", "producto_lab": "Producto del lab"})
+    _sh["Situación"] = ["✅ Lab OK · falta cerrar" if _pd.notna(c) else "🔴 Sin lab"
+                        for c in df["calidad_lab"]]
+    st.dataframe(
+        _sh[["Situación", "Reacción", "Fecha", "Días esperando", "Estado", "Etapa",
+             "Ticket que espera", "Producto del lab", "Calidad del lab", "Tanque destino"]],
+        hide_index=True, use_container_width=True,
+        column_config={"Días esperando": st.column_config.NumberColumn(format="%d")})
+
+    if not _con.empty and conectar is not None and USR is not None:
+        st.info("💡 **%d reacción(es) ya tienen el resultado del laboratorio cargado** "
+                "(el lab lo registró con el ticket de la reacción, no con el número que "
+                "esperaba el sistema). Cerrarlas deja la calidad confirmada y las saca del "
+                "contador de la portada." % len(_con))
+        if st.button("✅ Cerrar validación de las que ya tienen resultado",
+                     key="esp_lab_cerrar", type="primary"):
+            _ids = [int(x) for x in _con["id_batch"].tolist()]
+            try:
+                with conectar(int(USR["id_usuario"])) as (conn, audit):
+                    with conn.cursor() as cur:
+                        for _i in _ids:
+                            cur.execute(
+                                "UPDATE produccion.fact_batch_proceso SET "
+                                "esperando_validacion_lab=false, validado_lab=true "
+                                "WHERE id_batch=%s AND esperando_validacion_lab", (_i,))
+                            audit.log("U", "fact_batch_proceso", _i,
+                                      {"validado_lab": True,
+                                       "motivo": "resultado de lab ya cargado",
+                                       "desde": "bandeja esperando validación"})
+                cat.clear()
+                try:
+                    _landing_kpis.clear()
+                except Exception:
+                    pass
+                st.success("%d reacción(es) validadas." % len(_ids))
+                st.rerun()
+            except Exception as _e:
+                st.error("No se pudo cerrar: %s" % _e)
+    if not _sin.empty:
+        st.warning("🔴 **Sin resultado de laboratorio:** %s. El producto ya está en tanque con "
+                   "la calidad sin confirmar — pedile al lab el análisis de esas reacciones."
+                   % ", ".join(str(x) for x in _sin["identificador_unidad"].fillna("—")))
 
 
 def _home_df(sql, params=None):
@@ -475,9 +585,27 @@ if st.session_state.section is None:
           <div class="kpi"><div class="l">Tickets lab pendientes</div>
             <div class="v {tic_cls}">{int(k['tickets_pend'] or 0)}</div><div class="s">a evaluar en laboratorio</div></div>
           <div class="kpi"><div class="l">Esperando validación</div>
-            <div class="v {esp_cls}">{int(k['esp_valid'] or 0)}</div><div class="s">reacciones que aguardan lab</div></div>
+            <div class="v {esp_cls}">{int(k['esp_valid'] or 0)}</div>
+            <div class="s">reacciones cerradas cuyo análisis de laboratorio todavía no se confirmó</div></div>
         </div>
         """, unsafe_allow_html=True)
+        _kb1, _kb2, _kb3 = st.columns([1.3, 1.3, 2.4])
+        if int(k.get('tickets_pend') or 0) > 0:
+            if _kb1.button("🧪 Ver tickets de lab pendientes", key="kpi_go_lab",
+                           use_container_width=True):
+                go_to("LAB")
+        if int(k.get('esp_valid') or 0) > 0:
+            if _kb2.button("⏳ Ver las %d esperando validación" % int(k['esp_valid']),
+                           key="kpi_go_esp", use_container_width=True):
+                st.session_state["ep_focus_esp"] = True
+                go_to("ESTADO")
+            _cl = int(k.get('esp_con_lab') or 0)
+            _kb3.caption(
+                "**Esperando validación**: la reacción terminó y se mandó muestra al "
+                "laboratorio, pero el resultado nunca se confirmó en el sistema, así que la "
+                "calidad del producto que ya está en el tanque sigue sin cerrar."
+                + ((" De esas, **%d ya tienen el análisis cargado** y sólo falta cerrarlas."
+                    % _cl) if _cl else ""))
 
     st.markdown('<div class="section-title">Accesos</div>', unsafe_allow_html=True)
 
@@ -1686,8 +1814,21 @@ def _porteria_entrada_diaria(cat):
 
 def _render_estado_planta(cat, conectar=None, USR=None):
     st.title("📈 Estado de planta")
-    t1, t2, t3, t4, t5, t6, t7 = st.tabs(["🏭 Tablero", "🧪 Bandeja lab", "🔗 Trazabilidad", "📉 Mermas", "🔔 Alertas", "💵 Margen por reacción", "🧫 Evaluaciones internas"])
-    with t7:
+    # Si se llegó desde el KPI "Esperando validación" de la portada, el panel se
+    # muestra arriba de todo: las pestañas de Streamlit no se pueden preseleccionar.
+    if st.session_state.get("ep_focus_esp"):
+        with st.container(border=True):
+            _panel_esperando_lab(cat, conectar, USR)
+            if st.button("✖ Cerrar este panel", key="ep_focus_close"):
+                st.session_state.pop("ep_focus_esp", None)
+                st.rerun()
+        st.divider()
+    t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs(
+        ["🏭 Tablero", "🧪 Bandeja lab", "⏳ Esperando validación", "🔗 Trazabilidad",
+         "📉 Mermas", "🔔 Alertas", "💵 Margen por reacción", "🧫 Evaluaciones internas"])
+    with t3:
+        _panel_esperando_lab(cat, conectar, USR)
+    with t8:
         import pandas as pd
         st.caption("Evaluaciones internas de cada reacción. Si se cargó mal la **hora** o un **parámetro**, corregilo acá.")
         _reac = cat("SELECT DISTINCT b.identificador_unidad, b.id_batch "
@@ -1788,7 +1929,7 @@ def _render_estado_planta(cat, conectar=None, USR=None):
         else:
             st.dataframe(df, hide_index=True, use_container_width=True,
                          column_config={"Horas esperando": st.column_config.NumberColumn(format="%.1f")})
-    with t3:
+    with t4:
         st.caption("La historia de un lote: qué entró, qué salió y a qué tanque.")
         _lotes = cat("SELECT DISTINCT identificador_unidad FROM produccion.v_trazabilidad_lote WHERE identificador_unidad IS NOT NULL ORDER BY 1")
         if _lotes is None or _lotes.empty:
@@ -1804,7 +1945,7 @@ def _render_estado_planta(cat, conectar=None, USR=None):
                                             "Litros": st.column_config.NumberColumn(format="%.0f")})
             else:
                 st.caption("Ese lote no tiene movimientos cargados.")
-    with t4:
+    with t5:
         st.caption("Planificado vs real por lote: rendimiento y mermas.")
         df = cat("SELECT identificador_unidad AS \"Reacción\", kg_inicial AS \"MP kg\", are_objetivo_kg AS \"ARE obj.\", "
                  "producido_kg AS \"ARE real\", rendimiento_vs_obj_pct AS \"% vs obj\", rendimiento_vs_mp_pct AS \"% vs MP\" "
@@ -1814,7 +1955,7 @@ def _render_estado_planta(cat, conectar=None, USR=None):
         else:
             st.dataframe(df, hide_index=True, use_container_width=True,
                          column_config={k: st.column_config.NumberColumn(format="%.0f") for k in ["MP kg","ARE obj.","ARE real"]})
-    with t5:
+    with t6:
         st.caption("Cosas que requieren atención ahora.")
         df = cat("SELECT severidad, tipo, mensaje FROM produccion.v_alertas_planta "
                  "ORDER BY CASE severidad WHEN 'alta' THEN 0 WHEN 'media' THEN 1 ELSE 2 END")
@@ -1825,7 +1966,7 @@ def _render_estado_planta(cat, conectar=None, USR=None):
                 _ic = "🔴" if r["severidad"] == "alta" else "🟠"
                 st.warning(f"{_ic} **{r['tipo']}** — {r['mensaje']}")
 
-    with t6:
+    with t7:
         import pandas as pd
         st.subheader("💵 Margen de transformación por reacción")
         st.caption("Cuánto vale lo que **sale** (ARE-B, que se exporta como AG-E) menos lo que **entra** "
