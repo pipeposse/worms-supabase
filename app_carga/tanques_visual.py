@@ -1,30 +1,33 @@
 # -*- coding: utf-8 -*-
 """Visualización de tanques — el estado de la planta de un vistazo.
 
-Cada tanque se dibuja como un recipiente a escala: el nivel es el stock medido
-sobre la capacidad, la parte rayada de arriba del líquido es lo COMPROMETIDO en
-despachos confirmados (está en el tanque pero ya tiene dueño), y el color es el
-producto. Al pie, la banda de calidad A/B/C/D contra la spec de venta, el último
-lab y el movimiento neto de las últimas horas.
+Cada tanque es un recipiente a escala: nivel = stock medido / capacidad, la franja
+rayada arriba del líquido es lo COMPROMETIDO en despachos confirmados, el color es
+el producto. Chip de calidad: para AFE/AG es la banda A/B/C/D contra la spec de
+venta; para el resto (ARE-B, AG-C…) es la calidad propia del producto. Cada
+tarjeta dice el medidor (WeDo/Manual), cuándo se midió por última vez y cuál fue
+el último movimiento tipificado (despacho, asignación AFE, carga…).
 
-Es HTML/CSS puro sin estado (ningún widget adentro de las tarjetas): no puede
-colgarse ni resetear nada, y dibuja 50 tanques en un solo render.
+El HTML se genera SIN saltos de línea: st.markdown trata las líneas con sangría
+como bloque de código y aparecían '</div>' sueltos en pantalla.
 """
 import html as _html
 
 import pandas as pd
 import streamlit as st
 
-# spec de venta (la misma que Balance) para la banda A/B/C/D
-_SPEC_S, _SPEC_P = 50.0, 150.0
+_SPEC_S, _SPEC_P = 50.0, 150.0     # spec de venta (misma que Balance) para la banda AFE/AG
 _BANDA_COL = {"A": "#166534", "B": "#1d4ed8", "C": "#b45309", "D": "#b91c1c", "—": "#94a3b8"}
-_BANDA_DESC = {"A": "excelente", "B": "bueno", "C": "justo", "D": "fuera de spec",
-               "—": "sin lab"}
-# color del líquido por producto (familias); el resto cae en el default
 _PROD_COL = [("AFE-SG", "#64748b"), ("AFE-S", "#0284c7"), ("AFE-G", "#7c3aed"),
              ("AFE", "#0ea5e9"), ("AG-E", "#d97706"), ("AG", "#f59e0b"),
              ("ARE", "#16a34a"), ("SEBO", "#a16207"), ("GLICERINA", "#db2777"),
              ("MP", "#6b7280")]
+_ORIGEN_LBL = {"despacho": "🚢 Despacho", "asignacion_afe": "🎯 Asig. AFE",
+               "recuperacion_ag": "♻️ Recuperación", "carga_operario": "🏭 Carga",
+               "decantacion": "🧴 Decantación", "planificacion": "🗓️ Planif.",
+               "lab_sync": "🚛 Ingreso", "porteria_sync": "🚛 Ingreso",
+               "ajuste_manual": "✍️ Ajuste", "sistema": "⚙️ Sistema",
+               "sync_wedo": "📡 WeDo", "despacho_salida": "🚢 Despacho"}
 
 
 def _color_prod(p):
@@ -35,18 +38,24 @@ def _color_prod(p):
     return "#475569"
 
 
-def _banda(s, p):
-    if pd.isna(s) and pd.isna(p):
-        return "—"
-    ic = max((float(s) / _SPEC_S) if pd.notna(s) else 0.0,
-             (float(p) / _SPEC_P) if pd.notna(p) else 0.0)
-    if ic <= 0.80:
-        return "A"
-    if ic <= 0.90:
-        return "B"
-    if ic <= 1.00:
-        return "C"
-    return "D"
+def _chip_calidad(prod, s, p):
+    """(letra, color, tooltip). AFE/AG: banda vs spec de venta. Resto: la calidad
+    del propio producto (ARE-B -> B). Sin nada -> None."""
+    up = str(prod or "").strip().upper()
+    if up.startswith("AFE") or up.startswith("AG"):
+        if pd.isna(s) and pd.isna(p):
+            return ("—", _BANDA_COL["—"], "Sin análisis de laboratorio")
+        ic = max((float(s) / _SPEC_S) if pd.notna(s) else 0.0,
+                 (float(p) / _SPEC_P) if pd.notna(p) else 0.0)
+        b = "A" if ic <= 0.80 else ("B" if ic <= 0.90 else ("C" if ic <= 1.00 else "D"))
+        d = {"A": "excelente", "B": "bueno", "C": "justo", "D": "fuera de spec"}[b]
+        return (b, _BANDA_COL[b], "Banda %s · %s (contra spec de venta S≤50 / P≤150)" % (b, d))
+    if "-" in up:
+        cal = up.rsplit("-", 1)[1]
+        if 0 < len(cal) <= 3:
+            col = _BANDA_COL.get(cal, "#334155")
+            return (cal, col, "Calidad %s del producto %s" % (cal, up))
+    return None
 
 
 def _fnum(v, dec=0, vacio="—"):
@@ -58,8 +67,17 @@ def _fnum(v, dec=0, vacio="—"):
         return vacio
 
 
-def _card(r, mov):
-    """HTML de la tarjeta de UN tanque."""
+def _fts(ts):
+    try:
+        t = pd.to_datetime(ts, utc=True)
+        if pd.isna(t):
+            return None
+        return t.tz_convert("America/Argentina/Buenos_Aires").strftime("%d/%m %H:%M")
+    except Exception:
+        return None
+
+
+def _card(r, mov, ult):
     nombre = _html.escape(str(r["nombre"]))
     prod = str(r["producto_principal"] or "—")
     col = _color_prod(prod)
@@ -67,98 +85,104 @@ def _card(r, mov):
     lts = float(r["litros_actual"]) if pd.notna(r["litros_actual"]) else None
     comp = float(r.get("litros_comprometido") or 0.0)
     pct = min(100.0, max(0.0, 100.0 * (lts or 0.0) / cap)) if cap > 0 else 0.0
-    # comprometido dibujado como la tajada SUPERIOR del líquido
     comp_draw = min(comp, (lts or 0.0))
     pct_comp = min(pct, 100.0 * comp_draw / cap) if cap > 0 else 0.0
     pct_disp = max(0.0, pct - pct_comp)
-    bnd = _banda(r.get("azufre"), r.get("fosforo"))
-    bcol = _BANDA_COL[bnd]
-    # lab compacto
+    chip = _chip_calidad(prod, r.get("azufre"), r.get("fosforo"))
+    chip_html = ""
+    if chip:
+        _b, _c, _tt = chip
+        chip_html = ("<span class='tvq-bnd' style='background:%s22;color:%s;border:1px solid %s55'"
+                     " title='%s'>%s</span>" % (_c, _c, _c, _html.escape(_tt), _b))
     lab = "ac %s · P %s · S %s" % (_fnum(r.get("acidez"), 2), _fnum(r.get("fosforo"), 0),
                                    _fnum(r.get("azufre"), 0))
-    if pd.notna(r.get("agua_sedimento")):
-        lab += " · AyS %s" % _fnum(r.get("agua_sedimento"), 2)
-    # frescura de la medición
+    # medidor + última medición
+    _fm = str(r.get("fuente_medicion") or "Manual")
+    _mi = "📡" if _fm == "WeDo" else "✍️"
+    _tm = _fts(r.get("ultima_medicion"))
     stale = ""
     try:
         _um = pd.to_datetime(r.get("ultima_medicion"), utc=True)
         if pd.notna(_um):
-            _hs = (pd.Timestamp.now(tz="UTC") - _um).total_seconds() / 3600.0
-            if _hs > 48:
-                stale = "<span title='Última medición hace %.0f h' style='color:#b45309'>⏱%dd</span>" % (_hs, int(_hs // 24))
+            _hsx = (pd.Timestamp.now(tz="UTC") - _um).total_seconds() / 3600.0
+            if _hsx > 48:
+                stale = " <b style='color:#b45309'>⏱%dd</b>" % int(_hsx // 24)
     except Exception:
         pass
-    # movimiento neto de la ventana
-    _mv = ""
-    if mov is not None:
-        _n = float(mov.get("neto") or 0.0)
-        if abs(_n) >= 100:
-            _mv = ("<span style='color:%s;font-weight:700'>%s%s L</span>"
-                   % ("#15803d" if _n > 0 else "#b91c1c",
-                      "▲ +" if _n > 0 else "▼ −", _fnum(abs(_n))))
-        else:
-            _mv = "<span style='color:#94a3b8'>— sin mov.</span>"
+    med = "%s %s · %s%s" % (_mi, _fm, (_tm or "sin medición"), stale)
+    # Δ de la ventana
+    if mov is not None and abs(float(mov.get("neto") or 0.0)) >= 100:
+        _n = float(mov["neto"])
+        dl = ("<span style='color:%s;font-weight:700'>%s%s L</span>"
+              % ("#15803d" if _n > 0 else "#b91c1c", "▲+" if _n > 0 else "▼−", _fnum(abs(_n))))
     else:
-        _mv = "<span style='color:#94a3b8'>— sin mov.</span>"
-    _niv = ("%s" % _fnum(lts)) if lts is not None else "s/med"
-    _sinm = lts is None
-    return f"""
-<div class="tvq-card">
-  <div class="tvq-head" title="{nombre} · {_html.escape(prod)}">
-    <span class="tvq-nom">{nombre}</span>
-    <span class="tvq-bnd" style="background:{bcol}22;color:{bcol};border:1px solid {bcol}55"
-          title="Banda {bnd} · {_BANDA_DESC[bnd]} (contra spec de venta S≤50 / P≤150)">{bnd}</span>
-  </div>
-  <div class="tvq-body">
-    <div class="tvq-tank {'tvq-nomed' if _sinm else ''}">
-      <div class="tvq-fill" style="height:{pct_disp:.1f}%;background:linear-gradient(180deg,{col}cc,{col});bottom:{pct_comp:.1f}%"></div>
-      <div class="tvq-comp" style="height:{pct_comp:.1f}%"
-           title="🔒 {_fnum(comp)} L comprometidos en despachos confirmados"></div>
-      <div class="tvq-pct">{pct:.0f}%</div>
-    </div>
-    <div class="tvq-info">
-      <div class="tvq-lts"><b>{_niv}</b><span class="tvq-cap"> / {_fnum(cap)} L</span></div>
-      <div class="tvq-prod" style="color:{col}">{_html.escape(prod)}</div>
-      <div class="tvq-lab" title="Último análisis de laboratorio">{lab}</div>
-      <div class="tvq-mov">{_mv} {stale}</div>
-      {"<div class='tvq-lock'>🔒 " + _fnum(comp) + " L comp.</div>" if comp > 0 else ""}
-    </div>
-  </div>
-</div>"""
+        dl = "<span style='color:#94a3b8'>Δ 0</span>"
+    # último movimiento tipificado
+    umv = ""
+    if ult is not None:
+        _lb = _ORIGEN_LBL.get(str(ult.get("origen") or ""), "↔️ Mov.")
+        if str(ult.get("origen") or "") == "despacho" and pd.notna(ult.get("id_despacho")):
+            _lb += " #%d" % int(ult["id_despacho"])
+        _sg = "−" if str(ult.get("tipo")) == "OUT" else "+"
+        umv = ("<div class='tvq-ult' title='Último movimiento registrado'>últ: %s %s%s L · %s</div>"
+               % (_lb, _sg, _fnum(ult.get("litros")), _fts(ult.get("ts")) or ""))
+    _niv = _fnum(lts) if lts is not None else "s/med"
+    _lock = ("<div class='tvq-lock'>🔒 %s L comp.</div>" % _fnum(comp)) if comp > 0 else ""
+    h = ("<div class='tvq-card'>"
+         "<div class='tvq-head' title='%s · %s'><span class='tvq-nom'>%s</span>%s</div>"
+         "<div class='tvq-body'>"
+         "<div class='tvq-tank %s'>"
+         "<div class='tvq-fill' style='height:%.1f%%;background:linear-gradient(180deg,%scc,%s);bottom:%.1f%%'></div>"
+         "<div class='tvq-comp' style='height:%.1f%%' title='🔒 %s L comprometidos en despachos confirmados'></div>"
+         "<div class='tvq-pct'>%.0f%%</div>"
+         "</div>"
+         "<div class='tvq-info'>"
+         "<div class='tvq-lts'><b>%s</b><span class='tvq-cap'> / %s L</span></div>"
+         "<div class='tvq-prod' style='color:%s'>%s</div>"
+         "<div class='tvq-lab' title='Último análisis de laboratorio'>%s</div>"
+         "<div class='tvq-med' title='Medidor y última medición'>%s</div>"
+         "<div class='tvq-mov'>%s</div>%s%s"
+         "</div></div></div>"
+         % (nombre, _html.escape(prod), nombre, chip_html,
+            ("tvq-nomed" if lts is None else ""),
+            pct_disp, col, col, pct_comp,
+            pct_comp, _fnum(comp), pct,
+            _niv, _fnum(cap), col, _html.escape(prod), lab, med, dl, umv, _lock))
+    return h
 
 
-_CSS = """
-<style>
-.tvq-grid{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 14px}
-.tvq-card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:8px 10px;
-  width:212px;box-shadow:0 1px 2px rgba(15,23,42,.06)}
-.tvq-head{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:6px}
-.tvq-nom{font-weight:700;font-size:.8rem;color:#0f172a;white-space:nowrap;overflow:hidden;
-  text-overflow:ellipsis}
-.tvq-bnd{font-weight:800;font-size:.72rem;border-radius:8px;padding:1px 7px}
-.tvq-body{display:flex;gap:10px;align-items:stretch}
-.tvq-tank{position:relative;width:58px;min-height:104px;border:2px solid #94a3b8;
-  border-radius:8px 8px 12px 12px;background:#f8fafc;overflow:hidden;flex:none}
-.tvq-tank.tvq-nomed{border-style:dashed;background:repeating-linear-gradient(45deg,#f8fafc,
-  #f8fafc 6px,#f1f5f9 6px,#f1f5f9 12px)}
-.tvq-fill{position:absolute;left:0;right:0}
-.tvq-comp{position:absolute;left:0;right:0;bottom:0;
-  background:repeating-linear-gradient(45deg,#0f172a55,#0f172a55 4px,#0f172a22 4px,#0f172a22 8px)}
-.tvq-pct{position:absolute;top:4px;left:0;right:0;text-align:center;font-weight:800;
-  font-size:.78rem;color:#0f172a;text-shadow:0 0 4px #fff}
-.tvq-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;justify-content:center}
-.tvq-lts{font-size:.82rem;color:#0f172a}
-.tvq-cap{color:#64748b;font-size:.72rem}
-.tvq-prod{font-weight:700;font-size:.74rem}
-.tvq-lab{font-size:.68rem;color:#475569;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tvq-mov{font-size:.7rem}
-.tvq-lock{font-size:.68rem;color:#7c2d12}
-.tvq-sec{display:flex;align-items:baseline;gap:10px;margin:14px 0 2px}
-.tvq-sec h4{margin:0;font-size:1.02rem}
-.tvq-secbar{flex:1;height:8px;background:#e2e8f0;border-radius:6px;overflow:hidden;max-width:260px}
-.tvq-secfill{height:100%;background:linear-gradient(90deg,#0ea5e9,#0284c7)}
-.tvq-sect{font-size:.78rem;color:#475569}
-</style>"""
+_CSS = ("<style>"
+        ".tvq-grid{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 14px}"
+        ".tvq-card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:8px 10px;"
+        "width:224px;box-shadow:0 1px 2px rgba(15,23,42,.06)}"
+        ".tvq-head{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:6px}"
+        ".tvq-nom{font-weight:700;font-size:.8rem;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+        ".tvq-bnd{font-weight:800;font-size:.72rem;border-radius:8px;padding:1px 7px;flex:none}"
+        ".tvq-body{display:flex;gap:10px;align-items:stretch}"
+        ".tvq-tank{position:relative;width:54px;min-height:112px;border:2px solid #94a3b8;"
+        "border-radius:8px 8px 12px 12px;background:#f8fafc;overflow:hidden;flex:none}"
+        ".tvq-tank.tvq-nomed{border-style:dashed;background:repeating-linear-gradient(45deg,#f8fafc,"
+        "#f8fafc 6px,#f1f5f9 6px,#f1f5f9 12px)}"
+        ".tvq-fill{position:absolute;left:0;right:0}"
+        ".tvq-comp{position:absolute;left:0;right:0;bottom:0;"
+        "background:repeating-linear-gradient(45deg,#0f172a55,#0f172a55 4px,#0f172a22 4px,#0f172a22 8px)}"
+        ".tvq-pct{position:absolute;top:4px;left:0;right:0;text-align:center;font-weight:800;"
+        "font-size:.76rem;color:#0f172a;text-shadow:0 0 4px #fff}"
+        ".tvq-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;justify-content:center}"
+        ".tvq-lts{font-size:.8rem;color:#0f172a}"
+        ".tvq-cap{color:#64748b;font-size:.7rem}"
+        ".tvq-prod{font-weight:700;font-size:.72rem}"
+        ".tvq-lab{font-size:.66rem;color:#475569;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+        ".tvq-med{font-size:.64rem;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+        ".tvq-mov{font-size:.68rem}"
+        ".tvq-ult{font-size:.64rem;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+        ".tvq-lock{font-size:.66rem;color:#7c2d12}"
+        ".tvq-sec{display:flex;align-items:baseline;gap:10px;margin:14px 0 2px}"
+        ".tvq-sec h4{margin:0;font-size:1.02rem}"
+        ".tvq-secbar{flex:1;height:8px;background:#e2e8f0;border-radius:6px;overflow:hidden;max-width:260px}"
+        ".tvq-secfill{height:100%;background:linear-gradient(90deg,#0ea5e9,#0284c7)}"
+        ".tvq-sect{font-size:.78rem;color:#475569}"
+        "</style>")
 
 
 def render(USR, cat, conectar=None):
@@ -167,13 +191,13 @@ def render(USR, cat, conectar=None):
         "padding:16px 20px;margin:0 0 12px'>"
         "<div style='color:#fff;font-size:1.4rem;font-weight:900'>🧭 Visualización de tanques</div>"
         "<div style='color:#e0f2fe;font-size:.88rem;margin-top:3px'>La planta de un vistazo: nivel "
-        "sobre capacidad, producto, banda de calidad, comprometido en despachos y el movimiento "
-        "de las últimas horas.</div></div>", unsafe_allow_html=True)
+        "sobre capacidad, producto, calidad, comprometido en despachos, medidor y últimos "
+        "movimientos.</div></div>", unsafe_allow_html=True)
 
     df = cat("SELECT id_tanque, nombre, sector, producto_principal, capacidad_litros, "
              "litros_actual, kg_actual, litros_comprometido, litros_disponible, densidad, "
-             "acidez, fosforo, azufre, agua_sedimento, ultima_medicion, condicion "
-             "FROM produccion.vw_tanque_panel WHERE activo ORDER BY sector, nombre")
+             "acidez, fosforo, azufre, agua_sedimento, ultima_medicion, fuente_medicion, "
+             "condicion FROM produccion.vw_tanque_panel WHERE activo ORDER BY sector, nombre")
     if df is None or df.empty:
         st.info("No hay tanques activos.")
         return
@@ -189,9 +213,9 @@ def render(USR, cat, conectar=None):
     _prods = sorted(df["producto_principal"].fillna("—").unique().tolist())
     f_prod = f2.multiselect("Producto", _prods, key="tvq_prod", placeholder="todos")
     _orden = f3.selectbox("Ordenar por", ["% de llenado", "Litros", "Producto", "Nombre",
-                                          "Banda de calidad"], key="tvq_ord")
+                                          "Calidad"], key="tvq_ord")
     _hs = int(f4.selectbox("Movs. últimas", [6, 12, 24, 48], index=2, key="tvq_hs",
-                           help="Ventana de movimientos que muestra cada tarjeta."))
+                           help="Ventana del Δ neto que muestra cada tarjeta."))
     if f_sec:
         df = df[df["sector"].fillna("—").isin(f_sec)]
     if f_prod:
@@ -200,7 +224,7 @@ def render(USR, cat, conectar=None):
         st.info("Ningún tanque cumple los filtros.")
         return
 
-    # ---------- movimientos de la ventana ----------
+    # ---------- movimientos: neto de la ventana + ÚLTIMO tipificado (7 días) ----------
     movs = cat("SELECT mv.id_tanque, "
                "SUM(CASE WHEN mv.tipo='OUT' THEN -COALESCE(mv.litros,0) "
                "         ELSE COALESCE(mv.litros,0) END) AS neto, "
@@ -216,6 +240,16 @@ def render(USR, cat, conectar=None):
             _mv[int(m["id_tanque"])] = {"neto": float(m["neto"] or 0),
                                         "entro": float(m["entro"] or 0),
                                         "salio": float(m["salio"] or 0), "n": int(m["n"])}
+    ults = cat("SELECT DISTINCT ON (mv.id_tanque) mv.id_tanque, mv.tipo, mv.litros, mv.ts, "
+               "ms.origen, ms.id_despacho "
+               "FROM produccion.fact_movimiento_tanque mv "
+               "LEFT JOIN produccion.fact_movimiento_stock ms ON ms.id_mov_stock = mv.id_mov_stock "
+               "WHERE mv.ts >= now() - interval '7 days' "
+               "ORDER BY mv.id_tanque, mv.ts DESC")
+    _ult = {}
+    if ults is not None and not ults.empty:
+        for _, u in ults.iterrows():
+            _ult[int(u["id_tanque"])] = u
 
     # ---------- KPIs ----------
     _lts = df["litros_actual"].fillna(0)
@@ -229,21 +263,24 @@ def render(USR, cat, conectar=None):
     k4.metric("🔒 Comprometido", "%s L" % _fnum(_comp.sum()),
               help="En despachos confirmados sin terminar de pesar: es la franja rayada "
                    "arriba del líquido de cada tanque.")
-    _neto_tot = sum(m["neto"] for m in _mv.values() if int(0) == 0) if _mv else 0.0
     _neto_f = sum(_mv.get(int(t), {"neto": 0})["neto"] for t in df["id_tanque"])
     k5.metric("Δ últimas %d h" % _hs, "%s%s L" % ("+" if _neto_f >= 0 else "−", _fnum(abs(_neto_f))),
               help="Movimiento neto (entradas − salidas) de los tanques visibles.")
-    st.caption("🎨 Banda contra la spec de venta (S ≤ 50 / P ≤ 150): "
-               "🟢 **A** excelente · 🔵 **B** bueno · 🟠 **C** justo · 🔴 **D** fuera de spec · "
-               "**—** sin lab. La franja **rayada** arriba del líquido es stock comprometido en "
-               "despachos; el recipiente **punteado** no tiene medición cargada.")
+    st.caption("🎨 Chip de calidad: en **AFE/AG** es la banda contra la spec de venta "
+               "(🟢 A excelente · 🔵 B bueno · 🟠 C justo · 🔴 D fuera de spec · — sin lab); "
+               "en el resto es la **calidad del producto** (ARE-B → B). Franja **rayada** = "
+               "comprometido en despachos · recipiente **punteado** = sin medición · "
+               "📡 WeDo / ✍️ Manual con fecha y hora de la última medición · "
+               "⏱ = medición con más de 48 h.")
 
     # ---------- orden ----------
     df["_pct"] = (100.0 * _lts / _cap.replace(0, pd.NA)).fillna(-1)
-    df["_bnd"] = [(_banda(s, p)) for s, p in zip(df["azufre"], df["fosforo"])]
+    df["_chp"] = [(c[0] if c else "z") for c in
+                  (_chip_calidad(p, s, f) for p, s, f in
+                   zip(df["producto_principal"], df["azufre"], df["fosforo"]))]
     _keys = {"% de llenado": ("_pct", False), "Litros": ("litros_actual", False),
              "Producto": ("producto_principal", True), "Nombre": ("nombre", True),
-             "Banda de calidad": ("_bnd", True)}
+             "Calidad": ("_chp", True)}
     _k, _asc = _keys[_orden]
     df = df.sort_values([_k, "nombre"], ascending=[_asc, True], na_position="last")
 
@@ -261,7 +298,8 @@ def render(USR, cat, conectar=None):
             "<span class='tvq-sect'>%s / %s L · %.0f%% · %d tanques</span></div>"
             % (_html.escape(str(_sec or "—")), min(100, _po), _fnum(_sl), _fnum(_sc), _po,
                len(_d)), unsafe_allow_html=True)
-        _cards = "".join(_card(r, _mv.get(int(r["id_tanque"]))) for _, r in _d.iterrows())
+        _cards = "".join(_card(r, _mv.get(int(r["id_tanque"])), _ult.get(int(r["id_tanque"])))
+                         for _, r in _d.iterrows())
         st.markdown("<div class='tvq-grid'>%s</div>" % _cards, unsafe_allow_html=True)
 
     # ---------- los que más se movieron ----------
@@ -282,6 +320,5 @@ def render(USR, cat, conectar=None):
                 st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
                              column_config={c: st.column_config.NumberColumn(format="%.0f")
                                             for c in ("Entró (L)", "Salió (L)", "Neto (L)")})
-                st.caption("Neto = entradas − salidas del ledger de movimientos (cargas, "
-                           "asignaciones, despachos, decantaciones). Un neto grande sin "
-                           "medición nueva es aviso de que el nivel del panel quedó viejo.")
+                st.caption("Neto = entradas − salidas del ledger de movimientos. Un neto grande "
+                           "sin medición nueva es aviso de que el nivel del panel quedó viejo.")
