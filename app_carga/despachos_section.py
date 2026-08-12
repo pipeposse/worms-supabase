@@ -1954,6 +1954,22 @@ def _armar(USR, cat, conectar):
                 "despacho nuevo se arma con lo que realmente va a quedar. El descuento se "
                 "libera cuando el despacho termina de pesar TODOS sus contenedores."
                 % ("{:,.0f}".format(_tot_c), _n_d))
+        try:
+            _hoyz = _dt.date.today()
+            _viej = _cmp_fam[pd.to_datetime(_cmp_fam["fecha"], errors="coerce").dt.date
+                             < (_hoyz - _dt.timedelta(days=2))]
+        except Exception:
+            _viej = _cmp_fam.iloc[0:0]
+        if not _viej.empty:
+            st.warning("⏰ **Confirmados hace más de 2 días de su fecha y sin completar "
+                       "tickets:** %s. Si ya salieron, faltan tickets por vincular en "
+                       "Conciliación; si no van a salir, anulalos o editalos — mientras "
+                       "tanto siguen bloqueando ese stock."
+                       % " · ".join("#%d %s (%d/%d tickets)"
+                                    % (int(r["id_despacho"]), str(r.get("titulo") or "—"),
+                                       int(r["n_tickets"]), int(r["n_cont"]))
+                                    for _, r in
+                                    _viej.drop_duplicates("id_despacho").iterrows()))
         with st.expander("Ver el detalle de lo comprometido por despacho"):
             _nomt = {int(r["id_tanque"]): str(r["nombre"]) for _, r in tks.iterrows()}
             _dd = _cmp_fam.copy()
