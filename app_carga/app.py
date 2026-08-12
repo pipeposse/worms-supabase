@@ -368,7 +368,7 @@ _SQL_ESP_LAB = """
 """
 
 
-def _panel_esperando_lab(cat, conectar=None, USR=None):
+def _panel_esperando_lab(cat, conectar=None, USR=None, pref="esp"):
     """Las reacciones que quedaron esperando el resultado del laboratorio."""
     import pandas as _pd
     st.markdown("#### ⏳ Reacciones esperando validación de laboratorio")
@@ -458,7 +458,7 @@ def _panel_esperando_lab(cat, conectar=None, USR=None):
                 "corresponde a su proceso. Cerrarlas deja la calidad confirmada y las saca "
                 "del contador de la portada." % len(_con))
         if st.button("✅ Cerrar validación de las que ya tienen resultado",
-                     key="esp_lab_cerrar", type="primary"):
+                     key="%s_lab_cerrar" % pref, type="primary"):
             _ids = [int(x) for x in _con["id_batch"].tolist()]
             try:
                 with conectar(int(USR["id_usuario"])) as (conn, audit):
@@ -1834,7 +1834,9 @@ def _render_estado_planta(cat, conectar=None, USR=None):
     # muestra arriba de todo: las pestañas de Streamlit no se pueden preseleccionar.
     if st.session_state.get("ep_focus_esp"):
         with st.container(border=True):
-            _panel_esperando_lab(cat, conectar, USR)
+            # el mismo panel se dibuja dos veces en la misma pagina (foco + pestana):
+            # cada instancia necesita sus propias keys de widget.
+            _panel_esperando_lab(cat, conectar, USR, pref="foco")
             if st.button("✖ Cerrar este panel", key="ep_focus_close"):
                 st.session_state.pop("ep_focus_esp", None)
                 st.rerun()
@@ -1843,7 +1845,7 @@ def _render_estado_planta(cat, conectar=None, USR=None):
         ["🏭 Tablero", "🧪 Bandeja lab", "⏳ Esperando validación", "🔗 Trazabilidad",
          "📉 Mermas", "🔔 Alertas", "💵 Margen por reacción", "🧫 Evaluaciones internas"])
     with t3:
-        _panel_esperando_lab(cat, conectar, USR)
+        _panel_esperando_lab(cat, conectar, USR, pref="tab")
     with t8:
         import pandas as pd
         st.caption("Evaluaciones internas de cada reacción. Si se cargó mal la **hora** o un **parámetro**, corregilo acá.")
