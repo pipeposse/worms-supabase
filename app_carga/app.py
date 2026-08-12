@@ -349,14 +349,7 @@ def _landing_kpis():
         (SELECT count(*) FROM fact_ticket_lab WHERE estado='PENDIENTE') AS tickets_pend,
         (SELECT count(*) FROM fact_batch_proceso
           WHERE esperando_validacion_lab AND NOT anulado) AS esp_valid,
-        (SELECT count(*) FROM fact_batch_proceso b
-          WHERE b.esperando_validacion_lab AND NOT b.anulado
-            AND EXISTS (SELECT 1 FROM produccion.v_procesos_lab_efectivo p
-                         WHERE replace(upper(p.ticket),'-','')
-                             = replace(upper(COALESCE(b.identificador_unidad,'@')),'-','')
-                            OR replace(upper(p.ticket),'-','')
-                             = replace(upper(COALESCE(b.ticket_validacion_lab,'@')),'-',''))
-        ) AS esp_con_lab,
+        (SELECT count(*) FROM produccion.v_batch_esperando_lab WHERE apto_cierre) AS esp_con_lab,
         (SELECT count(*) FROM fact_batch_proceso WHERE fecha=CURRENT_DATE AND NOT anulado) AS hoy
     """
     try:
@@ -371,24 +364,7 @@ def _landing_kpis():
 
 
 _SQL_ESP_LAB = """
-  SELECT b.id_batch, b.fecha, b.identificador_unidad, b.estado, b.etapa_actual,
-         b.tipo_proceso, b.ticket_validacion_lab, b.tanque_destino,
-         (CURRENT_DATE - b.fecha) AS dias,
-         (SELECT p.calidad_final_lab FROM produccion.v_procesos_lab_efectivo p
-           WHERE replace(upper(p.ticket),'-','')
-               = replace(upper(COALESCE(b.identificador_unidad,'@')),'-','')
-              OR replace(upper(p.ticket),'-','')
-               = replace(upper(COALESCE(b.ticket_validacion_lab,'@')),'-','')
-           ORDER BY p.fecha DESC NULLS LAST LIMIT 1) AS calidad_lab,
-         (SELECT p.producto_lab FROM produccion.v_procesos_lab_efectivo p
-           WHERE replace(upper(p.ticket),'-','')
-               = replace(upper(COALESCE(b.identificador_unidad,'@')),'-','')
-              OR replace(upper(p.ticket),'-','')
-               = replace(upper(COALESCE(b.ticket_validacion_lab,'@')),'-','')
-           ORDER BY p.fecha DESC NULLS LAST LIMIT 1) AS producto_lab
-    FROM produccion.fact_batch_proceso b
-   WHERE b.esperando_validacion_lab AND NOT b.anulado
-   ORDER BY b.fecha DESC, b.id_batch DESC
+  SELECT * FROM produccion.v_batch_esperando_lab ORDER BY fecha DESC, id_batch DESC
 """
 
 
@@ -410,37 +386,77 @@ def _panel_esperando_lab(cat, conectar=None, USR=None):
         return
     df = df.copy()
     df["dias"] = _pd.to_numeric(df["dias"], errors="coerce").fillna(0).astype(int)
-    _con = df[df["calidad_lab"].notna()]
-    _sin = df[df["calidad_lab"].isna()]
+    df["apto_cierre"] = df["apto_cierre"].fillna(False).astype(bool)
+    df["lab_sin_calidad"] = df["lab_sin_calidad"].fillna(False).astype(bool)
+    _con = df[df["apto_cierre"]]
+    _scal = df[df["lab_sin_calidad"]]
+    _amb = df[(~df["apto_cierre"]) & (~df["lab_sin_calidad"]) & df["lab_ticket"].notna()]
+    _sin = df[df["lab_ticket"].isna()]
 
-    k1, k2, k3 = st.columns(3)
+    k1, k2, k3, k4 = st.columns(4)
     k1.metric("Esperando validación", int(len(df)))
     k2.metric("✅ El lab ya respondió", int(len(_con)),
-              help="El resultado está cargado en el sistema con el ticket de la reacción. "
-                   "Sólo falta cerrar la validación: la bandera quedó pegada porque la "
-                   "reacción esperaba otro número de ticket.")
-    k3.metric("🔴 Sin resultado de lab", int(len(_sin)),
-              help="No hay ningún análisis cargado para esta reacción: el producto está en "
+              help="Hay análisis con calidad final para esa reacción. Sólo falta cerrar la "
+                   "validación: la bandera quedó pegada porque la reacción esperaba otro "
+                   "número de ticket.")
+    k3.metric("🟡 Midió sin calidad", int(len(_scal)),
+              help="El análisis existe pero el laboratorio no asignó la calidad final: sin "
+                   "eso la validación no se puede cerrar.")
+    k4.metric("🔴 Sin resultado de lab", int(len(_sin)),
+              help="No hay ningún análisis cargado para esa reacción: el producto está en "
                    "el tanque con la calidad sin confirmar.")
 
-    _sh = df.rename(columns={
+    def _sit(r):
+        if r["apto_cierre"]:
+            return "✅ Lab OK · falta cerrar"
+        if r["lab_sin_calidad"]:
+            return "🟡 Midió, sin calidad"
+        if _pd.notna(r["lab_ticket"]):
+            return "⚠️ Coincide con ticket de camión"
+        return "🔴 Sin lab"
+
+    _sh = df.copy()
+    _sh["Situación"] = [_sit(r) for _, r in df.iterrows()]
+    _sh["Análisis usado"] = [
+        ("%s (%s)" % (t, v)) if _pd.notna(t) else "—"
+        for t, v in zip(df["lab_ticket"], df["lab_via"])]
+    _sh = _sh.rename(columns={
         "identificador_unidad": "Reacción", "fecha": "Fecha", "estado": "Estado",
-        "etapa_actual": "Etapa", "ticket_validacion_lab": "Ticket que espera",
+        "etapa_actual": "Etapa", "tipo_proceso": "Proceso",
+        "ticket_validacion_lab": "Ticket que espera",
+        "ticket_producto_final": "Ticket pesada final",
         "tanque_destino": "Tanque destino", "dias": "Días esperando",
         "calidad_lab": "Calidad del lab", "producto_lab": "Producto del lab"})
-    _sh["Situación"] = ["✅ Lab OK · falta cerrar" if _pd.notna(c) else "🔴 Sin lab"
-                        for c in df["calidad_lab"]]
     st.dataframe(
-        _sh[["Situación", "Reacción", "Fecha", "Días esperando", "Estado", "Etapa",
-             "Ticket que espera", "Producto del lab", "Calidad del lab", "Tanque destino"]],
+        _sh[["Situación", "Reacción", "Proceso", "Fecha", "Días esperando", "Estado", "Etapa",
+             "Ticket que espera", "Ticket pesada final", "Análisis usado",
+             "Producto del lab", "Calidad del lab", "Tanque destino"]],
         hide_index=True, use_container_width=True,
-        column_config={"Días esperando": st.column_config.NumberColumn(format="%d")})
+        column_config={
+            "Días esperando": st.column_config.NumberColumn(format="%d"),
+            "Análisis usado": st.column_config.TextColumn(
+                "Análisis usado", help="Qué análisis del laboratorio se le atribuyó a la "
+                                       "reacción y por qué vía se encontró.")})
+    st.caption("**Cómo se busca el análisis de cada reacción:** en el **desgomado** la "
+               "evaluación final es la del **ticket de pesada final**; en ARE y el resto vale "
+               "el análisis interno cargado con el ticket de la reacción, el de validación o "
+               "el de la pesada final. Un análisis que además figura como transacción de "
+               "portería es de un **camión**, no de la reacción: ese caso no se cierra solo "
+               "(sale como ⚠️).")
+    if not _amb.empty:
+        st.warning("⚠️ **Coincidencia con ticket de camión** en %s: el número de ticket "
+                   "existe en el laboratorio pero corresponde a una pesada de portería, no "
+                   "a esta reacción. Revisalo a mano antes de dar la calidad por buena."
+                   % ", ".join(str(x) for x in _amb["identificador_unidad"].fillna("—")))
+    if not _scal.empty:
+        st.info("🟡 **El laboratorio midió pero no asignó calidad final** en %s. Pedile al "
+                "lab que cierre la calidad: con la medición sola no se puede validar."
+                % ", ".join(str(x) for x in _scal["identificador_unidad"].fillna("—")))
 
     if not _con.empty and conectar is not None and USR is not None:
-        st.info("💡 **%d reacción(es) ya tienen el resultado del laboratorio cargado** "
-                "(el lab lo registró con el ticket de la reacción, no con el número que "
-                "esperaba el sistema). Cerrarlas deja la calidad confirmada y las saca del "
-                "contador de la portada." % len(_con))
+        st.info("💡 **%d reacción(es) tienen análisis con calidad final** por la vía que "
+                "corresponde a su proceso. Cerrarlas deja la calidad confirmada y las saca "
+                "del contador de la portada." % len(_con))
         if st.button("✅ Cerrar validación de las que ya tienen resultado",
                      key="esp_lab_cerrar", type="primary"):
             _ids = [int(x) for x in _con["id_batch"].tolist()]
