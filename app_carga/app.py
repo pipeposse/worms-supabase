@@ -4444,7 +4444,7 @@ if st.session_state.section != "CARGAS":
 
     elif st.session_state.section == "INICIAR":
         # =================== PRODUCCIÓN EN PLANTA ===================
-        _ip_view = st.radio("Vista", ["👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🎯 Asignación AFE", "♻️ Recuperación AG", "🚢 Despachos", "🛢️ Tanques"],
+        _ip_view = st.radio("Vista", ["👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🎯 Asignación AFE", "♻️ Recuperación AG", "🚢 Despachos", "🧭 Visualización", "🛢️ Tanques"],
                             horizontal=True, key="iniciar_view", label_visibility="collapsed")
         if _ip_view.startswith("👷"):
             try:
@@ -4516,6 +4516,12 @@ if st.session_state.section != "CARGAS":
             try:
                 from despachos_section import verificacion_planta as _verif_desp
                 _verif_desp(USR, cat, conectar)
+            except Exception as _e:
+                st.exception(_e)
+        elif _ip_view.startswith("🧭"):
+            try:
+                import tanques_visual
+                tanques_visual.render(USR, cat, conectar)
             except Exception as _e:
                 st.exception(_e)
         else:
