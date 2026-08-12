@@ -31,9 +31,12 @@ def _datos(cat, d1, d2):
     df = cat(
         "SELECT p.id_transaccion, p.fecha, to_char(p.fecha,'IYYY·\"S\"IW') AS semana, "
         "COALESCE(p.procedencia,'—') AS proveedor, p.ticket, abs(p.kg) AS kg, p.producto, "
-        "l.prc_acidez, l.ppm_azufre, l.ppm_fosforo, l.calidad_final_lab "
+        "l.prc_acidez, l.ppm_azufre, l.ppm_fosforo, l.calidad_final_lab, "
+        "l.rechazado, l.conclusion, l.patente_chasis, l.prc_sedimentos, l.empleado "
         "FROM produccion.v_porteria_ticket p "
-        "LEFT JOIN LATERAL (SELECT pl.prc_acidez, pl.ppm_azufre, pl.ppm_fosforo, pl.calidad_final_lab "
+        "LEFT JOIN LATERAL (SELECT pl.prc_acidez, pl.ppm_azufre, pl.ppm_fosforo, "
+        "         pl.calidad_final_lab, pl.rechazado, pl.conclusion, pl.patente_chasis, "
+        "         pl.prc_sedimentos, pl.empleado "
         "  FROM produccion.procesos_lab pl "
         "  WHERE btrim(pl.ticket)=p.ticket::text AND COALESCE(pl.anulado,false)=false "
         "  ORDER BY pl.fecha DESC NULLS LAST LIMIT 1) l ON true "
@@ -48,6 +51,12 @@ def _datos(cat, d1, d2):
     df["dia"] = df["fecha"].dt.dayofweek.map(_DIAS)
     df["acidez"] = [(_norm_acidez(v)) for v in df["prc_acidez"]]
     df["tiene_lab"] = df["ppm_azufre"].notna() | df["ppm_fosforo"].notna() | pd.Series(df["acidez"]).notna()
+    # Rechazado = el laboratorio lo marcó RECHAZADO o le puso calidad FUERA DE
+    # ESPECIFICACION. Ese camión NO descargó: no es stock ni es calidad de lo que entró.
+    _re = df["rechazado"].astype(str).str.upper().str.strip()
+    _ca = df["calidad_final_lab"].astype(str).str.upper().str.strip()
+    df["es_rechazado"] = _re.str.startswith("RECHAZ") | (_ca == "FUERA DE ESPECIFICACION")
+    df["es_remuestreo"] = _re.str.startswith("REMUESTREO")
     return df
 
 
@@ -139,6 +148,16 @@ def render(USR, cat, conectar):
         st.info("Ningún camión cumple los filtros.")
         return
 
+    # Los RECHAZADOS salen del análisis: no descargaron, así que no son ni volumen
+    # ingresado ni calidad de lo que entró. Van completos a su propia sección.
+    _rech = df[df["es_rechazado"]].copy()
+    df = df[~df["es_rechazado"]]
+    if df.empty:
+        st.warning("Con estos filtros **todos los camiones están rechazados** (%d). "
+                   "El detalle está abajo, en Rechazados." % len(_rech))
+        _seccion_rechazados(_rech, d1, d2)
+        return
+
     # a qué recorte corresponden los KPIs (los filtros activos, explícitos)
     _fil = ["📅 %s → %s" % (d1.strftime("%d/%m/%y"), d2.strftime("%d/%m/%y"))]
     _fil.append("🗓️ " + (", ".join(f_sem) if f_sem else "todas las semanas del rango"))
@@ -146,6 +165,7 @@ def render(USR, cat, conectar):
                          % df["proveedor"].nunique()))
     if not f_lab.startswith("Todos"):
         _fil.append(f_lab)
+    _fil.append("🚫 sin los rechazados" + (" (%d)" % len(_rech) if len(_rech) else ""))
     st.markdown("<div style='background:#f0fdfa;border:1px solid #99f6e4;border-radius:10px;"
                 "padding:6px 12px;margin:2px 0 8px;font-size:.85rem;color:#134e4a'>"
                 "<b>KPIs calculados sobre:</b> " + " · ".join(_fil) + "</div>",
@@ -156,7 +176,9 @@ def render(USR, cat, conectar):
         d = df[pd.notna(df[col])]
         return (float((d[col] * d["kg"]).sum() / d["kg"].sum()) if not d.empty and d["kg"].sum() > 0 else None)
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Camiones", len(df))
+    k1.metric("Camiones", len(df),
+              help="Camiones que efectivamente ingresaron. Los rechazados no cuentan acá: "
+                   "están en su propia sección, más abajo.")
     k2.metric("Toneladas", "%.0f" % (_kg / 1000.0))
     k3.metric("Con lab", "%.0f %%" % (100.0 * df["tiene_lab"].mean()))
     _sp = _pond("ppm_azufre"); _pp = _pond("ppm_fosforo")
@@ -187,7 +209,77 @@ def render(USR, cat, conectar):
         b2.caption("No se pudo generar la imagen: %s" % _e)
 
     st.markdown("---")
+    _seccion_rechazados(_rech, d1, d2)
+
+    st.markdown("---")
     render_sin_lab(USR, cat, conectar)
+
+
+def _seccion_rechazados(r, d1, d2):
+    """Camiones de AFE rechazados por laboratorio: por qué y de quién."""
+    st.markdown("#### 🚫 Camiones rechazados")
+    if r is None or r.empty:
+        st.success("✅ Ningún camión rechazado en el período y los filtros elegidos.")
+        return
+    st.caption("Rechazados por laboratorio: el camión llegó, se muestreó y **no descargó** "
+               "(por eso pesa casi 0 t). Quedan fuera del análisis de arriba — no son "
+               "volumen ingresado ni calidad de lo que entró — pero son el mejor termómetro "
+               "de qué proveedor está mandando material fuera de especificación.")
+    _kg = float(r["kg"].fillna(0).sum())
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Camiones rechazados", int(len(r)))
+    m2.metric("Proveedores", int(r["proveedor"].nunique()))
+    m3.metric("Kg que no entraron", "%.0f kg" % _kg,
+              help="Peso registrado en portería. Un rechazado suele pesar casi 0 porque "
+                   "entra y sale cargado: lo que se ve es la diferencia de báscula.")
+    _pm = r[pd.notna(r["ppm_fosforo"])]
+    m4.metric("Fósforo medio", ("%.0f ppm" % _pm["ppm_fosforo"].mean()) if not _pm.empty else "—",
+              help="Promedio simple del fósforo de los camiones rechazados. Es el motivo "
+                   "más frecuente de rechazo en AFE.")
+
+    _porp = (r.groupby("proveedor")
+              .agg(camiones=("ticket", "count"),
+                   fosforo_medio=("ppm_fosforo", "mean"),
+                   azufre_medio=("ppm_azufre", "mean"),
+                   ultimo=("fecha", "max"))
+              .reset_index().sort_values("camiones", ascending=False))
+    st.markdown("**Por proveedor**")
+    st.dataframe(_porp.rename(columns={"proveedor": "Proveedor", "camiones": "Camiones",
+                                       "fosforo_medio": "Fósforo medio ppm",
+                                       "azufre_medio": "Azufre medio ppm",
+                                       "ultimo": "Último rechazo"}),
+                 hide_index=True, use_container_width=True,
+                 column_config={"Fósforo medio ppm": st.column_config.NumberColumn(format="%.0f"),
+                                "Azufre medio ppm": st.column_config.NumberColumn(format="%.1f"),
+                                "Último rechazo": st.column_config.DatetimeColumn(format="DD/MM/YY")})
+
+    st.markdown("**Detalle camión por camión**")
+    v = r.sort_values("fecha", ascending=False).copy()
+    v["Motivo del lab"] = [str(c).strip() if (pd.notna(c) and str(c).strip()) else "— sin nota —"
+                           for c in v["conclusion"]]
+    v = v.rename(columns={"fecha": "Fecha", "dia": "Día", "semana": "Semana",
+                          "proveedor": "Proveedor", "ticket": "Ticket",
+                          "acidez": "Acidez %", "ppm_fosforo": "Fósforo ppm",
+                          "ppm_azufre": "Azufre ppm", "prc_sedimentos": "Sed. %",
+                          "calidad_final_lab": "Calidad", "rechazado": "Estado",
+                          "patente_chasis": "Patente", "empleado": "Analista"})
+    _cols = ["Fecha", "Día", "Semana", "Proveedor", "Ticket", "Patente", "Acidez %",
+             "Fósforo ppm", "Azufre ppm", "Sed. %", "Calidad", "Estado", "Motivo del lab",
+             "Analista"]
+    _cols = [c for c in _cols if c in v.columns]
+    st.dataframe(v[_cols], hide_index=True, use_container_width=True,
+                 column_config={"Fecha": st.column_config.DatetimeColumn(format="DD/MM/YY"),
+                                "Acidez %": st.column_config.NumberColumn(format="%.2f"),
+                                "Fósforo ppm": st.column_config.NumberColumn(format="%.1f"),
+                                "Azufre ppm": st.column_config.NumberColumn(format="%.1f"),
+                                "Sed. %": st.column_config.NumberColumn(format="%.2f")})
+    try:
+        st.download_button("⬇️ Descargar rechazados (.xlsx)", _excel_bytes(v[_cols]),
+                           file_name="afe_rechazados_%s_%s.xlsx" % (d1, d2),
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           key="aafe_rech_dl")
+    except Exception as _e:
+        st.caption("No se pudo generar el Excel: %s" % _e)
 
 
 def render_sin_lab(USR, cat, conectar, key="pl"):
