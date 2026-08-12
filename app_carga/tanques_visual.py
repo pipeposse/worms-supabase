@@ -39,10 +39,15 @@ def _color_prod(p):
 
 
 def _chip_calidad(prod, s, p):
-    """(letra, color, tooltip). AFE/AG: banda vs spec de venta. Resto: la calidad
-    del propio producto (ARE-B -> B). Sin nada -> None."""
+    """(letra, color, tooltip).
+
+    - AFE-S y AG-E (lo que se despacha contra la spec de venta): banda A/B/C/D
+      calculada con el laboratorio (S≤50 / P≤150).
+    - Cualquier producto cuya letra de calidad viene EN el código (AG-C, ARE-A,
+      ARE-B…): esa letra es su calidad — un AG-C es C, sin importar el lab.
+    - Sin letra de calidad en el código (SEBO, MP…): sin chip."""
     up = str(prod or "").strip().upper()
-    if up.startswith("AFE") or up.startswith("AG"):
+    if up in ("AFE-S", "AG-E"):
         if pd.isna(s) and pd.isna(p):
             return ("—", _BANDA_COL["—"], "Sin análisis de laboratorio")
         ic = max((float(s) / _SPEC_S) if pd.notna(s) else 0.0,
@@ -52,9 +57,9 @@ def _chip_calidad(prod, s, p):
         return (b, _BANDA_COL[b], "Banda %s · %s (contra spec de venta S≤50 / P≤150)" % (b, d))
     if "-" in up:
         cal = up.rsplit("-", 1)[1]
-        if 0 < len(cal) <= 3:
+        if cal in ("A", "B", "C", "D", "E"):
             col = _BANDA_COL.get(cal, "#334155")
-            return (cal, col, "Calidad %s del producto %s" % (cal, up))
+            return (cal, col, "Calidad %s del producto %s (viene en el código)" % (cal, up))
     return None
 
 
@@ -182,6 +187,10 @@ _CSS = ("<style>"
         ".tvq-secbar{flex:1;height:8px;background:#e2e8f0;border-radius:6px;overflow:hidden;max-width:260px}"
         ".tvq-secfill{height:100%;background:linear-gradient(90deg,#0ea5e9,#0284c7)}"
         ".tvq-sect{font-size:.78rem;color:#475569}"
+        ".tvq-prods{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 2px}"
+        ".tvq-pchip{font-size:.72rem;font-weight:700;border:1px solid;border-radius:9px;"
+        "padding:2px 9px;background:#fff}"
+        ".tvq-pplanta{font-weight:400;color:#64748b}"
         "</style>")
 
 
@@ -205,6 +214,10 @@ def render(USR, cat, conectar=None):
     for c in ("capacidad_litros", "litros_actual", "kg_actual", "litros_comprometido",
               "litros_disponible", "acidez", "fosforo", "azufre", "agua_sedimento", "densidad"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # total de planta por producto, ANTES de filtrar (recordatorio por sector)
+    _tot_planta = (df.assign(_l=df["litros_actual"].fillna(0))
+                     .groupby(df["producto_principal"].fillna("—"))["_l"].sum().to_dict())
 
     # ---------- filtros ----------
     f1, f2, f3, f4 = st.columns([1.6, 1.6, 1.2, 1.0])
@@ -298,6 +311,26 @@ def render(USR, cat, conectar=None):
             "<span class='tvq-sect'>%s / %s L · %.0f%% · %d tanques</span></div>"
             % (_html.escape(str(_sec or "—")), min(100, _po), _fnum(_sl), _fnum(_sc), _po,
                len(_d)), unsafe_allow_html=True)
+        # resumen del sector por producto (el código ya trae la calidad: AG-C, ARE-B…)
+        _gp = (_d.assign(_l=_d["litros_actual"].fillna(0))
+                 .groupby(_d["producto_principal"].fillna("—"))["_l"].sum()
+                 .sort_values(ascending=False))
+        _chips = []
+        for _pn, _pl in _gp.items():
+            if _pl <= 0:
+                continue
+            _cp = _color_prod(_pn)
+            _tp = float(_tot_planta.get(_pn, 0.0))
+            _pctp = (100.0 * _pl / _tp) if _tp > 0 else 0.0
+            _chips.append(
+                "<span class='tvq-pchip' style='border-color:%s55;color:%s' "
+                "title='%s en este sector · en toda la planta hay %s L'>"
+                "%s <b>%s L</b><span class='tvq-pplanta'> · %.0f%% de %s L en planta</span></span>"
+                % (_cp, _cp, _html.escape(str(_pn)), _fnum(_tp),
+                   _html.escape(str(_pn)), _fnum(_pl), _pctp, _fnum(_tp)))
+        if _chips:
+            st.markdown("<div class='tvq-prods'>%s</div>" % "".join(_chips),
+                        unsafe_allow_html=True)
         _cards = "".join(_card(r, _mv.get(int(r["id_tanque"])), _ult.get(int(r["id_tanque"])))
                          for _, r in _d.iterrows())
         st.markdown("<div class='tvq-grid'>%s</div>" % _cards, unsafe_allow_html=True)
