@@ -516,7 +516,8 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
         _pp = []
         for _c, _k2, _d in (("Acidez %", "acidez", 2), ("Fósforo ppm", "fosforo", 1),
                             ("Azufre ppm", "azufre", 1), ("AyS %", "ays", 2)):
-            _v = _ponderar(_res, _c)
+            # _ponderar devuelve (valor, % de masa con ese dato): hay que desempacar.
+            _v, _cob = _ponderar(_res, _c)
             _lim = spec.get(_k2)
             if _v is None:
                 _pp.append("%s **—**" % _c.split(" ")[0])
@@ -525,8 +526,10 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
             if _lim and float(_lim) > 0:
                 _r2 = float(_v) / float(_lim)
                 _ic = "🟢" if _r2 <= 0.9 else ("🟡" if _r2 <= 1.0 else "🔴")
-            _pp.append("%s %s **%s**%s" % (_ic, _c.split(" ")[0], ("%.*f" % (_d, _v)),
-                                           (" / %s" % ("%.*f" % (_d, float(_lim)))) if _lim else ""))
+            _pp.append("%s %s **%s**%s%s"
+                       % (_ic, _c.split(" ")[0], ("%.*f" % (_d, _v)),
+                          (" / %s" % ("%.*f" % (_d, float(_lim)))) if _lim else "",
+                          ("" if (_cob or 0) >= 99.5 else " _(%.0f%% de la masa)_" % (_cob or 0))))
         st.markdown("**Ponderado por kg de lo seleccionado:** " + " · ".join(_pp))
         st.caption("Los mismos números que controla el panel de Cumplimiento de abajo. "
                    "🟢 en spec con margen · 🟡 al límite · 🔴 fuera.")
