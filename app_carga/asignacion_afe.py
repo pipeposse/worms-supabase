@@ -683,62 +683,94 @@ def _pendientes(USR, cat, conectar, contexto):
                               key="asg_tq%d_%s" % (i, r["tk"]))
             _sel.append(_lbl[_k])
 
-    # Reparto por defecto con 2 tanques: se LLENA el más cargado (menos espacio libre)
-    # hasta su capacidad y el resto va al más vacío — la regla operativa de planta.
-    # Si los tanques elegidos son exactamente los sugeridos, se respeta el reparto de
-    # la sugerencia (ya considera calidad además de espacio).
-    _defs = [kg] * int(_n_tq)
+    # Estado de los tildes "está VACÍO" ANTES de calcular el reparto: si el operario
+    # marcó vacío, el espacio libre real de ese tanque es su CAPACIDAD completa y el
+    # reparto por defecto se recalcula solo con ese dato (el click dispara un rerun y
+    # el key de los inputs cambia, así los litros vuelven al reparto correcto).
+    _vacs, _disp_eff = [], []
+    for i in range(int(_n_tq)):
+        _t = _sel[i]
+        _v = bool(st.session_state.get("asg_vac%d_%s" % (i, r["tk"]), False))
+        _vacs.append(_v)
+        _cap_l = float(_t.get("cap_lts") or 0.0)
+        _disp_eff.append(max(0.0, _cap_l if (_v and _cap_l > 0) else float(_t["_disp"])))
+
+    litros_tk = (kg / dens) if dens > 0 else 0.0
+    # Reparto por defecto (en LITROS) con 2 tanques: se llena hasta el tope el que
+    # MENOS espacio efectivo tiene y el resto va al otro — la regla operativa de
+    # planta. Si los elegidos son los sugeridos y no hay tildes de vacío, se respeta
+    # el reparto de la sugerencia (considera calidad además de espacio).
+    _defs_l = [litros_tk] * int(_n_tq)
     if int(_n_tq) == 2:
         _ids_sel = {int(t["id_tanque"]) for t in _sel}
         _ids_sug = {int(x["id_tanque"]) for x in sug} if len(sug) == 2 else set()
-        if _ids_sel == _ids_sug and len(_ids_sel) == 2:
+        if _ids_sel == _ids_sug and len(_ids_sel) == 2 and not any(_vacs):
             _map = {int(x["id_tanque"]): float(x.get("_kg", 0.0)) for x in sug}
-            _defs = [_map.get(int(t["id_tanque"]), 0.0) for t in _sel]
+            _defs_l = [(_map.get(int(t["id_tanque"]), 0.0) / dens if dens > 0 else 0.0)
+                       for t in _sel]
         else:
-            _i_lleno = 0 if float(_sel[0]["_disp"]) <= float(_sel[1]["_disp"]) else 1
-            _cap = max(0.0, float(_sel[_i_lleno]["_disp"]) * dens)
-            _kg1 = round(min(kg, _cap), 1)
-            _defs = [0.0, 0.0]
-            _defs[_i_lleno] = _kg1
-            _defs[1 - _i_lleno] = round(max(kg - _kg1, 0.0), 1)
-    # el key incluye los tanques elegidos: al cambiar un tanque, los kg vuelven al
-    # reparto por defecto de la nueva combinación (si no, arrastraban valores viejos)
-    _sig = "_".join(str(int(t["id_tanque"])) for t in _sel)
+            _i_lleno = 0 if _disp_eff[0] <= _disp_eff[1] else 1
+            _l1 = round(min(litros_tk, _disp_eff[_i_lleno]), 0)
+            _defs_l = [0.0, 0.0]
+            _defs_l[_i_lleno] = _l1
+            _defs_l[1 - _i_lleno] = round(max(litros_tk - _l1, 0.0), 0)
+    # el key incluye tanques elegidos + tildes de vacío: cambiar cualquiera de los
+    # dos rehace el reparto por defecto (si no, se arrastraban valores viejos)
+    _sig = ("_".join(str(int(t["id_tanque"])) for t in _sel)
+            + "_v" + "".join("1" if v else "0" for v in _vacs))
     for i in range(int(_n_tq)):
         with cols[i]:
             _t = _sel[i]
-            _kgi = st.number_input("Kg a tanque %d" % (i + 1), 0.0, 200000.0,
-                                   float(round(_defs[i], 1)), step=10.0,
-                                   key="asg_kg%d_%s_%s" % (i, r["tk"], _sig))
+            _li = st.number_input("Litros a tanque %d" % (i + 1), 0.0, 300000.0,
+                                  float(round(_defs_l[i], 0)), step=500.0,
+                                  key="asg_lt%d_%s_%s" % (i, r["tk"], _sig))
+            _kgi = round(_li * dens, 1)
+            st.caption("≈ **%s kg** (densidad %.3f)" % (_n(_kgi, 0), dens))
             _fue = any(int(x["id_tanque"]) == int(_t["id_tanque"]) for x in sug)
             _mot = ""
             if not _fue:
                 _mot = st.selectbox("Motivo del desvío", MOTIVOS, key="asg_mot%d_%s" % (i, r["tk"]))
-            if _t["_disp"] * dens < _kgi - 1:
-                st.warning("Excede el espacio libre (%s kg máx.)" % _n(_t["_disp"] * dens, 0))
+            if _disp_eff[i] < _li - 1:
+                st.warning("Excede el espacio libre (%s L máx.)" % _n(_disp_eff[i], 0))
             # transparencia del ponderado: sobre cuántos kg previos va a mezclar. El stock
-            # del sistema puede estar viejo (Cónico 4: ponderó sobre 26,5 t que ya no
-            # estaban) — el operario que tiene el tanque adelante es quien lo sabe.
+            # del sistema puede estar viejo — el operario que tiene el tanque adelante
+            # es quien lo sabe.
             _kg_prev = float(_t.get("_kg_est") or 0.0)
-            st.caption("Pondera sobre **%s kg previos** según el sistema." % _n(_kg_prev, 0))
+            if _vacs[i]:
+                st.caption("Marcado **VACÍO**: espacio libre = capacidad completa "
+                           "(%s L) y el ponderado parte de 0 kg." % _n(_disp_eff[i], 0))
+            else:
+                st.caption("Pondera sobre **%s kg previos** según el sistema." % _n(_kg_prev, 0))
             _vac = False
             if _kg_prev > VACIO_KG:
                 _vac = st.checkbox("⚠️ El tanque está VACÍO en realidad",
                                    key="asg_vac%d_%s" % (i, r["tk"]),
-                                   help="Si el stock del sistema está desactualizado y el tanque "
-                                        "está vacío, marcá esto: el tanque toma los parámetros "
-                                        "del ticket tal cual, sin ponderar contra stock fantasma. "
-                                        "Queda registrado. Avisá igual que falta la medición.")
+                                   help="El stock del sistema está desactualizado y el tanque "
+                                        "está vacío: al marcarlo, el espacio libre pasa a ser la "
+                                        "capacidad completa, el reparto se recalcula solo y el "
+                                        "tanque toma los parámetros del ticket sin ponderar "
+                                        "contra stock fantasma. Queda registrado. Avisá igual "
+                                        "que falta la medición.")
             lineas.append({"id_tanque": int(_t["id_tanque"]),
                            "label": "%d · %s" % (int(_t["id_tanque"]), _t["nombre"]),
-                           "kg": float(_kgi), "fue_sugerido": _fue, "motivo": _mot,
+                           "kg": float(_kgi), "litros": float(_li),
+                           "fue_sugerido": _fue, "motivo": _mot,
                            "vacio_real": bool(_vac), "_tq": _t})
 
     _suma = sum(x["kg"] for x in lineas)
+    _suma_l = sum(x.get("litros", 0.0) for x in lineas)
     _dif = round(kg - _suma, 1)
-    if abs(_dif) > 1:
-        st.error("La suma asignada (%s kg) no coincide con el total del ticket (%s kg). Diferencia: %s kg."
-                 % (_n(_suma, 0), _n(kg, 0), _n(_dif, 0)))
+    if abs(_dif) <= max(1.0, kg * 0.002):
+        st.success("✅ **Ticket completo:** %s L asignados ≈ %s kg (ticket: %s kg)."
+                   % (_n(_suma_l, 0), _n(_suma, 0), _n(kg, 0)))
+    elif _dif > 0:
+        st.error("Faltan **%s kg** (≈ %s L) para completar el ticket: asignados %s L ≈ %s kg "
+                 "de %s kg." % (_n(_dif, 0), _n(_dif / dens if dens > 0 else 0, 0),
+                                _n(_suma_l, 0), _n(_suma, 0), _n(kg, 0)))
+    else:
+        st.error("Se asignó **%s kg de más** (≈ %s L): asignados %s L ≈ %s kg y el ticket "
+                 "trae %s kg." % (_n(-_dif, 0), _n(-_dif / dens if dens > 0 else 0, 0),
+                                  _n(_suma_l, 0), _n(_suma, 0), _n(kg, 0)))
     if int(_n_tq) == 2 and lineas[0]["id_tanque"] == lineas[1]["id_tanque"]:
         st.error("Los dos tanques son el mismo. Elegí tanques distintos o pasá a 1 tanque.")
 
