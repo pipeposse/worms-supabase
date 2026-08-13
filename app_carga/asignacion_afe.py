@@ -701,6 +701,16 @@ def _pendientes(USR, cat, conectar, contexto):
     # planta. Si los elegidos son los sugeridos y no hay tildes de vacío, se respeta
     # el reparto de la sugerencia (considera calidad además de espacio).
     _defs_l = [litros_tk] * int(_n_tq)
+    if int(_n_tq) == 1:
+        # Un solo tanque: por defecto se carga hasta el TOPE de su espacio efectivo.
+        # Si el ticket no entra entero, el control de abajo marca en rojo lo que falta
+        # y ahí se pasa a 2 tanques.
+        _defs_l = [round(min(litros_tk, _disp_eff[0]), 0)]
+        if _disp_eff[0] + 1 < litros_tk:
+            st.warning("El ticket trae %s L y en este tanque entran %s L: se precargó el "
+                       "tope. Los %s L restantes necesitan un segundo tanque."
+                       % (_n(litros_tk, 0), _n(_disp_eff[0], 0),
+                          _n(litros_tk - _disp_eff[0], 0)))
     if int(_n_tq) == 2:
         _ids_sel = {int(t["id_tanque"]) for t in _sel}
         _ids_sug = {int(x["id_tanque"]) for x in sug} if len(sug) == 2 else set()
