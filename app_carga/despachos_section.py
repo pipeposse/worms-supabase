@@ -367,10 +367,37 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
             except Exception:
                 _map_l[_t] = 0.0
 
-    _pool = tp.copy()
+    # Por qué un tanque con stock medido puede quedar con 0 disponible: el fondo de
+    # tanque (10% en base plana) y lo COMPROMETIDO en despachos confirmados. Antes
+    # simplemente desaparecía de la lista y no se entendía.
+    _fuera = []
     if not inc_vacios:
-        _pool = _pool[(_pool["litros_actual"].fillna(0) > 0)
-                      | (_pool["clave"].astype(str).isin(_map_l.keys()))]
+        _vis = ((tp["litros_actual"].fillna(0) > 0)
+                | (tp["clave"].astype(str).isin(_map_l.keys())))
+        for _, _r0 in tp[~_vis].iterrows():
+            _br = float(_r0.get("litros_brutos") or 0)
+            if _br <= 0:
+                continue                       # sin stock medido: no hay nada que explicar
+            _cmp0 = float(_r0.get("comprometido_l") or 0)
+            _fon = float(_r0.get("reserva_fondo") or 0)
+            _mot = []
+            if _cmp0 > 0:
+                _mot.append("%s L comprometidos en despachos confirmados"
+                            % "{:,.0f}".format(_cmp0))
+            if _fon > 0:
+                _mot.append("%s L de fondo de tanque" % "{:,.0f}".format(_fon))
+            _fuera.append("**%s** (%s L medidos: %s)"
+                          % (_r0["nombre"], "{:,.0f}".format(_br),
+                             " y ".join(_mot) if _mot else "sin stock útil"))
+        _pool = tp[_vis].copy()
+    else:
+        _pool = tp.copy()
+    if _fuera:
+        st.info("🔒 **%d tanque(s) con stock medido no están disponibles:** %s. "
+                "Si esos despachos ya salieron, vinculá sus tickets en *Tickets de portería* "
+                "y el stock se libera solo; si no van a salir, anulalos. Para usarlos igual, "
+                "tildá *Permitir tanques vacíos o con fondo* más arriba."
+                % (len(_fuera), " · ".join(_fuera)))
     if _pool.empty:
         st.info("No hay tanques con stock para este producto.")
         return
