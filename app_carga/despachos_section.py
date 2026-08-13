@@ -1767,7 +1767,7 @@ def render(USR, cat, conectar):
         return
 
     ss = st.session_state
-    _opts = ["🧪 Armar / editar despacho", "🔬 Control y confirmación", "🎟️ Tickets de portería",
+    _opts = ["🧪 Armar / editar orden de venta", "🔬 Control y confirmación", "🎟️ Tickets de portería",
              "📋 Despachos cargados", "📊 Análisis", "🔎 Baja de stock"]
     # "Modificar en el armador" pide cambiar de vista: va vía dsp_tab_next porque el estado de
     # un widget ya instanciado no se puede pisar dentro del mismo run.
@@ -1775,6 +1775,11 @@ def render(USR, cat, conectar):
     if _nx in _opts:
         ss["dsp_tab_sc"] = _nx
         ss["dsp_tab"] = _nx
+    # si la sesión tiene una etiqueta vieja (se renombró una vista), se descarta:
+    # un valor que no está entre las opciones hace explotar el widget.
+    for _kk in ("dsp_tab_sc", "dsp_tab"):
+        if ss.get(_kk) is not None and ss.get(_kk) not in _opts:
+            ss.pop(_kk, None)
     try:
         _t = st.segmented_control("Vista", _opts, default=_opts[0], key="dsp_tab_sc",
                                   label_visibility="collapsed")
@@ -2385,7 +2390,7 @@ def _armar(USR, cat, conectar):
             st.rerun()
 
     # ---------- 1 · Cabecera ----------
-    st.markdown("#### 1 · Datos del despacho")
+    st.markdown("#### 1 · Datos de la orden de venta")
     hoy = _dt.date.today()
     c1, c2, c3 = st.columns([2, 1.4, 1])
     titulo = c1.text_input("Título / referencia", value=ss.get("dsp_titulo", ""),
@@ -3425,7 +3430,7 @@ def _editar_despacho(cat, ss, id_despacho):
     ss["dsp_obs"] = r["observaciones"] or ""
     ss["dsp_load_pend"] = [] if lin is None else lin.to_dict("records")
     ss["dsp_edit_id"] = int(id_despacho)
-    ss["dsp_tab_next"] = "🧪 Armar / editar despacho"
+    ss["dsp_tab_next"] = "🧪 Armar / editar orden de venta"
 
 
 # ------------------------------------------------------------------ control y confirmación
@@ -3863,7 +3868,7 @@ def _tickets(USR, cat, conectar):
              "FROM produccion.v_despacho_resumen "
              "ORDER BY fecha_despacho DESC NULLS LAST, id_despacho DESC")
     if df is None or df.empty:
-        st.info("Primero cargá un despacho en *Armar / editar despacho*.")
+        st.info("Primero cargá un despacho en *Armar / editar orden de venta*.")
         return
     _lbl = {int(r["id_despacho"]): (f"#{int(r['id_despacho'])} · {r['titulo']} · "
                                     f"{r['destino'] or 's/destino'} · {r['fecha_despacho'] or 's/fecha'}")
