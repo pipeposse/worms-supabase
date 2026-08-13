@@ -1767,8 +1767,9 @@ def render(USR, cat, conectar):
         return
 
     ss = st.session_state
-    _opts = ["🧪 Armar / editar orden de venta", "🔬 Control y confirmación", "🎟️ Tickets de portería",
-             "📋 Despachos cargados", "📊 Análisis", "🔎 Baja de stock"]
+    _opts = ["🧪 Armar / editar orden de venta", "📝 Borradores", "🔬 Control y confirmación",
+             "🎟️ Tickets de portería", "📋 Despachos cargados", "📊 Análisis",
+             "🔎 Baja de stock"]
     # "Modificar en el armador" pide cambiar de vista: va vía dsp_tab_next porque el estado de
     # un widget ya instanciado no se puede pisar dentro del mismo run.
     _nx = ss.pop("dsp_tab_next", None)
@@ -1788,7 +1789,9 @@ def render(USR, cat, conectar):
     _t = _t or _opts[0]
     st.write("")
 
-    if _t.startswith("🔎"):
+    if _t.startswith("📝"):
+        _borradores(USR, cat, conectar)
+    elif _t.startswith("🔎"):
         _monitor_baja(USR, cat, conectar)
     elif _t.startswith("📋"):
         _listado(USR, cat, conectar)
@@ -3392,6 +3395,121 @@ def _listado(USR, cat, conectar):
             cat.clear(); st.success("Despacho borrado."); st.rerun()
         except Exception as e:
             st.error(f"No se pudo borrar: {e}")
+
+
+def _borradores(USR, cat, conectar):
+    """Órdenes de venta a medio armar: seguir, duplicar o borrar."""
+    ss = st.session_state
+    st.markdown("#### 📝 Órdenes de venta en borrador")
+    st.caption("Lo que quedó a medio armar. Un borrador **no descuenta stock** ni cuenta en el "
+               "balance: recién al confirmarlo pasa a comprometer los tanques. Desde acá se "
+               "sigue editando, se duplica como base de otra orden, o se borra.")
+    df = cat("SELECT id_despacho, titulo, cliente, destino, producto, tipo_carga, "
+             "fecha_despacho, n_contenedores, litros_objetivo, litros_total, tn_total, "
+             "n_lineas, pct_cubierto, acidez_pond, fosforo_pond, azufre_pond, ays_pond, "
+             "spec_acidez_max, spec_fosforo_max, spec_azufre_max, spec_ays_max, fuera_spec, "
+             "creado_por, to_char(actualizado_en AT TIME ZONE "
+             "  'America/Argentina/Buenos_Aires', 'DD/MM/YY HH24:MI') AS tocado "
+             "FROM produccion.v_despacho_resumen WHERE estado='BORRADOR' "
+             "ORDER BY actualizado_en DESC NULLS LAST, id_despacho DESC")
+    if df is None or df.empty:
+        st.success("✅ No hay borradores: todas las órdenes de venta están confirmadas o "
+                   "despachadas.")
+        st.caption("Los borradores se crean guardando una orden sin confirmar, desde "
+                   "*Armar / editar orden de venta*.")
+        return
+    df = df.copy()
+    for c in ("litros_objetivo", "litros_total", "tn_total", "n_lineas", "pct_cubierto",
+              "n_contenedores"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Borradores", int(len(df)))
+    k2.metric("Litros armados", "%s L" % "{:,.0f}".format(float(df["litros_total"].sum())))
+    k3.metric("⚠️ Fuera de spec", int(df["fuera_spec"].fillna(False).astype(bool).sum()),
+              help="Se pueden guardar igual, pero al confirmarlos necesitan la aprobación "
+                   "de dirección.")
+
+    for _, r in df.iterrows():
+        _idd = int(r["id_despacho"])
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns([3.2, 1.5, 1.2, 1.2])
+            c1.markdown("**#%d · %s**  \n%s → %s · %s · %s"
+                        % (_idd, str(r["titulo"] or "sin título"),
+                           str(r["cliente"] or "—"), str(r["destino"] or "s/destino"),
+                           str(r["producto"] or "—"), str(r["fecha_despacho"] or "s/fecha")))
+            _pc = float(r["pct_cubierto"] or 0)
+            c2.progress(min(1.0, max(0.0, _pc / 100.0)),
+                        text="%s / %s L (%.0f%%)"
+                             % ("{:,.0f}".format(float(r["litros_total"] or 0)),
+                                "{:,.0f}".format(float(r["litros_objetivo"] or 0)), _pc))
+            c2.caption("%d tanque(s) · %.2f TN · %d contenedor(es)"
+                       % (int(r["n_lineas"] or 0), float(r["tn_total"] or 0),
+                          int(r["n_contenedores"] or 0)))
+            # qué le falta para poder confirmarse
+            _pend = []
+            if float(r["litros_total"] or 0) <= 0 or int(r["n_lineas"] or 0) == 0:
+                _pend.append("sin tanques cargados")
+            elif _pc < 99.0:
+                _pend.append("falta cubrir %s L"
+                             % "{:,.0f}".format(float(r["litros_objetivo"] or 0)
+                                                - float(r["litros_total"] or 0)))
+            elif _pc > 101.0:
+                _pend.append("cargado de más: %s L"
+                             % "{:,.0f}".format(float(r["litros_total"] or 0)
+                                                - float(r["litros_objetivo"] or 0)))
+            if bool(r["fuera_spec"]):
+                _ex = []
+                for _n2, _v, _l in (("acidez", r["acidez_pond"], r["spec_acidez_max"]),
+                                    ("fósforo", r["fosforo_pond"], r["spec_fosforo_max"]),
+                                    ("azufre", r["azufre_pond"], r["spec_azufre_max"]),
+                                    ("AyS", r["ays_pond"], r["spec_ays_max"])):
+                    try:
+                        if (pd.notna(_v) and pd.notna(_l) and float(_l) > 0
+                                and float(_v) > float(_l)):
+                            _ex.append("%s %.1f>%.1f" % (_n2, float(_v), float(_l)))
+                    except Exception:
+                        pass
+                _pend.append("fuera de spec (" + ", ".join(_ex) + ")" if _ex else "fuera de spec")
+            if _pend:
+                c1.caption("⚠️ " + " · ".join(_pend))
+            else:
+                c1.caption("✅ Listo para confirmar en *Control y confirmación*.")
+            c1.caption("Últ. cambio: %s · %s" % (str(r["tocado"] or "—"),
+                                                 str(r["creado_por"] or "—")))
+            if c3.button("✏️ Seguir editando", key="brr_ed_%d" % _idd,
+                         use_container_width=True, type="primary"):
+                _editar_despacho(cat, ss, _idd)
+                st.rerun()
+            if c3.button("📄 Duplicar", key="brr_dup_%d" % _idd, use_container_width=True,
+                         help="Abre una orden NUEVA con la misma cabecera y los mismos "
+                              "tanques; el borrador original queda intacto."):
+                _editar_despacho(cat, ss, _idd)
+                ss["dsp_edit_id"] = None          # ← se guarda como uno nuevo
+                ss["dsp_titulo"] = (str(r["titulo"] or "") + " (copia)").strip()
+                st.rerun()
+            _ok_del = c4.checkbox("Habilitar", key="brr_delok_%d" % _idd,
+                                  help="Tildá para habilitar el borrado de este borrador.")
+            if c4.button("🗑️ Borrar", key="brr_del_%d" % _idd, use_container_width=True,
+                         disabled=not _ok_del):
+                try:
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("DELETE FROM produccion.fact_despacho "
+                                        "WHERE id_despacho=%s AND estado='BORRADOR'", (_idd,))
+                            _n2 = cur.rowcount
+                        audit.log("D", "fact_despacho", _idd, {"estado": "BORRADOR"})
+                    cat.clear()
+                    if _n2:
+                        st.success("Borrador #%d eliminado." % _idd)
+                    else:
+                        st.warning("El #%d ya no está en borrador: no se borró." % _idd)
+                    st.rerun()
+                except Exception as e:
+                    st.error("No se pudo borrar: %s" % e)
+
+    st.caption("**Duplicar** sirve para las órdenes que se repiten (mismo cliente, destino y "
+               "spec): se abre una nueva con todo precargado y sólo se ajustan los tanques.")
 
 
 def _editar_despacho(cat, ss, id_despacho):
