@@ -788,7 +788,7 @@ if st.session_state.section is None:
     tiles.append(("🧪", "Fórmulas", "Fórmulas con nombre por proceso/MP/producto: creá, editá y elegí la default que usa Planificación.", "FORMULAS", "land_formulas", False))
     tiles.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
     tiles.append(("💰", "Cierres mensuales", "Rentabilidad: P&L mensual, dónde está el valor, márgenes por segmento, Q1 vs Q2, outliers e insights.", "CIERRES", "land_cierres", False))
-    tiles.append(("🛂", "Dirección", "Aprobación de planificaciones fuera de norma (carga menor al 80% del equipo).", "DIRECCION", "land_direccion", False))
+    tiles.append(("🛂", "Dirección", "Brief semanal, desvíos de stock, control de gestión y aprobación de planificaciones fuera de norma.", "DIRECCION", "land_direccion", False))
     tiles.append(("⚙️", "Admin", "Gestión de usuarios: alta, roles, sectores, reset PIN y accesos a la página.", "ADMIN", "land_admin", False))
     tiles = [t for t in tiles if puede_seccion(t[3])]
 
@@ -4682,7 +4682,7 @@ if st.session_state.section != "CARGAS":
         try:
             import planificacion as _pl
             st.title("🛂 Dirección")
-            _dir_opts = ["📉 Desvíos", "📊 Variación semanal", "🛂 Aprobaciones", "💵 Precios", "🎯 Control de gestión"]
+            _dir_opts = ["📋 Brief semanal", "📉 Desvíos", "📊 Variación semanal", "🛂 Aprobaciones", "💵 Precios", "🎯 Control de gestión"]
             try:
                 _dir = st.segmented_control("Sección", _dir_opts, default=_dir_opts[0],
                                             key="dir_grupo_sc", label_visibility="collapsed")
@@ -4690,7 +4690,10 @@ if st.session_state.section != "CARGAS":
                 _dir = st.radio("Sección", _dir_opts, horizontal=True, key="dir_grupo")
             _dir = _dir or _dir_opts[0]
             st.write("")
-            if _dir.startswith("📊"):
+            if _dir.startswith("📋"):
+                from brief_dir import render as _render_brief
+                _render_brief(USR, cat, conectar)
+            elif _dir.startswith("📊"):
                 _pl._variacion_semanal(USR, cat, conectar)
             elif _dir.startswith("🛂"):
                 st.caption("Aprobación de planificaciones **fuera de norma**: cargas menores al 80% de la capacidad "
