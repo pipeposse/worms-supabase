@@ -135,6 +135,44 @@ def cargar(cat, semana):
                                   "ult": max(d[0] for d in dias), "dias": dias})
         D["liquidos"] = D["liquidos"][-4:]
 
+    D["reacciones_tipo"] = _recs(cat(
+        "SELECT semana::text, tipo_proceso AS tipo, reacciones AS n, round(tn_producidas,1) AS tn, "
+        "  round(rendimiento_pct,0) AS rend, round(utilizacion_pct,0) AS uti "
+        "FROM produccion.v_brief_reacciones_semana WHERE semana BETWEEN %s AND %s",
+        (desde12, sem)))
+
+    D["afe_banda_mes"] = _recs(cat(
+        "SELECT to_char(mes,'YYYY-MM') AS mes, banda, round(sum(tn),1) AS tn "
+        "FROM produccion.v_brief_afe_banda_semana WHERE mes >= %s GROUP BY 1,2", (mes0,)))
+
+    D["mezcla"] = _recs(cat(
+        "SELECT producto, round(tn,1) AS tn, round(parte,4) AS parte "
+        "FROM produccion.v_brief_mezcla_despacho"))
+    if not D["mezcla"]:
+        # sin despachos recientes, la mezcla histórica típica: AFE-S diluyendo AG-C
+        D["mezcla"] = [{"producto": "AFE-S", "tn": 0.0, "parte": 0.94}]
+
+    D["desvio_producto"] = _recs(cat(
+        "SELECT codigo_producto AS cod, round(stock_ini_t,1) AS ini, round(prod_t,1) AS prod, "
+        "  round(ext_in_t,1) AS e_in, round(ext_out_t,1) AS e_out, round(interno_t,1) AS intr, "
+        "  round(stock_proy_t,1) AS unico, round(stock_real_t,1) AS medido, "
+        "  round(desvio_t,1) AS desvio "
+        "FROM produccion.v_desvio_stock_producto "
+        "WHERE semana = %s AND (abs(coalesce(desvio_t,0)) > 1 OR coalesce(stock_real_t,0) > 5) "
+        "  AND codigo_producto IN (SELECT DISTINCT producto "
+        "                          FROM produccion.v_brief_stock_tanque)", (sem,)))
+
+    exp = cat(
+        "SELECT mes_txt, dia, round(tn::numeric,1) AS tn FROM produccion.v_brief_exportacion_dia "
+        "WHERE mes >= %s ORDER BY mes_txt, dia", (mes0,))
+    D["exportacion"] = []
+    if exp is not None and not exp.empty:
+        for m, g in exp.groupby("mes_txt", sort=True):
+            dias = [[int(r.dia), float(r.tn)] for r in g.itertuples()]
+            D["exportacion"].append({"mes": m, "tn": round(sum(d[1] for d in dias), 1),
+                                     "ult": max(d[0] for d in dias), "dias": dias})
+        D["exportacion"] = D["exportacion"][-4:]
+
     D["cobertura_libro"] = _recs(cat(
         "SELECT sector, tanques, round(mov_fisico_kl,1) AS fis, round(mov_libro_kl,1) AS libro, "
         "  round(cobertura_pct,0) AS cob, round(no_explicado_neto_kl,1) AS no_expl "
