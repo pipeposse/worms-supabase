@@ -23,6 +23,31 @@ import streamlit as st
 ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 
 
+SPEC_S, SPEC_P = 50.0, 150.0     # spec de venta AG-E: define la banda A/B/C/D
+_BCOL = {"A": "#166534", "B": "#1d4ed8", "C": "#b45309", "D": "#b91c1c", "SIN LAB": "#94a3b8"}
+_BDESC = {"A": "excelente", "B": "bueno", "C": "justo", "D": "fuera de spec",
+          "SIN LAB": "sin análisis"}
+_BEMO = {"A": "🟢", "B": "🔵", "C": "🟠", "D": "🔴", "SIN LAB": "⚪"}
+_BORD = ["A", "B", "C", "D", "SIN LAB"]
+
+
+def _banda(s_, p_):
+    """Banda de calidad contra la spec de venta — la misma regla que Balance y Despachos."""
+    _s = None if (s_ is None or pd.isna(s_) or float(s_) <= 0) else float(s_)
+    _p = None if (p_ is None or pd.isna(p_) or float(p_) <= 0) else float(p_)
+    if _s is None and _p is None:
+        return "SIN LAB"
+    ic = max((_s / SPEC_S) if _s is not None else 0.0,
+             (_p / SPEC_P) if _p is not None else 0.0)
+    if ic <= 0.80:
+        return "A"
+    if ic <= 0.90:
+        return "B"
+    if ic <= 1.00:
+        return "C"
+    return "D"
+
+
 def _n(v, dec=0):
     try:
         if v is None or pd.isna(v):
@@ -62,7 +87,11 @@ def _png(df, titulo, max_filas=45):
             _dec = 1 if ("(t)" in str(c) or "%" in str(c)) else 0
             x[c] = x[c].map(lambda v: _n(v, _dec))
         else:
-            x[c] = x[c].astype(str).str.slice(0, 42)
+            # matplotlib no tiene glifos para los emoji: se sacan o salen cuadraditos
+            x[c] = (x[c].astype(str)
+                    .str.replace(r"[\U0001F300-\U0001FAFF\u26A0\uFE0F\u2B1C\u2705]",
+                                 "", regex=True)
+                    .str.strip().str.slice(0, 42))
     x = x.fillna("—").astype(str)
     _w = max(9.0, min(22.0, 1.15 * len(x.columns)))
     fig, ax = plt.subplots(figsize=(_w, 0.34 * (len(x) + 2) + 1.1))
@@ -88,16 +117,19 @@ def _png(df, titulo, max_filas=45):
     return buf.getvalue()
 
 
-def _excel(res, det, desp, porde=None):
+def _excel(res, det, desp, porde=None, bandas=None):
     buf = _io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         res.to_excel(w, sheet_name="Resumen", index=False)
+        if bandas is not None and not bandas.empty:
+            bandas.to_excel(w, sheet_name="Por calidad (banda)", index=False)
         det.to_excel(w, sheet_name="Detalle por tanque", index=False)
         if porde is not None and not porde.empty:
             porde.to_excel(w, sheet_name="Por despacho", index=False)
         if desp is not None and not desp.empty:
             desp.to_excel(w, sheet_name="Despacho x tanque", index=False)
-        for _sh, _df in (("Resumen", res), ("Detalle por tanque", det),
+        for _sh, _df in (("Resumen", res), ("Por calidad (banda)", bandas),
+                         ("Detalle por tanque", det),
                          ("Por despacho", porde), ("Despacho x tanque", desp)):
             if _df is None or _df.empty:
                 continue
@@ -108,6 +140,119 @@ def _excel(res, det, desp, porde=None):
                 ws.column_dimensions[chr(65 + i) if i < 26
                                      else "A" + chr(65 + i - 26)].width = max(11, min(34, _len + 2))
     return buf.getvalue()
+
+
+def _tabla_bandas(dd):
+    """Por banda: tanques, litros/t, %, parámetros ponderados por kg y dónde está."""
+    dd = dd.copy()
+    dd["banda"] = [(_banda(a, b)) for a, b in zip(dd["azufre"], dd["fosforo"])]
+    dd["_kg"] = dd["medido_l"] * dd["densidad"]
+    _tot_l = float(dd["medido_l"].sum()) or 1.0
+    filas = []
+    for b in _BORD:
+        g = dd[dd["banda"] == b]
+        if g.empty:
+            continue
+        _kg = float(g["_kg"].sum()) or 1.0
+
+        def _pond(col):
+            v = g[pd.notna(g[col]) & (g[col] > 0)]
+            return (float((v[col] * v["_kg"]).sum() / float(v["_kg"].sum()))
+                    if not v.empty and float(v["_kg"].sum()) > 0 else None)
+
+        _tks = " · ".join("%s (%s L)" % (r["nombre"], _n(r["medido_l"]))
+                          for _, r in g.sort_values("medido_l", ascending=False).iterrows())
+        filas.append({
+            "Banda": "%s %s · %s" % (_BEMO[b], b, _BDESC[b]),
+            "_b": b,
+            "Tanques": int(len(g)),
+            "Medido (L)": float(g["medido_l"].sum()),
+            "Medido (t)": float(g["medido_t"].sum()),
+            "% del total": 100.0 * float(g["medido_l"].sum()) / _tot_l,
+            "Comprometido (L)": float(g["comp_l"].sum()),
+            "Disponible (L)": float(g["disp_l"].sum()),
+            "Acidez %": _pond("acidez"),
+            "Fósforo ppm": _pond("fosforo"),
+            "Azufre ppm": _pond("azufre"),
+            "AyS %": _pond("agua_sedimento"),
+            "En qué tanques": _tks,
+        })
+    return pd.DataFrame(filas)
+
+
+def _barra_bandas(tb):
+    """Barra apilada de % por banda (HTML sin estado: no puede colgarse)."""
+    if tb is None or tb.empty:
+        return ""
+    _seg = "".join(
+        "<div title='%s: %s%% · %s L' style='width:%.4f%%;background:%s'></div>"
+        % (r["_b"], _n(r["% del total"], 0), _n(r["Medido (L)"]),
+           max(0.0, float(r["% del total"])), _BCOL.get(r["_b"], "#94a3b8"))
+        for _, r in tb.iterrows())
+    _leg = " ".join(
+        "<span style='color:%s;font-weight:700'>%s %s %s%%</span>"
+        % (_BCOL.get(r["_b"], "#94a3b8"), _BEMO.get(r["_b"], ""), r["_b"],
+           _n(r["% del total"], 0)) for _, r in tb.iterrows())
+    return ("<div style='display:flex;height:16px;border-radius:8px;overflow:hidden;"
+            "border:1px solid #e2e8f0;margin:2px 0 4px'>%s</div>"
+            "<div style='font-size:.8rem'>%s</div>" % (_seg, _leg))
+
+
+def _vista_rapida(d):
+    """Lo que se mira todos los días: cuánto AFE-S y cuánto AG-E hay de cada banda."""
+    st.markdown("##### ⚡ Vista rápida por calidad — AFE-S y AG-E")
+    st.caption("Banda contra la **spec de venta** (S ≤ 50 · P ≤ 150), la misma que usan Balance "
+               "y el armador de despachos: 🟢 **A** excelente (S≤40 y P≤120) · 🔵 **B** bueno "
+               "(S≤45 y P≤135) · 🟠 **C** justo (cumple sin margen) · 🔴 **D** fuera de spec "
+               "(sólo entra mezclado) · ⚪ sin análisis.")
+    _tabs = st.tabs(["🔵 AFE-S", "🟠 AG-E", "🧪 Todos los AFE"])
+    for _t, _fil, _tit in ((_tabs[0], lambda x: x["prod_cal"] == "AFE-S", "AFE-S"),
+                           (_tabs[1], lambda x: x["prod_cal"] == "AG-E", "AG-E"),
+                           (_tabs[2], lambda x: x["prod_cal"].str.startswith("AFE"),
+                            "todos los AFE")):
+        with _t:
+            dd = d[_fil(d)]
+            if dd.empty:
+                st.info("No hay tanques de %s con los filtros actuales." % _tit)
+                continue
+            tb = _tabla_bandas(dd)
+            if tb.empty:
+                st.info("Sin datos de calidad para %s." % _tit)
+                continue
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Medido", "%s t" % _n(dd["medido_t"].sum(), 1),
+                      "%s L en %d tanques" % (_n(dd["medido_l"].sum()), len(dd)))
+            _ab = float(tb[tb["_b"].isin(["A", "B"])]["Medido (L)"].sum())
+            _cd = float(tb[tb["_b"].isin(["C", "D"])]["Medido (L)"].sum())
+            _tt = float(tb["Medido (L)"].sum()) or 1.0
+            m2.metric("🟢🔵 A + B", "%.0f %%" % (100.0 * _ab / _tt), "%s L" % _n(_ab),
+                      help="El stock que sostiene la exportación: absorbe AG-E sin pasarse "
+                           "de la spec.")
+            m3.metric("🟠🔴 C + D", "%.0f %%" % (100.0 * _cd / _tt), "%s L" % _n(_cd),
+                      help="El que hay que colocar mezclado con los buenos.")
+            st.markdown(_barra_bandas(tb), unsafe_allow_html=True)
+            _cols = ["Banda", "Tanques", "Medido (L)", "Medido (t)", "% del total",
+                     "Comprometido (L)", "Disponible (L)", "Acidez %", "Fósforo ppm",
+                     "Azufre ppm", "AyS %", "En qué tanques"]
+            st.dataframe(tb[_cols], hide_index=True, use_container_width=True,
+                         column_config={
+                             "Medido (L)": st.column_config.NumberColumn(format="%.0f"),
+                             "Medido (t)": st.column_config.NumberColumn(format="%.1f"),
+                             "Comprometido (L)": st.column_config.NumberColumn(format="%.0f"),
+                             "Disponible (L)": st.column_config.NumberColumn(format="%.0f"),
+                             "% del total": st.column_config.ProgressColumn(
+                                 "% del total", format="%.0f%%", min_value=0, max_value=100),
+                             "Acidez %": st.column_config.NumberColumn(format="%.2f"),
+                             "Fósforo ppm": st.column_config.NumberColumn(format="%.1f"),
+                             "Azufre ppm": st.column_config.NumberColumn(format="%.1f"),
+                             "AyS %": st.column_config.NumberColumn(format="%.2f"),
+                             "En qué tanques": st.column_config.TextColumn(
+                                 "En qué tanques", width="large",
+                                 help="Tanques de esa banda, del que más tiene al que menos.")},
+                         height=min(38 * (len(tb) + 1) + 6, 300))
+            st.caption("Los parámetros son el **promedio ponderado por kg** de esa banda. "
+                       "Pasá el mouse por *En qué tanques* para ver la lista completa.")
+            st.session_state["_ifs_bandas_%s" % _tit] = tb
 
 
 def render(USR, cat, conectar=None):
@@ -181,6 +326,9 @@ def render(USR, cat, conectar=None):
     st.caption("**Disponible = Medido − Comprometido.** *Medido* es la última medición física "
                "del tanque; *comprometido* es lo designado en despachos **confirmados** que "
                "aún no pesaron todos sus contenedores (se libera solo al completarse).")
+
+    # ---------- 0 · vista rápida por calidad (AFE y AG-E) ----------
+    _vista_rapida(d)
 
     # ---------- 1 · resumen por producto·calidad ----------
     st.markdown("##### 1 · Resumen por producto · calidad")
@@ -332,10 +480,19 @@ def render(USR, cat, conectar=None):
     st.markdown("##### ⬇️ Descargar")
     _hoy = pd.Timestamp.today().strftime("%Y%m%d")
     _porde = locals().get("porde_v")
+    _bandas = pd.concat(
+        [(st.session_state.get("_ifs_bandas_%s" % _t2, pd.DataFrame()).assign(Producto=_t2))
+         for _t2 in ("AFE-S", "AG-E")], ignore_index=True) \
+        if any(st.session_state.get("_ifs_bandas_%s" % _t2) is not None
+               for _t2 in ("AFE-S", "AG-E")) else pd.DataFrame()
+    if not _bandas.empty:
+        _bandas = _bandas[["Producto", "Banda", "Tanques", "Medido (L)", "Medido (t)",
+                           "% del total", "Comprometido (L)", "Disponible (L)", "Acidez %",
+                           "Fósforo ppm", "Azufre ppm", "AyS %", "En qué tanques"]]
     c1, c2, c3 = st.columns(3)
     try:
-        c1.download_button("📊 Excel completo (4 hojas)",
-                           _excel(res_v, det_v[_coldet], desp_v, _porde),
+        c1.download_button("📊 Excel completo",
+                           _excel(res_v, det_v[_coldet], desp_v, _porde, _bandas),
                            file_name="stock_producto_calidad_%s.xlsx" % _hoy,
                            mime="application/vnd.openxmlformats-officedocument."
                                 "spreadsheetml.sheet",
@@ -350,6 +507,14 @@ def render(USR, cat, conectar=None):
                        file_name="stock_detalle_%s.csv" % _hoy, mime="text/csv",
                        use_container_width=True)
 
+    if not _bandas.empty:
+        try:
+            st.download_button("🖼️ PNG · Stock por calidad (AFE-S y AG-E)",
+                               _png(_bandas.drop(columns=["En qué tanques"]),
+                                    "Stock por calidad"),
+                               file_name="stock_por_calidad_%s.png" % _hoy, mime="image/png")
+        except Exception as e:
+            st.caption("No se pudo generar la imagen de calidad: %s" % e)
     p1, p2, p3 = st.columns(3)
     try:
         p1.download_button("🖼️ PNG · Resumen", _png(res_v, "Stock por producto y calidad"),
@@ -374,6 +539,6 @@ def render(USR, cat, conectar=None):
                            use_container_width=True)
     except Exception as e:
         p3.caption("No se pudo generar la imagen: %s" % e)
-    st.caption("El **Excel** trae cuatro hojas: Resumen, Detalle por tanque, Por despacho y "
-               "Despacho × tanque. Los **PNG** son para pegar en un mensaje o informe (las "
+    st.caption("El **Excel** trae las hojas: Resumen, Por calidad (banda), Detalle por tanque, "
+               "Por despacho y Despacho × tanque. Los **PNG** son para pegar en un mensaje o informe (las "
                "primeras 45 filas). Los CSV usan codificación compatible con Excel en español.")
