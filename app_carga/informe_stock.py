@@ -59,7 +59,8 @@ def _n(v, dec=0):
 
 def _datos(cat):
     """Tanques con medido/comprometido/disponible + a qué despachos está comprometido."""
-    tk = cat("SELECT id_tanque, nombre, sector, producto_principal, capacidad_litros, "
+    tk = cat("SELECT id_tanque, nombre, sector, producto_principal, producto_rotulo, "
+             "capacidad_litros, "
              "COALESCE(litros_actual,0) AS medido_l, COALESCE(kg_actual,0) AS medido_kg, "
              "COALESCE(litros_comprometido,0) AS comp_l, "
              "COALESCE(densidad,0.91) AS densidad, ultima_medicion, fuente_medicion, "
@@ -280,7 +281,9 @@ def render(USR, cat, conectar=None):
     tk["medido_t"] = tk["medido_l"] * tk["densidad"] / 1000.0
     tk["comp_t"] = tk["comp_l"] * tk["densidad"] / 1000.0
     tk["disp_t"] = tk["disp_l"] * tk["densidad"] / 1000.0
-    tk["prod_cal"] = tk["producto_principal"].astype(str).str.strip()
+    # el nombre visible es el RÓTULO OFICIAL: trae la calidad (GLICERINA-C (recuperada))
+    tk["prod_cal"] = (tk["producto_rotulo"].fillna(tk["producto_principal"])
+                        .astype(str).str.strip())
 
     # a qué despachos está comprometido cada tanque (texto compacto)
     _por_tk = {}

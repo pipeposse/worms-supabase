@@ -28,6 +28,10 @@ def _panel(cat):
     df = cat("SELECT * FROM produccion.vw_tanque_panel ORDER BY sector, nombre")
     if df.empty:
         return df
+    # el código se guarda aparte y lo visible pasa a ser el rótulo oficial (con calidad)
+    df["producto_codigo"] = df["producto_principal"]
+    if "producto_rotulo" in df.columns:
+        df["producto_principal"] = df["producto_rotulo"].fillna(df["producto_principal"])
     df["_litros"] = pd.to_numeric(df["litros_actual"], errors="coerce")
     df["_cap"] = pd.to_numeric(df["capacidad_litros"], errors="coerce")
     df["_dens"] = pd.to_numeric(df["densidad"], errors="coerce").fillna(0.91)
