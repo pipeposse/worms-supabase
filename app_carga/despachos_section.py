@@ -1432,6 +1432,137 @@ def _plan_contenedores(lineas, n_cont, base_cod):
     return plan
 
 
+def _fmtv(v, dec=1):
+    """Formato corto de un valor de spec/parámetro ('—' si no hay dato)."""
+    try:
+        if v is None or pd.isna(v):
+            return "—"
+        return ("%.*f" % (int(dec), float(v)))
+    except Exception:
+        return "—"
+
+
+def _params_por_contenedor(plan, lin, spec, id_despacho):
+    """Cómo queda cada contenedor: ponderado por kg y semáforo contra la spec.
+
+    El operario no tiene que hacer cuentas: si la fila está en verde, ese
+    contenedor cumple; si no, dice qué parámetro se pasa y por cuánto."""
+    if not plan:
+        return
+    _lab = {}
+    for _, r in lin.iterrows():
+        _lab[str(r["tanque"])] = {
+            "dens": float(r["densidad"]) if pd.notna(r.get("densidad")) else 0.91,
+            "acidez": (float(r["acidez"]) if pd.notna(r.get("acidez")) else None),
+            "fosforo": (float(r["fosforo"]) if pd.notna(r.get("fosforo")) else None),
+            "azufre": (float(r["azufre"]) if pd.notna(r.get("azufre")) else None),
+            "ays": (float(r["agua_sedimento"]) if pd.notna(r.get("agua_sedimento")) else None)}
+    _pc = {}
+    for _c, _tk, _pr, _l in plan:
+        _d = _lab.get(str(_tk), {"dens": 0.91})
+        _kg = float(_l) * float(_d.get("dens") or 0.91)
+        _e = _pc.setdefault(int(_c), {"litros": 0.0, "kg": 0.0,
+                                      "num": {}, "den": {}, "tanques": 0})
+        _e["litros"] += float(_l)
+        _e["kg"] += _kg
+        _e["tanques"] += 1
+        for _k in ("acidez", "fosforo", "azufre", "ays"):
+            _v = _d.get(_k)
+            if _v is not None:
+                _e["num"][_k] = _e["num"].get(_k, 0.0) + _v * _kg
+                _e["den"][_k] = _e["den"].get(_k, 0.0) + _kg
+
+    _ETQ = {"acidez": ("Acidez %", 2), "fosforo": ("Fósforo ppm", 1),
+            "azufre": ("Azufre ppm", 1), "ays": ("AyS %", 2)}
+    filas, _malos, _sin = [], [], []
+    for _c in sorted(_pc):
+        _e = _pc[_c]
+        _f = {"Contenedor": "Cont. %d" % _c, "Litros": round(_e["litros"], 0),
+              "TN": round(_e["kg"] / 1000.0, 2), "Tanques": _e["tanques"]}
+        _ex, _falta = [], []
+        for _k, (_et, _dec) in _ETQ.items():
+            _dn = _e["den"].get(_k, 0.0)
+            if _dn <= 0:
+                _f[_et] = None
+                _falta.append(_et.split(" ")[0])
+                continue
+            _v = _e["num"][_k] / _dn
+            _f[_et] = round(_v, _dec)
+            _lim = spec.get(_k)
+            try:
+                if _lim is not None and float(_lim) > 0 and _v > float(_lim):
+                    _ex.append("%s %.*f>%.*f" % (_et.split(" ")[0], _dec, _v, _dec, float(_lim)))
+            except Exception:
+                pass
+            # cobertura: si un parámetro no está en toda la masa del contenedor
+            if _dn < _e["kg"] * 0.995:
+                _falta.append("%s (%.0f%%)" % (_et.split(" ")[0], 100.0 * _dn / max(_e["kg"], 1e-9)))
+        _f["Estado"] = ("✅ En spec" if not _ex else "❌ " + " · ".join(_ex))
+        _f["Sin lab"] = " · ".join(_falta) if _falta else ""
+        if _ex:
+            _malos.append("Cont. %d" % _c)
+        if _falta:
+            _sin.append("Cont. %d" % _c)
+        filas.append(_f)
+    if not filas:
+        return
+    _df = pd.DataFrame(filas)
+
+    st.markdown("##### 🧪 Cómo queda cada contenedor — control de parámetros")
+    if not _malos:
+        st.success("✅ **Los %d contenedores quedan dentro de la especificación** "
+                   "(acidez ≤ %s · fósforo ≤ %s · azufre ≤ %s · AyS ≤ %s). "
+                   "Si el llenado se hace con los litros del plan de arriba, no hace falta "
+                   "corregir nada."
+                   % (len(_df), _fmtv(spec.get("acidez"), 2), _fmtv(spec.get("fosforo"), 1),
+                      _fmtv(spec.get("azufre"), 1), _fmtv(spec.get("ays"), 2)))
+    else:
+        st.error("❌ **%d contenedor(es) quedan fuera de spec: %s.** Avisá a planificación "
+                 "antes de cargarlos: hay que reordenar los litros del plan."
+                 % (len(_malos), ", ".join(_malos)))
+    _lim_col = {"Acidez %": spec.get("acidez"), "Fósforo ppm": spec.get("fosforo"),
+                "Azufre ppm": spec.get("azufre"), "AyS %": spec.get("ays")}
+
+    def _css(val, lim):
+        if val is None or pd.isna(val) or not lim:
+            return "color:#94a3b8"
+        try:
+            _r = float(val) / float(lim)
+        except Exception:
+            return ""
+        if _r > 1.0:
+            return "background-color:#fee2e2;color:#b91c1c;font-weight:700"
+        if _r > 0.95:
+            return "background-color:#fef9c3;color:#a16207"
+        return "color:#15803d"
+
+    _cols = ["Contenedor", "Litros", "TN", "Tanques", "Acidez %", "Fósforo ppm",
+             "Azufre ppm", "AyS %", "Estado", "Sin lab"]
+    try:
+        _sty = (_df[_cols].style
+                .apply(lambda col: [_css(v, _lim_col.get(col.name)) for v in col]
+                       if col.name in _lim_col else ["" for _ in col], axis=0)
+                .format({"Litros": "{:,.0f}", "TN": "{:.2f}", "Acidez %": "{:.2f}",
+                         "Fósforo ppm": "{:.1f}", "Azufre ppm": "{:.1f}", "AyS %": "{:.2f}"},
+                        na_rep="—"))
+        st.dataframe(_sty, hide_index=True, use_container_width=True,
+                     height=int(38 * (len(_df) + 1) + 6))
+    except Exception:
+        st.dataframe(_df[_cols], hide_index=True, use_container_width=True)
+    st.caption("Cada valor es el **promedio ponderado por kg** de lo que entra a ese "
+               "contenedor según el plan. Verde = en spec · amarillo = a menos del 5% del "
+               "límite · rojo = lo supera. La columna *Sin lab* avisa cuando algún parámetro "
+               "no está medido en toda la masa del contenedor: ahí el promedio se calcula "
+               "sólo con la parte que sí tiene análisis.")
+    if _sin:
+        st.warning("⚠️ Faltan análisis en %s: el control de esos contenedores es parcial."
+                   % ", ".join(sorted(set(_sin))))
+    st.download_button("⬇️ Descargar control por contenedor (CSV)",
+                       _df[_cols].to_csv(index=False).encode("utf-8-sig"),
+                       file_name="contenedores_despacho_%d.csv" % int(id_despacho),
+                       mime="text/csv", key="cont_par_dl_%d" % int(id_despacho))
+
+
 def verificacion_planta(USR, cat, conectar):
     """Vista para Producción en planta: dirección arma la formulación del despacho y acá
     los operarios confirman, tanque por tanque, si la carga salió DE VERDAD de esos
@@ -1457,7 +1588,9 @@ def verificacion_planta(USR, cat, conectar):
     if sel is None:
         return
     lin = cat("SELECT l.id_linea, COALESCE(t.nombre, 'línea ' || l.orden) AS tanque, "
-              "       l.producto_codigo, l.litros, l.verif_estado, l.verif_nota, "
+              "       l.producto_codigo, l.litros, l.acidez, l.fosforo, l.azufre, "
+              "       l.agua_sedimento, COALESCE(l.densidad, 0.91) AS densidad, "
+              "       l.verif_estado, l.verif_nota, "
               "       l.verif_por, to_char(l.verif_en AT TIME ZONE "
               "       'America/Argentina/Buenos_Aires', 'DD/MM HH24:MI') AS verif_cuando "
               "FROM produccion.fact_despacho_linea l "
@@ -1476,7 +1609,8 @@ def verificacion_planta(USR, cat, conectar):
     m3.metric("Marcados NO usados", _no)
 
     # ---------- plan de llenado POR CONTENEDOR ----------
-    _cab = cat("SELECT n_contenedores, litros_por_contenedor, producto_codigo "
+    _cab = cat("SELECT n_contenedores, litros_por_contenedor, producto_codigo, "
+               "spec_acidez_max, spec_fosforo_max, spec_azufre_max, spec_ays_max "
                "FROM produccion.fact_despacho WHERE id_despacho=%s", (int(sel),))
     _ncc = int(_cab.iloc[0]["n_contenedores"] or 0) if _cab is not None and not _cab.empty else 0
     _pcod = (str(_cab.iloc[0]["producto_codigo"] or "")
@@ -1512,6 +1646,13 @@ def verificacion_planta(USR, cat, conectar):
                        "cambios de manguera. Llenar contenedor por contenedor con estos litros."
                        % ("{:,.0f}".format(float(_tot_c.mean())),
                           (_pcod if _pcod.strip().upper() in FORMULADOS else "base")))
+            _spec_d = {}
+            if _cab is not None and not _cab.empty:
+                _spec_d = {"acidez": _cab.iloc[0].get("spec_acidez_max"),
+                           "fosforo": _cab.iloc[0].get("spec_fosforo_max"),
+                           "azufre": _cab.iloc[0].get("spec_azufre_max"),
+                           "ays": _cab.iloc[0].get("spec_ays_max")}
+            _params_por_contenedor(_plan, lin, _spec_d, int(sel))
 
     _base = pd.DataFrame({
         "Tanque": lin["tanque"].astype(str),
