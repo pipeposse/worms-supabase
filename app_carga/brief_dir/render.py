@@ -13,9 +13,10 @@ Regla de la casa: nada se muestra como total sin abrir por producto y calidad.
 import calendar
 from datetime import date, datetime
 
-from .viz import (sparkline, stack_abs, diverging, barra_stock, acumulado_proy,
-                 barras_h, barras_v, barras_agrupadas, microbarra,
-                 BANDA_COLOR, BANDA_DESC, ORDEN_BANDA,
+from .viz import (figura, leyenda, barras_apiladas, barras_simples, barras_agrupadas,
+                 barras_divergentes, barras_stock, barras_pct, acumulado_proy,
+                 sparkline, microbarra,
+                 BANDA_COLOR, BANDA_DESC, ORDEN_BANDA, LIBRE,
                  GOOD, WARN, SERIOUS, CRIT, INK, INK2, MUTED, GRID, AZUL, PROY, _n, _e)
 
 MES_ABR = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
@@ -164,7 +165,7 @@ def render(D):
         f"Consecuencia medible: los últimos despachos se armaron con {_n(parte_afe*100,1)}% de AFE-S "
         f"y sólo {_n((1-parte_afe)*100,1)}% de AG-C, hay <b>{_n(ag_c,1)} TN de AG-C sin salida</b> "
         f"y la semana cerró con {_n(pct_ab_in,0)}% de los ingresos de AFE en bandas A+B.",
-        "comprar AFE-S de banda A o B (ver el detalle por proveedor en la página 2), o "
+        "comprar AFE-S de banda A o B (el detalle por proveedor está en la página 4), o "
         "renegociar la especificación de venta del AG-E."))
 
     if fs_14:
@@ -176,7 +177,7 @@ def render(D):
             "supera 50 ppm de azufre o 150 ppm de fósforo. La app calcula esto antes de confirmar "
             "y pide el visto de dirección, pero el circuito no bloquea la confirmación: "
             f"{len(fs_sin_aprob)} de los {len(fs_14)} se confirmaron igual. "
-            "El detalle despacho por despacho está en la página 3.",
+            "El detalle despacho por despacho está en la página 5.",
             "definir si la confirmación se bloquea sin aprobación de dirección, o si la "
             "especificación pactada con el cliente se actualiza."))
 
@@ -246,15 +247,41 @@ def render(D):
     t_clave = tabla(["Producto y calidad", "Tanques", "Stock TN", "Comprometido TN",
                      "Libre TN", "S ppm", "P ppm"], fil_clave)
 
-    g_afe_stock = barra_stock(
-        [(f"AFE-S {b} · {BANDA_DESC[b]}", BANDA_COLOR[b],
-          [("comprometido", afe_s[b]["c_desp"], BANDA_COLOR[b]),
-           ("libre", afe_s[b]["libre"], "#d3dae3")], afe_s[b]["tn"]) for b in ("A", "B", "C", "D")],
-        alto_fila=24)
+    fig_stock = figura(
+        "Stock de AFE-S por calidad, y cuánto ya está comprometido",
+        barras_stock([(f"Banda {b} · {BANDA_DESC[b]}", BANDA_COLOR[b],
+                       afe_s[b]["c_desp"], afe_s[b]["libre"], afe_s[b]["tn"],
+                       f'{afe_s[b]["tanques"]} tanques' if afe_s[b]["tanques"] else "sin stock")
+                      for b in ("A", "B", "C", "D")]),
+        subtitulo=(f"La banda A está en cero. De las {_n(afe_s['B']['tn'],1)} TN de banda B, "
+                   f"<b>{_n(afe_s['B']['c_desp'],1)} TN ya tienen despacho asignado</b>: "
+                   f"queda {_n(afe_s['B']['libre'],1)} TN de AFE-S limpio disponible."),
+        leyenda=leyenda([("#2a78d6", "comprometido a un despacho confirmado"),
+                         (LIBRE, "libre")]),
+        nota="Medición física de tanque. El número de la derecha es el stock total de esa banda.")
 
     # ======================= PÁGINA 2 =======================
     sem12 = semanas[-12:]
-    g_banda_abs = stack_abs([(fdate(s), banda_sem.get(s, {})) for s in sem12], h=152)
+    _idx_sem = sem12.index(sem) if sem in sem12 else None
+    _b0 = banda_sem.get(sem12[0], {}) if sem12 else {}
+    _pct_ab_12 = ((_b0.get("A", 0) + _b0.get("B", 0)) / (sum(_b0.values()) or 1) * 100)
+    _ult_con_a = None
+    for _i, _s in enumerate(sem12):
+        if (banda_sem.get(_s, {}).get("A") or 0) > 0:
+            _ult_con_a = _i
+    _anot = ([(_ult_con_a, "última semana con banda A", CRIT)]
+             if _ult_con_a is not None and _ult_con_a < len(sem12) - 1 else [])
+    fig_banda_sem = figura(
+        "El AFE-S que entra se corrió hacia las bandas malas",
+        barras_apiladas([fdate(s) for s in sem12], [banda_sem.get(s, {}) for s in sem12],
+                        x_titulo="semana (lunes)", y_titulo="TN ingresadas",
+                        resaltar=_idx_sem, anotaciones=_anot),
+        subtitulo=(f"Toneladas por semana y participación de cada banda. Las bandas A+B pasaron de "
+                   f"{_n(_pct_ab_12,0)}% hace tres meses a <b>{_n(pct_ab_in,0)}% esta semana</b>."),
+        leyenda=leyenda([(BANDA_COLOR[b], f"{b} · {BANDA_DESC[b]}") for b in ORDEN_BANDA]),
+        nota=("La banda sale del análisis de laboratorio del ticket: se toma el peor de los dos "
+              "parámetros contra la especificación de venta del AG-E. "
+              "A: S ≤ 40 y P ≤ 120 · B: S ≤ 45 y P ≤ 135 · C: S ≤ 50 y P ≤ 150 · D: no cumple solo."))
     fil_b = []
     for b in ORDEN_BANDA:
         v = b_now.get(b, 0) or 0
@@ -273,9 +300,20 @@ def render(D):
     banda_mes = {}
     for r in D.get("afe_banda_mes", []):
         banda_mes.setdefault(r["mes"], {})[r["banda"]] = r["tn"]
-    g_banda_mes = stack_abs([(fmes(m), banda_mes[m]) for m in sorted(banda_mes)], h=140)
-    _m_ult = sorted(banda_mes)[-1] if banda_mes else None
+    _meses_b = sorted(banda_mes)
+    _m_ult = _meses_b[-1] if _meses_b else None
     _m_pico = max(banda_mes, key=lambda m: banda_mes[m].get("A", 0)) if banda_mes else None
+    _a_pico = banda_mes.get(_m_pico, {}).get("A", 0)
+    fig_banda_mes = figura(
+        f"Mes a mes: la banda A pasó de {_n(_a_pico,0)} TN en {fmes(_m_pico)} a cero",
+        barras_apiladas([fmes(m) for m in _meses_b], [banda_mes[m] for m in _meses_b],
+                        x_titulo="mes", y_titulo="TN ingresadas",
+                        resaltar=len(_meses_b) - 1,
+                        anotaciones=[(_meses_b.index(_m_pico), "pico de banda A", GOOD)]
+                        if _m_pico and _m_pico != _m_ult else []),
+        subtitulo=(f"El último mes está en curso, así que el volumen todavía no es comparable; "
+                   f"la participación de cada banda sí."),
+        leyenda=leyenda([(BANDA_COLOR[b], f"{b} · {BANDA_DESC[b]}") for b in ORDEN_BANDA]))
 
     fil_prov = []
     for p in D.get("proveedores", []):
@@ -292,11 +330,20 @@ def render(D):
                     "% A+B últimas 3 sem."], fil_prov)
 
     # ======================= PÁGINA 3 =======================
-    g_expo = barras_v([(fdate(s), sal.get(s, {}).get("tn")) for s in sem12], color=C_EXPO)
+    fig_expo = figura(
+        "Ritmo de exportación: toneladas despachadas a terminal por semana",
+        barras_simples([fdate(s) for s in sem12], [sal.get(s, {}).get("tn") for s in sem12],
+                       color=C_EXPO, x_titulo="semana (lunes)", y_titulo="TN despachadas",
+                       ref=ritmo_expo, ref_txt=f"promedio 4 sem. · {_n(ritmo_expo,0)} TN",
+                       resaltar=_idx_sem),
+        subtitulo=(f"La semana informada cerró en <b>{_n(s_now.get('tn'),1)} TN</b>, "
+                   f"{_n(abs((s_now.get('tn') or 0) - ritmo_expo),1)} TN "
+                   f"{'por debajo' if (s_now.get('tn') or 0) < ritmo_expo else 'por encima'} "
+                   f"del promedio de las cuatro semanas previas."),
+        nota="Salidas de portería con destino a terminal (procedencia EGNITRADE).")
     _y, _m = int(D["exportacion"][-1]["mes"][:4]), int(D["exportacion"][-1]["mes"][5:7])
-    g_expo_proy, proy_expo = acumulado_proy(D["exportacion"], h=152,
-                                            dias_mes=calendar.monthrange(_y, _m)[1],
-                                            etiqueta=fmes)
+    _g_ep, proy_expo = acumulado_proy(D["exportacion"], dias_mes=calendar.monthrange(_y, _m)[1],
+                                      etiqueta=fmes, y_titulo="TN exportadas acumuladas")
     ex_ult = D["exportacion"][-1]
     ex_prev = D["exportacion"][-2] if len(D["exportacion"]) > 1 else None
 
@@ -332,16 +379,20 @@ def render(D):
 
     # ======================= PÁGINA 4 =======================
     labels_r = [fdate(s) for s in sorted(rt)]
-    g_prod = barras_agrupadas(
-        labels_r,
-        [("Desgomado acuoso", C_DESG, [rt[s].get("DESGOMADO_ACUOSO", {}).get("tn", 0) or 0 for s in sorted(rt)]),
-         ("Producción de ARE", C_ARE, [rt[s].get("PRODUCCION_ARE", {}).get("tn", 0) or 0 for s in sorted(rt)])],
-        h=122, decimales=0)
-    g_prod_n = barras_agrupadas(
-        labels_r,
-        [("Desgomado acuoso", C_DESG, [rt[s].get("DESGOMADO_ACUOSO", {}).get("n", 0) or 0 for s in sorted(rt)]),
-         ("Producción de ARE", C_ARE, [rt[s].get("PRODUCCION_ARE", {}).get("n", 0) or 0 for s in sorted(rt)])],
-        h=110, decimales=0)
+    _sr = sorted(rt)
+    _idx_r = _sr.index(sem) if sem in _sr else None
+    fig_prod = figura(
+        "Desgomado acuoso y producción de ARE, semana a semana",
+        barras_agrupadas(labels_r,
+                         [("Desgomado acuoso", C_DESG,
+                           [rt[s].get("DESGOMADO_ACUOSO", {}).get("tn", 0) or 0 for s in _sr]),
+                          ("Producción de ARE", C_ARE,
+                           [rt[s].get("PRODUCCION_ARE", {}).get("tn", 0) or 0 for s in _sr])],
+                         x_titulo="semana (lunes)", y_titulo="TN producidas", resaltar=_idx_r),
+        subtitulo=(f"En la semana informada: {desg.get('n',0) or 0} reacciones de desgomado por "
+                   f"{_n(desg.get('tn'),1)} TN y {are.get('n',0) or 0} de ARE por "
+                   f"{_n(are.get('tn'),1)} TN."),
+        leyenda=leyenda([(C_DESG, "Desgomado acuoso"), (C_ARE, "Producción de ARE")]))
 
     fil_rt = []
     for s in sorted(rt, reverse=True)[:3]:
@@ -357,11 +408,24 @@ def render(D):
 
     liq = D["liquidos"]
     _ly, _lm = int(liq[-1]["mes"][:4]), int(liq[-1]["mes"][5:7])
-    g_liq, proy_liq = acumulado_proy(liq, h=142, dias_mes=calendar.monthrange(_ly, _lm)[1],
-                                     etiqueta=fmes)
+    _g_lq, proy_liq = acumulado_proy(liq, dias_mes=calendar.monthrange(_ly, _lm)[1],
+                                     etiqueta=fmes, y_titulo="TN acumuladas")
     liq_ult, liq_prev = liq[-1], (liq[-2] if len(liq) > 1 else None)
 
     # ======================= PÁGINA 5 =======================
+    _exp_mes = {m["mes"]: m["tn"] for m in D.get("exportacion", [])}
+    _liq_mes = {m["mes"]: m["tn"] for m in D.get("liquidos", [])}
+    fil_mes = []
+    for m in D["meses"]:
+        en_curso = (m["mes"] == D["meses"][-1]["mes"])
+        fil_mes.append([
+            f'{fmes(m["mes"])}{" <i>(en curso)</i>" if en_curso else ""}',
+            _n(m["afe"], 0), _n(_exp_mes.get(m["mes"]), 0), _n(m["reac_tn"], 0),
+            _n(_liq_mes.get(m["mes"]), 0),
+            str(m["desp_n"] or "—"), _n(m["desp_tn"], 0)])
+    t_mes = tabla(["Mes", "AFE ingresado TN", "Exportado TN", "Producido TN",
+                   "Líquidos TN", "Despachos", "TN despachadas"], fil_mes)
+
     _dp = sorted(D["desvio_producto"], key=lambda x: -abs(x["desvio"] or 0))
     _dp_top, _dp_resto = _dp[:12], _dp[12:]
     fil_dp = []
@@ -381,7 +445,15 @@ def render(D):
     t_dp = tabla(["Producto", "Stock inicial", "Producido", "Ingresos", "Salidas",
                   "Consumo interno", "Stock único", "Medición real", "Desvío TN"], fil_dp)
 
-    g_pool = diverging([(fdate(s), pool[s]["desvio"]) for s in sorted(pool)])
+    _sp = sorted(pool)
+    fig_pool = figura(
+        "Desvío entre el stock único y la medición de tanques, semana a semana",
+        barras_divergentes([fdate(s) for s in _sp], [pool[s]["desvio"] for s in _sp],
+                           x_titulo="semana (lunes)", y_titulo="TN de desvío",
+                           resaltar=_sp.index(sem) if sem in _sp else None),
+        subtitulo=("AFE y AG tomados juntos. Por encima de cero hay más material del que el libro "
+                   "explica; por debajo, falta. Por separado las dos familias se compensan, porque "
+                   "el AFE-S que se mezcla y sale como AG-E no genera movimiento en el libro."))
 
     def _ccol(v):
         if v is None:
@@ -391,9 +463,14 @@ def render(D):
         if 50 <= v < 80 or 120 < v <= 160:
             return WARN
         return CRIT
-    g_cob = barras_h([(c["sector"], c["cob"], _ccol(c["cob"]))
-                      for c in sorted(D["cobertura_libro"], key=lambda x: -x["fis"])[:6]],
-                     alto=18, maxv=100)
+    fig_cob = figura(
+        "Cobertura del libro por sector: cuánto del movimiento físico está registrado",
+        barras_pct([(c["sector"], c["cob"], _ccol(c["cob"]))
+                    for c in sorted(D["cobertura_libro"], key=lambda x: -x["fis"])[:7]]),
+        subtitulo=("Por debajo de 50% el desvío de ese sector no es concluyente: el problema está "
+                   "en el registro, no necesariamente en el tanque. Por encima de 120% el libro "
+                   "carga más movimiento del que el radar midió."),
+        nota="Verde 80-120% · ámbar 50-80% y 120-160% · rojo fuera de esos rangos.")
 
     _cf = sorted(D["confianza"], key=lambda x: -x["kl"])[:6]
     t_conf = tabla(["Sector", "Tanques", "Volumen kL", "Medición más vieja"],
@@ -439,16 +516,16 @@ h3 { font-size:9.3px; margin:7px 0 3px; color:#52514e; text-transform:uppercase;
      letter-spacing:.5px; font-weight:700; }
 p.lead { font-size:8.6px; color:#52514e; margin:2px 0 5px; }
 .dec { background:#fcfcfb; border:1px solid #e1e0d9; border-left-width:4px; border-radius:3px;
-       padding:5px 10px; margin-bottom:4px; }
+       padding:4.5px 10px; margin-bottom:3.5px; }
 .dec-e { font-size:7.5px; text-transform:uppercase; letter-spacing:.7px; font-weight:800; }
 .dec-t { font-weight:700; font-size:10.2px; margin-top:1px; }
 .dec-b { font-size:8.4px; color:#52514e; margin-top:2px; }
 .dec-p { font-size:8.4px; color:#0b0b0b; margin-top:2px; }
-.grid { display:grid; grid-template-columns:repeat(4,1fr); gap:5px; margin:7px 0; }
-.kpi { border:1px solid #e1e0d9; border-radius:4px; padding:6px 7px; background:#fcfcfb; }
-.kpi-t { font-size:7.8px; color:#898781; text-transform:uppercase; letter-spacing:.4px;
-         font-weight:700; min-height:19px; }
-.kpi-v { font-size:19px; font-weight:800; letter-spacing:-.6px; line-height:1.1; }
+.grid { display:grid; grid-template-columns:repeat(4,1fr); gap:5px; margin:6px 0 4px; }
+.kpi { border:1px solid #e1e0d9; border-radius:4px; padding:5px 7px; background:#fcfcfb; }
+.kpi-t { font-size:7.7px; color:#898781; text-transform:uppercase; letter-spacing:.4px;
+         font-weight:700; min-height:17px; }
+.kpi-v { font-size:18px; font-weight:800; letter-spacing:-.6px; line-height:1.1; }
 .kpi-u { font-size:9px; font-weight:600; color:#52514e; }
 .kpi-d { font-size:7.5px; color:#898781; }
 .kpi-x { margin:3px 0 1px; min-height:14px; }
@@ -466,8 +543,14 @@ tr:last-child td { border-bottom:none; }
 .cols { display:grid; grid-template-columns:1fr 1fr; gap:11px; }
 .foot { position:absolute; bottom:0; left:0; right:0; font-size:7.5px; color:#898781;
         border-top:1px solid #e1e0d9; padding-top:3px; display:flex; justify-content:space-between; }
-.leg { font-size:8px; color:#52514e; margin:2px 0 4px; }
-.leg span { margin-right:10px; white-space:nowrap; }
+.fig { margin:5px 0 9px; }
+.fig-t { font-size:11px; font-weight:800; letter-spacing:-.15px; margin-bottom:1px; }
+.fig-s { font-size:8.7px; color:#52514e; margin-bottom:4px; line-height:1.4; }
+.fig-s b { color:#0b0b0b; }
+.fig-n { font-size:7.9px; color:#898781; margin-top:2px; line-height:1.4; }
+.leg { font-size:8.3px; color:#52514e; margin:3px 0 1px; }
+.leg span { margin-right:12px; white-space:nowrap; }
+.leg i.dot { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:4px; }
 .leg .leg-n { color:#898781; white-space:normal; }
 .nota { font-size:7.9px; color:#898781; line-height:1.4; margin:6px 0 0;
         border-top:1px solid #e1e0d9; padding-top:5px; }
@@ -484,25 +567,44 @@ tr:last-child td { border-bottom:none; }
     def foot(p, t):
         return (f'<div class="foot"><span>Portería, laboratorio, radares de tanque, despachos y '
                 f'batches (Supabase). Semana ISO cerrada, de lunes a domingo.</span>'
-                f'<span>{t} · pág. {p}/5</span></div>')
+                f'<span>{t} · pág. {p}/7</span></div>')
+
+    fil_sem = []
+    for s_ in reversed(sem12[-5:]):
+        bs = banda_sem.get(s_, {})
+        tot_b = sum(bs.values()) or 1
+        r_d = rt.get(s_, {}).get("DESGOMADO_ACUOSO", {})
+        r_a = rt.get(s_, {}).get("PRODUCCION_ARE", {})
+        p_ = pool.get(s_, {})
+        fil_sem.append([
+            f'<b>{fdate(s_)}</b>' if s_ == sem else fdate(s_),
+            _n(tot_b, 1), _n((bs.get("A", 0) + bs.get("B", 0)) / tot_b * 100, 0) + "%",
+            _n(sal.get(s_, {}).get("tn"), 1),
+            _n(r_d.get("tn"), 1), _n(r_a.get("tn"), 1),
+            f'<span style="color:{CRIT if (p_.get("desvio") or 0) < 0 else INK2}">'
+            f'{_n(p_.get("desvio"),0)}</span>'])
+    t_sem = tabla(["Semana (lunes)", "AFE ingresado TN", "% A+B", "Exportado TN",
+                   "Desgomado TN", "ARE TN", "Desvío pool TN"], fil_sem)
+
 
     H = []
-    # ---------------- 1 ----------------
+    # ---------------- 1 · TABLERO ----------------
     H.append(f"""<div class="page">{head("Tablero")}
 <h2><span class="n">1</span>Situaciones que requieren una decisión</h2>
 {''.join(decs)}
 <h2><span class="n">2</span>Indicadores de la semana</h2>
 <div class="grid">{''.join(kpis)}</div>
+{fig_stock}
+<h3>Las últimas 5 semanas de un vistazo</h3>
+{t_sem}
 {foot(1, "Tablero")}</div>""")
 
     # ---------------- 2 · STOCK ----------------
     H.append(f"""<div class="page">{head("Stock")}
 <h2><span class="n">3</span>Stock por producto y calidad</h2>
+<h3>Todo el stock de los productos clave</h3>
 <p class="lead">Medición física de tanque al {fdate(D['emitido'])}. "Comprometido" son las toneladas
 ya asignadas a un despacho confirmado; "libre" es lo que queda disponible.</p>
-{g_afe_stock}
-<div class="leg"><span><span class="dot" style="background:#2a78d6"></span>color pleno = comprometido</span>
-<span><span class="dot" style="background:#d3dae3"></span>gris = libre</span></div>
 {t_clave}
 
 <h2><span class="n">4</span>Stock único contra medición real</h2>
@@ -511,7 +613,91 @@ es lo que dice el libro. <b>Medición real</b> = lo que miden los radares y las 
 la diferencia; el color mide su tamaño relativo (verde por debajo de 10%, ámbar por debajo de 25%,
 rojo por encima), no su signo.</p>
 {t_dp}
+{foot(2, "Stock")}</div>""")
 
+    # ---------------- 3 · INGRESOS DE AFE ----------------
+    H.append(f"""<div class="page">{head("Ingresos de AFE")}
+<h2><span class="n">5</span>AFE-S que ingresa, por calidad</h2>
+{fig_banda_sem}
+{fig_banda_mes}
+<h3>Detalle de la semana {iso}, contra el promedio de las 4 semanas previas</h3>
+{t_banda}
+{foot(3, "Ingresos de AFE")}</div>""")
+
+    # ---------------- 4 · CALIDAD POR PROVEEDOR Y RITMO ----------------
+    H.append(f"""<div class="page">{head("Proveedores y ritmo")}
+<h2><span class="n">6</span>Qué calidad vende cada proveedor</h2>
+<p class="lead">Porcentaje de las toneladas de cada proveedor que llegó en banda A o B. La última
+columna es el mismo dato limitado a las últimas 3 semanas: sirve para ver quién se está degradando
+(▼) y quién mejora (▲).</p>
+{t_prov}
+<div class="box"><b>Dónde está el AFE-S limpio.</b> Los dos proveedores que aportan el volumen
+({_e(D['proveedores'][0]['prov']) if D.get('proveedores') else '—'} y
+{_e(D['proveedores'][1]['prov']) if len(D.get('proveedores',[]))>1 else '—'}) son los que peor
+calidad entregan en las últimas 3 semanas. Los que mejor entregan tienen volumen chico:
+mover el mix de compra hacia ellos es la palanca más directa sobre la banda A+B.</div>
+
+<h2><span class="n">7</span>Ritmo de exportación y AFE-S que exige</h2>
+{fig_expo}
+<p class="lead">Los despachos de los últimos 45 días se armaron con {_n(parte_afe*100,1)}% de AFE-S y
+{_n((1-parte_afe)*100,1)}% de AG-C. Aplicando esa mezcla, los {len(dfut)} despachos pendientes
+({_n(dfut_tn,1)} TN) exigen <b>{_n(afe_necesario,1)} TN de AFE-S</b>.</p>
+{t_nec}
+<div class="box"><b>Posición.</b> El AFE-S libre cubre <b>{_n(cobertura_afe,1)}%</b> de lo que exigen
+los despachos ya comprometidos, pero sólo <b>{_n(ab_libre,1)} TN</b> son de bandas A+B: el resto
+({_n(cd_libre,1)} TN) es C y D, que no admite AG-C sin salirse de especificación.
+Al ritmo de las últimas 4 semanas la exportación consume <b>{_n(consumo_semanal_afe,1)} TN de AFE-S
+por semana</b>, contra <b>{_n(afe_in,1)} TN</b> que ingresaron: el AFE-S libre equivale a
+<b>{_n(dias_autonomia,1)} días</b>. La planta trabaja con reposición continua y sin stock de
+respaldo, así que un corte de recepción se siente en días, no en semanas.</div>
+{foot(4, "Proveedores y ritmo")}</div>""")
+
+    # ---------------- 5 · DESPACHOS Y PRODUCCIÓN ----------------
+    H.append(f"""<div class="page">{head("Despachos y producción")}
+<h2><span class="n">8</span>Despachos desde el inicio de la semana informada</h2>
+{t_desp}
+
+<h2><span class="n">9</span>Desgomado acuoso y producción de ARE</h2>
+{fig_prod}
+{t_rt}
+<p class="lead">Rendimiento = toneladas reales sobre toneladas de fórmula. Utilización = cuánto se
+llenó el reactor respecto de su capacidad nominal.</p>
+{foot(5, "Despachos y producción")}</div>""")
+
+    # ---------------- 6 · PROYECCIONES ----------------
+    H.append(f"""<div class="page">{head("Proyecciones")}
+<h2><span class="n">10</span>Proyección de exportación</h2>
+{figura("Exportación acumulada del mes, contra los meses anteriores", _g_ep,
+        subtitulo=(f"Cada línea es un mes, día por día. La punteada naranja proyecta el cierre de "
+                   f"{fmes(ex_ult['mes'])} al ritmo diario de los primeros {ex_ult['ult']} días: "
+                   f"<b>{_n(proy_expo,0)} TN</b>, contra {_n(ex_prev['tn'],0) if ex_prev else '—'} TN "
+                   f"de {fmes(ex_prev['mes']) if ex_prev else '—'} "
+                   f"({_n((proy_expo/(ex_prev['tn'] or 1)-1)*100,0) if ex_prev else '—'}%)."),
+        nota="Salidas de portería con destino a terminal. La proyección asume que el ritmo diario "
+             "del mes en curso se sostiene hasta fin de mes.")}
+
+<h2><span class="n">11</span>Proyección de disposición final de líquidos</h2>
+{figura("Disposición final de líquidos acumulada, contra los meses anteriores", _g_lq,
+        subtitulo=(f"Proyección de cierre de {fmes(liq_ult['mes'])}: <b>{_n(proy_liq,0)} TN</b>, "
+                   f"contra {_n(liq_prev['tn'],0) if liq_prev else '—'} TN de "
+                   f"{fmes(liq_prev['mes']) if liq_prev else '—'} "
+                   f"({_n((proy_liq/(liq_prev['tn'] or 1)-1)*100,0) if liq_prev else '—'}%)."),
+        nota="Si la pendiente del mes en curso se aplana a mitad de mes es caída de recepción; "
+             "si se empina, es riesgo de capacidad en piletas.")}
+
+<h2><span class="n">12</span>Cierre mensual, todo junto</h2>
+<p class="lead">Las mismas magnitudes del brief, cerradas por mes. El mes en curso no es comparable
+en volumen —todavía le faltan días—, pero sí en ritmo contra las líneas de arriba.</p>
+{t_mes}
+{foot(6, "Proyecciones")}</div>""")
+
+
+    # ---------------- 7 · CONTROL DEL DATO ----------------
+    H.append(f"""<div class="page">{head("Control del dato")}
+<h2><span class="n">13</span>Desvío consolidado del pool de exportación</h2>
+{fig_pool}
+<h2><span class="n">14</span>De dónde puede venir el desvío</h2>
+{fig_cob}
 <div class="cols">
  <div>
   <h3>Antigüedad de la medición física</h3>
@@ -526,115 +712,13 @@ rojo por encima), no su signo.</p>
   {t_cp}
  </div>
 </div>
-{foot(2, "Stock")}</div>""")
-
-    # ---------------- 3 · INGRESOS DE AFE ----------------
-    H.append(f"""<div class="page">{head("Ingresos de AFE")}
-<h2><span class="n">6</span>AFE-S que ingresa, por calidad</h2>
-<p class="lead">Toneladas por semana, con la participación de cada banda dentro de la barra.
-La banda sale del análisis de laboratorio del ticket: se toma el peor de los dos parámetros
-contra la especificación de venta del AG-E (azufre sobre 50, fósforo sobre 150).</p>
-{g_banda_abs}
-{leg_banda}
-
-<h3>Detalle de la semana {iso}, contra el promedio de las 4 semanas previas</h3>
-{t_banda}
-
-<div class="box"><b>Lectura.</b> Las bandas A y B representaron el <b>{_n(pct_ab_in,1)}%</b> del AFE-S
-que ingresó esta semana. Hace <b>{sin_a} semanas que no ingresa banda A</b> y no queda nada en tanque.
-El fósforo promedio de la banda D fue
-{_n(next((x['p'] for x in D['afe_banda'] if x['semana']==sem and x['banda']=='D'), None),0)} ppm,
-contra un máximo de venta de 150 ppm. Menos A y B significa menos AG-C por contenedor:
-la mezcla de los últimos despachos absorbió apenas {_n((1-parte_afe)*100,1)}% de AG-C.</div>
-
-<h3>Mismo corte, mes a mes</h3>
-{g_banda_mes}
-<p class="lead">La banda A pasó de <b>{_n(banda_mes.get(_m_pico,{}).get('A'),0)} TN</b> en
-{fmes(_m_pico)} a <b>{_n(banda_mes.get(_m_ult,{}).get('A',0),0)} TN</b> en {fmes(_m_ult)}.
-{fmes(_m_ult)} está en curso, así que el volumen todavía no es comparable; la participación sí.</p>
-
-<h2><span class="n">7</span>Qué calidad vende cada proveedor</h2>
-<p class="lead">Porcentaje de las toneladas de cada proveedor que llegó en banda A o B. La última
-columna es el mismo dato limitado a las últimas 3 semanas: sirve para ver quién se está degradando
-(▼) y quién mejora (▲).</p>
-{t_prov}
-{foot(3, "Ingresos de AFE")}</div>""")
-
-    # ---------------- 4 · EXPORTACIÓN ----------------
-    H.append(f"""<div class="page">{head("Exportación")}
-<h2><span class="n">8</span>Ritmo de exportación</h2>
-<h3>Toneladas despachadas a terminal, por semana</h3>
-{barras_v([(fdate(s), sal.get(s, {}).get("tn")) for s in sem12], color=C_EXPO, meta=ritmo_expo, h=116)}
-<p class="lead">La línea punteada es el promedio de las últimas 4 semanas
-({_n(ritmo_expo,1)} TN por semana).</p>
-
-<h2><span class="n">9</span>AFE-S necesario para los despachos comprometidos</h2>
-<p class="lead">Los despachos de los últimos 45 días se armaron con {_n(parte_afe*100,1)}% de AFE-S y
-{_n((1-parte_afe)*100,1)}% de AG-C. Aplicando esa mezcla, los {len(dfut)} despachos pendientes
-({_n(dfut_tn,1)} TN) exigen <b>{_n(afe_necesario,1)} TN de AFE-S</b>.</p>
-{t_nec}
-<div class="box"><b>Posición.</b> El AFE-S libre cubre <b>{_n(cobertura_afe,1)}%</b> de lo que exigen
-los despachos ya comprometidos, pero sólo <b>{_n(ab_libre,1)} TN</b> son de bandas A+B: el resto
-({_n(cd_libre,1)} TN) es C y D, que no admite AG-C sin salirse de especificación.
-Al ritmo de las últimas 4 semanas la exportación consume <b>{_n(consumo_semanal_afe,1)} TN de AFE-S
-por semana</b>, contra <b>{_n(afe_in,1)} TN</b> que ingresaron: el AFE-S libre equivale a
-<b>{_n(dias_autonomia,1)} días</b>. La planta trabaja con reposición continua y sin stock de
-respaldo, así que un corte de recepción se siente en días, no en semanas.</div>
-
-<h2><span class="n">10</span>Despachos desde el inicio de la semana informada</h2>
-{t_desp}
-
-<h2><span class="n">11</span>Proyección de exportación</h2>
-<p class="lead">Toneladas acumuladas día a día, un mes por línea. La línea naranja punteada proyecta
-el cierre de {fmes(ex_ult['mes'])} al ritmo diario de los primeros {ex_ult['ult']} días.</p>
-{g_expo_proy}
-<div class="box">Acumulado {fmes(ex_ult['mes'])} al día {ex_ult['ult']}: <b>{_n(ex_ult['tn'],0)} TN</b>
-· proyección de cierre: <b>{_n(proy_expo,0)} TN</b>
-· {fmes(ex_prev['mes']) if ex_prev else '—'} cerró en
-<b>{_n(ex_prev['tn'],0) if ex_prev else '—'} TN</b>
-→ <b>{_n((proy_expo/(ex_prev['tn'] or 1)-1)*100,0) if ex_prev else '—'}%</b>.</div>
-{foot(4, "Exportación")}</div>""")
-
-    # ---------------- 5 · PRODUCCIÓN ----------------
-    H.append(f"""<div class="page">{head("Producción y control")}
-<h2><span class="n">12</span>Desgomado acuoso y producción de ARE</h2>
-<h3>Toneladas producidas por semana</h3>
-{g_prod}
-{leg_prod}
-<h3>Detalle por proceso · últimas 3 semanas</h3>
-{t_rt}
-<p class="lead">Rendimiento = toneladas reales sobre toneladas de fórmula. Utilización = cuánto se
-llenó el reactor respecto de su capacidad nominal.</p>
-
-<h2><span class="n">13</span>Proyección de disposición final de líquidos</h2>
-<p class="lead">Toneladas acumuladas día a día, un mes por línea. La línea naranja punteada proyecta
-el cierre de {fmes(liq_ult['mes'])} al ritmo diario de los primeros {liq_ult['ult']} días.</p>
-{g_liq}
-<div class="cols">
-  <div class="box">Acumulado {fmes(liq_ult['mes'])} al día {liq_ult['ult']}:
-    <b>{_n(liq_ult['tn'],0)} TN</b><br>
-    Proyección de cierre de mes: <b>{_n(proy_liq,0)} TN</b><br>
-    {fmes(liq_prev['mes']) if liq_prev else '—'} cerró en
-    <b>{_n(liq_prev['tn'],0) if liq_prev else '—'} TN</b>
-    → <b>{_n((proy_liq/(liq_prev['tn'] or 1)-1)*100,0) if liq_prev else '—'}%</b></div>
-  <div class="box"><b>Qué mirar.</b> La pendiente del mes en curso contra las anteriores. Si se
-    aplana a mitad de mes es caída de recepción; si se empina, es riesgo de capacidad en piletas.</div>
-</div>
-<h2><span class="n">14</span>Desvío consolidado del pool de exportación</h2>
-<p class="lead">AFE y AG tomados juntos, semana a semana. Por separado se compensan, porque el AFE-S
-que se mezcla y sale como AG-E no genera movimiento en el libro.</p>
-{g_pool}
-<h3>Cobertura del libro por sector</h3>
-<p class="lead">Porcentaje del movimiento físico medido que tiene un movimiento registrado que lo
-explique. Por debajo de 50% el desvío de ese sector no es concluyente.</p>
-{g_cob}
 <p class="nota"><b>Nota metodológica.</b> Ingresos y salidas salen de los tickets de portería.
 La calidad de cada ticket sale de su último análisis de laboratorio; los tickets sin análisis se
 cuentan en toneladas pero no en banda. El stock medido es medición física de tanque (radares WeDo y
 aforo por centímetros). Las reacciones salen de los batches cerrados. La mezcla de exportación se
 calcula sobre las líneas reales de los despachos de los últimos 45 días. Ningún número de este
 informe se carga a mano.</p>
-{foot(5, "Producción y control")}</div>""")
+{foot(7, "Control del dato")}</div>""")
 
     return (f'<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">'
             f'<title>WORMS · Brief de Dirección · {iso}</title><style>{css}</style></head>'
