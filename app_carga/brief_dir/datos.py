@@ -4,7 +4,7 @@
 Una sola función `cargar(cat, semana)` devuelve el dict que consume el
 renderizador. Todo sale de las vistas `produccion.v_brief_*` para que la
 pestaña de la app, el PDF semanal y cualquier consulta manual den el mismo
-número. No hay lógica de negocio acá: las bandas de calidad, los compromisos
+número. No hay lógica de negocio acá: las categorías de calidad, los compromisos
 y los desvíos ya vienen resueltos por la base.
 """
 from datetime import date, timedelta
@@ -48,10 +48,10 @@ def cargar(cat, semana):
         "WHERE semana BETWEEN %s AND %s AND flujo IN ('ENTRADA','SALIDA') "
         "GROUP BY 1,2", (desde12, sem)))
 
-    D["afe_banda"] = _recs(cat(
-        "SELECT semana::text, banda, tickets, round(tn,1) AS tn, "
+    D["afe_categoria"] = _recs(cat(
+        "SELECT semana::text, categoria, tickets, round(tn,1) AS tn, "
         "  round(s_prom,0) AS s, round(p_prom,0) AS p, round(acidez_prom,2) AS ac "
-        "FROM produccion.v_brief_afe_banda_semana WHERE semana BETWEEN %s AND %s",
+        "FROM produccion.v_brief_afe_categoria_semana WHERE semana BETWEEN %s AND %s",
         (desde12, sem)))
 
     D["reacciones"] = _recs(cat(
@@ -87,16 +87,16 @@ def cargar(cat, semana):
 
     # el stock es SIEMPRE la foto de hoy: es una medición, no una serie histórica
     D["stock"] = _recs(cat(
-        "SELECT producto, banda, tanques, round(tn,1) AS tn, "
+        "SELECT producto, categoria, tanques, round(tn,1) AS tn, "
         "  round(tn_comp_despacho,1) AS c_desp, round(tn_comp_vencido,1) AS c_venc, "
         "  round(tn_libre,1) AS libre, tanques_sobrecomprometidos AS sobre, "
         "  round(horas_peor_medicion,0) AS h, round(s_pond,0) AS s, round(p_pond,0) AS p "
         "FROM produccion.v_brief_stock_calidad WHERE tn > 0"))
-    # bandas de AFE-S sin stock: se muestran igual, en cero (que falten es la noticia)
-    _hay = {(r["producto"], r["banda"]) for r in D["stock"]}
+    # categorías de AFE-S sin stock: se muestran igual, en cero (que falten es la noticia)
+    _hay = {(r["producto"], r["categoria"]) for r in D["stock"]}
     for b in ("A", "B", "C", "D"):
         if ("AFE-S", b) not in _hay:
-            D["stock"].append({"producto": "AFE-S", "banda": b, "tanques": 0, "tn": 0.0,
+            D["stock"].append({"producto": "AFE-S", "categoria": b, "tanques": 0, "tn": 0.0,
                                "c_desp": 0.0, "c_venc": 0.0, "libre": 0.0, "sobre": 0,
                                "h": None, "s": None, "p": None})
 
@@ -141,9 +141,9 @@ def cargar(cat, semana):
         "FROM produccion.v_brief_reacciones_semana WHERE semana BETWEEN %s AND %s",
         (desde12, sem)))
 
-    D["afe_banda_mes"] = _recs(cat(
-        "SELECT to_char(mes,'YYYY-MM') AS mes, banda, round(sum(tn),1) AS tn "
-        "FROM produccion.v_brief_afe_banda_semana WHERE mes >= %s GROUP BY 1,2", (mes0,)))
+    D["afe_categoria_mes"] = _recs(cat(
+        "SELECT to_char(mes,'YYYY-MM') AS mes, categoria, round(sum(tn),1) AS tn "
+        "FROM produccion.v_brief_afe_categoria_semana WHERE mes >= %s GROUP BY 1,2", (mes0,)))
 
     D["mezcla"] = _recs(cat(
         "SELECT producto, round(tn,1) AS tn, round(parte,4) AS parte "
@@ -187,13 +187,13 @@ def cargar(cat, semana):
         "FROM produccion.v_brief_compromiso_produccion ORDER BY tn DESC"))
 
     D["proveedores"] = _recs(cat(
-        "WITH b AS (SELECT proveedor, banda, tn, semana FROM produccion.v_brief_porteria "
+        "WITH b AS (SELECT proveedor, categoria, tn, semana FROM produccion.v_brief_porteria "
         "  WHERE familia='AFE' AND flujo='ENTRADA' AND semana BETWEEN %s AND %s) "
         "SELECT coalesce(proveedor,'—') AS prov, round(sum(tn),1) AS tn_tot, "
         "  round(sum(tn) FILTER (WHERE semana=%s),1) AS tn_sem, "
-        "  round(100*sum(tn) FILTER (WHERE banda IN ('A','B'))/nullif(sum(tn),0),0) AS pct_ab, "
-        "  round(100*sum(tn) FILTER (WHERE banda='D')/nullif(sum(tn),0),0) AS pct_d, "
-        "  round(100*sum(tn) FILTER (WHERE banda IN ('A','B') AND semana > (%s::date-21))"
+        "  round(100*sum(tn) FILTER (WHERE categoria IN ('A','B'))/nullif(sum(tn),0),0) AS pct_ab, "
+        "  round(100*sum(tn) FILTER (WHERE categoria='D')/nullif(sum(tn),0),0) AS pct_d, "
+        "  round(100*sum(tn) FILTER (WHERE categoria IN ('A','B') AND semana > (%s::date-21))"
         "        /nullif(sum(tn) FILTER (WHERE semana > (%s::date-21)),0),0) AS pct_ab3 "
         "FROM b GROUP BY 1 HAVING sum(tn) > 100 ORDER BY 2 DESC LIMIT 8",
         (desde9, sem, sem, sem, sem)))

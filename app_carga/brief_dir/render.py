@@ -16,7 +16,7 @@ from datetime import date, datetime
 from .viz import (figura, leyenda, barras_apiladas, barras_simples, barras_agrupadas,
                  barras_divergentes, barras_stock, barras_pct, acumulado_proy,
                  sparkline, microbarra,
-                 BANDA_COLOR, BANDA_DESC, ORDEN_BANDA, LIBRE,
+                 CAT_COLOR, CAT_DESC, ORDEN_CAT, LIBRE,
                  GOOD, WARN, SERIOUS, CRIT, INK, INK2, MUTED, GRID, AZUL, PROY, _n, _e)
 
 MES_ABR = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
@@ -96,9 +96,9 @@ def render(D):
         v = [dic[s][k] for s in ult4 if s in dic and dic[s].get(k) is not None]
         return sum(v) / len(v) if v else None
 
-    banda_sem = {}
-    for r in D["afe_banda"]:
-        banda_sem.setdefault(r["semana"], {})[r["banda"]] = r["tn"]
+    cat_sem = {}
+    for r in D["afe_categoria"]:
+        cat_sem.setdefault(r["semana"], {})[r["categoria"]] = r["tn"]
     rt = {}
     for r in D["reacciones_tipo"]:
         rt.setdefault(r["semana"], {})[r["tipo"]] = r
@@ -106,10 +106,10 @@ def render(D):
 
     e_now, s_now = ent.get(sem, {}), sal.get(sem, {})
     e_prev, s_prev = ent.get(prev, {}), sal.get(prev, {})
-    b_now = banda_sem.get(sem, {})
+    b_now = cat_sem.get(sem, {})
     afe_in = sum(b_now.values())
-    afe_in_prev = sum(banda_sem.get(prev, {}).values()) if prev else None
-    afe_in_p4 = ([sum(banda_sem.get(s, {}).values()) for s in ult4] or [None])
+    afe_in_prev = sum(cat_sem.get(prev, {}).values()) if prev else None
+    afe_in_p4 = ([sum(cat_sem.get(s, {}).values()) for s in ult4] or [None])
     afe_in_p4 = sum(afe_in_p4) / len(afe_in_p4) if afe_in_p4 and afe_in_p4[0] is not None else None
 
     desg = rt.get(sem, {}).get("DESGOMADO_ACUOSO", {})
@@ -119,9 +119,9 @@ def render(D):
 
     # ---- stock por producto y calidad ----
     stock = D["stock"]
-    afe_s = {r["banda"]: r for r in stock if r["producto"] == "AFE-S"}
+    afe_s = {r["categoria"]: r for r in stock if r["producto"] == "AFE-S"}
     for b in ("A", "B", "C", "D"):
-        afe_s.setdefault(b, {"banda": b, "tanques": 0, "tn": 0.0, "c_desp": 0.0,
+        afe_s.setdefault(b, {"categoria": b, "tanques": 0, "tn": 0.0, "c_desp": 0.0,
                              "c_venc": 0.0, "libre": 0.0, "h": None, "s": None, "p": None})
     afe_s_tot = sum(afe_s[b]["tn"] for b in ("A", "B", "C", "D"))
     ab = afe_s["A"]["tn"] + afe_s["B"]["tn"]
@@ -146,7 +146,7 @@ def render(D):
 
     sin_a = 0
     for s in reversed(semanas):
-        if (banda_sem.get(s, {}).get("A") or 0) > 0:
+        if (cat_sem.get(s, {}).get("A") or 0) > 0:
             break
         sin_a += 1
 
@@ -155,17 +155,17 @@ def render(D):
     pct_ab_in = (b_now.get("A", 0) + b_now.get("B", 0)) / (afe_in or 1) * 100
     decs.append(decision(
         "critico",
-        "Calidad del AFE-S: la banda A está agotada y la mezcla de exportación quedó sin margen",
+        "Calidad del AFE-S: la categoría A está agotada y la mezcla de exportación quedó sin margen",
         "El AG-E que se exporta se arma mezclando AFE-S con AG-C. Cuanto más limpio el AFE-S "
-        "(bandas A y B), más AG-C admite la mezcla sin superar la especificación de venta "
+        "(categorías A y B), más AG-C admite la mezcla sin superar la especificación de venta "
         "(azufre ≤ 50 ppm, fósforo ≤ 150 ppm). "
-        f"Hoy <b>no queda AFE-S de banda A en tanque</b> y hace <b>{sin_a} semanas que no ingresa</b>. "
-        f"De las {_n(afe_s['B']['tn'],1)} TN de banda B, {_n(afe_s['B']['c_desp'],1)} TN ya están "
+        f"Hoy <b>no queda AFE-S de categoría A en tanque</b> y hace <b>{sin_a} semanas que no ingresa</b>. "
+        f"De las {_n(afe_s['B']['tn'],1)} TN de categoría B, {_n(afe_s['B']['c_desp'],1)} TN ya están "
         "comprometidas a despachos confirmados. "
         f"Consecuencia medible: los últimos despachos se armaron con {_n(parte_afe*100,1)}% de AFE-S "
         f"y sólo {_n((1-parte_afe)*100,1)}% de AG-C, hay <b>{_n(ag_c,1)} TN de AG-C sin salida</b> "
-        f"y la semana cerró con {_n(pct_ab_in,0)}% de los ingresos de AFE en bandas A+B.",
-        "comprar AFE-S de banda A o B (el detalle por proveedor está en la página 4), o "
+        f"y la semana cerró con {_n(pct_ab_in,0)}% de los ingresos de AFE en categorías A+B.",
+        "comprar AFE-S de categoría A o B (el detalle por proveedor está en la página 4), o "
         "renegociar la especificación de venta del AG-E."))
 
     if fs_14:
@@ -200,7 +200,7 @@ def render(D):
     # ======================= PÁGINA 1 =======================
     kpis = []
     kpis.append(kpi("AFE-S ingresado", _n(afe_in, 1), " TN",
-                    f"{_n(b_now.get('A',0)+b_now.get('B',0),1)} TN en bandas A+B "
+                    f"{_n(b_now.get('A',0)+b_now.get('B',0),1)} TN en categorías A+B "
                     f"({_n(pct_ab_in,0)}% del ingreso)",
                     microbarra(b_now),
                     delta(afe_in, afe_in_prev), delta(afe_in, afe_in_p4)))
@@ -219,7 +219,7 @@ def render(D):
                                for s in sorted(rt)], 150, 26, C_ARE),
                     delta(are.get("n"), are_p.get("n"))))
     kpis.append(kpi("AFE-S libre en tanque", _n(libre_total, 1), " TN",
-                    f"de los cuales <b>{_n(ab_libre,1)} TN</b> son de bandas A+B "
+                    f"de los cuales <b>{_n(ab_libre,1)} TN</b> son de categorías A+B "
                     f"({_n(ab_libre/(libre_total or 1)*100,0)}%)",
                     microbarra({b: afe_s[b]["libre"] for b in ("A", "B", "C", "D")})))
     kpis.append(kpi("AG-C sin salida", _n(ag_c, 1), " TN",
@@ -237,10 +237,10 @@ def render(D):
         filas_p = [r for r in stock if r["producto"] == p]
         if not filas_p:
             continue
-        for r in sorted(filas_p, key=lambda x: ORDEN_BANDA.index(x["banda"])
-                        if x["banda"] in ORDEN_BANDA else 9):
-            et = (punto(BANDA_COLOR[r["banda"]]) + f'<b>{_e(p)}</b> · banda {r["banda"]}'
-                  if r["banda"] in BANDA_COLOR else f'<b>{_e(p)}</b>')
+        for r in sorted(filas_p, key=lambda x: ORDEN_CAT.index(x["categoria"])
+                        if x["categoria"] in ORDEN_CAT else 9):
+            et = (punto(CAT_COLOR[r["categoria"]]) + f'<b>{_e(p)}</b> · categoría {r["categoria"]}'
+                  if r["categoria"] in CAT_COLOR else f'<b>{_e(p)}</b>')
             comp = (r["c_desp"] or 0)
             fil_clave.append([et, str(r["tanques"]), _n(r["tn"], 1), _n(comp, 1),
                               _n(r["libre"], 1), _n(r["s"], 0), _n(r["p"], 0)])
@@ -249,71 +249,71 @@ def render(D):
 
     fig_stock = figura(
         "Stock de AFE-S por calidad, y cuánto ya está comprometido",
-        barras_stock([(f"Banda {b} · {BANDA_DESC[b]}", BANDA_COLOR[b],
+        barras_stock([(f"Categoría {b} · {CAT_DESC[b]}", CAT_COLOR[b],
                        afe_s[b]["c_desp"], afe_s[b]["libre"], afe_s[b]["tn"],
                        f'{afe_s[b]["tanques"]} tanques' if afe_s[b]["tanques"] else "sin stock")
                       for b in ("A", "B", "C", "D")]),
-        subtitulo=(f"La banda A está en cero. De las {_n(afe_s['B']['tn'],1)} TN de banda B, "
+        subtitulo=(f"La categoría A está en cero. De las {_n(afe_s['B']['tn'],1)} TN de categoría B, "
                    f"<b>{_n(afe_s['B']['c_desp'],1)} TN ya tienen despacho asignado</b>: "
                    f"queda {_n(afe_s['B']['libre'],1)} TN de AFE-S limpio disponible."),
         leyenda=leyenda([("#2a78d6", "comprometido a un despacho confirmado"),
                          (LIBRE, "libre")]),
-        nota="Medición física de tanque. El número de la derecha es el stock total de esa banda.")
+        nota="Medición física de tanque. El número de la derecha es el stock total de esa categoría.")
 
     # ======================= PÁGINA 2 =======================
     sem12 = semanas[-12:]
     _idx_sem = sem12.index(sem) if sem in sem12 else None
-    _b0 = banda_sem.get(sem12[0], {}) if sem12 else {}
+    _b0 = cat_sem.get(sem12[0], {}) if sem12 else {}
     _pct_ab_12 = ((_b0.get("A", 0) + _b0.get("B", 0)) / (sum(_b0.values()) or 1) * 100)
     _ult_con_a = None
     for _i, _s in enumerate(sem12):
-        if (banda_sem.get(_s, {}).get("A") or 0) > 0:
+        if (cat_sem.get(_s, {}).get("A") or 0) > 0:
             _ult_con_a = _i
-    _anot = ([(_ult_con_a, "última semana con banda A", CRIT)]
+    _anot = ([(_ult_con_a, "última semana con categoría A", CRIT)]
              if _ult_con_a is not None and _ult_con_a < len(sem12) - 1 else [])
-    fig_banda_sem = figura(
-        "El AFE-S que entra se corrió hacia las bandas malas",
-        barras_apiladas([fdate(s) for s in sem12], [banda_sem.get(s, {}) for s in sem12],
+    fig_cat_sem = figura(
+        "El AFE-S que entra se corrió hacia las categorías malas",
+        barras_apiladas([fdate(s) for s in sem12], [cat_sem.get(s, {}) for s in sem12],
                         x_titulo="semana (lunes)", y_titulo="TN ingresadas",
                         resaltar=_idx_sem, anotaciones=_anot),
-        subtitulo=(f"Toneladas por semana y participación de cada banda. Las bandas A+B pasaron de "
+        subtitulo=(f"Toneladas por semana y participación de cada categoría. Las categorías A+B pasaron de "
                    f"{_n(_pct_ab_12,0)}% hace tres meses a <b>{_n(pct_ab_in,0)}% esta semana</b>."),
-        leyenda=leyenda([(BANDA_COLOR[b], f"{b} · {BANDA_DESC[b]}") for b in ORDEN_BANDA]),
-        nota=("La banda sale del análisis de laboratorio del ticket: se toma el peor de los dos "
+        leyenda=leyenda([(CAT_COLOR[b], f"{b} · {CAT_DESC[b]}") for b in ORDEN_CAT]),
+        nota=("La categoría sale del análisis de laboratorio del ticket: se toma el peor de los dos "
               "parámetros contra la especificación de venta del AG-E. "
               "A: S ≤ 40 y P ≤ 120 · B: S ≤ 45 y P ≤ 135 · C: S ≤ 50 y P ≤ 150 · D: no cumple solo."))
-    fil_b = []
-    for b in ORDEN_BANDA:
+    fil_c = []
+    for b in ORDEN_CAT:
         v = b_now.get(b, 0) or 0
-        p4 = [banda_sem.get(s, {}).get(b, 0) or 0 for s in ult4]
+        p4 = [cat_sem.get(s, {}).get(b, 0) or 0 for s in ult4]
         p4v = sum(p4) / len(p4) if p4 else 0
-        t4 = sum(sum(banda_sem.get(s, {}).values()) for s in ult4) or 1
-        r = next((x for x in D["afe_banda"] if x["semana"] == sem and x["banda"] == b), {})
-        fil_b.append([punto(BANDA_COLOR[b]) + f"<b>{b}</b> · {BANDA_DESC[b]}",
+        t4 = sum(sum(cat_sem.get(s, {}).values()) for s in ult4) or 1
+        r = next((x for x in D["afe_categoria"] if x["semana"] == sem and x["categoria"] == b), {})
+        fil_c.append([punto(CAT_COLOR[b]) + f"<b>{b}</b> · {CAT_DESC[b]}",
                       _n(v, 1), f'<b>{_n(v/(afe_in or 1)*100,1)}%</b>',
                       _n(p4v, 1), _n(sum(p4) / t4 * 100, 1) + "%",
                       _n(afe_s[b]["tn"], 1) if b in ("A", "B", "C", "D") else "—",
                       _n(r.get("s"), 0), _n(r.get("p"), 0)])
-    t_banda = tabla(["Banda de calidad", "TN semana", "% semana", "TN prom. 4 sem.",
-                     "% prom. 4 sem.", "TN en tanque", "S ppm", "P ppm"], fil_b)
+    t_cat = tabla(["Categoría de calidad", "TN semana", "% semana", "TN prom. 4 sem.",
+                     "% prom. 4 sem.", "TN en tanque", "S ppm", "P ppm"], fil_c)
 
-    banda_mes = {}
-    for r in D.get("afe_banda_mes", []):
-        banda_mes.setdefault(r["mes"], {})[r["banda"]] = r["tn"]
-    _meses_b = sorted(banda_mes)
+    cat_mes = {}
+    for r in D.get("afe_cat_mes", []):
+        cat_mes.setdefault(r["mes"], {})[r["categoria"]] = r["tn"]
+    _meses_b = sorted(cat_mes)
     _m_ult = _meses_b[-1] if _meses_b else None
-    _m_pico = max(banda_mes, key=lambda m: banda_mes[m].get("A", 0)) if banda_mes else None
-    _a_pico = banda_mes.get(_m_pico, {}).get("A", 0)
-    fig_banda_mes = figura(
-        f"Mes a mes: la banda A pasó de {_n(_a_pico,0)} TN en {fmes(_m_pico)} a cero",
-        barras_apiladas([fmes(m) for m in _meses_b], [banda_mes[m] for m in _meses_b],
+    _m_pico = max(cat_mes, key=lambda m: cat_mes[m].get("A", 0)) if cat_mes else None
+    _a_pico = cat_mes.get(_m_pico, {}).get("A", 0)
+    fig_cat_mes = figura(
+        f"Mes a mes: la categoría A pasó de {_n(_a_pico,0)} TN en {fmes(_m_pico)} a cero",
+        barras_apiladas([fmes(m) for m in _meses_b], [cat_mes[m] for m in _meses_b],
                         x_titulo="mes", y_titulo="TN ingresadas",
                         resaltar=len(_meses_b) - 1,
-                        anotaciones=[(_meses_b.index(_m_pico), "pico de banda A", GOOD)]
+                        anotaciones=[(_meses_b.index(_m_pico), "pico de categoría A", GOOD)]
                         if _m_pico and _m_pico != _m_ult else []),
         subtitulo=(f"El último mes está en curso, así que el volumen todavía no es comparable; "
-                   f"la participación de cada banda sí."),
-        leyenda=leyenda([(BANDA_COLOR[b], f"{b} · {BANDA_DESC[b]}") for b in ORDEN_BANDA]))
+                   f"la participación de cada categoría sí."),
+        leyenda=leyenda([(CAT_COLOR[b], f"{b} · {CAT_DESC[b]}") for b in ORDEN_CAT]))
 
     fil_prov = []
     for p in D.get("proveedores", []):
@@ -366,7 +366,7 @@ def render(D):
     fil_nec = []
     for b in ("A", "B", "C", "D"):
         libre = afe_s[b]["libre"]
-        fil_nec.append([punto(BANDA_COLOR[b]) + f"<b>banda {b}</b> · {BANDA_DESC[b]}",
+        fil_nec.append([punto(CAT_COLOR[b]) + f"<b>categoría {b}</b> · {CAT_DESC[b]}",
                         _n(afe_s[b]["tn"], 1), _n(afe_s[b]["c_desp"], 1), _n(libre, 1),
                         _n(libre / (afe_necesario or 1) * 100, 1) + "%"])
     fil_nec.append([f"<b>Total AFE-S</b>", f"<b>{_n(afe_s_tot,1)}</b>",
@@ -487,8 +487,8 @@ def render(D):
                        f'{_n(sum(x["tn"] for x in _venc),1)}</span>'])
     t_cp = tabla(["Producto", "Rol", "Estado del batch", "TN"], fil_cp)
 
-    leg_banda = ('<div class="leg">' + "".join(
-        f'<span>{punto(BANDA_COLOR[b])}{b} · {BANDA_DESC[b]}</span>' for b in ORDEN_BANDA) +
+    leg_cat = ('<div class="leg">' + "".join(
+        f'<span>{punto(CAT_COLOR[b])}{b} · {CAT_DESC[b]}</span>' for b in ORDEN_CAT) +
         '<span class="leg-n">A: S ≤ 40 y P ≤ 120 · B: S ≤ 45 y P ≤ 135 · '
         'C: S ≤ 50 y P ≤ 150 · D: fuera de spec</span></div>')
     leg_prod = (f'<div class="leg"><span>{punto(C_DESG)}Desgomado acuoso</span>'
@@ -571,7 +571,7 @@ tr:last-child td { border-bottom:none; }
 
     fil_sem = []
     for s_ in reversed(sem12[-5:]):
-        bs = banda_sem.get(s_, {})
+        bs = cat_sem.get(s_, {})
         tot_b = sum(bs.values()) or 1
         r_d = rt.get(s_, {}).get("DESGOMADO_ACUOSO", {})
         r_a = rt.get(s_, {}).get("PRODUCCION_ARE", {})
@@ -618,16 +618,16 @@ rojo por encima), no su signo.</p>
     # ---------------- 3 · INGRESOS DE AFE ----------------
     H.append(f"""<div class="page">{head("Ingresos de AFE")}
 <h2><span class="n">5</span>AFE-S que ingresa, por calidad</h2>
-{fig_banda_sem}
-{fig_banda_mes}
+{fig_cat_sem}
+{fig_cat_mes}
 <h3>Detalle de la semana {iso}, contra el promedio de las 4 semanas previas</h3>
-{t_banda}
+{t_cat}
 {foot(3, "Ingresos de AFE")}</div>""")
 
     # ---------------- 4 · CALIDAD POR PROVEEDOR Y RITMO ----------------
     H.append(f"""<div class="page">{head("Proveedores y ritmo")}
 <h2><span class="n">6</span>Qué calidad vende cada proveedor</h2>
-<p class="lead">Porcentaje de las toneladas de cada proveedor que llegó en banda A o B. La última
+<p class="lead">Porcentaje de las toneladas de cada proveedor que llegó en categoría A o B. La última
 columna es el mismo dato limitado a las últimas 3 semanas: sirve para ver quién se está degradando
 (▼) y quién mejora (▲).</p>
 {t_prov}
@@ -635,7 +635,7 @@ columna es el mismo dato limitado a las últimas 3 semanas: sirve para ver quié
 ({_e(D['proveedores'][0]['prov']) if D.get('proveedores') else '—'} y
 {_e(D['proveedores'][1]['prov']) if len(D.get('proveedores',[]))>1 else '—'}) son los que peor
 calidad entregan en las últimas 3 semanas. Los que mejor entregan tienen volumen chico:
-mover el mix de compra hacia ellos es la palanca más directa sobre la banda A+B.</div>
+mover el mix de compra hacia ellos es la palanca más directa sobre la categoría A+B.</div>
 
 <h2><span class="n">7</span>Ritmo de exportación y AFE-S que exige</h2>
 {fig_expo}
@@ -644,7 +644,7 @@ mover el mix de compra hacia ellos es la palanca más directa sobre la banda A+B
 ({_n(dfut_tn,1)} TN) exigen <b>{_n(afe_necesario,1)} TN de AFE-S</b>.</p>
 {t_nec}
 <div class="box"><b>Posición.</b> El AFE-S libre cubre <b>{_n(cobertura_afe,1)}%</b> de lo que exigen
-los despachos ya comprometidos, pero sólo <b>{_n(ab_libre,1)} TN</b> son de bandas A+B: el resto
+los despachos ya comprometidos, pero sólo <b>{_n(ab_libre,1)} TN</b> son de categorías A+B: el resto
 ({_n(cd_libre,1)} TN) es C y D, que no admite AG-C sin salirse de especificación.
 Al ritmo de las últimas 4 semanas la exportación consume <b>{_n(consumo_semanal_afe,1)} TN de AFE-S
 por semana</b>, contra <b>{_n(afe_in,1)} TN</b> que ingresaron: el AFE-S libre equivale a
@@ -714,7 +714,7 @@ en volumen —todavía le faltan días—, pero sí en ritmo contra las líneas 
 </div>
 <p class="nota"><b>Nota metodológica.</b> Ingresos y salidas salen de los tickets de portería.
 La calidad de cada ticket sale de su último análisis de laboratorio; los tickets sin análisis se
-cuentan en toneladas pero no en banda. El stock medido es medición física de tanque (radares WeDo y
+cuentan en toneladas pero no en categoría. El stock medido es medición física de tanque (radares WeDo y
 aforo por centímetros). Las reacciones salen de los batches cerrados. La mezcla de exportación se
 calcula sobre las líneas reales de los despachos de los últimos 45 días. Ningún número de este
 informe se carga a mano.</p>

@@ -7,7 +7,7 @@ unidad, eje X con etiquetas y título, y una anotación opcional que dice qué h
 que mirar— para que se lean como un sistema y no como ocho gráficos sueltos.
 
 Paleta validada con scripts/validate_palette.js del skill dataviz (modo light,
-superficie #ffffff): las bandas A/B/C/D pasan banda de luminosidad, piso de croma,
+superficie #ffffff): las categorías A/B/C/D pasan la banda de luminosidad, piso de croma,
 separación CVD (peor par adyacente ΔE 19.8 deutan) y piso de visión normal (ΔE 24.1).
 El amarillo queda bajo 3:1 de contraste, así que SIEMPRE lleva etiqueta directa.
 """
@@ -15,11 +15,11 @@ import math
 from html import escape
 
 # --- roles de color ---------------------------------------------------------
-BANDA_COLOR = {"A": "#008300", "B": "#2a78d6", "C": "#eda100",
+CAT_COLOR = {"A": "#008300", "B": "#2a78d6", "C": "#eda100",
                "D": "#d03b3b", "SIN LAB": "#898781"}
-BANDA_DESC = {"A": "excelente", "B": "bueno", "C": "justo",
+CAT_DESC = {"A": "excelente", "B": "bueno", "C": "justo",
               "D": "fuera de spec", "SIN LAB": "sin análisis"}
-ORDEN_BANDA = ["A", "B", "C", "D", "SIN LAB"]
+ORDEN_CAT = ["A", "B", "C", "D", "SIN LAB"]
 
 GOOD, WARN, SERIOUS, CRIT = "#0ca30c", "#fab219", "#ec835a", "#d03b3b"
 INK, INK2, MUTED = "#0b0b0b", "#52514e", "#898781"
@@ -171,8 +171,8 @@ def leyenda(items):
 def barras_apiladas(labels, datos, orden=None, colores=None, w=ANCHO, h=ALTO,
                     x_titulo="", y_titulo="TN", resaltar=None, anotaciones=None,
                     etiqueta_pct=True, min_pct=8):
-    orden = orden or ORDEN_BANDA
-    colores = colores or BANDA_COLOR
+    orden = orden or ORDEN_CAT
+    colores = colores or CAT_COLOR
     if not labels:
         return ""
     tot = [sum(d.get(k, 0) or 0 for k in orden) for d in datos]
@@ -465,8 +465,8 @@ def sparkline(vals, w=152, h=26, color="#2a78d6"):
 
 
 def microbarra(d, orden=None, colores=None, w=152, h=14):
-    orden = orden or ORDEN_BANDA
-    colores = colores or BANDA_COLOR
+    orden = orden or ORDEN_CAT
+    colores = colores or CAT_COLOR
     tot = sum(d.get(b, 0) or 0 for b in orden)
     if not tot:
         return (f'<svg width="{w}" height="{h}"><rect width="{w}" height="{h}" rx="2.5" '
