@@ -76,11 +76,22 @@ def render(USR, cat, conectar=None):
             return
 
     nombre = f"brief_worms_{D['semana_iso']}"
-    d1, d2 = st.columns(2)
-    d1.download_button("⬇️ Descargar el brief (HTML)", html.encode("utf-8"),
+    st.download_button("⬇️ Descargar el brief", html.encode("utf-8"),
                        file_name=f"{nombre}.html", mime="text/html",
-                       use_container_width=True)
-    d2.caption("Para PDF: abrí el HTML descargado y usá **Imprimir → Guardar como PDF** "
-               "(ya viene paginado en A4). El envío automático de los lunes manda el PDF hecho.")
+                       use_container_width=True, type="primary")
+    st.caption(
+        "Es **un solo archivo que sirve en los dos lados**: en la computadora se pagina en A4 y con "
+        "**Imprimir → Guardar como PDF** sale el informe listo para mandar; en el teléfono se acomoda "
+        "solo a una columna, con letra grande, las tablas convertidas en fichas y los gráficos "
+        "deslizables. Se comparte por WhatsApp o mail tal cual está y se abre sin internet.")
 
-    components.html(html, height=1150, scrolling=True)
+    st.divider()
+    ver = st.radio("Vista previa", ["🖥️ Como se ve impreso", "📱 Como se ve en el celular"],
+                   horizontal=True, key="brief_vista", label_visibility="collapsed")
+    if ver.startswith("📱"):
+        st.caption("Simulación de un teléfono de 390 px de ancho.")
+        _c = st.columns([1, 2, 1])[1]
+        with _c:
+            components.html(html, height=1200, scrolling=True, width=390)
+    else:
+        components.html(html, height=1200, scrolling=True)

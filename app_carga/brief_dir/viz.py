@@ -145,12 +145,17 @@ def _anotacion(o, x, y, texto, color=INK2, ancho=150, hacia="arriba"):
                  f'font-size="8.2" font-weight="600" fill="{color}">{_e(ln)}</text>')
 
 
-def figura(titulo, svg, subtitulo="", nota="", leyenda=""):
-    """Envuelve un gráfico con su título, su bajada y su leyenda."""
+def figura(titulo, svg, subtitulo="", nota="", leyenda="", ancho_min=560):
+    """Envuelve un gráfico con su título, su bajada y su leyenda.
+
+    En pantalla angosta el SVG no se encoge hasta volverse ilegible: se mantiene a
+    tamaño de lectura dentro de un contenedor que se desliza en horizontal.
+    """
     s = f'<div class="fig"><div class="fig-t">{_e(titulo)}</div>'
     if subtitulo:
         s += f'<div class="fig-s">{subtitulo}</div>'
-    s += svg
+    s += f'<div class="figx" style="--wmin:{ancho_min}px">{svg}</div>'
+    s += '<div class="figx-hint">Deslizá el gráfico para verlo completo →</div>'
     if leyenda:
         s += leyenda
     if nota:
@@ -351,63 +356,6 @@ def barras_stock(filas, w=ANCHO, x_titulo="TN", alto_fila=30):
 
 
 # ===========================================================================
-# 6 · acumulado mensual con proyección (líquidos, exportación)
-# ===========================================================================
-def acumulado_proy(meses, w=ANCHO, h=250, dias_mes=31, etiqueta=None, y_titulo="TN acumuladas"):
-    if not meses:
-        return "", 0.0
-    series = []
-    for m in meses:
-        acum, ser = 0.0, []
-        for d, tn in sorted(m["dias"]):
-            acum += tn or 0
-            ser.append((d, acum))
-        series.append((etiqueta(m["mes"]) if etiqueta else m["mes"], ser,
-                       m.get("ult") or (ser[-1][0] if ser else 0)))
-    _mes_ult, ult_serie, ult_dia = series[-1]
-    ritmo = (ult_serie[-1][1] / ult_dia) if ult_serie and ult_dia else 0
-    proy = ritmo * dias_mes
-    lo, hi, ticks = _ticks(max([s[-1][1] for _, s, _ in series if s] + [proy]) * 1.1)
-    o, x0, x1, Y = _marco(w, h, lo, hi, ticks, "día del mes", y_titulo, ml=52, mr=104, mb=46)
-    pw = x1 - x0
-
-    def X(d):
-        return x0 + (d - 1) / max(dias_mes - 1, 1) * pw
-
-    for d in (1, 5, 10, 15, 20, 25, dias_mes):
-        o.append(f'<text x="{X(d):.1f}" y="{h-26}" text-anchor="middle" font-size="8.2" '
-                 f'fill="{MUTED}">{d}</text>')
-    ly = 22
-    for i, (mes, ser, _u) in enumerate(series):
-        col = AZUL[min(i, len(AZUL) - 1)]
-        grosor = 2.6 if i == len(series) - 1 else 1.8
-        pts = " ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in ser)
-        o.append(f'<polyline points="{pts}" fill="none" stroke="{col}" '
-                 f'stroke-width="{grosor}" stroke-linejoin="round" stroke-linecap="round"/>')
-        o.append(f'<rect x="{x1+10}" y="{ly-7}" width="11" height="3.5" fill="{col}" rx="1.7"/>')
-        o.append(f'<text x="{x1+26}" y="{ly-2}" font-size="8.4" fill="{INK2}">'
-                 f'{_e(mes)}</text>')
-        o.append(f'<text x="{w-2}" y="{ly-2}" text-anchor="end" font-size="8.4" '
-                 f'font-weight="700" fill="{INK2}">{_fmt_eje(ser[-1][1], hi)}</text>')
-        ly += 14
-    if ult_serie and ritmo:
-        d0, v0 = ult_serie[-1]
-        o.append(f'<circle cx="{X(d0):.1f}" cy="{Y(v0):.1f}" r="3.2" fill="{AZUL[-1]}" '
-                 f'stroke="{SURF}" stroke-width="1.5"/>')
-        o.append(f'<line x1="{X(d0):.1f}" y1="{Y(v0):.1f}" x2="{X(dias_mes):.1f}" '
-                 f'y2="{Y(proy):.1f}" stroke="{PROY}" stroke-width="2.4" stroke-dasharray="6 4"/>')
-        o.append(f'<circle cx="{X(dias_mes):.1f}" cy="{Y(proy):.1f}" r="4" fill="{SURF}" '
-                 f'stroke="{PROY}" stroke-width="2.4"/>')
-        o.append(f'<rect x="{x1+10}" y="{ly-7}" width="11" height="3.5" fill="{PROY}" rx="1.7"/>')
-        o.append(f'<text x="{x1+26}" y="{ly-2}" font-size="8.4" font-weight="700" '
-                 f'fill="{PROY}">proyección</text>')
-        o.append(f'<text x="{w-2}" y="{ly-2}" text-anchor="end" font-size="8.4" '
-                 f'font-weight="800" fill="{PROY}">{_fmt_eje(proy, hi)}</text>')
-    return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img">'
-            + "".join(o) + "</svg>"), proy
-
-
-# ===========================================================================
 # 7 · barras horizontales de porcentaje (cobertura del libro)
 # ===========================================================================
 def barras_pct(items, w=ANCHO, alto=22, maxv=100, x_titulo="% del movimiento físico explicado"):
@@ -484,4 +432,158 @@ def microbarra(d, orden=None, colores=None, w=152, h=14):
             o.append(f'<text x="{x+ww/2-0.7:.1f}" y="{h-3.6}" text-anchor="middle" '
                      f'font-size="8.2" font-weight="700" fill="#fff">{_e(b)}</text>')
         x += ww
+    return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img">' + "".join(o) + "</svg>"
+
+
+# ===========================================================================
+# 9 · cascada: de dónde sale el desvío (balance cerrado)
+# ===========================================================================
+def cascada(pasos, w=ANCHO, h=270, y_titulo="TN", x_titulo=""):
+    """pasos: [(etiqueta, valor, tipo)] con tipo 'base'|'suma'|'resta'|'total'|'medido'.
+
+    Cada barra arranca donde terminó la anterior, así se ve qué suma y qué resta
+    entre el stock inicial y el final. Los 'total' y 'medido' se apoyan en cero.
+    """
+    if not pasos:
+        return ""
+    acum, geom, techo, piso = 0.0, [], 0.0, 0.0
+    for lab, val, tipo in pasos:
+        if tipo in ("base", "total", "medido"):
+            ini, fin = 0.0, float(val)
+            acum = float(val)
+        else:
+            ini = acum
+            acum += float(val)
+            fin = acum
+        geom.append((lab, ini, fin, float(val), tipo))
+        techo, piso = max(techo, ini, fin), min(piso, ini, fin)
+    lo, hi, ticks = _ticks(techo * 1.22, piso)
+    o, x0, x1, Y = _marco(w, h, lo, hi, ticks, x_titulo, y_titulo, mb=56)
+    paso = (x1 - x0) / len(geom)
+    bw = min(56.0, paso - 12)
+    col = {"base": "#5598e7", "suma": "#1baf7a", "resta": CRIT,
+           "total": "#0d366b", "medido": "#256abf"}
+    prev_fin = None
+    for i, (lab, ini, fin, val, tipo) in enumerate(geom):
+        x = x0 + i * paso + (paso - bw) / 2
+        yt, yb = Y(max(ini, fin)), Y(min(ini, fin))
+        o.append(f'<rect x="{x:.1f}" y="{yt:.1f}" width="{bw:.1f}" '
+                 f'height="{max(yb-yt,2):.1f}" fill="{col[tipo]}" rx="2.5"/>')
+        signo = "+" if tipo == "suma" else ("−" if tipo == "resta" else "")
+        o.append(f'<text x="{x+bw/2:.1f}" y="{yt-5:.1f}" text-anchor="middle" font-size="9.4" '
+                 f'font-weight="800" fill="{INK}">{signo}{_n(abs(val),0)}</text>')
+        if prev_fin is not None and tipo in ("suma", "resta"):
+            o.append(f'<line x1="{x-(paso-bw)+1:.1f}" y1="{Y(ini):.1f}" x2="{x:.1f}" '
+                     f'y2="{Y(ini):.1f}" stroke="{MUTED}" stroke-width="1" stroke-dasharray="2 2"/>')
+        prev_fin = fin
+        # etiqueta del eje X en dos renglones
+        palabras, ren, cur = lab.split(), [], ""
+        for p in palabras:
+            if len(cur) + len(p) + 1 > 13:
+                ren.append(cur); cur = p
+            else:
+                cur = (cur + " " + p).strip()
+        if cur:
+            ren.append(cur)
+        for k, t in enumerate(ren[:2]):
+            o.append(f'<text x="{x+bw/2:.1f}" y="{h-34+11*k}" text-anchor="middle" '
+                     f'font-size="8.2" font-weight="{"700" if tipo in ("total","medido") else "400"}" '
+                     f'fill="{INK if tipo in ("total","medido") else MUTED}">{_e(t)}</text>')
+    return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img">' + "".join(o) + "</svg>"
+
+
+# ===========================================================================
+# 10 · cierre mensual con la barra del mes en curso proyectada
+# ===========================================================================
+def barras_mes_proy(labels, reales, proyeccion=None, w=ANCHO, h=ALTO,
+                    y_titulo="TN", x_titulo="mes", color="#256abf"):
+    if not labels:
+        return ""
+    vv = [v for v in reales if v is not None] + ([proyeccion] if proyeccion else [])
+    lo, hi, ticks = _ticks(max(vv or [1]) * 1.2)
+    o, x0, x1, Y = _marco(w, h, lo, hi, ticks, x_titulo, y_titulo)
+    paso = (x1 - x0) / len(labels)
+    bw = min(66.0, paso - 26)
+    for i, (lab, v) in enumerate(zip(labels, reales)):
+        if v is None:
+            continue
+        x = x0 + i * paso + (paso - bw) / 2
+        ultimo = (i == len(labels) - 1)
+        o.append(f'<rect x="{x:.1f}" y="{Y(v):.1f}" width="{bw:.1f}" height="{Y(0)-Y(v):.1f}" '
+                 f'fill="{color}" rx="3"/>')
+        if ultimo and proyeccion and proyeccion > v:
+            o.append(f'<rect x="{x:.1f}" y="{Y(proyeccion):.1f}" width="{bw:.1f}" '
+                     f'height="{Y(v)-Y(proyeccion):.1f}" fill="{PROY}" fill-opacity="0.20" '
+                     f'stroke="{PROY}" stroke-width="1.6" stroke-dasharray="5 3" rx="3"/>')
+            o.append(f'<text x="{x+bw/2:.1f}" y="{Y(proyeccion)-6:.1f}" text-anchor="middle" '
+                     f'font-size="10" font-weight="800" fill="{PROY}">{_n(proyeccion,0)}</text>')
+            if Y(v) - Y(proyeccion) > 16:
+                o.append(f'<text x="{x+bw/2:.1f}" y="{Y(proyeccion)+(Y(v)-Y(proyeccion))/2+3:.1f}" '
+                         f'text-anchor="middle" font-size="8.2" font-weight="700" fill="{PROY}">'
+                         f'faltan {_n(proyeccion-v,0)}</text>')
+            o.append(f'<text x="{x+bw/2:.1f}" y="{Y(v)+14:.1f}" text-anchor="middle" font-size="9" '
+                     f'font-weight="800" fill="#fff">{_n(v,0)}</text>')
+        else:
+            o.append(f'<text x="{x+bw/2:.1f}" y="{Y(v)-5:.1f}" text-anchor="middle" font-size="10" '
+                     f'font-weight="800" fill="{INK}">{_n(v,0)}</text>')
+        o.append(f'<text x="{x+bw/2:.1f}" y="{h-26}" text-anchor="middle" font-size="8.6" '
+                 f'font-weight="{"700" if ultimo else "400"}" '
+                 f'fill="{INK if ultimo else MUTED}">{_e(lab)}{" (en curso)" if ultimo else ""}</text>')
+    return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img">' + "".join(o) + "</svg>"
+
+
+# ===========================================================================
+# 11 · pares teórico vs real (insumos, TN de fórmula vs producidas)
+# ===========================================================================
+def barras_pares(labels, izq, der, nom_izq="teórico", nom_der="real", w=ANCHO, h=ALTO,
+                 y_titulo="", x_titulo="", col_izq="#9ec5f4", col_der="#256abf", dec=0):
+    if not labels:
+        return ""
+    vv = [v for v in list(izq) + list(der) if v is not None] or [1]
+    lo, hi, ticks = _ticks(max(vv) * 1.2)
+    o, x0, x1, Y = _marco(w, h, lo, hi, ticks, x_titulo, y_titulo)
+    paso = (x1 - x0) / len(labels)
+    bw = min(26.0, (paso - 16) / 2)
+    for i, lab in enumerate(labels):
+        gx = x0 + i * paso + (paso - bw * 2 - 3) / 2
+        for j, (v, c) in enumerate(((izq[i], col_izq), (der[i], col_der))):
+            if v is None:
+                continue
+            x = gx + j * (bw + 3)
+            o.append(f'<rect x="{x:.1f}" y="{Y(v):.1f}" width="{bw:.1f}" '
+                     f'height="{max(Y(0)-Y(v),1):.1f}" fill="{c}" rx="2.5"/>')
+            o.append(f'<text x="{x+bw/2:.1f}" y="{Y(v)-4:.1f}" text-anchor="middle" '
+                     f'font-size="8.4" font-weight="700" fill="{INK2}">{_n(v,dec)}</text>')
+        if izq[i] and der[i]:
+            pct = der[i] / izq[i] * 100
+            c = GOOD if 90 <= pct <= 110 else (WARN if 75 <= pct <= 130 else CRIT)
+            o.append(f'<text x="{gx+bw+1.5:.1f}" y="{h-38}" text-anchor="middle" font-size="8.6" '
+                     f'font-weight="800" fill="{c}">{_n(pct,0)}%</text>')
+        o.append(f'<text x="{x0+i*paso+paso/2:.1f}" y="{h-26}" text-anchor="middle" '
+                 f'font-size="8.4" fill="{MUTED}">{_e(lab)}</text>')
+    return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img">' + "".join(o) + "</svg>"
+
+
+# ===========================================================================
+# 12 · dispersión chica (tanques usados vs margen de spec)
+# ===========================================================================
+def dispersion(puntos, w=ANCHO, h=225, x_titulo="", y_titulo="", x_max=None, cero=True):
+    """puntos: [(x, y, etiqueta, color)]"""
+    if not puntos:
+        return ""
+    xs = [p[0] for p in puntos]
+    ys = [p[1] for p in puntos]
+    xhi = x_max or (max(xs) + 1)
+    lo, hi, ticks = _ticks(max(ys) * 1.25, min(min(ys) * 1.25, 0))
+    o, x0, x1, Y = _marco(w, h, lo, hi, ticks, x_titulo, y_titulo, mb=42)
+    pw = x1 - x0
+
+    def X(v):
+        return x0 + (v - 0) / (xhi or 1) * pw
+    for t in range(0, int(xhi) + 1, max(1, int(xhi // 8))):
+        o.append(f'<text x="{X(t):.1f}" y="{h-26}" text-anchor="middle" font-size="8.2" '
+                 f'fill="{MUTED}">{t}</text>')
+    for px, py, lab, c in puntos:
+        o.append(f'<circle cx="{X(px):.1f}" cy="{Y(py):.1f}" r="5" fill="{c}" '
+                 f'fill-opacity="0.85" stroke="{SURF}" stroke-width="1.4"/>')
     return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img">' + "".join(o) + "</svg>"

@@ -173,6 +173,47 @@ def cargar(cat, semana):
                                      "ult": max(d[0] for d in dias), "dias": dias})
         D["exportacion"] = D["exportacion"][-4:]
 
+    D["balance_afe"] = _recs(cat(
+        "SELECT semana::text, round(stock_inicial,1) AS ini, round(ingresos,1) AS ing, "
+        "  round(producido,1) AS prod, round(consumido_reactores,1) AS cons, "
+        "  round(despachado,1) AS desp, n_despachos AS nd, round(stock_esperado,1) AS esp, "
+        "  round(stock_medido,1) AS med, round(desvio,1) AS desvio "
+        "FROM produccion.v_brief_balance_afe WHERE semana BETWEEN %s AND %s", (desde12, sem)))
+
+    D["etapas"] = _recs(cat(
+        "SELECT tipo_proceso AS tipo, etapa, sum(n) AS n, "
+        "  round(avg(real_h)::numeric,1) AS real, round(avg(prog_h)::numeric,1) AS prog, "
+        "  round(avg(target_h)::numeric,1) AS target, round(avg(desvio_h)::numeric,1) AS desvio, "
+        "  sum(dentro_rango) AS dentro, sum(sospecha_click) AS clicks, "
+        "  sum(tiempos_invalidos) AS invalidos "
+        "FROM produccion.v_brief_etapa_semana WHERE semana >= (%s::date - 56) "
+        "GROUP BY 1,2 ORDER BY 1, CASE etapa WHEN 'REACCION' THEN 1 WHEN 'REPOSANDO' THEN 2 "
+        "  ELSE 3 END", (sem,)))
+
+    D["insumos"] = _recs(cat(
+        "SELECT semana::text, insumo, round(teorico::numeric,1) AS teorico, unidad, "
+        "  round(registrado::numeric,1) AS real, round(pct_sobre_teorico::numeric,0) AS pct "
+        "FROM produccion.v_brief_insumo_control "
+        "WHERE semana BETWEEN %s AND %s AND (teorico > 0 OR registrado > 0)", (desde9, sem)))
+
+    D["despacho_ef"] = _recs(cat(
+        "SELECT id_despacho AS id, titulo, destino, fecha_despacho::text AS fecha, estado, "
+        "  n_contenedores AS cont, round(ocupacion_pct,0) AS ocup, round(tn_total::numeric,1) AS tn, "
+        "  round(tn_por_contenedor,2) AS tn_cont, tanques_usados AS tq, tickets_cargados AS tk, "
+        "  round(margen_azufre_pct,1) AS mg_s, round(margen_fosforo_pct,1) AS mg_p, "
+        "  round(margen_pct,1) AS mg, dias_anticipacion AS antic, "
+        "  n_lineas_exceden_stock AS exc, fuera_spec AS fs, aprob_direccion AS ap "
+        "FROM produccion.v_brief_despacho_eficiencia WHERE fecha_despacho >= (%s::date - 38) "
+        "ORDER BY fecha_despacho", (sem,)))
+
+    D["prod_mes"] = _recs(cat(
+        "SELECT to_char(date_trunc('month',fecha::timestamp),'YYYY-MM') AS mes, tipo_proceso AS tipo, "
+        "  count(*) AS n, round((sum(real_kg)/1000)::numeric,1) AS tn, "
+        "  round((sum(formula_kg)/1000)::numeric,1) AS tn_form, "
+        "  round(avg(utilizacion_pct)::numeric,0) AS uti, "
+        "  max(extract(day from fecha)::int) AS ult "
+        "FROM produccion.v_perf_reaccion WHERE fecha >= %s GROUP BY 1,2 ORDER BY 1,2", (mes0,)))
+
     D["cobertura_libro"] = _recs(cat(
         "SELECT sector, tanques, round(mov_fisico_kl,1) AS fis, round(mov_libro_kl,1) AS libro, "
         "  round(cobertura_pct,0) AS cob, round(no_explicado_neto_kl,1) AS no_expl "
