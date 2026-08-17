@@ -214,6 +214,42 @@ def cargar(cat, semana):
         "  max(extract(day from fecha)::int) AS ult "
         "FROM produccion.v_perf_reaccion WHERE fecha >= %s GROUP BY 1,2 ORDER BY 1,2", (mes0,)))
 
+    D["batches"] = _recs(cat(
+        "SELECT ident, tipo_proceso AS tipo, reactor, fecha::date::text AS fecha, "
+        "  round(espera_arranque_h::numeric,1) AS espera, "
+        "  round(prog_reaccion_h::numeric,1) AS reac_p, round(reaccion_h::numeric,1) AS reac_r, "
+        "  round(prog_reposo_h::numeric,1) AS repo_p, round(reposo_h::numeric,1) AS repo_r, "
+        "  round(prog_decantacion_h::numeric,1) AS dec_p, round(decantacion_h::numeric,1) AS dec_r, "
+        "  round(prog_total_h::numeric,1) AS tot_p, round(ciclo_proceso_h::numeric,1) AS tot_r, "
+        "  round((formula_kg/1000)::numeric,1) AS tn_form, round((real_kg/1000)::numeric,1) AS tn_real, "
+        "  tiempos_confiables AS conf "
+        "FROM produccion.v_perf_reaccion WHERE fecha BETWEEN %s AND %s ORDER BY fecha", (sem, fin)))
+
+    # especificación del maestro por tipo de AFE (los tres parámetros que los separan)
+    _notas_afe = {"AFE-S": "el estándar de exportación",
+                  "AFE-SG": "con gomas · MP del desgomado",
+                  "AFE-G": "girasol", "AFE-AL": "alta acidez", "AFE-P": "pesado"}
+    _sp = cat(
+        "SELECT producto, "
+        "  max(especificacion) FILTER (WHERE parametro='%% ACIDEZ') AS acidez, "
+        "  max(especificacion) FILTER (WHERE parametro='%% H2O - SEDIMENTO & Gomas') AS hsg, "
+        "  max(especificacion) FILTER (WHERE parametro='PPM FOSFORO') AS fosforo "
+        "FROM produccion.dim_maestro_parametro WHERE producto LIKE %s "
+        "GROUP BY 1 ORDER BY 1", ("AFE%",))
+    D["afe_specs"] = []
+    if _sp is not None and not _sp.empty:
+        def _fx(v, suf):
+            if v is None:
+                return "—"
+            t = str(v).replace("<=", "≤").replace(">=", "≥").strip()
+            return t + suf if t[-1:].isdigit() else t
+        for r in _sp.to_dict("records"):
+            if r["producto"] in _notas_afe:
+                D["afe_specs"].append({
+                    "producto": r["producto"], "acidez": _fx(r["acidez"], "%"),
+                    "hsg": _fx(r["hsg"], "%"), "fosforo": _fx(r["fosforo"], " ppm"),
+                    "nota": _notas_afe[r["producto"]]})
+
     D["cobertura_libro"] = _recs(cat(
         "SELECT sector, tanques, round(mov_fisico_kl,1) AS fis, round(mov_libro_kl,1) AS libro, "
         "  round(cobertura_pct,0) AS cob, round(no_explicado_neto_kl,1) AS no_expl "
@@ -238,6 +274,15 @@ def cargar(cat, semana):
         "        /nullif(sum(tn) FILTER (WHERE semana > (%s::date-21)),0),0) AS pct_ab3 "
         "FROM b GROUP BY 1 HAVING sum(tn) > 100 ORDER BY 2 DESC LIMIT 8",
         (desde9, sem, sem, sem, sem)))
+
+    # la fila AFE-S del stock único se corrige con el balance (despachos como salida)
+    _b = next((r for r in D.get("balance_afe", []) if r["semana"] == sem), None)
+    if _b:
+        for r in D.get("desvio_producto", []):
+            if r.get("cod") == "AFE-S":
+                r.update({"ini": _b["ini"], "prod": _b["prod"], "e_in": _b["ing"],
+                          "e_out": _b["desp"], "intr": _b["cons"], "unico": _b["esp"],
+                          "medido": _b["med"], "desvio": _b["desvio"], "fix": True})
 
     # normaliza tipos (Decimal -> float) para que el renderizador no se entere
     def _f(v):
