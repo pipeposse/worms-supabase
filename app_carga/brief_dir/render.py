@@ -15,8 +15,8 @@ gráficos se deslizan en horizontal manteniendo tamaño de lectura.
 import calendar
 from datetime import datetime
 
-from .viz import (figura, leyenda, barras_apiladas, barras_agrupadas, barras_stock,
-                 barras_mes_proy, barras_pares, cascada, dispersion, microbarra,
+from .viz import (figura, leyenda, barras_apiladas, barras_stock, acumulado_proy,
+                 barras_mes_proy, cascada, dispersion, microbarra,
                  CAT_COLOR, CAT_DESC, ORDEN_CAT, LIBRE,
                  GOOD, WARN, SERIOUS, CRIT, INK, INK2, MUTED, GRID, AZUL, PROY, _n, _e)
 
@@ -305,7 +305,8 @@ def render(D):
         base = max(abs(r["medido"] or 0), abs(r["unico"] or 0), 1)
         pctd = abs(r["desvio"] or 0) / base * 100
         col = GOOD if pctd < 10 else (WARN if pctd < 25 else CRIT)
-        marca = ' <span class="mut">*</span>' if r.get("fix") else ""
+        marca = (' <span class="mut">*</span>' if r.get("fix") else
+                 (' <span class="mut">**</span>' if r.get("fixd") else ""))
         fil_dp.append([f'<b>{_e(nom(r["cod"]))}</b>{marca}', _n(r["ini"], 1), _n(r["prod"], 1),
                        _n(r["e_in"], 1), _n(r["e_out"], 1), _n(r.get("intr"), 1),
                        f'<b>{_n(r["unico"],1)}</b>', _n(r["medido"], 1),
@@ -420,44 +421,71 @@ def render(D):
         leyenda=leyenda([(GOOD, "dentro de especificación"), (CRIT, "fuera")]),
         nota="Margen = cuánto sobra hasta el máximo de venta, tomando el peor de azufre y fósforo.")
 
-    # ======================= P6 · tendencias =======================
-    _ex = D["exportacion"]
-    _ex_proy = _ex[-1]["tn"] / _ex[-1]["ult"] * dias_mes(_ex[-1]["mes"])
-    _ex_ritmo_act = _ex[-1]["tn"] / _ex[-1]["ult"]
-    _ex_ritmo_prev = _ex[-2]["tn"] / dias_mes(_ex[-2]["mes"]) if len(_ex) > 1 else None
-    fig_expo_mes = figura(
-        "Exportación por mes, con la proyección del mes en curso",
-        barras_mes_proy([fmes(m["mes"]) for m in _ex], [m["tn"] for m in _ex], _ex_proy,
-                        y_titulo="TN exportadas", color=C_EXPO, h=185),
-        subtitulo=(f"{fmes(_ex[-1]['mes'])} corre a <b>{_n(_ex_ritmo_act,0)} TN/día</b> "
-                   f"(contra {_n(_ex_ritmo_prev,0)} de {fmes(_ex[-2]['mes'])}) y proyecta "
-                   f"<b>{_n(_ex_proy,0)} TN</b>: "
-                   f"{_n((_ex_proy/(_ex[-2]['tn'] or 1)-1)*100,0)}% contra el mes pasado."))
-
+    # ======================= P7 · tendencias =======================
     _pm = {}
     for r in D["prod_mes"]:
         _pm.setdefault(r["mes"], {})[r["tipo"]] = r
     _pmk = sorted(_pm)
-    fig_prod_mes = figura(
-        "Producción por mes y por proceso",
-        barras_agrupadas([fmes(m) for m in _pmk],
-                         [("Desgomado acuoso", C_DESG,
-                           [_pm[m].get("DESGOMADO_ACUOSO", {}).get("tn", 0) for m in _pmk]),
-                          ("Producción de ARE", C_ARE,
-                           [_pm[m].get("PRODUCCION_ARE", {}).get("tn", 0) for m in _pmk])],
-                         x_titulo="mes", y_titulo="TN producidas",
-                         resaltar=len(_pmk) - 1, w=330, h=195),
-        leyenda=leyenda([(C_DESG, "Desgomado acuoso"), (C_ARE, "Producción de ARE")]),
-        nota="El último mes está a mitad de camino: comparar la proporción entre procesos, no el total.")
+
+    def _mini_proy(tipo, color, titulo):
+        vals = [(_pm[m].get(tipo) or {}) for m in _pmk]
+        labels = [fmes(m) for m in _pmk]
+        tns = [v.get("tn", 0) or 0 for v in vals]
+        ult = vals[-1] if vals else {}
+        proy = (ult.get("tn", 0) / (ult.get("ult") or 1) * dias_mes(_pmk[-1])) if ult else None
+        return figura(titulo,
+                      barras_mes_proy(labels, tns, proy, y_titulo="TN producidas",
+                                      color=color, w=330, h=185),
+                      subtitulo=(f"{fmes(_pmk[-1])} proyecta <b>{_n(proy,0)} TN</b> al ritmo "
+                                 f"de sus primeros {ult.get('ult','—')} días."), ancho_min=330)
+
+    fig_desg_proy = _mini_proy("DESGOMADO_ACUOSO", C_DESG, "Desgomado acuoso, por mes")
+    fig_are_proy = _mini_proy("PRODUCCION_ARE", C_ARE, "Producción de ARE, por mes")
+
+    _pd = D.get("produccion_dia", [])
+    _g_pa, _pa_proy = acumulado_proy(_pd, dias_mes=dias_mes(_pd[-1]["mes"]) if _pd else 31,
+                                     etiqueta=fmes, y_titulo="TN producidas acumuladas", h=200)
+    fig_prod_acum = figura(
+        "Producción total acumulada, día a día",
+        _g_pa,
+        subtitulo=(f"Ambos procesos sumados. La punteada naranja extiende el ritmo diario de "
+                   f"{fmes(_pd[-1]['mes']) if _pd else '—'}: cerraría en <b>{_n(_pa_proy,0)} TN</b>, "
+                   f"contra {_n(_pd[-2]['tn'],0) if len(_pd) > 1 else '—'} TN de "
+                   f"{fmes(_pd[-2]['mes']) if len(_pd) > 1 else '—'}."))
 
     _lq = D["liquidos"]
-    _lq_proy = _lq[-1]["tn"] / _lq[-1]["ult"] * dias_mes(_lq[-1]["mes"])
-    fig_liq_mes = figura(
-        "Disposición final de líquidos por mes, con proyección",
-        barras_mes_proy([fmes(m["mes"]) for m in _lq], [m["tn"] for m in _lq], _lq_proy,
-                        y_titulo="TN recibidas", color="#256abf", w=330, h=195),
+    _g_lq, _lq_proy = acumulado_proy(_lq, dias_mes=dias_mes(_lq[-1]["mes"]), etiqueta=fmes,
+                                     y_titulo="TN recibidas acumuladas", h=192)
+    fig_liq_acum = figura(
+        "Disposición final de líquidos acumulada, día a día",
+        _g_lq,
         subtitulo=(f"Proyecta <b>{_n(_lq_proy,0)} TN</b> contra {_n(_lq[-2]['tn'],0)} TN de "
-                   f"{fmes(_lq[-2]['mes'])} ({_n((_lq_proy/(_lq[-2]['tn'] or 1)-1)*100,0)}%)."))
+                   f"{fmes(_lq[-2]['mes'])} ({_n((_lq_proy/(_lq[-2]['tn'] or 1)-1)*100,0)}%). "
+                   "Si la línea del mes en curso se aplana es caída de recepción; si se empina, "
+                   "riesgo de capacidad en piletas."))
+
+    _ag_e_desp = D.get("ag_e_despachado", 52.9)
+    _gli_cons = sum((r.get("intr") or 0) for r in D["desvio_producto"]
+                    if str(r["cod"]).startswith("GLICERINA"))
+    _fuel_kl = next((r["real"] for r in ins_sem if r["insumo"] == "FUEL_OIL"), None)
+    t_traza = tabla(
+        ["Producto", "Entra por", "Sale por", "Se consume en"],
+        [["<b>AFE-S</b>", "camiones de portería + producido por el desgomado "
+          f"({_n(b_now.get('prod'),0)} TN)",
+          f"líneas de despacho de exportación ({_n(b_now.get('desp'),0)} TN)", "—"],
+         ["<b>AG-C</b>", "camiones de portería", "mezclado en los despachos como parte del AG-E",
+          "MP de la producción de ARE"],
+         ["<b>AG-E</b>", "se forma al armar el despacho (mezcla AFE-S + AG-C); esa entrada hoy "
+          "no se registra", f"líneas de despacho ({_n(_ag_e_desp,1)} TN)", "—"],
+         ["<b>ARE-B</b>", "producido por los reactores (PRODUCCION_ARE)",
+          "camiones de portería — venta directa", "—"],
+         ["<b>AFE-SG</b>", "camiones de portería", "—",
+          "MP del desgomado acuoso (se convierte en AFE-S)"],
+         ["<b>GLICERINA B y C</b>", "compra (B · pura) y recuperación interna (C)", "—",
+          f"insumo de la producción de ARE ({_n(_gli_cons,1)} TN esta semana)"],
+         ["<b>FUEL OIL</b>", "compra", "—",
+          f"caldera de los reactores ({_n(_fuel_kl,0)} L esta semana)"]],
+        aligns=["l", "l", "l", "l"])
 
     # ======================= CSS =======================
     css = """
@@ -592,7 +620,7 @@ tr:last-child td{border-bottom:none}
     def foot(p, t):
         return (f'<div class="foot"><span>Portería, laboratorio, radares de tanque, despachos y '
                 f'batches (Supabase). Semana ISO cerrada, de lunes a domingo.</span>'
-                f'<span>{t} · pág. {p}/6</span></div>')
+                f'<span>{t} · pág. {p}/7</span></div>')
 
     H = []
     # ---------------- 1 · TABLERO ----------------
@@ -618,42 +646,38 @@ tr:last-child td{border-bottom:none}
     H.append(f"""<div class="page">{head("Stock único")}
 <h2><span class="n">4</span>Stock único contra medición, por producto</h2>
 <p class="lead"><b>Stock único</b> = inicial + producido + ingresos − salidas − consumo de
-producción: lo que dice el libro. <b>Medición</b> = radares y varillas. La fila AFE-S
-(<span class="mut">*</span>) usa las líneas de despacho como salida — por eso ya no da cero — y la
-glicerina va abierta en calidades B, C y D. El consumo de producción es lo que los reactores
-descontaron de cada tanque: ahí aparecen la glicerina y el fuel oil usados en el ARE.</p>
+producción: lo que dice el libro. <b>Medición</b> = radares y varillas. Lo despachado es siempre
+<b>mezcla de AFE-S y AG-E</b>: por eso las filas AFE-S (<span class="mut">*</span>) y AG-E
+(<span class="mut">**</span>) toman su salida de las líneas de despacho — {_n(b_now.get('desp'),0)}
+y {_n(_ag_e_desp,1)} TN esta semana — y ya no dan cero.</p>
 {t_dp}
 <div class="box"><b>Cómo leerlo.</b> Desvío verde: menor al 10% — diferencia normal de medición.
-Ámbar: 10–25% — mirar el registro de esa familia. Rojo: mayor al 25% — hay movimientos que no se
-están registrando (hoy: BORRA-B, EMULSION y BORRA-ANIMAL, los tres productos sin circuito de
-salida cargado).</div>
-<h3>Stock de los productos clave, con compromisos</h3>
-{tabla(["Producto", "Tanques", "Stock TN", "Comprometido TN", "Libre TN", "S ppm", "P ppm"],
-       [[(punto(CAT_COLOR[r["categoria"]]) if r["categoria"] in CAT_COLOR else "")
-         + f'<b>{_e(nom(r["producto"]))}</b>'
-         + (f' · cat. {r["categoria"]}' if r["categoria"] in CAT_COLOR else ""),
-         str(r["tanques"]), _n(r["tn"], 1), _n(r["c_desp"], 1), _n(r["libre"], 1),
-         _n(r["s"], 0), _n(r["p"], 0)]
-        for p in CLAVE for r in sorted([x for x in stock if x["producto"] == p],
-        key=lambda x: ORDEN_CAT.index(x["categoria"]) if x["categoria"] in ORDEN_CAT else 9)])}
+Ámbar: 10–25% — mirar el registro de esa familia. Rojo: mayor al 25% — hay movimientos sin
+registrar. El caso AG-E lo muestra: su salida por despachos ahora está ({_n(_ag_e_desp,1)} TN),
+pero la <b>mezcla que lo produce</b> (AFE-S + AG-C que se vuelve AG-E al armarse el despacho) no
+se registra como entrada — por eso su stock único da negativo. BORRA-B, EMULSION y BORRA-ANIMAL
+siguen sin circuito de salida cargado.</div>
+<h2><span class="n">5</span>Por dónde entra y sale cada producto</h2>
+<p class="lead">La trazabilidad de los movimientos, con los números de esta semana. "Se consume en"
+es lo que los reactores descontaron del tanque: la glicerina y el fuel oil de la producción de ARE
+están monitoreados acá y en la página 5.</p>
+{t_traza}
 {foot(3, "Stock único")}</div>""")
 
     # ---------------- 4 · INGRESOS DE AFE ----------------
     H.append(f"""<div class="page">{head("Ingresos de AFE")}
-<h2><span class="n">5</span>AFE-S que ingresa, por categoría</h2>
+<h2><span class="n">6</span>AFE-S que ingresa, por categoría</h2>
 {fig_cat_mes}
 {t_cat}
-<div class="cols">
-<div><h3>Qué define cada categoría (calidad del AFE-S)</h3>{t_defcat}</div>
-<div><h3>Qué define cada tipo de AFE (maestro de productos)</h3>{t_deftipo}</div>
-</div>
+<h3>Qué define cada categoría (calidad del AFE-S que ingresa)</h3>
+{t_defcat}
 <h3>Qué calidad vende cada proveedor</h3>
 {t_prov}
 {foot(4, "Ingresos de AFE")}</div>""")
 
     # ---------------- 5 · PRODUCCIÓN Y DESPACHOS ----------------
     H.append(f"""<div class="page">{head("Producción")}
-<h2><span class="n">6</span>Cronograma reacción por reacción · semana {iso}</h2>
+<h2><span class="n">7</span>Cronograma reacción por reacción · semana {iso}</h2>
 <p class="lead">Cada fila es una reacción real de la semana. En cada etapa se lee
 <b>programado → real</b> en horas: verde si quedó cerca de lo planificado, ámbar si tardó hasta el
 doble, rojo más allá. "Espera" es cuánto tardó en arrancar después del plan.</p>
@@ -662,7 +686,7 @@ doble, rojo más allá. "Espera" es cuánto tardó en arrancar después del plan
 El patrón real no está en la reacción — que anda cerca de lo programado — sino en el
 <b>reposo</b>: 15 a 95 horas contra 4,5–12 programadas. El reactor queda ocupado como pulmón
 porque el acopio de destino no desagota. Es un problema de logística de tanques, no de proceso.</div>
-<h2><span class="n">7</span>Insumos de la semana: fórmula contra tanque</h2>
+<h2><span class="n">8</span>Insumos de la semana: fórmula contra tanque</h2>
 {t_ins}
 <div class="box"><b>Lectura.</b> El potasio corre al {_n(ins_pot.get("pct"),0)}% del teórico — y
 viene arriba del 120% hace cuatro semanas: el coeficiente de la fórmula (3,125 kg/TN) quedó corto.
@@ -671,26 +695,52 @@ registro incompleto. La soda tiene fórmula y ningún movimiento; el agua y la g
 descuentan del tanque sin fórmula contra qué compararlas.</div>
 {foot(5, "Producción")}</div>""")
 
-    # ---------------- 6 · DESPACHOS Y TENDENCIAS ----------------
-    H.append(f"""<div class="page">{head("Despachos y tendencias")}
-<h2><span class="n">8</span>Eficiencia de los despachos</h2>
+    # ---------------- 6 · DESPACHOS ----------------
+    H.append(f"""<div class="page">{head("Despachos")}
+<h2><span class="n">9</span>Eficiencia de los despachos, explicada</h2>
+<p class="lead">Cada despacho de exportación se arma bombeando a los contenedores una mezcla de
+varios tanques: AFE-S en su mayoría, más la parte de AG-E. Sobre cada uno medimos cuatro cosas.
+<b>Ocupación</b>: cuánto del volumen contratado de los contenedores se llenó — por debajo de 98%
+se está pagando flete por espacio vacío. <b>Tanques</b>: de cuántos tanques distintos se bombeó —
+cada tanque agrega un origen con su propia calidad, y la mezcla final es el promedio de todos.
+<b>Margen spec</b>: cuánto le sobró a la mezcla contra el máximo de venta (azufre 50 ppm, fósforo
+150 ppm), tomando el peor de los dos; 0% es el límite exacto y un valor negativo significa que el
+despacho salió fuera de especificación. <b>Anticipo</b>: días entre que el despacho se creó en el
+sistema y la fecha de salida — 0 o negativo quiere decir que se cargó al sistema cuando el camión
+ya estaba saliendo.</p>
+{t_de}
 {fig_disp}
-<div class="box"><b>En una línea cada punto.</b> La carga física está bien ({ocup_ok} de {len(de)}
-contenedores al 98%+). El margen promedio es <b>{_n(mg_prom,1)}%</b> con {mg_neg} despachos bajo
-cero: se despacha al filo por falta de AFE-S limpio, no por error de armado. Anticipación promedio
-{_n(antic_prom,1)} días — se registra lo que ya salió en vez de planificarse — y {exc_total} líneas
-piden más litros de los que el tanque tiene medidos.</div>
-<h2><span class="n">9</span>Tendencias</h2>
-{fig_expo_mes}
+<div class="box"><b>Las cuatro conclusiones.</b>
+<b>1 · La logística no es el problema:</b> {ocup_ok} de {len(de)} despachos salieron con el
+contenedor lleno al 98% o más.
+<b>2 · La calidad sí:</b> el margen promedio es {_n(mg_prom,1)}% y {mg_neg} de {len(de)} despachos
+salieron por debajo de cero. No es un error de armado: sin AFE-S de categoría A, la mezcla parte
+del límite.
+<b>3 · Menos tanques, más margen:</b> con hasta 6 tanques el margen promedia {_n(mg_pocos,1)}%;
+con 7 o más, {_n(mg_muchos,1)}%. Armar el despacho con pocos tanques bien elegidos es la única
+palanca gratis que hay hoy.
+<b>4 · Se registra, no se planifica:</b> la anticipación promedio es {_n(antic_prom,1)} días y hay
+despachos creados después de la salida. Además {exc_total} líneas pidieron más litros de los que el
+tanque tenía medidos: el plan se armó sobre stock que no estaba.</div>
+{foot(6, "Despachos")}</div>""")
+
+    # ---------------- 7 · TENDENCIAS ----------------
+    H.append(f"""<div class="page">{head("Tendencias")}
+<h2><span class="n">10</span>Producción: cómo terminaría el mes</h2>
 <div class="cols">
-<div>{fig_prod_mes}</div>
-<div>{fig_liq_mes}</div>
+<div>{fig_desg_proy}</div>
+<div>{fig_are_proy}</div>
 </div>
+{fig_prod_acum}
+<h2><span class="n">11</span>Disposición final de líquidos</h2>
+{fig_liq_acum}
+<h3>Qué define cada tipo de AFE (maestro de productos)</h3>
+{t_deftipo}
 <p class="nota"><b>Nota metodológica.</b> Ingresos y salidas: tickets de portería; la categoría, del
-último análisis de laboratorio del ticket. Stock: medición física (radares WeDo y aforo). El balance
-del AFE-S usa las líneas de despacho como salida. Tiempos: batches cerrados. Insumos:
-dic_consumo_proceso contra movimientos ejecutados. Nada se carga a mano.</p>
-{foot(6, "Despachos y tendencias")}</div>""")
+último análisis de laboratorio del ticket. Stock: medición física (radares WeDo y aforo). Los
+balances de AFE-S y AG-E usan las líneas de despacho como salida. Tiempos: batches cerrados.
+Insumos: dic_consumo_proceso contra movimientos ejecutados. Nada se carga a mano.</p>
+{foot(7, "Tendencias")}</div>""")
 
     return (f'<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'

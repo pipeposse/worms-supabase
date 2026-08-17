@@ -250,6 +250,26 @@ def cargar(cat, semana):
                     "hsg": _fx(r["hsg"], "%"), "fosforo": _fx(r["fosforo"], " ppm"),
                     "nota": _notas_afe[r["producto"]]})
 
+    _ag = cat(
+        "SELECT round(coalesce(sum(l.tn),0)::numeric,1) AS tn "
+        "FROM produccion.v_despacho_linea l "
+        "JOIN produccion.fact_despacho d ON d.id_despacho = l.id_despacho "
+        "WHERE l.producto_codigo = 'AG-E' AND d.fecha_despacho BETWEEN %s AND %s", (sem, fin))
+    D["ag_e_despachado"] = float(_ag["tn"][0]) if _ag is not None and not _ag.empty else 0.0
+
+    _pdia = cat(
+        "SELECT to_char(date_trunc('month',fecha::timestamp),'YYYY-MM') AS mes_txt, "
+        "  extract(day from fecha)::int AS dia, round((sum(real_kg)/1000)::numeric,1) AS tn "
+        "FROM produccion.v_perf_reaccion "
+        "WHERE fecha >= (date_trunc('month', %s::date) - interval '1 month')::date "
+        "  AND real_kg IS NOT NULL GROUP BY 1,2 ORDER BY 1,2", (sem,))
+    D["produccion_dia"] = []
+    if _pdia is not None and not _pdia.empty:
+        for m, g in _pdia.groupby("mes_txt", sort=True):
+            dias = [[int(r.dia), float(r.tn)] for r in g.itertuples()]
+            D["produccion_dia"].append({"mes": m, "tn": round(sum(x[1] for x in dias), 1),
+                                        "ult": max(x[0] for x in dias), "dias": dias})
+
     D["cobertura_libro"] = _recs(cat(
         "SELECT sector, tanques, round(mov_fisico_kl,1) AS fis, round(mov_libro_kl,1) AS libro, "
         "  round(cobertura_pct,0) AS cob, round(no_explicado_neto_kl,1) AS no_expl "
@@ -283,6 +303,21 @@ def cargar(cat, semana):
                 r.update({"ini": _b["ini"], "prod": _b["prod"], "e_in": _b["ing"],
                           "e_out": _b["desp"], "intr": _b["cons"], "unico": _b["esp"],
                           "medido": _b["med"], "desvio": _b["desvio"], "fix": True})
+    for r in D.get("desvio_producto", []):
+        # AG-E: la salida real son sus líneas de despacho (la mezcla que lo produce
+        # no se registra como entrada; el único negativo queda explicado en el texto)
+        if r.get("cod") == "AG-E":
+            r.update({"e_out": D.get("ag_e_despachado", 0.0), "intr": 0.0, "fixd": True})
+        # glicerinas: el consumo de los reactores no viene expuesto en la columna
+        # interno de la vista; se deriva del propio balance de la fila
+        if str(r.get("cod", "")).startswith("GLICERINA") and not r.get("intr"):
+            try:
+                _d = round(float(r["ini"] or 0) + float(r["prod"] or 0) + float(r["e_in"] or 0)
+                           - float(r["e_out"] or 0) - float(r["unico"] or 0), 1)
+                if abs(_d) > 0.5:
+                    r["intr"] = _d
+            except Exception:
+                pass
 
     # normaliza tipos (Decimal -> float) para que el renderizador no se entere
     def _f(v):

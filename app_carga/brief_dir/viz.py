@@ -587,3 +587,65 @@ def dispersion(puntos, w=ANCHO, h=225, x_titulo="", y_titulo="", x_max=None, cer
         o.append(f'<circle cx="{X(px):.1f}" cy="{Y(py):.1f}" r="5" fill="{c}" '
                  f'fill-opacity="0.85" stroke="{SURF}" stroke-width="1.4"/>')
     return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img">' + "".join(o) + "</svg>"
+
+
+# ===========================================================================
+# 13 · acumulado diario por mes con proyección (el gráfico de tendencia)
+# ===========================================================================
+def acumulado_proy(meses, w=ANCHO, h=250, dias_mes=31, etiqueta=None,
+                   y_titulo="TN acumuladas"):
+    """meses: [{'mes','dias':[(dia,tn)],'ult'}] cronológico; el último se proyecta.
+
+    Una línea por mes sobre el eje "día del mes"; la punteada naranja extiende el
+    ritmo diario del mes en curso hasta fin de mes. Devuelve (svg, proyección).
+    """
+    if not meses:
+        return "", 0.0
+    series = []
+    for m in meses:
+        acum, ser = 0.0, []
+        for d, tn in sorted(m["dias"]):
+            acum += tn or 0
+            ser.append((d, acum))
+        series.append((etiqueta(m["mes"]) if etiqueta else m["mes"], ser,
+                       m.get("ult") or (ser[-1][0] if ser else 0)))
+    _mes_ult, ult_serie, ult_dia = series[-1]
+    ritmo = (ult_serie[-1][1] / ult_dia) if ult_serie and ult_dia else 0
+    proy = ritmo * dias_mes
+    lo, hi, ticks = _ticks(max([s[-1][1] for _, s, _ in series if s] + [proy]) * 1.1)
+    o, x0, x1, Y = _marco(w, h, lo, hi, ticks, "día del mes", y_titulo, ml=52, mr=110, mb=46)
+    pw = x1 - x0
+
+    def X(d):
+        return x0 + (d - 1) / max(dias_mes - 1, 1) * pw
+
+    for d in (1, 5, 10, 15, 20, 25, dias_mes):
+        o.append(f'<text x="{X(d):.1f}" y="{h-26}" text-anchor="middle" font-size="8.2" '
+                 f'fill="{MUTED}">{d}</text>')
+    ly = 24
+    for i, (mes, ser, _u) in enumerate(series):
+        col = AZUL[min(i, len(AZUL) - 1)]
+        grosor = 2.8 if i == len(series) - 1 else 2.0
+        pts = " ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in ser)
+        o.append(f'<polyline points="{pts}" fill="none" stroke="{col}" '
+                 f'stroke-width="{grosor}" stroke-linejoin="round" stroke-linecap="round"/>')
+        o.append(f'<rect x="{x1+10}" y="{ly-7}" width="12" height="4" fill="{col}" rx="2"/>')
+        o.append(f'<text x="{x1+27}" y="{ly-2}" font-size="8.6" fill="{INK2}">{_e(mes)}</text>')
+        o.append(f'<text x="{w-2}" y="{ly-2}" text-anchor="end" font-size="8.6" '
+                 f'font-weight="700" fill="{INK2}">{_fmt_eje(ser[-1][1], hi)}</text>')
+        ly += 15
+    if ult_serie and ritmo:
+        d0, v0 = ult_serie[-1]
+        o.append(f'<circle cx="{X(d0):.1f}" cy="{Y(v0):.1f}" r="3.4" fill="{AZUL[-1]}" '
+                 f'stroke="{SURF}" stroke-width="1.6"/>')
+        o.append(f'<line x1="{X(d0):.1f}" y1="{Y(v0):.1f}" x2="{X(dias_mes):.1f}" '
+                 f'y2="{Y(proy):.1f}" stroke="{PROY}" stroke-width="2.6" stroke-dasharray="7 4"/>')
+        o.append(f'<circle cx="{X(dias_mes):.1f}" cy="{Y(proy):.1f}" r="4.2" fill="{SURF}" '
+                 f'stroke="{PROY}" stroke-width="2.6"/>')
+        o.append(f'<rect x="{x1+10}" y="{ly-7}" width="12" height="4" fill="{PROY}" rx="2"/>')
+        o.append(f'<text x="{x1+27}" y="{ly-2}" font-size="8.6" font-weight="800" '
+                 f'fill="{PROY}">proyección</text>')
+        o.append(f'<text x="{w-2}" y="{ly-2}" text-anchor="end" font-size="8.6" '
+                 f'font-weight="800" fill="{PROY}">{_fmt_eje(proy, hi)}</text>')
+    return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img">'
+            + "".join(o) + "</svg>"), proy
