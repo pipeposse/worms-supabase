@@ -403,24 +403,48 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
         st.info("No hay tanques con stock para este producto.")
         return
 
-    # orden: base primero, después AFE preferidos; dentro, banda A→D y mejor calidad
+    # Orden pedido por planta: 1º SECTOR (los de carga primero, después alfabético),
+    # 2º CALIDAD (A→D) y 3º CAPACIDAD de menor a mayor (los chicos se vacían antes).
     _up = _pool["producto_principal"].astype(str).str.strip().str.upper()
-    _base_cod = fam[0]
-
-    def _rol_prod(c):
-        if c == _base_cod:
-            return 0
-        return 1 + (PREFERIDOS.index(c) if c in PREFERIDOS else 50)
-
-    _pool["_rol"] = _up.map(_rol_prod)
     _pool["_bnd"] = _pool.apply(lambda r: _banda_tk(r, spec), axis=1)
     _ordb = {"A": 0, "B": 1, "C": 2, "D": 3, "—": 4}
     _pool["_ob"] = _pool["_bnd"].map(_ordb).fillna(9)
-    _pool["_q"] = _pool.apply(lambda r: _puntaje_calidad(r, spec), axis=1)
     _pool["_x"] = (~_pool["sector"].astype(str).str.strip()
                    .isin(list(SECTORES_PRIORIDAD))).astype(int)
-    _pool = _pool.sort_values(["_rol", "_ob", "_x", "_q", "litros_actual"],
-                              ascending=[True, True, True, True, False])
+    _pool["_cap"] = pd.to_numeric(_pool["capacidad_litros"], errors="coerce").fillna(9e12)
+    _pool = _pool.sort_values(["_x", "sector", "_ob", "_cap", "nombre"],
+                              ascending=[True, True, True, True, True])
+
+    # ---------- filtros rápidos: lo tildado queda SIEMPRE visible ----------
+    fq1, fq2, fq3, fq4 = st.columns([1.5, 1.0, 1.3, 1.2])
+    _osec = sorted(_pool["sector"].fillna("—").astype(str).unique().tolist())
+    _fsec = fq1.multiselect("Sector", _osec, key="dsp_lst_fsec", placeholder="todos")
+    _fbnd = fq2.multiselect("Calidad", ["A", "B", "C", "D", "—"], key="dsp_lst_fbnd",
+                            placeholder="todas")
+    _fprd = fq3.multiselect("Producto", sorted(_up.unique().tolist()),
+                            key="dsp_lst_fprd", placeholder="todos")
+    _ftxt = fq4.text_input("🔎 Tanque", key="dsp_lst_ftxt", placeholder="buscar…")
+    _pass = pd.Series(True, index=_pool.index)
+    if _fsec:
+        _pass &= _pool["sector"].fillna("—").astype(str).isin(_fsec)
+    if _fbnd:
+        _pass &= _pool["_bnd"].astype(str).isin(_fbnd)
+    if _fprd:
+        _pass &= _up.isin(_fprd)
+    if (_ftxt or "").strip():
+        _pass &= _pool["nombre"].astype(str).str.contains((_ftxt or "").strip(),
+                                                          case=False, na=False)
+    _pool = _pool[_pass | _pool["clave"].astype(str).isin(list(_map_l.keys()))]
+    # cambiar un filtro cambia qué fila es qué: el editor se rearma para no
+    # desalinear el estado (lo ya CARGADO no se pierde: vive en dsp_lineas)
+    _ffir = "%s|%s|%s|%s" % (",".join(_fsec), ",".join(_fbnd), ",".join(_fprd),
+                             (_ftxt or "").strip().lower())
+    if ss.get("_dsp_lst_ffir") != _ffir:
+        ss["_dsp_lst_ffir"] = _ffir
+        ss["dsp_lst_nonce"] = int(ss.get("dsp_lst_nonce") or 0) + 1
+    if _pool.empty:
+        st.info("Ningún tanque cumple los filtros (y no hay ninguno tildado).")
+        return
 
     _filas = []
     for _, r in _pool.iterrows():
@@ -430,10 +454,13 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
         _filas.append({
             "Usar": _cl in _map_l,
             "Litros": round(_lit, 0),
-            "Grupo": "%s · %s" % (str(r["producto_principal"] or "—"), r["_bnd"]),
             "Tanque": str(r["nombre"]),
+            "Sector": str(r["sector"] or "—"),
+            "Grupo": "%s · %s" % (str(r["producto_principal"] or "—"), r["_bnd"]),
             "Cal.": "%s %s" % (BANDA_EMOJI.get(r["_bnd"], "⚪"), r["_bnd"]),
             "Disp. (L)": round(_disp, 0),
+            "Cap. (L)": (round(float(r["capacidad_litros"]), 0)
+                         if pd.notna(r.get("capacidad_litros")) else None),
             "Compr. (L)": round(float(r.get("comprometido_l") or 0.0), 0),
             "Medido (L)": (round(float(r["litros_brutos"]), 0)
                            if pd.notna(r.get("litros_brutos")) else None),
@@ -441,7 +468,6 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
             "Fósforo ppm": (float(r["fosforo"]) if pd.notna(r["fosforo"]) else None),
             "Azufre ppm": (float(r["azufre"]) if pd.notna(r["azufre"]) else None),
             "AyS %": (float(r["agua_sedimento"]) if pd.notna(r["agua_sedimento"]) else None),
-            "Sector": str(r["sector"] or "—"),
             "_clave": _cl,
         })
     _df = pd.DataFrame(_filas)
@@ -456,16 +482,18 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
     _k = "dsp_lst_%d" % int(ss.get("dsp_lst_nonce") or 0)
 
     st.markdown("##### 📋 Tanques disponibles — tildá para usar a tope o escribí los litros")
-    st.caption("Ordenados por **producto** y **banda de calidad** (%s). **Disp. (L)** ya tiene "
-               "descontado el fondo de tanque y lo **comprometido** en despachos confirmados. "
-               "Al tildar un tanque entra con TODO lo disponible; escribí los litros para usar "
-               "menos. La sugerencia y las propuestas se ven acá tildadas."
-               % " · ".join("%s %s" % (BANDA_EMOJI[b], b) for b in ("A", "B", "C", "D")))
+    st.caption("**%d tanque(s) visibles · %d tildado(s)** — ordenados por **sector** (los de "
+               "carga primero), **calidad** %s y **capacidad** de menor a mayor. **Disp. (L)** "
+               "ya tiene descontado el fondo de tanque y lo **comprometido** en despachos "
+               "confirmados. Al tildar un tanque entra con TODO lo disponible; escribí los "
+               "litros para usar menos. La sugerencia y las propuestas se ven acá tildadas."
+               % (len(_df), int(_df["Usar"].sum()),
+                  " · ".join("%s %s" % (BANDA_EMOJI[b], b) for b in ("A", "B", "C", "D"))))
     _edl = st.data_editor(
         _df.drop(columns=["_clave"]), hide_index=True, use_container_width=True, key=_k,
         height=min(38 * (len(_df) + 1) + 6, 460),
-        disabled=["Grupo", "Tanque", "Cal.", "Disp. (L)", "Compr. (L)", "Medido (L)",
-                  "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %", "Sector"],
+        disabled=["Grupo", "Tanque", "Cal.", "Disp. (L)", "Cap. (L)", "Compr. (L)",
+                  "Medido (L)", "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %", "Sector"],
         column_config={
             "Usar": st.column_config.CheckboxColumn("Usar", width="small",
                                                     help="Tildá para sumarlo a la carga con "
@@ -478,6 +506,10 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
             "Disp. (L)": st.column_config.NumberColumn(format="%.0f",
                                                        help="Utilizable ahora: medido − fondo "
                                                             "de tanque − comprometido."),
+            "Cap. (L)": st.column_config.NumberColumn(format="%.0f",
+                                                      help="Capacidad total del tanque (el "
+                                                           "orden va de menor a mayor)."),
+            "Sector": st.column_config.TextColumn("Sector", width="small"),
             "Compr. (L)": st.column_config.NumberColumn(format="%.0f",
                                                         help="Ya designado en despachos "
                                                              "confirmados sin terminar de pesar."),
