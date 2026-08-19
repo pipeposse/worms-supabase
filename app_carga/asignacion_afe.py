@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """Asignación de Tanques a AFEs.
 
-Cada ticket de AFE evaluado por laboratorio recibe automáticamente 1 o 2 tanques
+Cada ticket de AFE evaluado por laboratorio recibe automáticamente 1 a 3 tanques
 de acopio sugeridos. El operario (Producción en planta) o la dirección (Centro de
 Planificación) confirma o edita tanque y cantidades.
 
 Al confirmar:
   * se anulan los movimientos automáticos previos del ticket (lab_sync / sistema)
-    y se insertan 1 o 2 movimientos de stock reales + su espejo de tanque;
+    y se insertan 1 a 3 movimientos de stock reales + su espejo de tanque;
   * se propagan los parámetros del ticket al tanque:
       - tanque vacío  -> parámetros del ticket
       - tanque con líquido -> promedio ponderado por kg asignados
@@ -301,7 +301,10 @@ def _rankear(df_cand, tk, litros, kg=None):
 
 
 def _sugerir(rank, kg, dens):
-    """1 o 2 tanques. Con dos, primero se llena el más cargado (regla de planta).
+    """Hasta 3 tanques. Se elige el mejor; si no absorbe todo, se suman hasta dos
+    más ponderando el score por cuánto del resto cubre cada uno (cubrir el 100%
+    no puede imponerse sobre la calidad). Entre los elegidos se llena primero el
+    más cargado (regla de planta).
 
     El reparto respeta SIEMPRE el espacio disponible de cada tanque: nunca se
     asignan más kg de los que el tanque puede recibir. Lo que no entra queda en
@@ -311,43 +314,34 @@ def _sugerir(rank, kg, dens):
     if not viables:
         return []
     litros = (kg / dens) if dens else 0.0
-    t1 = viables[0]
-    if t1["_disp"] >= litros:
-        return [dict(t1, _kg=round(kg, 1), _orden=1, _falta=0.0)]
-    if len(viables) == 1:
-        _c = round(max(0.0, t1["_disp"] * dens), 1)
-        return [dict(t1, _kg=_c, _orden=1, _falta=round(max(0.0, kg - _c), 1))]
-
-    # Segundo tanque: se pondera el score por cuánto del resto absorbe. Cubrir el
-    # 100% no puede imponerse sobre la calidad — un tanque que tapa el 97% sin
-    # degradar es mejor que uno que tapa el 100% arruinando el contenido.
-    resto_lts = max(0.0, litros - t1["_disp"])
-    t2 = None
-    if len(viables) > 1 and resto_lts > 0:
+    eleg = [viables[0]]
+    resto_lts = litros - max(0.0, viables[0]["_disp"])
+    pool = list(viables[1:])
+    while resto_lts > 0.5 and pool and len(eleg) < 3:
         def _sel(x):
-            cob = min(1.0, x["_disp"] / resto_lts) if resto_lts > 0 else 1.0
+            cob = min(1.0, max(0.0, x["_disp"]) / resto_lts) if resto_lts > 0 else 1.0
             return x["_score"] * (0.5 + 0.5 * cob)
-        t2 = max(viables[1:], key=_sel)
-    if t2 is None:
-        _c = round(max(0.0, t1["_disp"] * dens), 1)
-        return [dict(t1, _kg=_c, _orden=1, _falta=round(max(0.0, kg - _c), 1))]
+        tx = max(pool, key=_sel)
+        pool = [x for x in pool if x is not tx]
+        if max(0.0, tx["_disp"]) <= 0:
+            continue
+        eleg.append(tx)
+        resto_lts -= max(0.0, tx["_disp"])
 
-    par = sorted([t1, t2], key=lambda x: x["_lts_est"], reverse=True)  # el más cargado primero
-    cap0 = max(0.0, par[0]["_disp"] * dens)
-    cap1 = max(0.0, par[1]["_disp"] * dens)
-    kg0 = min(kg, cap0)
-    kg1 = kg - kg0
-    if kg1 > cap1:                      # el segundo no absorbe el resto
-        kg1 = cap1
-        kg0 = min(kg - kg1, cap0)
-    falta = round(max(0.0, kg - kg0 - kg1), 1)
-    kg0, kg1 = round(kg0, 1), round(kg1, 1)
-    if kg1 <= 0.5:
-        return [dict(par[0], _kg=kg0, _orden=1, _falta=falta)]
-    if kg0 <= 0.5:
-        return [dict(par[1], _kg=kg1, _orden=1, _falta=falta)]
-    return [dict(par[0], _kg=kg0, _orden=1, _falta=falta),
-            dict(par[1], _kg=kg1, _orden=2, _falta=0.0)]
+    # reparto: el más cargado primero, cada uno hasta el tope de su espacio
+    orden = sorted(eleg, key=lambda x: x["_lts_est"], reverse=True)
+    out, restante = [], float(kg)
+    for t in orden:
+        capk = max(0.0, t["_disp"] * dens)
+        kgi = round(min(restante, capk), 1)
+        if kgi <= 0.5:
+            continue
+        restante = round(max(0.0, restante - kgi), 1)
+        out.append(dict(t, _kg=kgi, _orden=len(out) + 1, _falta=0.0))
+    if not out:
+        out = [dict(orden[0], _kg=0.0, _orden=1, _falta=0.0)]
+    out[0]["_falta"] = round(max(0.0, restante if len(out) else kg), 1)
+    return out
 
 
 def _porque(r):
@@ -627,10 +621,10 @@ def _pendientes(USR, cat, conectar, contexto):
     for s in sug:
         st.markdown("**%d. %s** (%s) → **%s kg** · %s"
                     % (s["_orden"], s["nombre"], s["sector"], _n(s["_kg"], 0), _porque(s)))
-    if len(sug) == 2:
-        st.caption("Dos tanques: el ticket (%s L) no entra completo en el primero. "
-                   "Se llena primero el más cargado hasta su capacidad y el resto va al segundo."
-                   % _n(litros, 0))
+    if len(sug) >= 2:
+        st.caption("%d tanques: el ticket (%s L) no entra completo en el primero. "
+                   "Se llena primero el más cargado hasta su capacidad y el resto sigue "
+                   "en los otros." % (len(sug), _n(litros, 0)))
     _falta = sum(_f(s.get("_falta")) or 0.0 for s in sug)
     if _falta > 0.5:
         st.warning("⚠️ **%s kg no entran** en los tanques sugeridos: no hay espacio suficiente. "
@@ -669,7 +663,8 @@ def _pendientes(USR, cat, conectar, contexto):
                 return k
         return _keys[0]
 
-    _n_tq = st.radio("¿Cuántos tanques?", [1, 2], index=(1 if len(sug) == 2 else 0),
+    _n_tq = st.radio("¿Cuántos tanques?", [1, 2, 3],
+                     index=(min(len(sug), 3) - 1 if sug else 0),
                      horizontal=True, key="asg_ntq_%s" % r["tk"])
     lineas = []
     cols = st.columns(int(_n_tq))
@@ -711,19 +706,29 @@ def _pendientes(USR, cat, conectar, contexto):
                        "tope. Los %s L restantes necesitan un segundo tanque."
                        % (_n(litros_tk, 0), _n(_disp_eff[0], 0),
                           _n(litros_tk - _disp_eff[0], 0)))
-    if int(_n_tq) == 2:
+    if int(_n_tq) >= 2:
         _ids_sel = {int(t["id_tanque"]) for t in _sel}
-        _ids_sug = {int(x["id_tanque"]) for x in sug} if len(sug) == 2 else set()
-        if _ids_sel == _ids_sug and len(_ids_sel) == 2 and not any(_vacs):
+        _ids_sug = {int(x["id_tanque"]) for x in sug}
+        if (len(sug) == int(_n_tq) and _ids_sel == _ids_sug
+                and len(_ids_sel) == int(_n_tq) and not any(_vacs)):
+            # los elegidos son exactamente los sugeridos: se respeta el reparto de la
+            # sugerencia (considera calidad además de espacio)
             _map = {int(x["id_tanque"]): float(x.get("_kg", 0.0)) for x in sug}
             _defs_l = [(_map.get(int(t["id_tanque"]), 0.0) / dens if dens > 0 else 0.0)
                        for t in _sel]
         else:
-            _i_lleno = 0 if _disp_eff[0] <= _disp_eff[1] else 1
-            _l1 = round(min(litros_tk, _disp_eff[_i_lleno]), 0)
-            _defs_l = [0.0, 0.0]
-            _defs_l[_i_lleno] = _l1
-            _defs_l[1 - _i_lleno] = round(max(litros_tk - _l1, 0.0), 0)
+            # regla operativa: se llenan A TOPE de menor a mayor espacio efectivo y
+            # el de más espacio absorbe el resto
+            _orden_i = sorted(range(int(_n_tq)), key=lambda i: _disp_eff[i])
+            _defs_l = [0.0] * int(_n_tq)
+            _resto = litros_tk
+            for _j, _ii in enumerate(_orden_i):
+                if _j == len(_orden_i) - 1:
+                    _defs_l[_ii] = round(max(_resto, 0.0), 0)
+                else:
+                    _l1 = round(min(_resto, _disp_eff[_ii]), 0)
+                    _defs_l[_ii] = _l1
+                    _resto = max(_resto - _l1, 0.0)
     # el key incluye tanques elegidos + tildes de vacío: cambiar cualquiera de los
     # dos rehace el reparto por defecto (si no, se arrastraban valores viejos)
     _sig = ("_".join(str(int(t["id_tanque"])) for t in _sel)
@@ -781,8 +786,9 @@ def _pendientes(USR, cat, conectar, contexto):
         st.error("Se asignó **%s kg de más** (≈ %s L): asignados %s L ≈ %s kg y el ticket "
                  "trae %s kg." % (_n(-_dif, 0), _n(-_dif / dens if dens > 0 else 0, 0),
                                   _n(_suma_l, 0), _n(_suma, 0), _n(kg, 0)))
-    if int(_n_tq) == 2 and lineas[0]["id_tanque"] == lineas[1]["id_tanque"]:
-        st.error("Los dos tanques son el mismo. Elegí tanques distintos o pasá a 1 tanque.")
+    _rep = len({x["id_tanque"] for x in lineas}) < len(lineas)
+    if _rep:
+        st.error("Hay tanques repetidos. Elegí tanques distintos o bajá la cantidad.")
 
     # ---- previsualización del impacto en la calidad del tanque
     with st.expander("🧪 Impacto en los parámetros del tanque (antes → después)", expanded=True):
@@ -805,7 +811,7 @@ def _pendientes(USR, cat, conectar, contexto):
             st.dataframe(pd.DataFrame(_tabla), use_container_width=True, hide_index=True)
 
     _obs = st.text_input("Observación (opcional)", key="asg_obs_%s" % r["tk"])
-    _bloq = (abs(_dif) > 1) or (int(_n_tq) == 2 and lineas[0]["id_tanque"] == lineas[1]["id_tanque"]) or kg <= 0
+    _bloq = (abs(_dif) > 1) or _rep or kg <= 0
     if st.button("✅ Confirmar asignación", type="primary", disabled=_bloq,
                  key="asg_ok_%s" % r["tk"], use_container_width=True):
         cab = {"fecha": r.get("fecha_entrada") or r.get("fecha"), "id_producto": _idp,
