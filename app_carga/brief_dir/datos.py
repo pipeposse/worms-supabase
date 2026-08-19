@@ -172,17 +172,6 @@ def cargar(cat, semana):
         "  AND codigo_producto IN (SELECT DISTINCT producto "
         "                          FROM produccion.v_brief_stock_tanque)", (sem,)))
 
-    exp = cat(
-        "SELECT mes_txt, dia, round(tn::numeric,1) AS tn FROM produccion.v_brief_exportacion_dia "
-        "WHERE mes >= %s ORDER BY mes_txt, dia", (mes0,))
-    D["exportacion"] = []
-    if exp is not None and not exp.empty:
-        for m, g in exp.groupby("mes_txt", sort=True):
-            dias = [[int(r.dia), float(r.tn)] for r in g.itertuples()]
-            D["exportacion"].append({"mes": m, "tn": round(sum(d[1] for d in dias), 1),
-                                     "ult": max(d[0] for d in dias), "dias": dias})
-        D["exportacion"] = D["exportacion"][-4:]
-
     D["balance_afe"] = _recs(cat(
         "SELECT semana::text, round(stock_inicial,1) AS ini, round(ingresos,1) AS ing, "
         "  round(producido,1) AS prod, round(consumido_reactores,1) AS cons, "

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Guía · Mejoras y resolución de problemas</title>
+<style>
+  body{font-family:'Segoe UI',Inter,sans-serif;max-width:880px;margin:32px auto;padding:0 20px;color:#1e293b;line-height:1.55}
+  h1{color:#2563eb;margin-bottom:4px} h2{color:#334155;border-bottom:2px solid #e2e8f0;padding-bottom:4px;margin-top:30px}
+  code,pre{background:#f1f5f9;border-radius:6px;font-family:Consolas,monospace}
+  code{padding:1px 6px} pre{padding:12px 16px;overflow-x:auto}
+  .chip{display:inline-block;background:#eef2ff;color:#4338ca;border-radius:999px;padding:2px 12px;font-size:.85em;margin-right:6px}
+  .warn{background:#fffbeb;border-left:4px solid #f59e0b;padding:10px 14px;border-radius:6px}
+  .ok{background:#f0fdf4;border-left:4px solid #22c55e;padding:10px 14px;border-radius:6px}
+  table{border-collapse:collapse;width:100%;margin-top:8px} td,th{border:1px solid #e2e8f0;padding:6px 10px;text-align:left;vertical-align:top}
+  th{background:#f8fafc}
+</style>
+</head>
+<body>
+<h1>🛠️ Mejoras y resolución de problemas</h1>
+<p style="color:#64748b;margin-top:0">Soporte de la plataforma — <b>no</b> son los tickets de balanza/portería de planta.</p>
+<p><span class="chip">app_carga</span><span class="chip">produccion.ticket_pedido</span><span class="chip">códigos SOL-####</span><span class="chip">SMTP Gmail</span></p>
+
+<h2>Cómo lo ve el usuario</h2>
+<p>Entra a <b>Mejoras y problemas → Nueva solicitud</b> y completa:</p>
+<ul>
+  <li><b>Qué necesita</b> (ej: <i>"Quiero agregar la opción de desgomar AFE-L"</i>)</li>
+  <li><b>Su mail</b> — obligatorio, es por donde recibe la respuesta</li>
+  <li><b>Tipo</b>: 🐞 Algo no funciona · ✨ Falta / quiero agregar algo · ❓ Duda de uso</li>
+  <li><b>Qué tan importante es</b> (ver tabla abajo)</li>
+  <li>Detalle opcional y hasta <b>3 fotos/capturas</b> (4 MB c/u)</li>
+</ul>
+<p>En <b>Mis solicitudes</b> ve solo las propias, ordenadas por importancia, con el estado y las respuestas recibidas.</p>
+
+<h2>La escala de importancia</h2>
+<p>Está redactada en lenguaje de operario para que signifique lo mismo para todos — no en "P1/P2", que cada uno interpreta a su manera:</p>
+<table>
+<tr><th>Nivel</th><th>Qué quiere decir</th><th>Expectativa</th></tr>
+<tr><td>🔴 <b>Bloqueante</b></td><td>No puedo trabajar / se pierden datos</td><td>Se mira el mismo día; el mail al admin llega con 🔴 en el asunto</td></tr>
+<tr><td>🟠 <b>Alta</b></td><td>Me traba tareas del turno</td><td>Esta semana</td></tr>
+<tr><td>🔵 <b>Media</b></td><td>Me hace perder tiempo todos los días</td><td>Entra en la cola normal</td></tr>
+<tr><td>🟢 <b>Baja</b></td><td>Estaría bueno, no me frena</td><td>Backlog</td></tr>
+</table>
+<p>El admin puede <b>repriorizar</b>: guarda su propio criterio en <code>prioridad_admin</code> y la pantalla muestra ambos ("el usuario puso 🟠 Alta"). Así queda registro de la brecha entre lo que urge al operario y lo que urge al sistema — útil para detectar quién sobre-prioriza todo.</p>
+
+<h2>Cómo lo ve el admin</h2>
+<p>Pestaña <b>Administrar</b> (solo rol ADMIN): contadores de bloqueantes / altas / pendientes / resueltas, filtro por estado e importancia, y la lista <b>ordenada por prioridad y no por fecha</b> — lo urgente arriba. En el detalle: fotos, conversación completa, plantillas de respuesta, cambio de estado (🔴 Abierto · 🟡 En proceso · 🟢 Resuelto · ⚫ Rechazado) y envío <b>automático por mail</b> al solicitante. Cada respuesta queda en <code>ticket_pedido_msg</code> con el flag de si salió por mail.</p>
+<p>Al crearse una solicitud te llega un <b>mail de aviso</b> con tipo, importancia y los adjuntos.</p>
+
+<h2>Configurar el mail (una sola vez)</h2>
+<ol>
+  <li><a href="https://myaccount.google.com/apppasswords">myaccount.google.com/apppasswords</a> (requiere verificación en 2 pasos activa).</li>
+  <li>Creá una App Password llamada <i>worms-soporte</i> y copiá las 16 letras.</li>
+  <li>Cargá la config donde corre la app:</li>
+</ol>
+<p><b>Local</b> — en el <code>.env</code> de <code>worms_supabase</code>:</p>
+<pre>SMTP_USER=fposse.mde@gmail.com
+SMTP_PASS=xxxx xxxx xxxx xxxx
+TICKETS_ADMIN_EMAIL=fposse.mde@gmail.com</pre>
+<p><b>Streamlit Cloud</b> — en <i>Settings → Secrets</i>:</p>
+<pre>[smtp]
+user = "fposse.mde@gmail.com"
+password = "xxxx xxxx xxxx xxxx"
+admin_email = "fposse.mde@gmail.com"</pre>
+<p>Opcionales: <code>SMTP_HOST</code> (default <code>smtp.gmail.com</code>) y <code>SMTP_PORT</code> (default <code>465</code>, SSL).</p>
+<div class="warn"><b>Seguridad:</b> la App Password vive solo en secrets/.env (gitignored), nunca en el código. Si el SMTP falla o no está configurado, la solicitud y la respuesta <b>se guardan igual</b> y aparece un link <i>mailto:</i> para mandarla desde tu correo.</div>
+
+<h2>Quién ve qué</h2>
+<table>
+<tr><th>Quién</th><th>Ve</th></tr>
+<tr><td>Operador / Supervisor</td><td>Solo sus propias solicitudes y las respuestas que recibió</td></tr>
+<tr><td>Admin (rol ADMIN)</td><td>Todo: solicitudes, mails, adjuntos y la conversación completa</td></tr>
+<tr><td>Chat IA (<code>ai_readonly</code>)</td><td>Nada — sin GRANT sobre estas tablas (verificado)</td></tr>
+</table>
+<p>La sección está habilitada para <b>todos los usuarios</b> y no se puede restringir desde Admin → Accesos: el que está anclado a una sola sección la tiene como botón en el sidebar.</p>
+
+<h2>Base de datos</h2>
+<pre>produccion.ticket_pedido          -- codigo SOL-0001, tipo, prioridad, prioridad_admin,
+                                  -- email, estado, notif_admin_ok
+produccion.ticket_pedido_adjunto  -- fotos en bytea (no requiere Storage)
+produccion.ticket_pedido_msg      -- respuestas ADMIN/USUARIO + enviado_email</pre>
+<p>Los nombres de tabla siguen diciendo <code>ticket_pedido</code> (renombrarlas obligaba a migrar índices y constraints sin ganancia real); lo que cambió es la cara visible: sección, códigos <code>SOL-</code> y textos.</p>
+
+<div class="ok"><b>Deploy:</b> commitear <code>app_carga/mejoras_section.py</code> + <code>app_carga/app.py</code> y cargar los secrets. Las migraciones ya están aplicadas en worms-prod. El viejo <code>tickets_section.py</code> quedó en <code>app_carga/_to_delete/</code>.</div>
+</body>
+</html>
