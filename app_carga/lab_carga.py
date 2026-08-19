@@ -86,7 +86,7 @@ def _conn_cm(get_conn):
 # ---------------------------------------------------------------------------
 # Catalogos (valores reales de produccion.procesos_lab)
 # ---------------------------------------------------------------------------
-EMPLEADOS = ["Cielo", "Manu", "Rich", "Mili"]
+EMPLEADOS = ["Cielo", "Manu", "Rich", "Mili", "Clari"]
 RECHAZADO = ["ACEPTADO", "RECHAZADO", "FUERA DE ESPECIFICACION", "REMUESTREO"]
 
 # Rangos plausibles por parámetro (para frenar errores groseros: %/fracción, negativos)
@@ -338,7 +338,7 @@ def _persistir(tipo, data, ctx, get_conn, usuario):
         st.error("Ticket is required")
         return False
     if not (data.get("empleado") or "").strip():
-        st.error("Elegí el responsable de carga (Cielo, Manu, Rich o Mili).")
+        st.error("Elegí el responsable de carga (%s)." % ", ".join(EMPLEADOS))
         return False
     _fuera = []
     for _c, (_lo, _hi) in _RANGOS.items():

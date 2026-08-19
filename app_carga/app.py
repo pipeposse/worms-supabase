@@ -296,12 +296,12 @@ SECCIONES_APP = [
     ("LAB", "🧪 Laboratorio"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"), ("REPUESTOS", "🔧 Repuestos"), ("ISCC", "📑 ISCC"), ("REMITOS", "📸 Remitos"),
     ("ESTADO", "📈 Estado de planta"), ("ANALISIS", "🔬 Análisis de reacciones"),
     ("PLANIFICACION", "🗓️ Centro de Planificación"), ("CONDICIONALES", "🧮 Condicionales"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
-    ("CIERRES", "💰 Cierres mensuales"), ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
+    ("CIERRES", "💰 Cierres mensuales"), ("TICKETS", "🎫 Tickets"), ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
 ]
 
 
 def _secciones_default(rol):
-    base = ["INICIAR", "LAB", "TANQUES", "STOCK", "REMITOS", "ESTADO"]
+    base = ["INICIAR", "LAB", "TANQUES", "STOCK", "REMITOS", "ESTADO", "TICKETS"]
     if rol in ("SUPERVISOR", "ADMIN"):
         base += ["REPUESTOS", "ISCC", "ANALISIS", "PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT", "CIERRES"]
     if rol == "ADMIN":
@@ -313,6 +313,8 @@ def puede_seccion(sec):
     """Acceso a una sección: lista explícita del usuario, o default del rol. Admin SIEMPRE exige rol ADMIN."""
     if sec == "ADMIN" and USR.get("rol") != "ADMIN":
         return False
+    if sec == "TICKETS":
+        return True  # Tickets es para TODOS los usuarios, sin importar sus accesos
     _p = USR.get("secciones_app")
     return sec in (_p if _p else _secciones_default(USR.get("rol")))
 
@@ -325,10 +327,12 @@ if "section" not in st.session_state:
     st.session_state.section = None
 
 # Usuarios con UNA sola sección habilitada quedan anclados a ella (sin landing ni cambio de sección).
-_ALLOWED_SECS = USR.get("secciones_app") or _secciones_default(USR.get("rol"))
-_LOCKED_ONE = len(_ALLOWED_SECS) == 1
-if _LOCKED_ONE:
-    st.session_state.section = _ALLOWED_SECS[0]
+_ALLOWED_SECS = list(USR.get("secciones_app") or _secciones_default(USR.get("rol")))
+if "TICKETS" not in _ALLOWED_SECS:
+    _ALLOWED_SECS.append("TICKETS")  # Tickets es para todos
+_LOCKED_ONE = len([s for s in _ALLOWED_SECS if s != "TICKETS"]) == 1
+if _LOCKED_ONE and st.session_state.section != "TICKETS":
+    st.session_state.section = [s for s in _ALLOWED_SECS if s != "TICKETS"][0]
 
 def go_to(sec):
     st.session_state.section = sec
@@ -560,7 +564,7 @@ def _panel_esperando_lab(cat, conectar=None, USR=None, pref="esp"):
                               value=_v("lab_azufre"))
         _fo = h2.number_input("Fósforo ppm", min_value=0.0, step=5.0, format="%.1f",
                               value=_v("lab_fosforo"))
-        _emp = h3.selectbox("Analista", ["Cielo", "Manu", "Rich", "Mili", "(sin definir)"],
+        _emp = h3.selectbox("Analista", ["Cielo", "Manu", "Rich", "Mili", "Clari", "(sin definir)"],
                             index=4)
         _obs = st.text_input("Observación (queda en la conclusión del análisis)",
                              value="Cargado desde la bandeja de validación")
@@ -789,6 +793,7 @@ if st.session_state.section is None:
     tiles.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
     tiles.append(("💰", "Cierres mensuales", "Rentabilidad: P&L mensual, dónde está el valor, márgenes por segmento, Q1 vs Q2, outliers e insights.", "CIERRES", "land_cierres", False))
     tiles.append(("🛂", "Dirección", "Brief semanal, desvíos de stock, control de gestión y aprobación de planificaciones fuera de norma.", "DIRECCION", "land_direccion", False))
+    tiles.append(("🎫", "Tickets", "Pedí mejoras o reportá problemas de la app: el administrador los ve, los resuelve y te responde a tu mail.", "TICKETS", "land_tickets", False))
     tiles.append(("⚙️", "Admin", "Gestión de usuarios: alta, roles, sectores, reset PIN y accesos a la página.", "ADMIN", "land_admin", False))
     tiles = [t for t in tiles if puede_seccion(t[3])]
 
@@ -809,6 +814,14 @@ with st.sidebar:
     if not _LOCKED_ONE:
         if st.button("← Cambiar de sección", use_container_width=True, key="sb_back"):
             st.session_state.section = None
+            st.rerun()
+    else:
+        if st.session_state.section == "TICKETS":
+            if st.button("← Volver a mi sección", use_container_width=True, key="sb_tk_back"):
+                st.session_state.section = [s for s in _ALLOWED_SECS if s != "TICKETS"][0]
+                st.rerun()
+        elif st.button("🎫 Tickets", use_container_width=True, key="sb_tickets"):
+            st.session_state.section = "TICKETS"
             st.rerun()
     if USR.get("sector"):
         st.caption(f"Sector default: **{USR['sector']}**")
@@ -4737,6 +4750,16 @@ if st.session_state.section != "CARGAS":
             _render_formulas(USR, cat, conectar)
         except Exception as _e:
             st.error(f"No se pudo cargar Fórmulas: {_e}")
+
+    elif st.session_state.section == "TICKETS":
+        try:
+            from tickets_section import render as _render_tickets
+            _render_tickets(USR, cat, conectar, lab_conn=_lab_conn)
+        except Exception as _e:
+            import traceback as _tbtk
+            st.error(f"No se pudo cargar Tickets: {_e}")
+            with st.expander("Detalle"):
+                st.code(_tbtk.format_exc())
 
     elif st.session_state.section == "CHAT":
         # =================== CONSULTAS IA (chat, solo lectura) ===================
