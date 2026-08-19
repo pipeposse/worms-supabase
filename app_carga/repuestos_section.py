@@ -130,6 +130,43 @@ def _alta_repuesto(conectar, USR, d):
     return (r[0] if r else None)
 
 
+def _eliminar_repuestos(conectar, USR, ids):
+    """Borra los repuestos SIN movimientos. Devuelve (borrados, [(id, n_movs)] que no)."""
+    borrados, con_movs = [], []
+    with conectar(USR["id_usuario"]) as (conn, audit):
+        with conn.cursor() as cur:
+            for i in ids:
+                cur.execute("SELECT count(*) FROM produccion.fact_repuesto_movimiento "
+                            "WHERE id_repuesto = %s", (int(i),))
+                n = int(cur.fetchone()[0])
+                if n > 0:
+                    con_movs.append((int(i), n))
+                    continue
+                cur.execute("DELETE FROM produccion.dim_repuesto WHERE id_repuesto = %s",
+                            (int(i),))
+                audit.log("D", "dim_repuesto", int(i), {"motivo": "depuración (sin movimientos)"})
+                borrados.append(int(i))
+    return borrados, con_movs
+
+
+def _fusionar_repuesto(conectar, USR, id_dup, id_dest):
+    """TODOS los movimientos del duplicado pasan al destino y el duplicado se borra.
+    El stock y el historial quedan sumados en el repuesto que sobrevive."""
+    with conectar(USR["id_usuario"]) as (conn, audit):
+        with conn.cursor() as cur:
+            cur.execute("UPDATE produccion.fact_repuesto_movimiento "
+                        "SET id_repuesto = %s, nota = COALESCE(nota,'') || %s "
+                        "WHERE id_repuesto = %s",
+                        (int(id_dest), " | fusionado desde repuesto #%d" % int(id_dup),
+                         int(id_dup)))
+            n = cur.rowcount
+            cur.execute("DELETE FROM produccion.dim_repuesto WHERE id_repuesto = %s",
+                        (int(id_dup),))
+        audit.log("D", "dim_repuesto", int(id_dup),
+                  {"fusionado_en": int(id_dest), "movimientos_migrados": int(n)})
+    return int(n)
+
+
 def _update_repuestos(conectar, USR, cambios):
     """cambios: lista de dicts {id_repuesto, campo: valor, ...}"""
     n = 0
@@ -640,6 +677,114 @@ def _vista_nuevo(USR, cat, conectar, df):
                 st.rerun()
 
 
+def _vista_depurar(USR, cat, conectar, df):
+    st.subheader("🗑️ Depurar repuestos")
+    st.caption("Para limpiar **duplicados** o repuestos creados por error. Sin movimientos se "
+               "borran directo; con movimientos se **fusionan** (el historial y el stock pasan "
+               "al que queda) o se **archivan**.")
+    if df is None or df.empty:
+        st.info("No hay repuestos.")
+        return
+    d = df.copy()
+    d["movimientos"] = pd.to_numeric(d["movimientos"], errors="coerce").fillna(0).astype(int)
+
+    # ---- posibles duplicados por detalle normalizado
+    # normalizado + palabras ordenadas: agarra "FILTRO ACEITE" vs "ACEITE FILTRO",
+    # mayúsculas, tildes de más, puntos y dobles espacios
+    d["_norm"] = (d["detalle"].astype(str).str.upper().str.strip()
+                    .str.replace(r"[^0-9A-ZÑÁÉÍÓÚÜ ]", "", regex=True)
+                    .str.replace(r"\s+", " ", regex=True)
+                    .map(lambda x: " ".join(sorted(x.split()))))
+    _dup = d[d.duplicated("_norm", keep=False) & d["_norm"].astype(bool)]
+    if not _dup.empty:
+        st.warning("⚠️ **%d repuesto(s) con detalle casi idéntico** — probables duplicados:"
+                   % len(_dup))
+        st.dataframe(_dup.sort_values(["_norm", "id_repuesto"])[
+                         ["id_repuesto", "codigo", "detalle", "categoria", "stock_actual",
+                          "movimientos", "activo"]]
+                     .rename(columns={"id_repuesto": "ID", "codigo": "Código",
+                                      "detalle": "Detalle", "categoria": "Categoría",
+                                      "stock_actual": "Stock", "movimientos": "Movs",
+                                      "activo": "Activo"}),
+                     hide_index=True, use_container_width=True)
+
+    def _lbl_dep(r):
+        return "#%d · %s%s · stock %g · %d mov%s" % (
+            int(r["id_repuesto"]), str(r["detalle"]),
+            (" [%s]" % r["codigo"]) if pd.notna(r.get("codigo")) and str(r.get("codigo")).strip() else "",
+            float(r.get("stock_actual") or 0), int(r["movimientos"]),
+            "" if bool(r.get("activo", True)) else " · ARCHIVADO")
+
+    _ops = {_lbl_dep(r): int(r["id_repuesto"]) for _, r in d.iterrows()}
+    _por_id = {int(r["id_repuesto"]): r for _, r in d.iterrows()}
+
+    # ---- eliminar (sin movimientos)
+    st.markdown("##### 1 · Eliminar repuestos sin movimientos")
+    _sel = st.multiselect("Repuestos a eliminar", list(_ops.keys()), key="repd_sel",
+                          placeholder="elegí uno o varios…")
+    _ids = [_ops[k] for k in _sel]
+    _sin = [i for i in _ids if _por_id[i]["movimientos"] == 0]
+    _con = [i for i in _ids if _por_id[i]["movimientos"] > 0]
+    if _con:
+        st.info("ℹ️ %s **tienen movimientos**: no se borran desde acá — fusionalos abajo "
+                "(o archivalos) para no perder el historial."
+                % ", ".join("#%d %s" % (i, _por_id[i]["detalle"]) for i in _con))
+    _okdel = st.checkbox("Confirmo que quiero borrarlos definitivamente", key="repd_ok",
+                         disabled=not _sin)
+    if st.button("🗑️ Eliminar %d repuesto(s)" % len(_sin), key="repd_go",
+                 type="primary", disabled=not (_sin and _okdel)):
+        try:
+            _b, _ = _eliminar_repuestos(conectar, USR, _sin)
+            cat.clear()
+            st.success("✅ %d repuesto(s) eliminado(s)." % len(_b))
+            st.rerun()
+        except Exception as e:
+            st.error("No se pudo eliminar: %s" % e)
+
+    # ---- fusionar duplicado con movimientos
+    st.markdown("##### 2 · Fusionar un duplicado (con movimientos) en el repuesto bueno")
+    st.caption("Los movimientos del duplicado pasan al repuesto que queda — el stock y el "
+               "historial se **suman** — y el duplicado se borra.")
+    fc1, fc2 = st.columns(2)
+    _kd = fc1.selectbox("Duplicado (se borra)", [""] + list(_ops.keys()), key="repd_fdup")
+    _kk = fc2.selectbox("Repuesto que queda", [""] + list(_ops.keys()), key="repd_fdest")
+    if _kd and _kk:
+        _idd, _idk = _ops[_kd], _ops[_kk]
+        if _idd == _idk:
+            st.error("Elegiste el mismo repuesto en los dos lados.")
+        else:
+            _rd, _rk = _por_id[_idd], _por_id[_idk]
+            st.caption("«%s» (%d movs, stock %g) → se fusiona en → «%s» (%d movs, stock %g). "
+                       "Stock resultante ≈ **%g**."
+                       % (_rd["detalle"], int(_rd["movimientos"]), float(_rd["stock_actual"] or 0),
+                          _rk["detalle"], int(_rk["movimientos"]), float(_rk["stock_actual"] or 0),
+                          float(_rd["stock_actual"] or 0) + float(_rk["stock_actual"] or 0)))
+            _okf = st.checkbox("Confirmo la fusión (no se puede deshacer)", key="repd_fok")
+            if st.button("🔗 Fusionar", key="repd_fgo", type="primary", disabled=not _okf):
+                try:
+                    _n = _fusionar_repuesto(conectar, USR, _idd, _idk)
+                    cat.clear()
+                    st.success("✅ Fusionado: %d movimiento(s) migrados y duplicado eliminado." % _n)
+                    st.rerun()
+                except Exception as e:
+                    st.error("No se pudo fusionar: %s" % e)
+
+    # ---- archivar
+    st.markdown("##### 3 · Archivar (dejar de usar sin borrar)")
+    st.caption("Para repuestos que ya no se usan pero cuyo historial querés conservar tal cual.")
+    _ka = st.multiselect("Repuestos a archivar", [k for k in _ops.keys() if "ARCHIVADO" not in k],
+                         key="repd_arc", placeholder="elegí…")
+    if st.button("📦 Archivar %d" % len(_ka), key="repd_arc_go", disabled=not _ka):
+        try:
+            _update_repuestos(conectar, USR,
+                              [{"id_repuesto": _ops[k], "activo": False} for k in _ka])
+            cat.clear()
+            st.success("✅ %d archivado(s)." % len(_ka))
+            st.rerun()
+        except Exception as e:
+            st.error("No se pudo archivar: %s" % e)
+
+
 # -------------------------------------------------------------------- main --
 def _vista_valor(USR, cat, conectar, df):
     st.subheader("💵 Valorización del pañol")
@@ -756,7 +901,7 @@ def render(USR, cat, conectar):
 
     vista = st.segmented_control(
         "Vista", ["⚡ Movimiento", "📊 Stock actual", "🚨 Alertas", "💵 Valorización",
-                  "🕐 Histórico", "➕ Nuevo repuesto"],
+                  "🕐 Histórico", "➕ Nuevo repuesto", "🗑️ Depurar"],
         default="⚡ Movimiento", key="rep_view", label_visibility="collapsed")
     if not vista:
         vista = "⚡ Movimiento"
@@ -771,5 +916,7 @@ def render(USR, cat, conectar):
         _vista_valor(USR, cat, conectar, df)
     elif vista.startswith("🕐"):
         _vista_historial(USR, cat, conectar, df)
+    elif vista.startswith("🗑️"):
+        _vista_depurar(USR, cat, conectar, df)
     else:
         _vista_nuevo(USR, cat, conectar, df)
