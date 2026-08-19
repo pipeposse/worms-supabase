@@ -357,6 +357,7 @@ def _selector_tanques(ss, tp, fam, spec, tks, conectar, USR, inc_vacios,
 
 def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod, lit_obj):
     """Tabla única: tildar para usar a tope, o escribir litros. Totales abajo."""
+    ss["_dsp_lst_on"] = True
     cur = _lineas_actuales(ss, tks)
     _map_l = {}
     for _, r in cur.iterrows():
@@ -594,6 +595,7 @@ def _selector_tarjetas(ss, tp, fam, spec, tks, conectar, USR, inc_vacios):
     Sin HTML con estado ni components custom: cada tarjeta es un st.button nativo,
     así el click es un rerun normal de Streamlit — no puede colgar ni resetear la
     página."""
+    ss["_dsp_lst_on"] = False
     c1, c2, c3 = st.columns([1.6, 1.6, 1.4])
     _fsel = c1.radio("1 · Producto", list(fam), horizontal=True, key="dsp_card_prod")
     _lleno = c2.checkbox("🔋 Llenado total al agregar", value=True, key="dsp_card_full",
@@ -1806,6 +1808,8 @@ def _borr_restaurar(cat, USR):
             ss[k] = v
         if pl.get("lineas"):
             ss["dsp_lineas"] = pd.DataFrame(pl["lineas"]).reindex(columns=_COLS_ED)
+            ss["_dsp_last_ed"] = ss["dsp_lineas"].copy()
+            ss["_dsp_lst_fir"] = None
             ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
         ss["_dsp_borr_ts"] = str(df.iloc[0]["ts"])
     except Exception:
@@ -2461,11 +2465,18 @@ def _analisis(USR, cat):
 
 
 def _lineas_set(ss, df):
-    """Toda escritura programática de la grilla pasa por acá: guarda copia para Deshacer."""
+    """Toda escritura programática de la grilla pasa por acá: guarda copia para Deshacer.
+
+    Sincroniza los TRES estados en el mismo run (dsp_lineas, _dsp_last_ed y la
+    firma de la lista). Antes _dsp_last_ed quedaba viejo, la lista lo detectaba
+    recién en el run del siguiente click del usuario, se rearmaba con clave nueva
+    y esa edición se perdía ("tengo que hacerlo dos veces")."""
     _prev = ss.get("dsp_lineas")
     if isinstance(_prev, pd.DataFrame) and not _prev.dropna(how="all").empty:
         ss["dsp_lineas_undo"] = _prev.copy()
     ss["dsp_lineas"] = df
+    ss["_dsp_last_ed"] = df.copy() if isinstance(df, pd.DataFrame) else df
+    ss["_dsp_lst_fir"] = None      # la lista se rearma en ESTE rerun, no en el próximo click
     # grilla fresca: sin esto el data_editor arrastra ediciones viejas sobre datos nuevos
     ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
 
@@ -2485,7 +2496,8 @@ def _armar(USR, cat, conectar):
                  "perdió nada. Seguí desde donde estabas." % ss["_dsp_borr_ts"])
         if _bx.button("🗑️ Descartar borrador", key="dsp_borr_del", use_container_width=True):
             _borr_limpiar(conectar, USR)
-            for _k in [k for k in list(ss.keys()) if str(k).startswith("dsp_")]:
+            for _k in [k for k in list(ss.keys())
+                       if str(k).startswith(("dsp_", "_dsp"))]:
                 ss.pop(_k, None)
             ss.pop("_dsp_borr_ts", None)
             st.rerun()
@@ -2495,7 +2507,8 @@ def _armar(USR, cat, conectar):
                        use_container_width=True,
                        help="Trae de vuelta el último borrador guardado (cada cambio se "
                             "guarda solo). PISA lo que esté en pantalla ahora."):
-            for _k in list(_BORR_KEYS) + ["dsp_lineas", "dsp_lineas_undo"]:
+            for _k in list(_BORR_KEYS) + ["dsp_lineas", "dsp_lineas_undo",
+                                          "_dsp_last_ed", "_dsp_lst_fir"]:
                 ss.pop(_k, None)
             ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
             _borr_restaurar(cat, USR)
@@ -2998,6 +3011,10 @@ def _armar(USR, cat, conectar):
             _cur = ss.get("dsp_lineas")
             ss["dsp_lineas"] = ss["dsp_lineas_undo"]
             ss["dsp_lineas_undo"] = _cur if isinstance(_cur, pd.DataFrame) else None
+            _n = ss["dsp_lineas"]
+            ss["_dsp_last_ed"] = _n.copy() if isinstance(_n, pd.DataFrame) else None
+            ss["_dsp_lst_fir"] = None
+            ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
             st.rerun()
     pisar = cc.checkbox("✏️ Pisar valores de laboratorio a mano", key="dsp_pisar",
                         help="Sólo si el lab te pasó un valor que todavía no está en el sistema. "
@@ -3133,6 +3150,14 @@ def _armar(USR, cat, conectar):
     ed = ed.reindex(columns=list(_cols) + ["Disp.", "Calidad"])
     _borr_guardar(conectar, USR, ed.reindex(columns=_cols))  # autosave sin columnas informativas
     ss["_dsp_last_ed"] = ed.reindex(columns=_cols).copy()    # para el selector de tarjetas
+    # La LISTA de arriba ya se dibujó en este run: si acá cambiaron litros o filas se
+    # resincroniza AHORA con un rerun programático. Antes quedaba desfasada y se
+    # rearmaba recién con el próximo click del usuario, comiéndose esa edición.
+    if ss.get("_dsp_lst_on"):
+        _f_low = _firma_lineas(_lineas_actuales(ss, tks))
+        if ss.get("_dsp_lst_fir") is not None and ss.get("_dsp_lst_fir") != _f_low:
+            ss["_dsp_lst_fir"] = None
+            st.rerun()
     # Si cambió un TANQUE o la cantidad de filas, dsp_lineas toma lo editado y se
     # redibuja UNA vez: así Disp. y Calidad reflejan el tanque nuevo. Lo tipeado se
     # conserva porque viene de `ed` (esto no es el espejo continuo que revertía valores).

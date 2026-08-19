@@ -2699,8 +2699,19 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
             if df is None or df.empty:
                 st.caption(f"Sin tanques **con stock** de {cod}.")
             else:
+                def _banda_afes(az, fo):
+                    """Banda contra la spec de venta (S<=50 / P<=150). None = sin lab."""
+                    if pd.isna(az) and pd.isna(fo):
+                        return None
+                    _r = max((float(az) / 50.0) if pd.notna(az) else 0.0,
+                             (float(fo) / 150.0) if pd.notna(fo) else 0.0)
+                    return "A" if _r <= 0.8 else ("B" if _r <= 0.9 else ("C" if _r <= 1.0 else "D"))
+
                 def _tlab(r):
                     s = f"{r['prod_cod']} · {r['codigo']} ({r['nombre']}) · {float(r['lt']):,.0f} L"
+                    if str(cod).upper() == "AFE-S":
+                        _b = _banda_afes(r.get('ppm_azufre'), r.get('ppm_fosforo'))
+                        s += " · banda %s" % (("%s 🔴" % _b) if _b == "D" else (_b or "s/lab"))
                     if pd.notna(r.get('corriente')):
                         s += f" · {str(r['corriente']).lower()}"
                     s += f" · ac {float(r['acidez_pct']):.2f}%" if pd.notna(r.get('acidez_pct')) else " · ac s/d"
@@ -2715,6 +2726,12 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                     sels = sels[:5]
                 for _i, _s in enumerate(sels):
                     row = df.iloc[opts.index(_s)]
+                    if str(cod).upper() == "AFE-S":
+                        _bsel = _banda_afes(row.get('ppm_azufre'), row.get('ppm_fosforo'))
+                        if _bsel in ("A", "B", "C"):
+                            st.warning(f"⚠️ **{row['codigo']}** está EN spec de venta (banda {_bsel}): "
+                                       "es producto vendible. Confirmá con dirección antes de "
+                                       "mandarlo a desgomado.")
                     _stock = float(row["kg"] or 0)
                     _stock_lt = float(row.get("lt") or 0)
                     _denst = (_stock / _stock_lt) if _stock_lt > 0 else (float(row["densidad_g_ml"]) if pd.notna(row.get("densidad_g_ml")) else (densidad_de(cod) or 0.92))
@@ -5123,7 +5140,10 @@ with tab_objs[0]:
             elif usa_tickets_lab:
                 # Opciones según proceso/sector
                 if sector == "REACTORES" and tipo_proceso_sel == "DESGOMADO_ACUOSO":
-                    _opts_mp_tl = ["AFE-SG"]
+                    # La MP sigue a la "Materia prima a tratar": AFE-SG (clásico),
+                    # AFE-S calidad D (reproceso de fuera de spec) o AFE-G.
+                    _mpu = str(mp_pre or "").strip().upper()
+                    _opts_mp_tl = [_mpu] if _mpu in ("AFE-SG", "AFE-S", "AFE-G") else ["AFE-SG"]
                     _multi_mp = False
                 elif sector == "BACHAS":
                     _opts_mp_tl = [c for c in opts_mp if str(c).startswith("BORRA")] or opts_mp or ["BORRA-A"]
@@ -5140,7 +5160,12 @@ with tab_objs[0]:
                 # BACHAS: text input (las MP pueden venir de stock interno sin portería)
                 _usa_multiselect_mp = (sector == "REACTORES" and tipo_proceso_sel == "DESGOMADO_ACUOSO")
                 if _usa_multiselect_mp:
-                    st.caption("📥 Elegí los tickets desde el desplegable (ya filtrados por **AFE-SG** con lab cargado). Máximo 3 por proceso. La app suma kg y trae los parámetros del laboratorio.")
+                    st.caption("📥 Elegí los tickets desde el desplegable (ya filtrados por **%s** con lab cargado). Máximo 3 por proceso. La app suma kg y trae los parámetros del laboratorio." % _opts_mp_tl[0])
+                    if _opts_mp_tl[0] == "AFE-S":
+                        st.info("♻️ **Reproceso de AFE-S calidad D**: al desgomado sólo debería "
+                                "entrar AFE-S **fuera de spec de venta** (azufre > 50 o fósforo "
+                                "> 150 ppm). El A/B/C es producto vendible: se despacha, no se "
+                                "reprocesa.")
                 else:
                     st.caption("📥 Ingresá **N° de ticket** de portería (máx 3 por proceso). La app suma kg y trae los parámetros del laboratorio.")
 
