@@ -228,18 +228,42 @@ def cargar(cat, semana):
         "WHERE e.fecha_despacho >= (%s::date - 38) "
         "ORDER BY e.fecha_despacho", (sem,)))
 
-    # lab final por batch (para las tablas de parámetros por reacción)
+    # lab por batch: inicial (acidez cargada al armar el batch) y final (análisis del batch)
     D["lab_batches"] = _recs(cat(
         "SELECT p.ident, p.tipo_proceso AS tipo, p.fecha::text AS fecha, "
         "  round((p.real_kg/1000)::numeric,1) AS tn, l.fuente_lab AS fuente, "
+        "  round((fb.parametros_proceso->>'acidez_pct')::numeric,2) AS acidez_ini, "
         "  round(l.acidez_pct::numeric,2) AS acidez, round(l.agua_pct::numeric,2) AS agua, "
         "  round(l.sedimentos_pct::numeric,2) AS sed, "
         "  round(l.azufre_ppm::numeric,0) AS s, round(l.fosforo_ppm::numeric,0) AS p, "
         "  produccion.fn_categoria_afe(l.azufre_ppm, l.fosforo_ppm) AS categoria "
         "FROM produccion.v_perf_reaccion p "
+        "JOIN produccion.fact_batch_proceso fb ON fb.id_batch = p.id_batch "
         "LEFT JOIN produccion.v_reaccion_lab_final l ON l.id_batch = p.id_batch "
         "WHERE p.fecha >= (%s::date - 45) AND p.real_kg IS NOT NULL "
         "ORDER BY p.fecha, p.ident", (sem,)))
+
+    # calidad del MP que entra por portería (proxy del inicial de S y P: aún no se mide
+    # por batch; ponderado por kg, últimos 45 días)
+    D["mp_porteria"] = _recs(cat(
+        "SELECT CASE WHEN producto ILIKE '%%SG%%' THEN 'AFE-SG' ELSE 'AG' END AS mp, "
+        "  count(*) AS tk, count(*) FILTER (WHERE s_ppm IS NOT NULL) AS con_lab, "
+        "  round(sum(tn)::numeric,0) AS tn, "
+        "  round((sum(kg*s_ppm)/nullif(sum(kg) FILTER (WHERE s_ppm IS NOT NULL),0))::numeric,0) AS s, "
+        "  round((sum(kg*p_ppm)/nullif(sum(kg) FILTER (WHERE p_ppm IS NOT NULL),0))::numeric,0) AS p, "
+        "  round((sum(kg*acidez_pct)/nullif(sum(kg) FILTER (WHERE acidez_pct IS NOT NULL),0))::numeric,1) AS acidez "
+        "FROM produccion.v_brief_porteria "
+        "WHERE flujo = 'ENTRADA' AND fecha >= (%s::date - 45) "
+        "  AND (producto ILIKE '%%SG%%' OR (familia = 'AG' AND producto NOT ILIKE 'AG-A%%')) "
+        "GROUP BY 1", (sem,)))
+
+    # metas del mes fijadas por dirección (editables en la app)
+    _mm = _recs(cat(
+        "SELECT to_char(mes,'YYYY-MM') AS mes, despachos_tn, fuera_spec_max_pct, "
+        "  desgomado_tn, desgomado_ab_pct, are_tn, are_acidez_max, nota "
+        "FROM produccion.meta_mensual "
+        "WHERE mes = date_trunc('month', %s::date)::date", (sem,)))
+    D["meta_mes"] = _mm[0] if _mm else None
 
     # calidad del registro de tiempos por etapa (últimas 4 semanas)
     D["etapa_calidad"] = _recs(cat(
@@ -260,16 +284,36 @@ def cargar(cat, semana):
         "  max(extract(day from fecha)::int) AS ult "
         "FROM produccion.v_perf_reaccion WHERE fecha >= %s GROUP BY 1,2 ORDER BY 1,2", (mes0,)))
 
+    # carga_p = horas de cronograma ANTERIORES a la etapa de reacción (la "carga"):
+    # el prog_total_h del view suma las 5 etapas del cronograma (carga · reacción · reposo ·
+    # decantación · acopio final); para que la tabla cierre por fila, el ciclo se arma como
+    # reacción + reposo + (decantación+acopio) y la carga queda con la espera.
     D["batches"] = _recs(cat(
-        "SELECT ident, tipo_proceso AS tipo, reactor, fecha::date::text AS fecha, "
-        "  round(espera_arranque_h::numeric,1) AS espera, "
-        "  round(prog_reaccion_h::numeric,1) AS reac_p, round(reaccion_h::numeric,1) AS reac_r, "
-        "  round(prog_reposo_h::numeric,1) AS repo_p, round(reposo_h::numeric,1) AS repo_r, "
-        "  round(prog_decantacion_h::numeric,1) AS dec_p, round(decantacion_h::numeric,1) AS dec_r, "
-        "  round(prog_total_h::numeric,1) AS tot_p, round(ciclo_proceso_h::numeric,1) AS tot_r, "
-        "  round((formula_kg/1000)::numeric,1) AS tn_form, round((real_kg/1000)::numeric,1) AS tn_real, "
-        "  tiempos_confiables AS conf "
-        "FROM produccion.v_perf_reaccion WHERE fecha BETWEEN %s AND %s ORDER BY fecha", (sem, fin)))
+        "SELECT p.ident, p.tipo_proceso AS tipo, p.reactor, p.fecha::date::text AS fecha, "
+        "  round(p.espera_arranque_h::numeric,1) AS espera, "
+        "  round(p.prog_reaccion_h::numeric,1) AS reac_p, round(p.reaccion_h::numeric,1) AS reac_r, "
+        "  round(p.prog_reposo_h::numeric,1) AS repo_p, round(p.reposo_h::numeric,1) AS repo_r, "
+        "  round(p.prog_decantacion_h::numeric,1) AS dec_p, round(p.decantacion_h::numeric,1) AS dec_r, "
+        "  round(p.prog_total_h::numeric,1) AS tot_p, round(p.ciclo_proceso_h::numeric,1) AS tot_r, "
+        "  round(cr.prog_pre::numeric,1) AS carga_p, "
+        "  round((p.formula_kg/1000)::numeric,1) AS tn_form, "
+        "  round((p.real_kg/1000)::numeric,1) AS tn_real, "
+        "  p.tiempos_confiables AS conf "
+        "FROM produccion.v_perf_reaccion p "
+        "LEFT JOIN LATERAL ("
+        "  WITH et AS ("
+        "    SELECT (s.value->>'Duración (h)')::numeric AS h, "
+        "           lower(s.value->>'Etapa') AS nom, s.ordinality AS ord "
+        "    FROM produccion.fact_batch_proceso fb "
+        "    CROSS JOIN LATERAL jsonb_array_elements("
+        "      CASE WHEN jsonb_typeof(fb.parametros_proceso->'cronograma')='array' "
+        "           THEN fb.parametros_proceso->'cronograma' ELSE '[]'::jsonb END) "
+        "      WITH ORDINALITY s(value, ordinality) "
+        "    WHERE fb.id_batch = p.id_batch) "
+        "  SELECT coalesce(sum(h) FILTER (WHERE ord < "
+        "    (SELECT min(ord) FROM et WHERE nom LIKE '%%reacci%%')),0) AS prog_pre FROM et"
+        ") cr ON true "
+        "WHERE p.fecha BETWEEN %s AND %s ORDER BY p.fecha", (sem, fin)))
 
     _ag = cat(
         "SELECT round(coalesce(sum(l.tn),0)::numeric,1) AS tn "

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """📋 Brief semanal de Dirección.
 
-Un informe de 5 páginas sobre la semana ISO cerrada (lunes a domingo), pensado
+Un informe de 8 páginas sobre la semana ISO cerrada (lunes a domingo), pensado
 para leerse de un vistazo: qué exige una decisión, qué entró y con qué calidad,
 cuánto stock hay por calidad y cuánto está comprometido, dónde están los desvíos
 y cómo estamos posicionados para los próximos despachos.
@@ -18,6 +18,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from . import datos as _datos
+from . import metas as _metas
 from .render import render as _html
 
 ROLES = ("SUPERVISOR", "ADMIN")
@@ -42,7 +43,7 @@ def render(USR, cat, conectar=None):
         "<div style='background:linear-gradient(90deg,#0f172a,#1d4ed8);border-radius:14px;"
         "padding:16px 20px;margin:0 0 12px'>"
         "<div style='color:#fff;font-size:1.4rem;font-weight:900'>📋 Brief semanal</div>"
-        "<div style='color:#dbeafe;font-size:.88rem;margin-top:3px'>Cinco páginas sobre la "
+        "<div style='color:#dbeafe;font-size:.88rem;margin-top:3px'>Ocho páginas sobre la "
         "semana cerrada: ingresos, calidad, stock por calidad, compromisos, desvíos, "
         "despachos y proyecciones. Todo comparado con las semanas y meses previos.</div></div>",
         unsafe_allow_html=True)
@@ -84,6 +85,8 @@ def render(USR, cat, conectar=None):
         "**Imprimir → Guardar como PDF** sale el informe listo para mandar; en el teléfono se acomoda "
         "solo a una columna, con letra grande, las tablas convertidas en fichas y los gráficos "
         "deslizables. Se comparte por WhatsApp o mail tal cual está y se abre sin internet.")
+
+    _metas.editor(USR, cat, conectar)
 
     st.divider()
     ver = st.radio("Vista previa", ["🖥️ Como se ve impreso", "📱 Como se ve en el celular"],
