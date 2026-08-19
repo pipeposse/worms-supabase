@@ -96,6 +96,7 @@ _RANGOS = {
     "prc_glicerina": (0, 100), "prc_poliglicerol": (0, 100),
     "prc_goma_arriba": (0, 100), "prc_goma_medio": (0, 100), "prc_goma_abajo": (0, 100),
     "ppm_azufre": (0, 100000), "ppm_fosforo": (0, 100000), "densidad__g_ml": (0.4, 1.7),
+    "descuento_pct": (0, 100),
 }
 CORRIENTE = ["VEGETAL", "ANIMAL"]
 # Calidades por familia — alineadas al maestro_final (revisado dirección 2026-07-07)
@@ -127,7 +128,7 @@ _VALID_COLS = {
     "eflu_conductividad_ms", "eflu_prc_agua", "eflu_prc_sedimentos",
     "eflu_prc_grasa", "eflu_dequo_mg02_l", "borra_prc_grasa", "borra_ph",
     "borra_alcalinidad", "sebo_indice_yodo_gyodo_gmuestra", "concentracion",
-    "gli_glicerol", "gli_ceniza", "gli_mong",
+    "gli_glicerol", "gli_ceniza", "gli_mong", "descuento_pct",
 }
 
 
@@ -311,6 +312,11 @@ def _cierre(p, pf, tok, calidades, default_corriente=None):
                        default=default_corriente)
         calidad = _s("Calidad final *", "calidad_final_lab", calidades, pf, p, tok, "cal")
         rechazado = _s("Rechazado/Aceptado *", "rechazado", RECHAZADO, pf, p, tok, "rech")
+        descuento = _n("Descuento al ticket (%)", "descuento_pct", pf, p, tok, "desc",
+                       min_value=0.0, max_value=100.0, step=0.5,
+                       help="Cuánto habría que descontarle al PRECIO del ticket por mala "
+                            "calidad. Vacío o 0 = sin descuento. También se puede aplicar "
+                            "después desde Centro de Planificación → 💸 Descuentos.")
     with c2:
         id_tanque_1 = _t("Tanque destino (automático/sugerido, editable)", "id_tanque_1", pf, p, tok, "t1")
         id_tanque_2 = _t("Tanque alternativo", "id_tanque_2", pf, p, tok, "t2")
@@ -320,7 +326,8 @@ def _cierre(p, pf, tok, calidades, default_corriente=None):
     if _mot_tq:
         conclusion = ((conclusion or "") + " | Cambio de tanque: " + _mot_tq).strip(" |")
     return dict(corriente=corriente, calidad_final_lab=calidad, rechazado=rechazado,
-                id_tanque_1=id_tanque_1, id_tanque_2=id_tanque_2, conclusion=conclusion)
+                id_tanque_1=id_tanque_1, id_tanque_2=id_tanque_2, conclusion=conclusion,
+                descuento_pct=descuento)
 
 
 # ---------------------------------------------------------------------------

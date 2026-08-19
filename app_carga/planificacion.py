@@ -3354,6 +3354,140 @@ def _render_cronogramas(USR, cat, conectar):
             st.exception(e)
 
 
+def _descuentos_tickets(USR, cat, conectar):
+    """Descuentos rápidos (%) al precio de los tickets por mala calidad.
+
+    Mismo campo que el "Descuento al ticket (%)" de los formularios de laboratorio
+    (lab_evaluaciones.descuento_pct): acá se aplica en masa sobre la grilla. Las
+    filas que vienen de Access se ADOPTAN (override de la app), así el sync diario
+    no pisa el descuento."""
+    st.subheader("💸 Descuentos a tickets por calidad")
+    st.caption("Cuánto **descontarle al precio** de cada ticket por mala calidad. Es el "
+               "mismo campo *Descuento al ticket (%)* de los formularios de laboratorio: "
+               "lo que cargues acá se ve allá y viceversa. Vacío = sin descuento.")
+    ss = st.session_state
+    f1, f2, f3, f4 = st.columns([0.9, 1.6, 1.1, 1.0])
+    _dias = int(f1.selectbox("Días hacia atrás", [15, 30, 60, 90, 180, 365], index=1,
+                             key="dsc_dias"))
+    df = cat(
+        "SELECT l.source_id, l.id_access, regexp_replace(l.ticket,'\\.0+$','') AS ticket, "
+        "       l.fecha::date::text AS fecha, "
+        "       COALESCE(NULLIF(btrim(l.producto_lab),''),'—') AS prod, "
+        "       COALESCE(NULLIF(btrim(l.calidad_final_lab),''),'—') AS cal, "
+        "       COALESCE(NULLIF(btrim(l.rechazado),''),'—') AS estado, "
+        "       l.prc_acidez, l.ppm_azufre, l.ppm_fosforo, l.descuento_pct, tx.kg "
+        "FROM produccion.v_procesos_lab_efectivo l "
+        "LEFT JOIN LATERAL (SELECT round(abs(COALESCE(t.peso_neto,0))::numeric,0) AS kg "
+        "                   FROM produccion.v_transacciones_limpias t "
+        "                   WHERE t.transaccion::text = regexp_replace(l.ticket,'\\.0+$','') "
+        "                   LIMIT 1) tx ON true "
+        "WHERE l.ticket IS NOT NULL AND btrim(l.ticket) <> '' "
+        "  AND l.fecha >= current_date - %s "
+        "ORDER BY l.fecha DESC, ticket DESC", (_dias,))
+    if df is None or df.empty:
+        st.info("No hay tickets evaluados por laboratorio en la ventana elegida.")
+        return
+    d = df.copy()
+    for _c in ("prc_acidez", "ppm_azufre", "ppm_fosforo", "descuento_pct", "kg"):
+        d[_c] = pd.to_numeric(d[_c], errors="coerce")
+    _fprod = f2.multiselect("Producto", sorted(d["prod"].unique().tolist()),
+                            key="dsc_prod", placeholder="todos")
+    _solo = f3.checkbox("Sólo SIN descuento", key="dsc_solo",
+                        help="Oculta los tickets que ya tienen un descuento cargado.")
+    _tkq = f4.text_input("Buscar ticket", key="dsc_tk")
+    if _fprod:
+        d = d[d["prod"].isin(_fprod)]
+    if _solo:
+        d = d[d["descuento_pct"].isna() | (d["descuento_pct"] <= 0)]
+    if _tkq.strip():
+        d = d[d["ticket"].astype(str).str.contains(_tkq.strip(), case=False, na=False)]
+    if d.empty:
+        st.info("Ningún ticket cumple los filtros.")
+        return
+    d = d.reset_index(drop=True)
+
+    _con = d[d["descuento_pct"].fillna(0) > 0]
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Tickets en la vista", int(len(d)))
+    k2.metric("Con descuento", int(len(_con)))
+    k3.metric("Kg con descuento", "{:,.0f}".format(float(_con["kg"].fillna(0).sum())))
+
+    _sh = pd.DataFrame({
+        "Ticket": d["ticket"].astype(str), "Fecha": d["fecha"],
+        "Producto": d["prod"], "Cal.": d["cal"], "Estado": d["estado"],
+        "Kg": d["kg"], "Acidez %": d["prc_acidez"],
+        "S ppm": d["ppm_azufre"], "P ppm": d["ppm_fosforo"],
+        "Descuento %": d["descuento_pct"],
+    })
+    _k = "dsc_ed_%d" % int(ss.get("dsc_nonce") or 0)
+    ed = st.data_editor(
+        _sh, hide_index=True, use_container_width=True, key=_k,
+        height=min(38 * (len(_sh) + 1) + 6, 520),
+        disabled=["Ticket", "Fecha", "Producto", "Cal.", "Estado", "Kg",
+                  "Acidez %", "S ppm", "P ppm"],
+        column_config={
+            "Kg": st.column_config.NumberColumn(format="%.0f"),
+            "Acidez %": st.column_config.NumberColumn(format="%.2f"),
+            "S ppm": st.column_config.NumberColumn(format="%.1f"),
+            "P ppm": st.column_config.NumberColumn(format="%.1f"),
+            "Descuento %": st.column_config.NumberColumn(
+                "Descuento %", min_value=0.0, max_value=100.0, step=0.5, format="%.1f",
+                help="% a descontar del precio del ticket por mala calidad. "
+                     "Borrá el valor para quitar el descuento."),
+        })
+
+    _cmb = []
+    for _i in range(len(_sh)):
+        _v0, _v1 = _sh["Descuento %"].iloc[_i], ed["Descuento %"].iloc[_i]
+        _n0 = None if pd.isna(_v0) else round(float(_v0), 2)
+        _n1 = None if pd.isna(_v1) else round(float(_v1), 2)
+        if _n0 != _n1:
+            _cmb.append((d.iloc[_i], _n1))
+    if _cmb:
+        st.info("✏️ **%d ticket(s) por guardar:** %s"
+                % (len(_cmb), " · ".join("%s → %s" % (r["ticket"],
+                   ("%.1f%%" % v) if v is not None else "sin descuento")
+                   for r, v in _cmb[:12]) + (" …" if len(_cmb) > 12 else "")))
+    if st.button("💾 Guardar descuentos", type="primary", disabled=not _cmb, key="dsc_save"):
+        import lab_carga as _lc
+        try:
+            from app import _lab_conn as _gc
+        except Exception:
+            _gc = None
+        _ok, _err = 0, []
+        for _r, _v in _cmb:
+            try:
+                if str(_r["source_id"]) == _lc.APP_SOURCE:
+                    with conectar(int(USR["id_usuario"])) as (conn, audit):
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE produccion.lab_evaluaciones "
+                                        "SET descuento_pct=%s WHERE id=%s",
+                                        (_v, int(float(_r["id_access"]))))
+                        audit.log("UPDATE", "lab_evaluaciones", int(float(_r["id_access"])),
+                                  {"descuento_pct": _v, "motivo": "descuento rápido planificación"})
+                else:
+                    _full = _lc.cargar_registro(str(_r["source_id"]), str(_r["id_access"]),
+                                                get_conn=_gc) or {}
+                    _lc.guardar_edicion(
+                        {"source_id": str(_r["source_id"]),
+                         "id_access": str(_r["id_access"]), "full": _full},
+                        {"descuento_pct": _v}, get_conn=_gc)
+                _ok += 1
+            except Exception as _e:
+                _err.append("%s: %s" % (_r["ticket"], _e))
+        if _ok:
+            st.success("✅ %d descuento(s) guardado(s)." % _ok)
+        if _err:
+            st.error("No se pudieron guardar: " + " · ".join(_err[:5]))
+        cat.clear()
+        ss["dsc_nonce"] = int(ss.get("dsc_nonce") or 0) + 1
+        st.rerun()
+    st.caption("El descuento queda en el registro de laboratorio del ticket "
+               "(*lab_evaluaciones.descuento_pct*) y se ve en los formularios del lab. "
+               "Los tickets evaluados desde Access se adoptan como override de la app, "
+               "así el sync diario no pisa el descuento.")
+
+
 def render(USR, cat, conectar, siguiente_identificador, H=None):
     if H is None:
         try:
@@ -3393,7 +3527,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administración de reacciones", "📅 Cronogramas",
                    "🚚 Despachos", "🧮 Balance", "🔬 Análisis AFE", "🎯 Asignación AFE",
                    "♻️ Recuperación AG", "🧭 Tanques", "📦 Informe de stock",
-                   "🛂 Aprobaciones"]
+                   "💸 Descuentos", "🛂 Aprobaciones"]
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3491,6 +3625,16 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         except Exception as _e:
             import traceback as _tb
             st.error("No se pudo cargar Recuperación AG: %s" % _e)
+            with st.expander("🔧 Detalle técnico"):
+                st.code(_tb.format_exc())
+        return
+
+    if _grupo.startswith("💸"):
+        try:
+            _descuentos_tickets(USR, cat, conectar)
+        except Exception as _e:
+            import traceback as _tb
+            st.error("No se pudo cargar Descuentos: %s" % _e)
             with st.expander("🔧 Detalle técnico"):
                 st.code(_tb.format_exc())
         return

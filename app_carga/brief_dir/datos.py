@@ -26,7 +26,17 @@ def semanas_disponibles(cat=None, n=26):
 
 
 def _recs(df):
-    return [] if df is None or df.empty else df.to_dict("records")
+    """records() convirtiendo Decimal→float: psycopg2 devuelve numeric como
+    Decimal y los gráficos multiplican por float (TypeError si se mezclan)."""
+    if df is None or df.empty:
+        return []
+    from decimal import Decimal
+    filas = df.to_dict("records")
+    for f in filas:
+        for k, v in f.items():
+            if isinstance(v, Decimal):
+                f[k] = float(v)
+    return filas
 
 
 def cargar(cat, semana):
@@ -197,14 +207,50 @@ def cargar(cat, semana):
         "WHERE semana BETWEEN %s AND %s AND (teorico > 0 OR registrado > 0)", (desde9, sem)))
 
     D["despacho_ef"] = _recs(cat(
-        "SELECT id_despacho AS id, titulo, destino, fecha_despacho::text AS fecha, estado, "
-        "  n_contenedores AS cont, round(ocupacion_pct,0) AS ocup, round(tn_total::numeric,1) AS tn, "
-        "  round(tn_por_contenedor,2) AS tn_cont, tanques_usados AS tq, tickets_cargados AS tk, "
-        "  round(margen_azufre_pct,1) AS mg_s, round(margen_fosforo_pct,1) AS mg_p, "
-        "  round(margen_pct,1) AS mg, dias_anticipacion AS antic, "
-        "  n_lineas_exceden_stock AS exc, fuera_spec AS fs, aprob_direccion AS ap "
-        "FROM produccion.v_brief_despacho_eficiencia WHERE fecha_despacho >= (%s::date - 38) "
-        "ORDER BY fecha_despacho", (sem,)))
+        "SELECT e.id_despacho AS id, e.titulo, e.destino, e.fecha_despacho::text AS fecha, "
+        "  e.estado, e.n_contenedores AS cont, round(e.ocupacion_pct,0) AS ocup, "
+        "  round(e.tn_total::numeric,1) AS tn, "
+        "  round((SELECT sum(l.tn) FROM produccion.v_despacho_linea l "
+        "         WHERE l.id_despacho = e.id_despacho)::numeric,1) AS tn_plan, "
+        "  round((SELECT sum(t.kg) FILTER (WHERE NOT coalesce(t.sin_pesada,false))/1000.0 "
+        "         FROM produccion.fact_despacho_ticket t "
+        "         WHERE t.id_despacho = e.id_despacho)::numeric,1) AS tn_ticket, "
+        "  round(e.tn_por_contenedor,2) AS tn_cont, e.tanques_usados AS tq, "
+        "  e.tickets_cargados AS tk, "
+        "  round(e.acidez_pond,2) AS acidez, round(e.azufre_pond,1) AS azufre, "
+        "  round(e.fosforo_pond,1) AS fosforo, round(d.spec_acidez_max,2) AS lim_ac, "
+        "  round(e.spec_azufre_max,0) AS lim_s, round(e.spec_fosforo_max,0) AS lim_p, "
+        "  round(e.margen_azufre_pct,1) AS mg_s, round(e.margen_fosforo_pct,1) AS mg_p, "
+        "  round(e.margen_pct,1) AS mg, e.dias_anticipacion AS antic, "
+        "  e.n_lineas_exceden_stock AS exc, e.fuera_spec AS fs, e.aprob_direccion AS ap "
+        "FROM produccion.v_brief_despacho_eficiencia e "
+        "JOIN produccion.fact_despacho d USING (id_despacho) "
+        "WHERE e.fecha_despacho >= (%s::date - 38) "
+        "ORDER BY e.fecha_despacho", (sem,)))
+
+    # lab final por batch (para las tablas de parámetros por reacción)
+    D["lab_batches"] = _recs(cat(
+        "SELECT p.ident, p.tipo_proceso AS tipo, p.fecha::text AS fecha, "
+        "  round((p.real_kg/1000)::numeric,1) AS tn, l.fuente_lab AS fuente, "
+        "  round(l.acidez_pct::numeric,2) AS acidez, round(l.agua_pct::numeric,2) AS agua, "
+        "  round(l.sedimentos_pct::numeric,2) AS sed, "
+        "  round(l.azufre_ppm::numeric,0) AS s, round(l.fosforo_ppm::numeric,0) AS p, "
+        "  produccion.fn_categoria_afe(l.azufre_ppm, l.fosforo_ppm) AS categoria "
+        "FROM produccion.v_perf_reaccion p "
+        "LEFT JOIN produccion.v_reaccion_lab_final l ON l.id_batch = p.id_batch "
+        "WHERE p.fecha >= (%s::date - 45) AND p.real_kg IS NOT NULL "
+        "ORDER BY p.fecha, p.ident", (sem,)))
+
+    # calidad del registro de tiempos por etapa (últimas 4 semanas)
+    D["etapa_calidad"] = _recs(cat(
+        "SELECT etapa, count(*) AS n, "
+        "  count(*) FILTER (WHERE sospecha_click AND real_h >= 0) AS clicks, "
+        "  count(*) FILTER (WHERE real_h < 0) AS negativos, "
+        "  count(*) FILTER (WHERE NOT sospecha_click AND real_h >= 0) AS ok, "
+        "  round(avg(real_h) FILTER (WHERE NOT sospecha_click AND real_h >= 0)::numeric,1) AS h_ok, "
+        "  round(avg(prog_h)::numeric,1) AS h_prog "
+        "FROM produccion.v_perf_reaccion_etapa WHERE fecha >= (%s::date - 28) "
+        "GROUP BY etapa", (sem,)))
 
     D["prod_mes"] = _recs(cat(
         "SELECT to_char(date_trunc('month',fecha::timestamp),'YYYY-MM') AS mes, tipo_proceso AS tipo, "
@@ -225,31 +271,6 @@ def cargar(cat, semana):
         "  tiempos_confiables AS conf "
         "FROM produccion.v_perf_reaccion WHERE fecha BETWEEN %s AND %s ORDER BY fecha", (sem, fin)))
 
-    # especificación del maestro por tipo de AFE (los tres parámetros que los separan)
-    _notas_afe = {"AFE-S": "el estándar de exportación",
-                  "AFE-SG": "con gomas · MP del desgomado",
-                  "AFE-G": "girasol", "AFE-AL": "alta acidez", "AFE-P": "pesado"}
-    _sp = cat(
-        "SELECT producto, "
-        "  max(especificacion) FILTER (WHERE parametro='%% ACIDEZ') AS acidez, "
-        "  max(especificacion) FILTER (WHERE parametro='%% H2O - SEDIMENTO & Gomas') AS hsg, "
-        "  max(especificacion) FILTER (WHERE parametro='PPM FOSFORO') AS fosforo "
-        "FROM produccion.dim_maestro_parametro WHERE producto LIKE %s "
-        "GROUP BY 1 ORDER BY 1", ("AFE%",))
-    D["afe_specs"] = []
-    if _sp is not None and not _sp.empty:
-        def _fx(v, suf):
-            if v is None:
-                return "—"
-            t = str(v).replace("<=", "≤").replace(">=", "≥").strip()
-            return t + suf if t[-1:].isdigit() else t
-        for r in _sp.to_dict("records"):
-            if r["producto"] in _notas_afe:
-                D["afe_specs"].append({
-                    "producto": r["producto"], "acidez": _fx(r["acidez"], "%"),
-                    "hsg": _fx(r["hsg"], "%"), "fosforo": _fx(r["fosforo"], " ppm"),
-                    "nota": _notas_afe[r["producto"]]})
-
     _ag = cat(
         "SELECT round(coalesce(sum(l.tn),0)::numeric,1) AS tn "
         "FROM produccion.v_despacho_linea l "
@@ -258,17 +279,46 @@ def cargar(cat, semana):
     D["ag_e_despachado"] = float(_ag["tn"][0]) if _ag is not None and not _ag.empty else 0.0
 
     _pdia = cat(
-        "SELECT to_char(date_trunc('month',fecha::timestamp),'YYYY-MM') AS mes_txt, "
-        "  extract(day from fecha)::int AS dia, round((sum(real_kg)/1000)::numeric,1) AS tn "
+        "SELECT tipo_proceso AS tipo, "
+        "  to_char(date_trunc('month',fecha::timestamp),'YYYY-MM') AS mes_txt, "
+        "  extract(day from fecha)::int AS dia, round((sum(real_kg)/1000)::numeric,3) AS tn "
         "FROM produccion.v_perf_reaccion "
         "WHERE fecha >= (date_trunc('month', %s::date) - interval '1 month')::date "
-        "  AND real_kg IS NOT NULL GROUP BY 1,2 ORDER BY 1,2", (sem,))
-    D["produccion_dia"] = []
+        "  AND real_kg IS NOT NULL GROUP BY 1,2,3 ORDER BY 1,2,3", (sem,))
+    D["produccion_dia_tipo"] = {}
     if _pdia is not None and not _pdia.empty:
-        for m, g in _pdia.groupby("mes_txt", sort=True):
+        for (t, m), g in _pdia.groupby(["tipo", "mes_txt"], sort=True):
             dias = [[int(r.dia), float(r.tn)] for r in g.itertuples()]
-            D["produccion_dia"].append({"mes": m, "tn": round(sum(x[1] for x in dias), 1),
-                                        "ult": max(x[0] for x in dias), "dias": dias})
+            D["produccion_dia_tipo"].setdefault(t, []).append(
+                {"mes": m, "tn": round(sum(x[1] for x in dias), 1),
+                 "ult": max(x[0] for x in dias), "dias": dias})
+
+    # qué categoría de AFE-S entrega el desgomado, por mes (lab final de cada batch)
+    _dcm = cat(
+        "SELECT to_char(date_trunc('month', p.fecha::timestamp),'YYYY-MM') AS mes_txt, "
+        "  coalesce(produccion.fn_categoria_afe(l.azufre_ppm, l.fosforo_ppm),'SIN LAB') AS categoria, "
+        "  round((sum(p.real_kg)/1000)::numeric,1) AS tn "
+        "FROM produccion.v_perf_reaccion p "
+        "LEFT JOIN produccion.v_reaccion_lab_final l ON l.id_batch = p.id_batch "
+        "WHERE p.tipo_proceso = 'DESGOMADO_ACUOSO' AND p.real_kg IS NOT NULL "
+        "  AND p.fecha >= (date_trunc('month', %s::date) - interval '1 month')::date "
+        "GROUP BY 1,2 ORDER BY 1,2", (sem,))
+    D["desgomado_cat"] = []
+    if _dcm is not None and not _dcm.empty:
+        for m, g in _dcm.groupby("mes_txt", sort=True):
+            D["desgomado_cat"].append(
+                {"mes": m, "cats": {r.categoria: float(r.tn) for r in g.itertuples()}})
+
+    # reparto semanal de horas de reactor entre desgomado y ARE
+    D["reactor_horas"] = _recs(cat(
+        "SELECT date_trunc('week', p.fecha::timestamp)::date::text AS semana, "
+        "  p.tipo_proceso AS tipo, count(*) AS n, "
+        "  round((sum(p.real_kg)/1000)::numeric,1) AS tn, "
+        "  round(sum(coalesce(p.ciclo_proceso_h, p.prog_total_h))::numeric,0) AS horas "
+        "FROM produccion.v_perf_reaccion p "
+        "WHERE p.fecha >= (date_trunc('week', %s::timestamp) - interval '28 days')::date "
+        "  AND p.real_kg IS NOT NULL "
+        "GROUP BY 1,2 ORDER BY 1,2", (sem,)))
 
     D["cobertura_libro"] = _recs(cat(
         "SELECT sector, tanques, round(mov_fisico_kl,1) AS fis, round(mov_libro_kl,1) AS libro, "

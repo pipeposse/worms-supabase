@@ -17,8 +17,8 @@ from html import escape
 # --- roles de color ---------------------------------------------------------
 CAT_COLOR = {"A": "#008300", "B": "#2a78d6", "C": "#eda100",
                "D": "#d03b3b", "SIN LAB": "#898781"}
-CAT_DESC = {"A": "excelente", "B": "bueno", "C": "justo",
-              "D": "fuera de spec", "SIN LAB": "sin análisis"}
+CAT_DESC = {"A": "", "B": "", "C": "",
+              "D": " · fuera de espec", "SIN LAB": " · sin análisis"}
 ORDEN_CAT = ["A", "B", "C", "D", "SIN LAB"]
 
 GOOD, WARN, SERIOUS, CRIT = "#0ca30c", "#fab219", "#ec835a", "#d03b3b"
