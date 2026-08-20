@@ -336,9 +336,9 @@ def render(USR, cat, conectar=None):
               "%s kL" % _n(d["disp_l"].sum(), 2))
     k4.metric("Productos · tanques", "%d · %d" % (d["prod_cal"].nunique(), len(d)))
     st.caption("**Volúmenes en kL** (1 kL = 1.000 L) · **t = kL × densidad**: se usa la "
-               "densidad medida por el **laboratorio en cada tanque** y, si no hay o es "
-               "implausible, la del maestro del producto (columnas *Dens.* y *Dens. fuente* "
-               "en el detalle). **Disponible = Medido − Comprometido.** *Medido* es la última medición física "
+               "densidad medida por el **laboratorio en cada tanque**; si no hay o es "
+               "implausible, la **mediana de lo medido por el lab** en tanques del mismo "
+               "producto (columnas *Dens.* y *Dens. fuente* en el detalle). **Disponible = Medido − Comprometido.** *Medido* es la última medición física "
                "del tanque; *comprometido* es lo designado en despachos **confirmados** que "
                "aún no pesaron todos sus contenedores (se libera solo al completarse).")
 
@@ -413,8 +413,10 @@ def render(USR, cat, conectar=None):
                          format="%.3f", help="kg/L usados para pasar de kL a t."),
                      "Dens. fuente": st.column_config.TextColumn(
                          "Dens. fuente", width="small",
-                         help="lab = densidad medida del tanque · maestro = la del producto "
-                              "en el maestro · default = 0,91 (sin dato)."),
+                         help="lab = densidad medida del tanque · mediana lab = mediana de lo "
+                              "medido por el lab en tanques del mismo producto · maestro = la "
+                              "del producto en el maestro (sólo si el lab nunca lo midió) · "
+                              "default = 0,91."),
                      "Capacidad (kL)": st.column_config.NumberColumn(format="%.0f"),
                      "Acidez %": st.column_config.NumberColumn(format="%.2f"),
                      "Fósforo ppm": st.column_config.NumberColumn(format="%.1f"),
