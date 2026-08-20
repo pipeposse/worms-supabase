@@ -63,7 +63,8 @@ def _datos(cat):
              "capacidad_litros, "
              "COALESCE(litros_actual,0) AS medido_l, COALESCE(kg_actual,0) AS medido_kg, "
              "COALESCE(litros_comprometido,0) AS comp_l, "
-             "COALESCE(densidad,0.91) AS densidad, ultima_medicion, fuente_medicion, "
+             "COALESCE(densidad,0.91) AS densidad, densidad_fuente, "
+             "ultima_medicion, fuente_medicion, "
              "acidez, fosforo, azufre, agua_sedimento, condicion "
              "FROM produccion.vw_tanque_panel "
              "WHERE activo AND producto_principal IS NOT NULL "
@@ -334,7 +335,10 @@ def render(USR, cat, conectar=None):
     k3.metric("✅ Disponible", "%s t" % _n(d["disp_t"].sum(), 1),
               "%s kL" % _n(d["disp_l"].sum(), 2))
     k4.metric("Productos · tanques", "%d · %d" % (d["prod_cal"].nunique(), len(d)))
-    st.caption("**Volúmenes en kL** (1 kL = 1.000 L). **Disponible = Medido − Comprometido.** *Medido* es la última medición física "
+    st.caption("**Volúmenes en kL** (1 kL = 1.000 L) · **t = kL × densidad**: se usa la "
+               "densidad medida por el **laboratorio en cada tanque** y, si no hay o es "
+               "implausible, la del maestro del producto (columnas *Dens.* y *Dens. fuente* "
+               "en el detalle). **Disponible = Medido − Comprometido.** *Medido* es la última medición física "
                "del tanque; *comprometido* es lo designado en despachos **confirmados** que "
                "aún no pesaron todos sus contenedores (se libera solo al completarse).")
 
@@ -391,9 +395,11 @@ def render(USR, cat, conectar=None):
         "capacidad_litros": "Capacidad (kL)", "despachos": "Comprometido en",
         "acidez": "Acidez %", "fosforo": "Fósforo ppm", "azufre": "Azufre ppm",
         "agua_sedimento": "AyS %", "ultima_medicion": "Últ. medición",
-        "fuente_medicion": "Medidor", "condicion": "Condición"})
+        "fuente_medicion": "Medidor", "condicion": "Condición",
+        "densidad": "Dens.", "densidad_fuente": "Dens. fuente"})
     _coldet = ["Producto · calidad", "Tanque", "Sector", "Medido (kL)", "Comprometido (kL)",
-               "Disponible (kL)", "Medido (t)", "Disponible (t)", "Capacidad (kL)",
+               "Disponible (kL)", "Medido (t)", "Disponible (t)", "Dens.", "Dens. fuente",
+               "Capacidad (kL)",
                "Comprometido en", "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %",
                "Medidor", "Últ. medición", "Condición"]
     st.dataframe(det_v[_coldet], hide_index=True, use_container_width=True,
@@ -403,6 +409,12 @@ def render(USR, cat, conectar=None):
                      "Disponible (kL)": st.column_config.NumberColumn(format="%.2f"),
                      "Medido (t)": st.column_config.NumberColumn(format="%.2f"),
                      "Disponible (t)": st.column_config.NumberColumn(format="%.2f"),
+                     "Dens.": st.column_config.NumberColumn(
+                         format="%.3f", help="kg/L usados para pasar de kL a t."),
+                     "Dens. fuente": st.column_config.TextColumn(
+                         "Dens. fuente", width="small",
+                         help="lab = densidad medida del tanque · maestro = la del producto "
+                              "en el maestro · default = 0,91 (sin dato)."),
                      "Capacidad (kL)": st.column_config.NumberColumn(format="%.0f"),
                      "Acidez %": st.column_config.NumberColumn(format="%.2f"),
                      "Fósforo ppm": st.column_config.NumberColumn(format="%.1f"),
