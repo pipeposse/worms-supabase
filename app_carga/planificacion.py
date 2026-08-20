@@ -3525,7 +3525,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # director al entrar y le tapaba lo que realmente hace la sección (planificar).
     # Ahora es la última opción del menú, como cualquier otra.
     _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administración de reacciones", "📅 Cronogramas",
-                   "🚚 Despachos", "🧮 Balance", "🔬 Análisis AFE", "🎯 Asignación AFE",
+                   "🚚 Despachos", "🧮 Balance", "🔬 Análisis AFE", "🧪 Análisis Glicerina",
+                   "🎯 Asignación AFE",
                    "♻️ Recuperación AG", "🧭 Tanques", "📦 Informe de stock",
                    "💸 Descuentos", "🛂 Aprobaciones"]
     try:
@@ -3604,6 +3605,17 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             import traceback as _tb
             st.error("No se pudo cargar Despachos: %s" % _e)
             with st.expander("🔧 Detalle técnico (para diagnóstico)"):
+                st.code(_tb.format_exc())
+        return
+
+    if _grupo.startswith("🧪"):
+        try:
+            from analisis_glicerina import render as _render_agli
+            _render_agli(USR, cat, conectar)
+        except Exception as _e:
+            import traceback as _tb
+            st.error("No se pudo cargar Análisis Glicerina: %s" % _e)
+            with st.expander("🔧 Detalle técnico"):
                 st.code(_tb.format_exc())
         return
 
