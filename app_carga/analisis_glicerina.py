@@ -20,8 +20,39 @@ import streamlit as st
 
 ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 _DIAS = {0: "lunes", 1: "martes", 2: "miércoles", 3: "jueves", 4: "viernes", 5: "sábado", 6: "domingo"}
-CAL_GLI_OPTS = ["", "A", "B", "C", "D", "FUERA DE ESPECIFICACION"]
+CAL_GLI_OPTS = ["", "A", "B", "C", "D"]
+CAL_LBL = {"A": "A (fresca)", "B": "B (fresca)", "C": "C (recuperada)", "D": "D (FE)"}
 TIPOS_GLI = ["", "FRESCA", "RECUPERADA"]
+
+
+def _cal_norm(cal, tipo, glicerol):
+    """Toda calidad se lleva a la letra A/B/C/D (idioma único con el laboratorio).
+
+    Legacy: F/E y FUERA DE ESPECIFICACIÓN son la actual D (FE); EN ESPECIFICACIÓN
+    y UNICA se derivan del tipo (RECUPERADA→C) o del glicerol según el maestro."""
+    c = str(cal or "").strip().upper()
+    if c in ("A", "B", "C", "D"):
+        return c
+    if c.startswith("F/E") or c.startswith("FUERA"):
+        return "D"
+    if not c:
+        return None
+    t = str(tipo or "").strip().upper()
+    if t == "RECUPERADA":
+        return "C"
+    try:
+        g = float(glicerol)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(g):
+        return None
+    if g > 80:
+        return "A"
+    if g > 70:
+        return "B"
+    if g > 60:
+        return "C"
+    return "D"
 _CLASE_LBL = {"INGRESO": "Ingreso", "OTRO": "Compra", "INTERNO": "Interno"}
 
 
@@ -66,9 +97,13 @@ def _datos(cat, d1, d2):
                   .map(lambda t: t if t in ("FRESCA", "RECUPERADA") else None))
     df["tiene_lab"] = (pd.Series(df["glicerol"]).notna() | df["gli_mong"].notna()
                        | df["gli_ays"].notna() | df["calidad_final_lab"].notna())
+    # calidad SIEMPRE como letra A/B/C/D (las legacy se normalizan); "FE" ya no es
+    # rechazo sino la calidad D — rechazado es sólo lo que el lab marcó RECHAZADO.
+    df["cal"] = [_cal_norm(c, t, g) for c, t, g in
+                 zip(df["calidad_final_lab"], df["gli_tipo"], df["glicerol"])]
+    df["cal_lbl"] = df["cal"].map(CAL_LBL)
     _re = df["rechazado"].astype(str).str.upper().str.strip()
-    _ca = df["calidad_final_lab"].astype(str).str.upper().str.strip()
-    df["es_rechazado"] = _re.str.startswith("RECHAZ") | (_ca == "FUERA DE ESPECIFICACION")
+    df["es_rechazado"] = _re.str.startswith("RECHAZ")
     return df
 
 
@@ -77,12 +112,13 @@ def _tabla_vista(df):
     v["Lab"] = v["tiene_lab"].map({True: "✅", False: "❌ sin lab"})
     v["tn"] = (v["kg"] / 1000.0).round(2)
     v["Tipo"] = v["tipo"].map(lambda t: t.lower() if isinstance(t, str) else "—")
+    v["Calidad"] = v["cal_lbl"].where(v["cal_lbl"].notna(),
+                                      v["tiene_lab"].map({True: "s/clasificar", False: "—"}))
     v = v.rename(columns={"fecha": "Fecha", "dia": "Día", "semana": "Semana",
                           "proveedor": "Origen", "ticket": "Ticket", "clase": "Clase",
                           "tn": "TN", "glicerol": "Glicerol %", "gli_ays": "AyS %",
                           "gli_mong": "MONG %", "gli_humedad": "Humedad %",
-                          "gli_ceniza": "Ceniza %", "calidad_final_lab": "Calidad",
-                          "descuento_pct": "Descuento %"})
+                          "gli_ceniza": "Ceniza %", "descuento_pct": "Descuento %"})
     return v[["Fecha", "Día", "Semana", "Origen", "Ticket", "Clase", "TN", "Tipo",
               "Glicerol %", "MONG %", "AyS %", "Humedad %", "Ceniza %", "Calidad",
               "Descuento %", "Lab"]]
@@ -225,12 +261,14 @@ def render(USR, cat, conectar):
     # ---- resumen por calidad y por tipo
     r1, r2 = st.columns(2)
     _cal = df.copy()
-    _cal["Calidad"] = _cal["calidad_final_lab"].fillna("— sin lab").astype(str).str.strip()
+    _cal["Calidad"] = _cal["cal_lbl"].where(
+        _cal["cal_lbl"].notna(),
+        _cal["tiene_lab"].map({True: "s/clasificar", False: "— sin lab"}))
     _byc = (_cal.groupby("Calidad")
                 .agg(Ingresos=("ticket", "count"), TN=("kg", lambda s: round(s.sum() / 1000.0, 1)))
                 .reset_index().sort_values("Calidad"))
     _byc["% del total"] = (100.0 * _byc["TN"] / max(_kg / 1000.0, 0.001)).round(0)
-    r1.markdown("**TN por calidad** _(maestro: A glicerol>80 · B 70–80 · C 60–80 · D con sedimento)_")
+    r1.markdown("**TN por calidad** _(A y B fresca · C recuperada · D = FE, fuera de spec)_")
     r1.dataframe(_byc, hide_index=True, use_container_width=True)
     _tip = df.copy()
     _tip["Tipo"] = _tip["tipo"].fillna("— sin dato").str.lower()
@@ -291,10 +329,11 @@ def _seccion_rechazados(r, d1, d2, solo=False):
     v["Motivo del lab"] = [str(c).strip() if (pd.notna(c) and str(c).strip()) else "— sin nota —"
                            for c in v["conclusion"]]
     v["tn"] = (v["kg"] / 1000.0).round(2)
+    v["Calidad"] = v["cal_lbl"].fillna("s/clasificar")
     v = v.rename(columns={"fecha": "Fecha", "semana": "Semana", "proveedor": "Origen",
                           "ticket": "Ticket", "tn": "TN", "glicerol": "Glicerol %",
                           "gli_mong": "MONG %", "gli_ays": "AyS %",
-                          "calidad_final_lab": "Calidad", "rechazado": "Estado",
+                          "rechazado": "Estado",
                           "patente_chasis": "Patente", "empleado": "Analista"})
     _cols = [c for c in ["Fecha", "Semana", "Origen", "Ticket", "Patente", "TN", "Glicerol %",
                          "MONG %", "AyS %", "Calidad", "Estado", "Motivo del lab", "Analista"]
@@ -355,7 +394,9 @@ def render_sin_lab(USR, cat, conectar, key="pl"):
     q5, q6, q7 = st.columns(3)
     _tp = q5.selectbox("Tipo", TIPOS_GLI, key="agli_qtp_%s" % key)
     _cal = q6.selectbox("Calidad", CAL_GLI_OPTS, key="agli_qcal_%s" % key,
-                        help="Maestro: A glicerol>80 · B 70–80 · C 60–80 sed≤10 · D 60–80 sed>10.")
+                        format_func=lambda c: CAL_LBL.get(c, c or "—"),
+                        help="Sólo A/B/C/D: A (fresca) glicerol>80 · B (fresca) 70–80 · "
+                             "C (recuperada) 60–80 sed≤10 · D (FE) sed>10 o ≤60.")
     _dc = q7.number_input("Descuento al ticket (%)", min_value=0.0, max_value=100.0, value=None,
                           step=0.5, format="%.1f", key="agli_qdc_%s" % key,
                           help="Cuánto descontarle al precio del ticket por mala calidad.")

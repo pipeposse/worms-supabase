@@ -108,7 +108,7 @@ CAL_EFLU  = ["LIQUIDO"]
 CAL_BORRA = ["A", "B", "ANIMAL", "PES", FUERA]               # BORRA-A/B (V) + animal + pescado
 CAL_SEBO  = ["A-1RA", "A-2DA", "B-1RA", "B-2DA", "C-2DA", FUERA]  # sebo: grado + 1ra/2da (ya NO A/B/C solo)
 CAL_GEN   = ["UNICA", "A", "B", "C", "D", "E", FUERA]
-CAL_GLI   = ["A", "B", "C", "D", FUERA]                     # maestro: A glicerol>80 · B 70-80 · C 60-80 sed<=10 · D 60-80 sed>10
+CAL_GLI   = ["A", "B", "C", "D"]   # A (fresca) >80 · B (fresca) 70-80 · C (recuperada) 60-80 sed<=10 · D (FE) resto
 CAL_INS   = ["UNICA", FUERA, "RECHAZADO"]
 
 _TABLE = "produccion.lab_evaluaciones"
@@ -621,7 +621,8 @@ def _form_para_producto(producto_lab):
 
 
 def _cal_gli_sugerida(glicerol, sedimento):
-    """Calidad de glicerina segun maestro: por %glicerol y, para 60-80, por %sedimento."""
+    """Calidad de glicerina — SOLO A/B/C/D: A (fresca) >80 · B (fresca) 70-80 ·
+    C (recuperada) 60-80 con sedimento <=10 · D (FE) el resto (sed>10 o <=60)."""
     try:
         g = float(glicerol)
     except (TypeError, ValueError):
@@ -636,16 +637,16 @@ def _cal_gli_sugerida(glicerol, sedimento):
         except (TypeError, ValueError):
             sed = None
         return "D" if (sed is not None and sed > 10) else "C"
-    return FUERA
+    return "D"
 
 
 def _form_GLICERINA(pf, ctx, tok, get_conn, usuario):
     """Glicerina: parámetros de calidad (glicerol, cenizas, MONG, pH, etc.)."""
     p = "gli"
     st.subheader("🧴 Glicerina · calidad")
-    st.caption("Calidad por **glicerol %** (y sedimento para C/D): "
-               "**A** >80 · **B** 70–80 · **C** 60–80 y sedimento ≤10 · **D** 60–80 y sedimento >10 · "
-               "**Fuera** ≤60. Parámetros: Glicerol, Cenizas, MONG, pH, Agua, Sedimento, Densidad, Azufre, Fósforo.")
+    st.caption("Calidades — **sólo A/B/C/D**: **A** (fresca) glicerol >80 · **B** (fresca) 70–80 · "
+               "**C** (recuperada) 60–80 y sedimento ≤10 · **D** (FE) 60–80 con sedimento >10 o ≤60. "
+               "Parámetros: Glicerol, Cenizas, MONG, pH, Agua, Sedimento, Densidad, Azufre, Fósforo.")
     with st.form(_k(p, tok, "form")):
         cab = _cab(p, pf, tok)
         st.markdown("**Parámetros de glicerina**")
