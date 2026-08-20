@@ -167,6 +167,33 @@ def _imagen_bytes(v, max_filas=60):
     return buf.getvalue()
 
 
+def _brief_calidades():
+    """Mini brief de las 4 calidades según la convención acordada con el laboratorio.
+    OJO: el HTML va en UNA sola línea — con saltos e indentación, st.markdown lo
+    renderiza como bloque de código."""
+    _cards = [
+        ("A", "fresca", "#15803d", "Glicerol &gt; 80 %"),
+        ("B", "fresca", "#0369a1", "Glicerol 70–80 %"),
+        ("C", "recuperada", "#b45309", "Glicerol 60–80 % · sedimento ≤ 10 %"),
+        ("D", "FE · fuera de spec", "#b91c1c", "Sedimento &gt; 10 % o glicerol ≤ 60 %"),
+    ]
+    _h = "".join(
+        "<div style='flex:1;min-width:150px;background:%s0d;border:1px solid %s44;"
+        "border-left:5px solid %s;border-radius:10px;padding:7px 12px'>"
+        "<span style='font-weight:900;color:%s;font-size:1rem'>%s</span>"
+        "<span style='color:#475569;font-size:.8rem'> (%s)</span>"
+        "<div style='color:#0f172a;font-size:.8rem;margin-top:2px'>%s</div></div>"
+        % (c, c, c, c, l, t, p) for l, t, c, p in _cards)
+    _html = ("<div style='display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px'>" + _h + "</div>"
+             "<div style='color:#64748b;font-size:.76rem;margin:-4px 0 10px'>Convención única "
+             "con laboratorio (maestro de productos): la calidad la definen el <b>% de "
+             "glicerol</b> y el <b>sedimento</b>; el tipo (fresca / recuperada) acompaña "
+             "entre paréntesis. D = la vieja «FE / fuera de especificación» — descarga "
+             "igual, pero con descuento.</div>")
+    assert "\n" not in _html
+    st.markdown(_html, unsafe_allow_html=True)
+
+
 def render(USR, cat, conectar):
     st.markdown(
         "<div style='background:linear-gradient(90deg,#581c87,#9d174d);border-radius:14px;"
@@ -178,6 +205,8 @@ def render(USR, cat, conectar):
     if USR.get("rol") not in ROLES_DIRECCION and "PLANIFICACION" not in (USR.get("secciones_app") or []):
         st.warning("Sección exclusiva de dirección.")
         return
+
+    _brief_calidades()
 
     hoy = pd.Timestamp.today().date()
     f1, f2, f3, f4 = st.columns([1, 1, 1.3, 1.3])
