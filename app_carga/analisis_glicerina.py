@@ -25,6 +25,31 @@ CAL_LBL = {"A": "A (fresca)", "B": "B (fresca)", "C": "C (recuperada)", "D": "D 
 TIPOS_GLI = ["", "FRESCA", "RECUPERADA"]
 
 
+def _cal_params(glicerol, sedimento):
+    """Calidad DESDE LOS PARÁMETROS — esto es lo que manda, más allá de la letra
+    que haya tipeado el laboratorio: A >80 · B 70–80 · C 60–80 con sedimento ≤10 ·
+    D sed>10 o ≤60. None si no hay glicerol medido."""
+    try:
+        g = float(glicerol)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(g):
+        return None
+    if g > 80:
+        return "A"
+    if g > 70:
+        return "B"
+    if g > 60:
+        try:
+            sd = float(sedimento)
+        except (TypeError, ValueError):
+            sd = None
+        if sd is not None and not pd.isna(sd) and sd > 10:
+            return "D"
+        return "C"
+    return "D"
+
+
 def _cal_norm(cal, tipo, glicerol):
     """Toda calidad se lleva a la letra A/B/C/D (idioma único con el laboratorio).
 
@@ -71,12 +96,13 @@ def _datos(cat, d1, d2):
         "COALESCE(p.procedencia,'—') AS proveedor, p.ticket, abs(p.kg) AS kg, "
         "p.producto, p.clase, "
         "l.gli_glicerol, l.gli_ays, l.gli_mong, l.gli_humedad, l.gli_ceniza, l.gli_tipo, "
+        "l.prc_sedimentos, "
         "l.calidad_final_lab, l.rechazado, l.conclusion, l.patente_chasis, l.empleado, "
         "l.descuento_pct "
         "FROM produccion.v_porteria_ticket p "
         "LEFT JOIN LATERAL (SELECT pl.gli_glicerol, pl.gli_ays, pl.gli_mong, pl.gli_humedad, "
-        "         pl.gli_ceniza, pl.gli_tipo, pl.calidad_final_lab, pl.rechazado, "
-        "         pl.conclusion, pl.patente_chasis, pl.empleado, pl.descuento_pct "
+        "         pl.gli_ceniza, pl.gli_tipo, pl.prc_sedimentos, pl.calidad_final_lab, "
+        "         pl.rechazado, pl.conclusion, pl.patente_chasis, pl.empleado, pl.descuento_pct "
         "  FROM produccion.procesos_lab pl "
         "  WHERE btrim(pl.ticket)=p.ticket::text AND COALESCE(pl.anulado,false)=false "
         "  ORDER BY (upper(COALESCE(pl.producto_lab,'')) LIKE '%%GLICER%%') DESC, "
@@ -87,7 +113,7 @@ def _datos(cat, d1, d2):
         return pd.DataFrame()
     df = df.copy()
     for _c in ("kg", "gli_glicerol", "gli_ays", "gli_mong", "gli_humedad", "gli_ceniza",
-               "descuento_pct"):
+               "prc_sedimentos", "descuento_pct"):
         df[_c] = pd.to_numeric(df[_c], errors="coerce")
     df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
     df["dia"] = df["fecha"].dt.dayofweek.map(_DIAS)
@@ -97,10 +123,17 @@ def _datos(cat, d1, d2):
                   .map(lambda t: t if t in ("FRESCA", "RECUPERADA") else None))
     df["tiene_lab"] = (pd.Series(df["glicerol"]).notna() | df["gli_mong"].notna()
                        | df["gli_ays"].notna() | df["calidad_final_lab"].notna())
-    # calidad SIEMPRE como letra A/B/C/D (las legacy se normalizan); "FE" ya no es
+    # LA CALIDAD LA DEFINEN LOS PARÁMETROS (glicerol + sedimento). La letra del
+    # lab vale de respaldo cuando no hay parámetros y de contraste cuando sí los
+    # hay: si no coincide, discrepa=True y la fila se marca. "FE" ya no es
     # rechazo sino la calidad D — rechazado es sólo lo que el lab marcó RECHAZADO.
-    df["cal"] = [_cal_norm(c, t, g) for c, t, g in
-                 zip(df["calidad_final_lab"], df["gli_tipo"], df["glicerol"])]
+    df["cal_param"] = [_cal_params(g, sd) for g, sd in
+                       zip(df["glicerol"], df["prc_sedimentos"])]
+    df["cal_lab"] = [_cal_norm(c, t, g) for c, t, g in
+                     zip(df["calidad_final_lab"], df["gli_tipo"], df["glicerol"])]
+    df["cal"] = df["cal_param"].where(df["cal_param"].notna(), df["cal_lab"])
+    df["discrepa"] = (df["cal_param"].notna() & df["cal_lab"].notna()
+                      & (df["cal_param"] != df["cal_lab"]))
     df["cal_lbl"] = df["cal"].map(CAL_LBL)
     _re = df["rechazado"].astype(str).str.upper().str.strip()
     df["es_rechazado"] = _re.str.startswith("RECHAZ")
@@ -112,8 +145,10 @@ def _tabla_vista(df):
     v["Lab"] = v["tiene_lab"].map({True: "✅", False: "❌ sin lab"})
     v["tn"] = (v["kg"] / 1000.0).round(2)
     v["Tipo"] = v["tipo"].map(lambda t: t.lower() if isinstance(t, str) else "—")
-    v["Calidad"] = v["cal_lbl"].where(v["cal_lbl"].notna(),
-                                      v["tiene_lab"].map({True: "s/clasificar", False: "—"}))
+    v["Calidad"] = [
+        ((CAL_LBL.get(c, c) + (" ⚠️" if d else "")) if pd.notna(c)
+         else ("s/clasificar" if t else "—"))
+        for c, d, t in zip(v["cal"], v["discrepa"], v["tiene_lab"])]
     v = v.rename(columns={"fecha": "Fecha", "dia": "Día", "semana": "Semana",
                           "proveedor": "Origen", "ticket": "Ticket", "clase": "Clase",
                           "tn": "TN", "glicerol": "Glicerol %", "gli_ays": "AyS %",
@@ -189,7 +224,9 @@ def _brief_calidades():
              "con laboratorio (maestro de productos): la calidad la definen el <b>% de "
              "glicerol</b> y el <b>sedimento</b>; el tipo (fresca / recuperada) acompaña "
              "entre paréntesis. D = la vieja «FE / fuera de especificación» — descarga "
-             "igual, pero con descuento.</div>")
+             "igual, pero con descuento. <b>Mandan los parámetros:</b> si la letra que "
+             "cargó el lab no coincide con glicerol/sedimento, la sección clasifica por "
+             "parámetros y marca la fila con ⚠️.</div>")
     assert "\n" not in _html
     st.markdown(_html, unsafe_allow_html=True)
 
@@ -307,6 +344,24 @@ def render(USR, cat, conectar):
     r2.markdown("**TN por tipo** _(fresca / recuperada, según laboratorio)_")
     r2.dataframe(_byt, hide_index=True, use_container_width=True)
 
+    _dis = df[df["discrepa"]]
+    if not _dis.empty:
+        st.warning("⚠️ **%d ticket(s) donde la letra del laboratorio NO coincide con los "
+                   "parámetros.** Acá mandan los parámetros — corregí el registro del lab "
+                   "para que todos hablemos el mismo idioma." % len(_dis))
+        _dv = _dis.sort_values("fecha", ascending=False)
+        _dv = pd.DataFrame({
+            "Fecha": _dv["fecha"], "Ticket": _dv["ticket"].astype(str),
+            "Origen": _dv["proveedor"],
+            "Lab dice": _dv["cal_lab"].map(lambda c: CAL_LBL.get(c, c)),
+            "Parámetros dicen": _dv["cal_param"].map(lambda c: CAL_LBL.get(c, c)),
+            "Glicerol %": _dv["glicerol"], "Sedimento %": _dv["prc_sedimentos"]})
+        st.dataframe(_dv, hide_index=True, use_container_width=True,
+                     column_config={
+                         "Fecha": st.column_config.DatetimeColumn(format="DD/MM/YY"),
+                         "Glicerol %": st.column_config.NumberColumn(format="%.1f"),
+                         "Sedimento %": st.column_config.NumberColumn(format="%.2f")})
+
     v = _tabla_vista(df)
     st.dataframe(v, hide_index=True, use_container_width=True,
                  column_config={
@@ -317,6 +372,10 @@ def render(USR, cat, conectar):
                      "AyS %": st.column_config.NumberColumn(format="%.2f"),
                      "Humedad %": st.column_config.NumberColumn(format="%.2f"),
                      "Ceniza %": st.column_config.NumberColumn(format="%.2f"),
+                     "Calidad": st.column_config.TextColumn(
+                         "Calidad", help="Definida por los PARÁMETROS (glicerol + sedimento). "
+                                         "⚠️ = la letra que cargó el lab no coincide: mandan "
+                                         "los parámetros."),
                      "Descuento %": st.column_config.NumberColumn(
                          format="%.1f", help="Descuento al precio del ticket por mala calidad "
                                              "(cargado por el lab o en 💸 Descuentos.")})
@@ -420,15 +479,26 @@ def render_sin_lab(USR, cat, conectar, key="pl"):
                           format="%.2f", key="agli_qay_%s" % key)
     _hu = q4.number_input("Humedad %", min_value=0.0, max_value=100.0, value=None, step=0.05,
                           format="%.2f", key="agli_qhu_%s" % key)
-    q5, q6, q7 = st.columns(3)
-    _tp = q5.selectbox("Tipo", TIPOS_GLI, key="agli_qtp_%s" % key)
-    _cal = q6.selectbox("Calidad", CAL_GLI_OPTS, key="agli_qcal_%s" % key,
-                        format_func=lambda c: CAL_LBL.get(c, c or "—"),
-                        help="Sólo A/B/C/D: A (fresca) glicerol>80 · B (fresca) 70–80 · "
-                             "C (recuperada) 60–80 sed≤10 · D (FE) sed>10 o ≤60.")
-    _dc = q7.number_input("Descuento al ticket (%)", min_value=0.0, max_value=100.0, value=None,
+    q5, q6, q7, q8 = st.columns(4)
+    _sd = q5.number_input("Sedimento %", min_value=0.0, max_value=100.0, value=None, step=0.5,
+                          format="%.1f", key="agli_qsd_%s" % key,
+                          help="Define C vs D en la franja 60–80 de glicerol.")
+    _tp = q6.selectbox("Tipo", TIPOS_GLI, key="agli_qtp_%s" % key)
+    _cal = q7.selectbox("Calidad", CAL_GLI_OPTS, key="agli_qcal_%s" % key,
+                        format_func=lambda c: CAL_LBL.get(c, c or "— (por parámetros)"),
+                        help="La define el glicerol + sedimento. Si la dejás vacía se guarda "
+                             "la que dan los parámetros.")
+    _dc = q8.number_input("Descuento al ticket (%)", min_value=0.0, max_value=100.0, value=None,
                           step=0.5, format="%.1f", key="agli_qdc_%s" % key,
                           help="Cuánto descontarle al precio del ticket por mala calidad.")
+    _sug = _cal_params(_gl, _sd)
+    if _sug:
+        if _cal and _cal != _sug:
+            st.warning("Elegiste **%s** pero por parámetros corresponde **%s** — se guarda "
+                       "lo que elijas, con la discrepancia marcada en el análisis."
+                       % (CAL_LBL.get(_cal, _cal), CAL_LBL.get(_sug, _sug)))
+        else:
+            st.caption("Por parámetros corresponde **%s**." % CAL_LBL.get(_sug, _sug))
     if st.button("💾 Guardar evaluación rápida", type="primary", key="agli_qgo_%s" % key,
                  disabled=(_gl is None and _mo is None and _ay is None and not _cal)):
         try:
@@ -438,16 +508,18 @@ def render_sin_lab(USR, cat, conectar, key="pl"):
                         "INSERT INTO produccion.lab_evaluaciones "
                         "(tipo_formulario, usuario_app, ticket, producto, producto_lab, "
                         " calidad_final_lab, gli_tipo, empleado, gli_glicerol, gli_mong, "
-                        " gli_ays, gli_humedad, descuento_pct) "
+                        " gli_ays, gli_humedad, prc_sedimentos, descuento_pct) "
                         "VALUES ('GLICERINA', %s, %s, %s, 'GLICERINA', %s, %s, %s, %s, %s, %s, "
-                        "%s, %s) RETURNING id",
+                        "%s, %s, %s) RETURNING id",
                         (str(USR.get("nombre") or "app"), str(r["ticket"]),
                          (str(r["producto"]) if pd.notna(r["producto"]) else "GLICERINA"),
-                         (_cal or None), (_tp or None), str(USR.get("nombre") or "app"),
+                         ((_cal or _sug) or None), (_tp or None),
+                         str(USR.get("nombre") or "app"),
                          (float(_gl) if _gl is not None else None),
                          (float(_mo) if _mo is not None else None),
                          (float(_ay) if _ay is not None else None),
                          (float(_hu) if _hu is not None else None),
+                         (float(_sd) if _sd is not None else None),
                          (float(_dc) if _dc is not None else None)))
                     _nid = cur.fetchone()[0]
                 _a.log("I", "lab_evaluaciones", int(_nid),

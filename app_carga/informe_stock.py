@@ -265,8 +265,11 @@ def render(USR, cat, conectar=None):
         "<div style='color:#e0f2fe;font-size:.88rem;margin-top:3px'>Qué hay de cada producto, "
         "en qué tanque, cuánto está comprometido en despachos y cuánto queda realmente "
         "disponible.</div></div>", unsafe_allow_html=True)
-    if USR.get("rol") not in ROLES_DIRECCION and "PLANIFICACION" not in (USR.get("secciones_app") or []):
-        st.warning("Sección exclusiva de dirección.")
+    _secs = USR.get("secciones_app") or []
+    if (USR.get("rol") not in ROLES_DIRECCION
+            and "PLANIFICACION" not in _secs and "INICIAR" not in _secs):
+        # también se muestra en Producción en planta (INICIAR): es lectura, sin acciones
+        st.warning("No tenés acceso a esta sección.")
         return
 
     tk, dc = _datos(cat)

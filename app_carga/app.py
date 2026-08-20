@@ -4474,7 +4474,7 @@ if st.session_state.section != "CARGAS":
 
     elif st.session_state.section == "INICIAR":
         # =================== PRODUCCIÓN EN PLANTA ===================
-        _ip_view = st.radio("Vista", ["👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🎯 Asignación AFE", "♻️ Recuperación AG", "🚢 Despachos", "🧭 Visualización", "🛢️ Tanques"],
+        _ip_view = st.radio("Vista", ["👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🎯 Asignación AFE", "♻️ Recuperación AG", "🚢 Despachos", "🧭 Visualización", "📦 Informe de stock", "🛢️ Tanques"],
                             horizontal=True, key="iniciar_view", label_visibility="collapsed")
         if _ip_view.startswith("👷"):
             try:
@@ -4552,6 +4552,13 @@ if st.session_state.section != "CARGAS":
             try:
                 import tanques_visual
                 tanques_visual.render(USR, cat, conectar)
+            except Exception as _e:
+                st.exception(_e)
+        elif _ip_view.startswith("📦"):
+            # mismo Informe de stock que en Centro de Planificación (mismo módulo)
+            try:
+                import informe_stock
+                informe_stock.render(USR, cat, conectar)
             except Exception as _e:
                 st.exception(_e)
         else:
