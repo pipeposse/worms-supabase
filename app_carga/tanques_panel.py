@@ -7,8 +7,10 @@ import streamlit as st
 
 
 def _fmt_l(x):
+    """Formato de volumen visible: kL con 2 decimales (los datos vienen en L y
+    _panel los convierte una sola vez)."""
     try:
-        return f"{float(x):,.0f}"
+        return f"{float(x):,.2f}"
     except Exception:
         return "—"
 
@@ -47,12 +49,16 @@ def _panel(cat):
         df["_estim"] = pd.to_numeric(df["litros_estimado"], errors="coerce")
     if "movs_post_medicion" in df.columns:
         df["_movs"] = pd.to_numeric(df["movs_post_medicion"], errors="coerce").fillna(0).astype(int)
+    # unidades VISIBLES en kL (2 dec): va al final, con _tn y disponibles ya calculados
+    for _ckl in ("_litros", "_comp", "_disp", "_cap", "_estim"):
+        if _ckl in df.columns:
+            df[_ckl] = pd.to_numeric(df[_ckl], errors="coerce") / 1000.0
     return df
 
 
 def vista_por_sector(cat):
     st.markdown("### 📊 Stock por sector")
-    st.caption("El **Stock (L)** es la **última medición física cargada** (lo que registra el operario / sensor). "
+    st.caption("El **Stock (kL)** es la **última medición física cargada** (en kilolitros, 1 kL = 1.000 L) (lo que registra el operario / sensor). "
                "Si hay movimientos posteriores sin conciliar, se muestran aparte como *Estimado* — no pisan la medición. "
                "El **Comprometido** es lo designado en despachos CONFIRMADOS que aún no terminaron de pesar en "
                "portería: no está disponible para despachos nuevos y se libera cuando el despacho completa todos sus tickets.")
@@ -63,21 +69,21 @@ def vista_por_sector(cat):
     _n_pend = int((df.get("_movs", pd.Series(dtype=int)) > 0).sum()) if "_movs" in df.columns else 0
     if _n_pend:
         st.warning(f"⚠️ {_n_pend} tanque(s) con movimientos posteriores a la última medición (posible doble conteo "
-                   "del ledger de movimientos). El **Stock (L)** sigue mostrando lo medido; revisá la columna *Estimado* en el detalle.")
+                   "del ledger de movimientos). El **Stock (kL)** sigue mostrando lo medido; revisá la columna *Estimado* en el detalle.")
 
     # KPIs globales
     g1, g2, g3, g4, g5 = st.columns(5)
     g1.metric("Tanques", f"{len(df)}")
-    g2.metric("Capacidad total", f"{_fmt_l(df['_cap'].sum())} L")
-    g3.metric("Stock total", f"{_fmt_l(df['_litros'].sum())} L", f"{df['_tn'].sum():,.0f} TN")
+    g2.metric("Capacidad total", f"{_fmt_l(df['_cap'].sum())} kL")
+    g3.metric("Stock total", f"{_fmt_l(df['_litros'].sum())} kL", f"{df['_tn'].sum():,.0f} TN")
     _tot_comp = float(df["_comp"].sum())
-    g4.metric("🔒 Comprometido", f"{_fmt_l(_tot_comp)} L",
+    g4.metric("🔒 Comprometido", f"{_fmt_l(_tot_comp)} kL",
               help="Designado en despachos CONFIRMADOS con tickets pendientes: sale de acá "
                    "en los próximos camiones. Disponible = Stock − Comprometido.")
     _occ = (df["_litros"].sum() / df["_cap"].sum() * 100.0) if df["_cap"].sum() else 0
     g5.metric("Ocupación", f"{_occ:.0f}%")
     if _tot_comp > 0:
-        st.caption("✅ **Disponible real: %s L** (stock medido menos lo comprometido en despachos "
+        st.caption("✅ **Disponible real: %s kL** (stock medido menos lo comprometido en despachos "
                    "confirmados)." % _fmt_l(df["_disp"].sum()))
 
     # Resumen por sector
@@ -94,17 +100,17 @@ def vista_por_sector(cat):
     st.markdown("**Resumen por sector**")
     st.dataframe(
         res.rename(columns={"sector": "Sector", "tanques": "Tanques",
-                            "capacidad_l": "Capacidad (L)", "stock_l": "Stock (L)",
-                            "comprometido_l": "Comprometido (L)", "disponible_l": "Disponible (L)",
+                            "capacidad_l": "Capacidad (kL)", "stock_l": "Stock (kL)",
+                            "comprometido_l": "Comprometido (kL)", "disponible_l": "Disponible (kL)",
                             "stock_tn": "Stock (TN)", "ocupacion_%": "Ocupación %"}),
         use_container_width=True, hide_index=True,
         column_config={
-            "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
-            "Stock (L)": st.column_config.NumberColumn(format="%.0f"),
-            "Comprometido (L)": st.column_config.NumberColumn(
-                format="%.0f", help="En despachos confirmados con tickets pendientes."),
-            "Disponible (L)": st.column_config.NumberColumn(
-                format="%.0f", help="Stock − Comprometido."),
+            "Capacidad (kL)": st.column_config.NumberColumn(format="%.2f"),
+            "Stock (kL)": st.column_config.NumberColumn(format="%.2f"),
+            "Comprometido (kL)": st.column_config.NumberColumn(
+                format="%.2f", help="En despachos confirmados con tickets pendientes."),
+            "Disponible (kL)": st.column_config.NumberColumn(
+                format="%.2f", help="Stock − Comprometido."),
             "Stock (TN)": st.column_config.NumberColumn(format="%.0f"),
             "Ocupación %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
         })
@@ -115,10 +121,10 @@ def vista_por_sector(cat):
              "_cap", "nivel_pct_actual",
              "condicion", "fuente_medicion", "confianza", "ultima_medicion",
              "acidez", "fosforo", "azufre", "agua_sedimento", "comentarios_lab", "observacion"]
-    _ren = {"nombre": "Tanque", "producto_principal": "Producto", "_litros": "Stock (L) medido",
-            "_comp": "Comprometido (L)", "_disp": "Disponible (L)",
-            "_estim": "Estimado c/movs (L)", "_movs": "Movs post-medición",
-            "_cap": "Capacidad (L)", "nivel_pct_actual": "Nivel %", "condicion": "Condición",
+    _ren = {"nombre": "Tanque", "producto_principal": "Producto", "_litros": "Stock (kL) medido",
+            "_comp": "Comprometido (kL)", "_disp": "Disponible (kL)",
+            "_estim": "Estimado c/movs (kL)", "_movs": "Movs post-medición",
+            "_cap": "Capacidad (kL)", "nivel_pct_actual": "Nivel %", "condicion": "Condición",
             "fuente_medicion": "Medición", "confianza": "Confianza", "ultima_medicion": "Últ. actualización",
             "acidez": "Acidez", "fosforo": "Fósforo", "azufre": "Azufre",
             "agua_sedimento": "Agua+Sed", "comentarios_lab": "Coment. lab", "observacion": "Observación"}
@@ -126,20 +132,20 @@ def vista_por_sector(cat):
         sub = df[df["sector"] == sec]
         cap = sub["_cap"].sum(); sto = sub["_litros"].sum()
         occ = (sto / cap * 100) if cap else 0
-        with st.expander(f"🛢️ {sec} · {len(sub)} tanques · {_fmt_l(sto)} / {_fmt_l(cap)} L ({occ:.0f}%)",
+        with st.expander(f"🛢️ {sec} · {len(sub)} tanques · {_fmt_l(sto)} / {_fmt_l(cap)} kL ({occ:.0f}%)",
                          expanded=False):
             show = sub[[c for c in _cols if c in sub.columns]].rename(columns=_ren)
             show = _art_naive_col(show, "Últ. actualización")
             st.dataframe(show, use_container_width=True, hide_index=True,
                          column_config={
-                             "Stock (L) medido": st.column_config.NumberColumn(format="%.0f"),
-                             "Comprometido (L)": st.column_config.NumberColumn(
+                             "Stock (kL) medido": st.column_config.NumberColumn(format="%.0f"),
+                             "Comprometido (kL)": st.column_config.NumberColumn(
                                  format="%.0f", help="En despachos confirmados con tickets pendientes."),
-                             "Disponible (L)": st.column_config.NumberColumn(
+                             "Disponible (kL)": st.column_config.NumberColumn(
                                  format="%.0f", help="Stock − Comprometido."),
-                             "Estimado c/movs (L)": st.column_config.NumberColumn(format="%.0f"),
+                             "Estimado c/movs (kL)": st.column_config.NumberColumn(format="%.0f"),
                              "Movs post-medición": st.column_config.NumberColumn(format="%d"),
-                             "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
+                             "Capacidad (kL)": st.column_config.NumberColumn(format="%.2f"),
                              "Nivel %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
                              "Últ. actualización": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm"),
                          })
@@ -167,11 +173,11 @@ def resumen_filtrado(cat):
 
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Tanques", f"{len(d)}")
-    k2.metric("Stock (L)", _fmt_l(d["_litros"].sum()))
-    k3.metric("🔒 Comprometido (L)", _fmt_l(d["_comp"].sum()),
+    k2.metric("Stock (kL)", _fmt_l(d["_litros"].sum()))
+    k3.metric("🔒 Comprometido (kL)", _fmt_l(d["_comp"].sum()),
               help="En despachos confirmados con tickets pendientes. Disponible = Stock − Comprometido.")
-    k4.metric("Disponible (L)", _fmt_l(d["_disp"].sum()))
-    k5.metric("Capacidad (L)", _fmt_l(d["_cap"].sum()))
+    k4.metric("Disponible (kL)", _fmt_l(d["_disp"].sum()))
+    k5.metric("Capacidad (kL)", _fmt_l(d["_cap"].sum()))
 
     if d.empty:
         st.info("Sin tanques para esos filtros.")
@@ -185,20 +191,20 @@ def resumen_filtrado(cat):
     st.markdown("**Stock por producto**")
     cA, cB = st.columns([3, 2])
     cA.dataframe(by_prod.rename(columns={"producto_principal": "Producto", "tanques": "Tanques",
-                                         "stock_l": "Stock (L)", "stock_tn": "Stock (TN)"}),
+                                         "stock_l": "Stock (kL)", "stock_tn": "Stock (TN)"}),
                  use_container_width=True, hide_index=True,
-                 column_config={"Stock (L)": st.column_config.NumberColumn(format="%.0f"),
+                 column_config={"Stock (kL)": st.column_config.NumberColumn(format="%.2f"),
                                 "Stock (TN)": st.column_config.NumberColumn(format="%.0f")})
     if not by_prod.empty:
         cB.bar_chart(by_prod.set_index("producto_principal")["stock_l"], use_container_width=True)
 
     # Stock por sector x producto (pivot)
-    st.markdown("**Stock (L) por sector × producto**")
+    st.markdown("**Stock (kL) por sector × producto**")
     piv = (d.dropna(subset=["producto_principal"])
              .pivot_table(index="sector", columns="producto_principal", values="_litros",
                           aggfunc="sum", fill_value=0))
     if not piv.empty:
-        st.dataframe(piv.round(0), use_container_width=True)
+        st.dataframe(piv.round(2), use_container_width=True)
 
     # Detalle filtrado
     st.markdown("**Detalle de tanques**")
@@ -207,20 +213,20 @@ def resumen_filtrado(cat):
             "fuente_medicion", "confianza", "condicion", "ultima_medicion",
             "acidez", "fosforo", "azufre", "agua_sedimento"]
     ren = {"sector": "Sector", "nombre": "Tanque", "producto_principal": "Producto",
-           "_litros": "Stock (L)", "_comp": "Comprometido (L)", "_disp": "Disponible (L)",
-           "_cap": "Capacidad (L)", "nivel_pct_actual": "Nivel %",
+           "_litros": "Stock (kL)", "_comp": "Comprometido (kL)", "_disp": "Disponible (kL)",
+           "_cap": "Capacidad (kL)", "nivel_pct_actual": "Nivel %",
            "fuente_medicion": "Medición", "confianza": "Confianza", "condicion": "Condición",
            "ultima_medicion": "Últ. actualización", "acidez": "Acidez", "fosforo": "Fósforo",
            "azufre": "Azufre", "agua_sedimento": "Agua+Sed"}
     show = d[[c for c in cols if c in d.columns]].rename(columns=ren)
     show = _art_naive_col(show, "Últ. actualización")
     st.dataframe(show, use_container_width=True, hide_index=True,
-                 column_config={"Stock (L)": st.column_config.NumberColumn(format="%.0f"),
-                                "Comprometido (L)": st.column_config.NumberColumn(
+                 column_config={"Stock (kL)": st.column_config.NumberColumn(format="%.2f"),
+                                "Comprometido (kL)": st.column_config.NumberColumn(
                                     format="%.0f", help="En despachos confirmados con tickets pendientes."),
-                                "Disponible (L)": st.column_config.NumberColumn(
+                                "Disponible (kL)": st.column_config.NumberColumn(
                                     format="%.0f", help="Stock − Comprometido."),
-                                "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
+                                "Capacidad (kL)": st.column_config.NumberColumn(format="%.2f"),
                                 "Nivel %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
                                 "Últ. actualización": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")})
     st.download_button("⬇️ Descargar CSV", show.to_csv(index=False).encode("utf-8"),

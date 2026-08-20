@@ -85,7 +85,8 @@ def _png(df, titulo, max_filas=45):
     x = df.head(max_filas).copy()
     for c in x.columns:
         if pd.api.types.is_numeric_dtype(x[c]):
-            _dec = 1 if ("(t)" in str(c) or "%" in str(c)) else 0
+            _dec = 2 if ("(kL)" in str(c) or str(c) == "kL") else (
+                1 if ("(t)" in str(c) or "%" in str(c)) else 0)
             x[c] = x[c].map(lambda v: _n(v, _dec))
         else:
             # matplotlib no tiene glifos para los emoji: se sacan o salen cuadraditos
@@ -161,17 +162,17 @@ def _tabla_bandas(dd):
             return (float((v[col] * v["_kg"]).sum() / float(v["_kg"].sum()))
                     if not v.empty and float(v["_kg"].sum()) > 0 else None)
 
-        _tks = " · ".join("%s (%s L)" % (r["nombre"], _n(r["medido_l"]))
+        _tks = " · ".join("%s (%s kL)" % (r["nombre"], _n(r["medido_l"], 2))
                           for _, r in g.sort_values("medido_l", ascending=False).iterrows())
         filas.append({
             "Banda": "%s %s · %s" % (_BEMO[b], b, _BDESC[b]),
             "_b": b,
             "Tanques": int(len(g)),
-            "Medido (L)": float(g["medido_l"].sum()),
+            "Medido (kL)": float(g["medido_l"].sum()),
             "Medido (t)": float(g["medido_t"].sum()),
             "% del total": 100.0 * float(g["medido_l"].sum()) / _tot_l,
-            "Comprometido (L)": float(g["comp_l"].sum()),
-            "Disponible (L)": float(g["disp_l"].sum()),
+            "Comprometido (kL)": float(g["comp_l"].sum()),
+            "Disponible (kL)": float(g["disp_l"].sum()),
             "Acidez %": _pond("acidez"),
             "Fósforo ppm": _pond("fosforo"),
             "Azufre ppm": _pond("azufre"),
@@ -186,8 +187,8 @@ def _barra_bandas(tb):
     if tb is None or tb.empty:
         return ""
     _seg = "".join(
-        "<div title='%s: %s%% · %s L' style='width:%.4f%%;background:%s'></div>"
-        % (r["_b"], _n(r["% del total"], 0), _n(r["Medido (L)"]),
+        "<div title='%s: %s%% · %s kL' style='width:%.4f%%;background:%s'></div>"
+        % (r["_b"], _n(r["% del total"], 0), _n(r["Medido (kL)"], 2),
            max(0.0, float(r["% del total"])), _BCOL.get(r["_b"], "#94a3b8"))
         for _, r in tb.iterrows())
     _leg = " ".join(
@@ -222,25 +223,25 @@ def _vista_rapida(d):
                 continue
             m1, m2, m3 = st.columns(3)
             m1.metric("Medido", "%s t" % _n(dd["medido_t"].sum(), 1),
-                      "%s L en %d tanques" % (_n(dd["medido_l"].sum()), len(dd)))
-            _ab = float(tb[tb["_b"].isin(["A", "B"])]["Medido (L)"].sum())
-            _cd = float(tb[tb["_b"].isin(["C", "D"])]["Medido (L)"].sum())
-            _tt = float(tb["Medido (L)"].sum()) or 1.0
-            m2.metric("🟢🔵 A + B", "%.0f %%" % (100.0 * _ab / _tt), "%s L" % _n(_ab),
+                      "%s kL en %d tanques" % (_n(dd["medido_l"].sum(), 2), len(dd)))
+            _ab = float(tb[tb["_b"].isin(["A", "B"])]["Medido (kL)"].sum())
+            _cd = float(tb[tb["_b"].isin(["C", "D"])]["Medido (kL)"].sum())
+            _tt = float(tb["Medido (kL)"].sum()) or 1.0
+            m2.metric("🟢🔵 A + B", "%.0f %%" % (100.0 * _ab / _tt), "%s kL" % _n(_ab, 2),
                       help="El stock que sostiene la exportación: absorbe AG-E sin pasarse "
                            "de la spec.")
-            m3.metric("🟠🔴 C + D", "%.0f %%" % (100.0 * _cd / _tt), "%s L" % _n(_cd),
+            m3.metric("🟠🔴 C + D", "%.0f %%" % (100.0 * _cd / _tt), "%s kL" % _n(_cd, 2),
                       help="El que hay que colocar mezclado con los buenos.")
             st.markdown(_barra_bandas(tb), unsafe_allow_html=True)
-            _cols = ["Banda", "Tanques", "Medido (L)", "Medido (t)", "% del total",
-                     "Comprometido (L)", "Disponible (L)", "Acidez %", "Fósforo ppm",
+            _cols = ["Banda", "Tanques", "Medido (kL)", "Medido (t)", "% del total",
+                     "Comprometido (kL)", "Disponible (kL)", "Acidez %", "Fósforo ppm",
                      "Azufre ppm", "AyS %", "En qué tanques"]
             st.dataframe(tb[_cols], hide_index=True, use_container_width=True,
                          column_config={
-                             "Medido (L)": st.column_config.NumberColumn(format="%.0f"),
+                             "Medido (kL)": st.column_config.NumberColumn(format="%.2f"),
                              "Medido (t)": st.column_config.NumberColumn(format="%.1f"),
-                             "Comprometido (L)": st.column_config.NumberColumn(format="%.0f"),
-                             "Disponible (L)": st.column_config.NumberColumn(format="%.0f"),
+                             "Comprometido (kL)": st.column_config.NumberColumn(format="%.2f"),
+                             "Disponible (kL)": st.column_config.NumberColumn(format="%.2f"),
                              "% del total": st.column_config.ProgressColumn(
                                  "% del total", format="%.0f%%", min_value=0, max_value=100),
                              "Acidez %": st.column_config.NumberColumn(format="%.2f"),
@@ -284,6 +285,10 @@ def render(USR, cat, conectar=None):
     tk["medido_t"] = tk["medido_l"] * tk["densidad"] / 1000.0
     tk["comp_t"] = tk["comp_l"] * tk["densidad"] / 1000.0
     tk["disp_t"] = tk["disp_l"] * tk["densidad"] / 1000.0
+    # unidades VISIBLES en kL (2 dec). Va después de calcular disponible y toneladas;
+    # los ratios (% compr., % del total) y los ponderados no cambian con la escala.
+    for _ckl in ("medido_l", "comp_l", "disp_l", "capacidad_litros"):
+        tk[_ckl] = tk[_ckl] / 1000.0
     # el nombre visible es el RÓTULO OFICIAL: trae la calidad (GLICERINA-C (recuperada))
     tk["prod_cal"] = (tk["producto_rotulo"].fillna(tk["producto_principal"])
                         .astype(str).str.strip())
@@ -292,11 +297,11 @@ def render(USR, cat, conectar=None):
     _por_tk = {}
     if dc is not None and not dc.empty:
         dc = dc.copy()
-        dc["litros"] = pd.to_numeric(dc["litros"], errors="coerce").fillna(0.0)
+        dc["litros"] = pd.to_numeric(dc["litros"], errors="coerce").fillna(0.0) / 1000.0  # kL
         for _t, _g in dc.groupby("id_tanque"):
             _por_tk[int(_t)] = " · ".join(
-                "#%d %s (%s L)" % (int(r["id_despacho"]), str(r["titulo"] or "—"),
-                                   _n(r["litros"]))
+                "#%d %s (%s kL)" % (int(r["id_despacho"]), str(r["titulo"] or "—"),
+                                    _n(r["litros"], 2))
                 for _, r in _g.sort_values("litros", ascending=False).iterrows())
     tk["despachos"] = tk["id_tanque"].map(lambda i: _por_tk.get(int(i), ""))
 
@@ -322,14 +327,14 @@ def render(USR, cat, conectar=None):
     # ---------- KPIs ----------
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Medido", "%s t" % _n(d["medido_t"].sum(), 1),
-              "%s L" % _n(d["medido_l"].sum()))
+              "%s kL" % _n(d["medido_l"].sum(), 2))
     k2.metric("🔒 Comprometido", "%s t" % _n(d["comp_t"].sum(), 1),
-              "%s L" % _n(d["comp_l"].sum()),
+              "%s kL" % _n(d["comp_l"].sum(), 2),
               help="En despachos confirmados que todavía no terminaron de pesar.")
     k3.metric("✅ Disponible", "%s t" % _n(d["disp_t"].sum(), 1),
-              "%s L" % _n(d["disp_l"].sum()))
+              "%s kL" % _n(d["disp_l"].sum(), 2))
     k4.metric("Productos · tanques", "%d · %d" % (d["prod_cal"].nunique(), len(d)))
-    st.caption("**Disponible = Medido − Comprometido.** *Medido* es la última medición física "
+    st.caption("**Volúmenes en kL** (1 kL = 1.000 L). **Disponible = Medido − Comprometido.** *Medido* es la última medición física "
                "del tanque; *comprometido* es lo designado en despachos **confirmados** que "
                "aún no pesaron todos sus contenedores (se libera solo al completarse).")
 
@@ -346,22 +351,22 @@ def render(USR, cat, conectar=None):
              .reset_index().sort_values("medido_t", ascending=False))
     res["% compr."] = (100.0 * res["comp_l"] / res["medido_l"].replace(0, pd.NA)).fillna(0.0)
     res = res.rename(columns={"prod_cal": "Producto · calidad",
-                              "medido_l": "Medido (L)", "comp_l": "Comprometido (L)",
-                              "disp_l": "Disponible (L)", "medido_t": "Medido (t)",
+                              "medido_l": "Medido (kL)", "comp_l": "Comprometido (kL)",
+                              "disp_l": "Disponible (kL)", "medido_t": "Medido (t)",
                               "comp_t": "Comprometido (t)", "disp_t": "Disponible (t)"})
-    _colres = ["Producto · calidad", "Tanques", "Medido (L)", "Comprometido (L)",
-               "Disponible (L)", "Medido (t)", "Comprometido (t)", "Disponible (t)",
+    _colres = ["Producto · calidad", "Tanques", "Medido (kL)", "Comprometido (kL)",
+               "Disponible (kL)", "Medido (t)", "Comprometido (t)", "Disponible (t)",
                "% compr."]
     _tot = {"Producto · calidad": "TOTAL", "Tanques": int(res["Tanques"].sum())}
     for _c in _colres[2:]:
         _tot[_c] = float(res[_c].sum()) if _c != "% compr." else (
-            100.0 * res["Comprometido (L)"].sum() / max(res["Medido (L)"].sum(), 1e-9))
+            100.0 * res["Comprometido (kL)"].sum() / max(res["Medido (kL)"].sum(), 1e-9))
     res_v = pd.concat([res[_colres], pd.DataFrame([_tot])], ignore_index=True)
     st.dataframe(res_v, hide_index=True, use_container_width=True,
                  column_config={
-                     "Medido (L)": st.column_config.NumberColumn(format="%.0f"),
-                     "Comprometido (L)": st.column_config.NumberColumn(format="%.0f"),
-                     "Disponible (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "Medido (kL)": st.column_config.NumberColumn(format="%.2f"),
+                     "Comprometido (kL)": st.column_config.NumberColumn(format="%.2f"),
+                     "Disponible (kL)": st.column_config.NumberColumn(format="%.2f"),
                      "Medido (t)": st.column_config.NumberColumn(format="%.1f"),
                      "Comprometido (t)": st.column_config.NumberColumn(format="%.1f"),
                      "Disponible (t)": st.column_config.NumberColumn(format="%.1f"),
@@ -381,24 +386,24 @@ def render(USR, cat, conectar=None):
         pass
     det_v = det.rename(columns={
         "prod_cal": "Producto · calidad", "nombre": "Tanque", "sector": "Sector",
-        "medido_l": "Medido (L)", "comp_l": "Comprometido (L)", "disp_l": "Disponible (L)",
+        "medido_l": "Medido (kL)", "comp_l": "Comprometido (kL)", "disp_l": "Disponible (kL)",
         "medido_t": "Medido (t)", "disp_t": "Disponible (t)",
-        "capacidad_litros": "Capacidad (L)", "despachos": "Comprometido en",
+        "capacidad_litros": "Capacidad (kL)", "despachos": "Comprometido en",
         "acidez": "Acidez %", "fosforo": "Fósforo ppm", "azufre": "Azufre ppm",
         "agua_sedimento": "AyS %", "ultima_medicion": "Últ. medición",
         "fuente_medicion": "Medidor", "condicion": "Condición"})
-    _coldet = ["Producto · calidad", "Tanque", "Sector", "Medido (L)", "Comprometido (L)",
-               "Disponible (L)", "Medido (t)", "Disponible (t)", "Capacidad (L)",
+    _coldet = ["Producto · calidad", "Tanque", "Sector", "Medido (kL)", "Comprometido (kL)",
+               "Disponible (kL)", "Medido (t)", "Disponible (t)", "Capacidad (kL)",
                "Comprometido en", "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %",
                "Medidor", "Últ. medición", "Condición"]
     st.dataframe(det_v[_coldet], hide_index=True, use_container_width=True,
                  column_config={
-                     "Medido (L)": st.column_config.NumberColumn(format="%.0f"),
-                     "Comprometido (L)": st.column_config.NumberColumn(format="%.0f"),
-                     "Disponible (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "Medido (kL)": st.column_config.NumberColumn(format="%.2f"),
+                     "Comprometido (kL)": st.column_config.NumberColumn(format="%.2f"),
+                     "Disponible (kL)": st.column_config.NumberColumn(format="%.2f"),
                      "Medido (t)": st.column_config.NumberColumn(format="%.2f"),
                      "Disponible (t)": st.column_config.NumberColumn(format="%.2f"),
-                     "Capacidad (L)": st.column_config.NumberColumn(format="%.0f"),
+                     "Capacidad (kL)": st.column_config.NumberColumn(format="%.0f"),
                      "Acidez %": st.column_config.NumberColumn(format="%.2f"),
                      "Fósforo ppm": st.column_config.NumberColumn(format="%.1f"),
                      "Azufre ppm": st.column_config.NumberColumn(format="%.1f"),
@@ -422,12 +427,12 @@ def render(USR, cat, conectar=None):
             st.markdown("##### 3 · Comprometido por despacho — **cuánto retiene cada uno**")
             _dc["_t"] = _dc.apply(
                 lambda r: float(r["litros"]) * float(
-                    d.set_index("id_tanque")["densidad"].get(int(r["id_tanque"]), 0.91)), axis=1) / 1000.0
+                    d.set_index("id_tanque")["densidad"].get(int(r["id_tanque"]), 0.91)), axis=1)
             porde = (_dc.groupby(["id_despacho", "titulo", "cliente", "fecha_despacho"])
-                        .agg(Litros=("litros", "sum"), Toneladas=("_t", "sum"),
+                        .agg(kL=("litros", "sum"), Toneladas=("_t", "sum"),
                              Tanques=("id_tanque", "nunique"),
                              _tk=("n_tickets", "max"), _cont=("n_contenedores", "max"))
-                        .reset_index().sort_values("Litros", ascending=False))
+                        .reset_index().sort_values("kL", ascending=False))
             porde["Productos"] = porde["id_despacho"].map(
                 lambda i: " · ".join(sorted(set(
                     _dc[_dc["id_despacho"] == i]["id_tanque"]
@@ -439,17 +444,17 @@ def render(USR, cat, conectar=None):
             porde = porde.rename(columns={"id_despacho": "Despacho", "titulo": "Título",
                                           "cliente": "Cliente",
                                           "fecha_despacho": "Fecha"})
-            _colpd = ["Despacho", "Título", "Cliente", "Fecha", "Litros", "Toneladas",
+            _colpd = ["Despacho", "Título", "Cliente", "Fecha", "kL", "Toneladas",
                       "Tanques", "Productos", "Avance", "Falta"]
             _totpd = {"Despacho": "TOTAL", "Título": "", "Cliente": "", "Fecha": None,
-                      "Litros": float(porde["Litros"].sum()),
+                      "kL": float(porde["kL"].sum()),
                       "Toneladas": float(porde["Toneladas"].sum()),
                       "Tanques": int(porde["Tanques"].sum()), "Productos": "",
                       "Avance": "", "Falta": int(porde["Falta"].sum())}
             porde_v = pd.concat([porde[_colpd], pd.DataFrame([_totpd])], ignore_index=True)
             st.dataframe(porde_v, hide_index=True, use_container_width=True,
                          column_config={
-                             "Litros": st.column_config.NumberColumn(format="%.0f"),
+                             "kL": st.column_config.NumberColumn(format="%.2f"),
                              "Toneladas": st.column_config.NumberColumn(format="%.2f"),
                              "Fecha": st.column_config.DateColumn(format="DD/MM/YY"),
                              "Falta": st.column_config.NumberColumn(
@@ -462,18 +467,18 @@ def render(USR, cat, conectar=None):
             st.markdown("**Apertura despacho × tanque**")
             desp_v = _dc.rename(columns={
                 "id_despacho": "Despacho", "titulo": "Título", "cliente": "Cliente",
-                "destino": "Destino", "fecha_despacho": "Fecha", "litros": "Litros",
+                "destino": "Destino", "fecha_despacho": "Fecha", "litros": "kL",
                 "estado": "Estado"})
             desp_v["Avance"] = desp_v.apply(
                 lambda r: "%d/%d tickets" % (int(r["n_tickets"] or 0),
                                              int(r["n_contenedores"] or 0)), axis=1)
             desp_v = desp_v[["Producto · calidad", "Despacho", "Título", "Cliente", "Destino",
-                             "Fecha", "Tanque", "Litros", "Avance", "Estado"]] \
-                .sort_values(["Producto · calidad", "Despacho", "Litros"],
+                             "Fecha", "Tanque", "kL", "Avance", "Estado"]] \
+                .sort_values(["Producto · calidad", "Despacho", "kL"],
                              ascending=[True, True, False])
             st.dataframe(desp_v, hide_index=True, use_container_width=True,
                          column_config={
-                             "Litros": st.column_config.NumberColumn(format="%.0f"),
+                             "kL": st.column_config.NumberColumn(format="%.2f"),
                              "Fecha": st.column_config.DateColumn(format="DD/MM/YY"),
                              "Avance": st.column_config.TextColumn(
                                  "Avance", help="Contenedores ya pesados en portería sobre el "
@@ -492,8 +497,8 @@ def render(USR, cat, conectar=None):
         if any(st.session_state.get("_ifs_bandas_%s" % _t2) is not None
                for _t2 in ("AFE-S", "AG-E")) else pd.DataFrame()
     if not _bandas.empty:
-        _bandas = _bandas[["Producto", "Banda", "Tanques", "Medido (L)", "Medido (t)",
-                           "% del total", "Comprometido (L)", "Disponible (L)", "Acidez %",
+        _bandas = _bandas[["Producto", "Banda", "Tanques", "Medido (kL)", "Medido (t)",
+                           "% del total", "Comprometido (kL)", "Disponible (kL)", "Acidez %",
                            "Fósforo ppm", "Azufre ppm", "AyS %", "En qué tanques"]]
     c1, c2, c3 = st.columns(3)
     try:
@@ -537,8 +542,8 @@ def render(USR, cat, conectar=None):
         except Exception as e:
             p2.caption("No se pudo generar la imagen: %s" % e)
     try:
-        _cold_png = ["Producto · calidad", "Tanque", "Medido (L)", "Comprometido (L)",
-                     "Disponible (L)", "Comprometido en"]
+        _cold_png = ["Producto · calidad", "Tanque", "Medido (kL)", "Comprometido (kL)",
+                     "Disponible (kL)", "Comprometido en"]
         p3.download_button("🖼️ PNG · Detalle por tanque",
                            _png(det_v[_cold_png], "Stock por tanque"),
                            file_name="stock_detalle_%s.png" % _hoy, mime="image/png",

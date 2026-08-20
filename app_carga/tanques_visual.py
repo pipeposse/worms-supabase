@@ -63,6 +63,16 @@ def _chip_calidad(prod, s, p):
     return None
 
 
+def _fkl(v, vacio="—"):
+    """Litros -> kilolitros con 2 decimales (los datos siguen en litros)."""
+    try:
+        if v is None or pd.isna(v):
+            return vacio
+        return "{:,.2f}".format(float(v) / 1000.0)
+    except Exception:
+        return vacio
+
+
 def _fnum(v, dec=0, vacio="—"):
     try:
         if v is None or pd.isna(v):
@@ -119,8 +129,8 @@ def _card(r, mov, ult):
     # Δ de la ventana
     if mov is not None and abs(float(mov.get("neto") or 0.0)) >= 100:
         _n = float(mov["neto"])
-        dl = ("<span style='color:%s;font-weight:700'>%s%s L</span>"
-              % ("#15803d" if _n > 0 else "#b91c1c", "▲+" if _n > 0 else "▼−", _fnum(abs(_n))))
+        dl = ("<span style='color:%s;font-weight:700'>%s%s kL</span>"
+              % ("#15803d" if _n > 0 else "#b91c1c", "▲+" if _n > 0 else "▼−", _fkl(abs(_n))))
     else:
         dl = "<span style='color:#94a3b8'>Δ 0</span>"
     # último movimiento tipificado
@@ -130,20 +140,20 @@ def _card(r, mov, ult):
         if str(ult.get("origen") or "") == "despacho" and pd.notna(ult.get("id_despacho")):
             _lb += " #%d" % int(ult["id_despacho"])
         _sg = "−" if str(ult.get("tipo")) == "OUT" else "+"
-        umv = ("<div class='tvq-ult' title='Último movimiento registrado'>últ: %s %s%s L · %s</div>"
-               % (_lb, _sg, _fnum(ult.get("litros")), _fts(ult.get("ts")) or ""))
-    _niv = _fnum(lts) if lts is not None else "s/med"
-    _lock = ("<div class='tvq-lock'>🔒 %s L comp.</div>" % _fnum(comp)) if comp > 0 else ""
+        umv = ("<div class='tvq-ult' title='Último movimiento registrado'>últ: %s %s%s kL · %s</div>"
+               % (_lb, _sg, _fkl(ult.get("litros")), _fts(ult.get("ts")) or ""))
+    _niv = _fkl(lts) if lts is not None else "s/med"
+    _lock = ("<div class='tvq-lock'>🔒 %s kL comp.</div>" % _fkl(comp)) if comp > 0 else ""
     h = ("<div class='tvq-card'>"
          "<div class='tvq-head' title='%s · %s'><span class='tvq-nom'>%s</span>%s</div>"
          "<div class='tvq-body'>"
          "<div class='tvq-tank %s'>"
          "<div class='tvq-fill' style='height:%.1f%%;background:linear-gradient(180deg,%scc,%s);bottom:%.1f%%'></div>"
-         "<div class='tvq-comp' style='height:%.1f%%' title='🔒 %s L comprometidos en despachos confirmados'></div>"
+         "<div class='tvq-comp' style='height:%.1f%%' title='🔒 %s kL comprometidos en despachos confirmados'></div>"
          "<div class='tvq-pct'>%.0f%%</div>"
          "</div>"
          "<div class='tvq-info'>"
-         "<div class='tvq-lts'><b>%s</b><span class='tvq-cap'> / %s L</span></div>"
+         "<div class='tvq-lts'><b>%s</b><span class='tvq-cap'> / %s kL</span></div>"
          "<div class='tvq-prod' style='color:%s'>%s</div>"
          "<div class='tvq-lab' title='Último análisis de laboratorio'>%s</div>"
          "<div class='tvq-med' title='Medidor y última medición'>%s</div>"
@@ -152,8 +162,8 @@ def _card(r, mov, ult):
          % (nombre, _html.escape(prod_lbl), nombre, chip_html,
             ("tvq-nomed" if lts is None else ""),
             pct_disp, col, col, pct_comp,
-            pct_comp, _fnum(comp), pct,
-            _niv, _fnum(cap), col, _html.escape(prod_lbl), lab, med, dl, umv, _lock))
+            pct_comp, _fkl(comp), pct,
+            _niv, _fkl(cap), col, _html.escape(prod_lbl), lab, med, dl, umv, _lock))
     return h
 
 
@@ -298,11 +308,11 @@ def render(USR, cat, conectar=None):
     k1.metric("Tanques", int(len(df)))
     k2.metric("Stock", "%s t" % _fnum((_lts * _dns).sum() / 1000.0))
     k3.metric("Ocupación", "%.0f %%" % (100.0 * _lts.sum() / _cap.sum() if _cap.sum() else 0))
-    k4.metric("🔒 Comprometido", "%s L" % _fnum(_comp.sum()),
+    k4.metric("🔒 Comprometido", "%s kL" % _fkl(_comp.sum()),
               help="En despachos confirmados sin terminar de pesar: es la franja rayada "
                    "arriba del líquido de cada tanque.")
     _neto_f = sum(_mv.get(int(t), {"neto": 0})["neto"] for t in df["id_tanque"])
-    k5.metric("Δ últimas %d h" % _hs, "%s%s L" % ("+" if _neto_f >= 0 else "−", _fnum(abs(_neto_f))),
+    k5.metric("Δ últimas %d h" % _hs, "%s%s kL" % ("+" if _neto_f >= 0 else "−", _fkl(abs(_neto_f))),
               help="Movimiento neto (entradas − salidas) de los tanques visibles.")
     st.caption("🎨 Chip de calidad: en **AFE/AG** es la banda contra la spec de venta "
                "(🟢 A excelente · 🔵 B bueno · 🟠 C justo · 🔴 D fuera de spec · — sin lab); "
@@ -333,8 +343,8 @@ def render(USR, cat, conectar=None):
         st.markdown(
             "<div class='tvq-sec'><h4>🏭 %s</h4>"
             "<div class='tvq-secbar'><div class='tvq-secfill' style='width:%.0f%%'></div></div>"
-            "<span class='tvq-sect'>%s / %s L · %.0f%% · %d tanques</span></div>"
-            % (_html.escape(str(_sec or "—")), min(100, _po), _fnum(_sl), _fnum(_sc), _po,
+            "<span class='tvq-sect'>%s / %s kL · %.0f%% · %d tanques</span></div>"
+            % (_html.escape(str(_sec or "—")), min(100, _po), _fkl(_sl), _fkl(_sc), _po,
                len(_d)), unsafe_allow_html=True)
         # resumen del sector por PRODUCTO·CALIDAD: los AFE-S/AG-E abren por banda
         # A/B/C/D del laboratorio ("AFE-S · B"); el resto ya la trae en el código
@@ -350,10 +360,10 @@ def render(USR, cat, conectar=None):
             _pctp = (100.0 * _pl / _tp) if _tp > 0 else 0.0
             _chips.append(
                 "<span class='tvq-pchip' style='border-color:%s55;color:%s' "
-                "title='%s en este sector · en toda la planta hay %s L'>"
-                "%s <b>%s L</b><span class='tvq-pplanta'> · %.0f%% de %s L en planta</span></span>"
-                % (_cp, _cp, _html.escape(str(_pn)), _fnum(_tp),
-                   _html.escape(str(_pn)), _fnum(_pl), _pctp, _fnum(_tp)))
+                "title='%s en este sector · en toda la planta hay %s kL'>"
+                "%s <b>%s kL</b><span class='tvq-pplanta'> · %.0f%% de %s kL en planta</span></span>"
+                % (_cp, _cp, _html.escape(str(_pn)), _fkl(_tp),
+                   _html.escape(str(_pn)), _fkl(_pl), _pctp, _fkl(_tp)))
         if _chips:
             st.markdown("<div class='tvq-prods'>%s</div>" % "".join(_chips),
                         unsafe_allow_html=True)
@@ -369,15 +379,17 @@ def render(USR, cat, conectar=None):
             _nom = {int(r["id_tanque"]): (str(r["nombre"]), str(r["prod_cal"] or "—"),
                                           str(r["sector"] or "—")) for _, r in df.iterrows()}
             _rows = [{"Tanque": _nom[t][0], "Producto": _nom[t][1], "Sector": _nom[t][2],
-                      "Entró (L)": m["entro"], "Salió (L)": m["salio"], "Neto (L)": m["neto"],
+                      "Entró (kL)": (m["entro"] or 0) / 1000.0,
+                      "Salió (kL)": (m["salio"] or 0) / 1000.0,
+                      "Neto (kL)": (m["neto"] or 0) / 1000.0,
                       "Movs": m["n"]}
                      for t, m in _mv.items() if t in _nom]
-            _rows = sorted(_rows, key=lambda x: -abs(x["Neto (L)"]))[:20]
+            _rows = sorted(_rows, key=lambda x: -abs(x["Neto (kL)"]))[:20]
             if not _rows:
                 st.info("Los tanques visibles no tuvieron movimientos en la ventana.")
             else:
                 st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True,
-                             column_config={c: st.column_config.NumberColumn(format="%.0f")
-                                            for c in ("Entró (L)", "Salió (L)", "Neto (L)")})
+                             column_config={c: st.column_config.NumberColumn(format="%.2f")
+                                            for c in ("Entró (kL)", "Salió (kL)", "Neto (kL)")})
                 st.caption("Neto = entradas − salidas del ledger de movimientos. Un neto grande "
                            "sin medición nueva es aviso de que el nivel del panel quedó viejo.")
