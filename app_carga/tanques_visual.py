@@ -220,18 +220,34 @@ def render(USR, cat, conectar=None):
     # etiqueta visible = rótulo oficial (con calidad); el código queda para la lógica
     df["prod_lbl"] = (df["producto_rotulo"].fillna(df["producto_principal"])
                         .fillna("—").astype(str))
-    _cod_de = dict(zip(df["prod_lbl"], df["producto_principal"].fillna("—").astype(str)))
+    # banda de calidad por tanque: AFE-S/AG-E por laboratorio (spec de venta); el
+    # resto por la letra del código (AG-C → C). None = producto sin calidad.
+    df["banda"] = [(c[0] if c else None) for c in
+                   (_chip_calidad(p, s, f) for p, s, f in
+                    zip(df["producto_principal"], df["azufre"], df["fosforo"]))]
+    _es_lab = (df["producto_principal"].astype(str).str.strip().str.upper()
+                 .isin(("AFE-S", "AG-E")))
+    # producto·calidad: en AFE-S/AG-E la banda va EN la etiqueta ("AFE-S · B");
+    # los que la traen en el código (AG-C, ARE-B) ya la muestran solos
+    df["prod_cal"] = [("%s · %s" % (pl, b)) if (lab and b) else pl
+                      for pl, b, lab in zip(df["prod_lbl"], df["banda"], _es_lab)]
+    _cod_de = dict(zip(df["prod_cal"], df["producto_principal"].fillna("—").astype(str)))
 
-    # total de planta por producto, ANTES de filtrar (recordatorio por sector)
+    # total de planta por producto·calidad, ANTES de filtrar (recordatorio por sector)
     _tot_planta = (df.assign(_l=df["litros_actual"].fillna(0))
-                     .groupby(df["prod_lbl"])["_l"].sum().to_dict())
+                     .groupby(df["prod_cal"])["_l"].sum().to_dict())
 
     # ---------- filtros ----------
-    f1, f2, f3, f4 = st.columns([1.6, 1.6, 1.2, 1.0])
+    f1, f2, f5, f3, f4 = st.columns([1.5, 1.5, 1.0, 1.1, 0.9])
     _secs = sorted(df["sector"].fillna("—").unique().tolist())
     f_sec = f1.multiselect("Sector", _secs, key="tvq_sec", placeholder="todos")
     _prods = sorted(df["prod_lbl"].unique().tolist())
     f_prod = f2.multiselect("Producto", _prods, key="tvq_prod", placeholder="todos")
+    f_cal = f5.multiselect("Calidad", ["A", "B", "C", "D", "E", "—"], key="tvq_cal",
+                           placeholder="todas",
+                           help="AFE-S y AG-E por laboratorio contra la spec de venta; el "
+                                "resto por la letra del código (AG-C → C). — = sin calidad "
+                                "o sin análisis.")
     _orden = f3.selectbox("Ordenar por", ["% de llenado", "Litros", "Producto", "Nombre",
                                           "Calidad"], key="tvq_ord")
     _hs = int(f4.selectbox("Movs. últimas", [6, 12, 24, 48], index=2, key="tvq_hs",
@@ -240,6 +256,8 @@ def render(USR, cat, conectar=None):
         df = df[df["sector"].fillna("—").isin(f_sec)]
     if f_prod:
         df = df[df["prod_lbl"].isin(f_prod)]
+    if f_cal:
+        df = df[df["banda"].fillna("—").isin(f_cal)]
     if df.empty:
         st.info("Ningún tanque cumple los filtros.")
         return
@@ -299,7 +317,7 @@ def render(USR, cat, conectar=None):
                   (_chip_calidad(p, s, f) for p, s, f in
                    zip(df["producto_principal"], df["azufre"], df["fosforo"]))]
     _keys = {"% de llenado": ("_pct", False), "Litros": ("litros_actual", False),
-             "Producto": ("prod_lbl", True), "Nombre": ("nombre", True),
+             "Producto": ("prod_cal", True), "Nombre": ("nombre", True),
              "Calidad": ("_chp", True)}
     _k, _asc = _keys[_orden]
     df = df.sort_values([_k, "nombre"], ascending=[_asc, True], na_position="last")
@@ -318,9 +336,10 @@ def render(USR, cat, conectar=None):
             "<span class='tvq-sect'>%s / %s L · %.0f%% · %d tanques</span></div>"
             % (_html.escape(str(_sec or "—")), min(100, _po), _fnum(_sl), _fnum(_sc), _po,
                len(_d)), unsafe_allow_html=True)
-        # resumen del sector por producto (el código ya trae la calidad: AG-C, ARE-B…)
+        # resumen del sector por PRODUCTO·CALIDAD: los AFE-S/AG-E abren por banda
+        # A/B/C/D del laboratorio ("AFE-S · B"); el resto ya la trae en el código
         _gp = (_d.assign(_l=_d["litros_actual"].fillna(0))
-                 .groupby(_d["prod_lbl"])["_l"].sum()
+                 .groupby(_d["prod_cal"])["_l"].sum()
                  .sort_values(ascending=False))
         _chips = []
         for _pn, _pl in _gp.items():
@@ -347,7 +366,7 @@ def render(USR, cat, conectar=None):
         if not _mv:
             st.info("Sin movimientos registrados en la ventana.")
         else:
-            _nom = {int(r["id_tanque"]): (str(r["nombre"]), str(r["prod_lbl"] or "—"),
+            _nom = {int(r["id_tanque"]): (str(r["nombre"]), str(r["prod_cal"] or "—"),
                                           str(r["sector"] or "—")) for _, r in df.iterrows()}
             _rows = [{"Tanque": _nom[t][0], "Producto": _nom[t][1], "Sector": _nom[t][2],
                       "Entró (L)": m["entro"], "Salió (L)": m["salio"], "Neto (L)": m["neto"],
