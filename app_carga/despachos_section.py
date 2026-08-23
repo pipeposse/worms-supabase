@@ -309,6 +309,14 @@ def _info_lineas(df, tks, spec):
     return out
 
 
+def _nombre_natural(nombre):
+    """Clave de orden natural: 'Tanque 2' < 'Tanque 10' (los números del nombre se
+    comparan como números, no como texto)."""
+    import re as _re
+    return _re.sub(r"\d+", lambda m: m.group(0).zfill(6),
+                   str(nombre or "").strip().lower())
+
+
 def _firma_lineas(df):
     """Firma estable de la carga (tanque→litros) para detectar cambios externos."""
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
@@ -476,11 +484,17 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
     _pool["_x"] = (~_pool["sector"].astype(str).str.strip()
                    .isin(list(SECTORES_PRIORIDAD))).astype(int)
     _pool["_cap"] = pd.to_numeric(_pool["capacidad_litros"], errors="coerce").fillna(9e12)
-    _pool = _pool.sort_values(["_x", "sector", "_ob", "_cap", "nombre"],
-                              ascending=[True, True, True, True, True])
+    _pool["_nat"] = _pool["nombre"].map(_nombre_natural)
+    # por defecto: N° de tanque (1, 2, 3… como en planta); opcional: calidad+capacidad
+    if str(ss.get("dsp_lst_ord") or "").startswith("Calidad"):
+        _pool = _pool.sort_values(["_x", "sector", "_ob", "_cap", "nombre"],
+                                  ascending=[True, True, True, True, True])
+    else:
+        _pool = _pool.sort_values(["_x", "sector", "_nat"],
+                                  ascending=[True, True, True])
 
     # ---------- filtros rápidos: lo tildado queda SIEMPRE visible ----------
-    fq1, fq2, fq3, fq4 = st.columns([1.5, 1.0, 1.3, 1.2])
+    fq1, fq2, fq3, fq4, fq5 = st.columns([1.35, 0.9, 1.15, 1.0, 1.1])
     _osec = sorted(_pool["sector"].fillna("—").astype(str).unique().tolist())
     _fsec = fq1.multiselect("Sector", _osec, key="dsp_lst_fsec", placeholder="todos")
     _fbnd = fq2.multiselect("Calidad", ["A", "B", "C", "D", "—"], key="dsp_lst_fbnd",
@@ -488,6 +502,11 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
     _fprd = fq3.multiselect("Producto", sorted(_up.unique().tolist()),
                             key="dsp_lst_fprd", placeholder="todos")
     _ftxt = fq4.text_input("🔎 Tanque", key="dsp_lst_ftxt", placeholder="buscar…")
+    _ford = fq5.selectbox("Orden", ["N° de tanque (1, 2, 3…)", "Calidad y capacidad"],
+                          key="dsp_lst_ord",
+                          help="Siempre agrupado por sector (los de carga primero). N° de "
+                               "tanque sigue el orden físico de planta; Calidad y capacidad "
+                               "pone primero los A y los tanques chicos.")
     _pass = pd.Series(True, index=_pool.index)
     if _fsec:
         _pass &= _pool["sector"].fillna("—").astype(str).isin(_fsec)
@@ -501,8 +520,9 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
     _pool = _pool[_pass | _pool["clave"].astype(str).isin(list(_map_l.keys()))]
     # cambiar un filtro cambia qué fila es qué: el editor se rearma para no
     # desalinear el estado (lo ya CARGADO no se pierde: vive en dsp_lineas)
-    _ffir = "%s|%s|%s|%s" % (",".join(_fsec), ",".join(_fbnd), ",".join(_fprd),
-                             (_ftxt or "").strip().lower())
+    _ffir = "%s|%s|%s|%s|%s" % (",".join(_fsec), ",".join(_fbnd), ",".join(_fprd),
+                                (_ftxt or "").strip().lower(),
+                                str(ss.get("dsp_lst_ord") or ""))
     if ss.get("_dsp_lst_ffir") != _ffir:
         ss["_dsp_lst_ffir"] = _ffir
         ss["dsp_lst_nonce"] = int(ss.get("dsp_lst_nonce") or 0) + 1
@@ -546,13 +566,16 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
     _k = "dsp_lst_%d" % int(ss.get("dsp_lst_nonce") or 0)
 
     st.markdown("##### 📋 Tanques disponibles — tildá para usar a tope o escribí los litros")
+    _otx = ("**calidad** (%s) y **capacidad** de menor a mayor"
+            % " · ".join("%s %s" % (BANDA_EMOJI[b], b) for b in ("A", "B", "C", "D"))
+            if str(ss.get("dsp_lst_ord") or "").startswith("Calidad")
+            else "**N° de tanque** (1, 2, 3… como están en planta)")
     st.caption("**%d tanque(s) visibles · %d tildado(s)** — ordenados por **sector** (los de "
-               "carga primero), **calidad** %s y **capacidad** de menor a mayor. **Disp. (L)** "
-               "ya tiene descontado el fondo de tanque y lo **comprometido** en despachos "
-               "confirmados. Al tildar un tanque entra con TODO lo disponible; escribí los "
-               "litros para usar menos. La sugerencia y las propuestas se ven acá tildadas."
-               % (len(_df), int(_df["Usar"].sum()),
-                  " · ".join("%s %s" % (BANDA_EMOJI[b], b) for b in ("A", "B", "C", "D"))))
+               "carga primero) y %s. **Disp. (L)** ya tiene descontado el fondo de tanque y "
+               "lo **comprometido** en despachos confirmados. Al tildar un tanque entra con "
+               "TODO lo disponible; escribí los litros para usar menos. La sugerencia y las "
+               "propuestas se ven acá tildadas."
+               % (len(_df), int(_df["Usar"].sum()), _otx))
     ss["_dsp_lst_base"] = _df    # la base que ve el callback (posiciones = filas)
     _edl = st.data_editor(
         _df.drop(columns=["_clave"]), hide_index=True, use_container_width=True, key=_k,
