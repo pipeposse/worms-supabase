@@ -339,6 +339,70 @@ def _lineas_actuales(ss, tks):
     return _normalizar_lineas(cur.reindex(columns=_COLS_ED), tks)
 
 
+def _lst_cb(ss=None, tks=None, conectar=None, USR=None, key=None):
+    """on_change de la lista: committea la edición ANTES del redibujo.
+
+    Corre entre el click del usuario y el rerun: aplica edited_rows sobre la
+    base que se dibujó, arma las líneas nuevas (tilde nuevo sin litros = a tope,
+    conservando overrides de lab) y deja dsp_lineas/_dsp_last_ed/firma en sync.
+    Así el primer tipeo queda grabado a la primera y todo el armador se dibuja
+    consistente en un solo paso."""
+    try:
+        _stt = ss.get(key)
+        base = ss.get("_dsp_lst_base")
+        if not isinstance(_stt, dict) or not isinstance(base, pd.DataFrame):
+            return
+        _edr = _stt.get("edited_rows") or {}
+        if not _edr:
+            return
+        df = base.copy()
+        for _i, _ch in _edr.items():
+            _i = int(_i)
+            if _i < 0 or _i >= len(df):
+                continue
+            for _c, _v in _ch.items():
+                if _c in ("Usar", "Litros"):
+                    df.iloc[_i, df.columns.get_loc(_c)] = _v
+        cur = _lineas_actuales(ss, tks)
+        _map_prev = {str(r.get("Tanque") or "").strip(): r for _, r in cur.iterrows()}
+        _nuevas = []
+        for _, r in df.iterrows():
+            if not bool(r["Usar"]):
+                continue
+            _cl = str(r["_clave"])
+            try:
+                _l = float(r["Litros"] or 0)
+            except Exception:
+                _l = 0.0
+            if _l <= 0 and _cl not in _map_prev:      # tilde nuevo sin litros: a TOPE
+                _l = float(int(float(r["Disp. (L)"] or 0) // 10) * 10)
+            _fila = {"Tanque": _cl, "Litros": round(_l, 0), "Acidez %": _NAN,
+                     "Fósforo ppm": _NAN, "Azufre ppm": _NAN, "AyS %": _NAN}
+            _prev = _map_prev.get(_cl)
+            if _prev is not None:                      # overrides de lab tipeados a mano
+                for _c in ("Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %"):
+                    _fila[_c] = _prev.get(_c, _NAN)
+            _nuevas.append(_fila)
+        _df_new = (pd.DataFrame(_nuevas).reindex(columns=_COLS_ED) if _nuevas
+                   else _base_vacia(_COLS_ED))
+        if _firma_lineas(_df_new) == _firma_lineas(cur):
+            return                                     # nada cambió de verdad
+        ss["dsp_lineas"] = _df_new
+        ss["_dsp_last_ed"] = _df_new.copy()
+        ss["_dsp_lst_fir"] = _firma_lineas(_lineas_actuales(ss, tks))
+        ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
+        try:
+            _borr_guardar(conectar, USR, _df_new)
+        except Exception:
+            pass
+        try:
+            st.toast("✔ Carga actualizada")
+        except Exception:
+            pass
+    except Exception:
+        pass    # ante cualquier duda: no romper el run; el commit post-render respalda
+
+
 def _selector_tanques(ss, tp, fam, spec, tks, conectar, USR, inc_vacios,
                       prod_cod=None, lit_obj=0.0):
     """Selección de tanques. Modo LISTA (principal) y modo TARJETAS (secundario)."""
@@ -489,8 +553,10 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
                "litros para usar menos. La sugerencia y las propuestas se ven acá tildadas."
                % (len(_df), int(_df["Usar"].sum()),
                   " · ".join("%s %s" % (BANDA_EMOJI[b], b) for b in ("A", "B", "C", "D"))))
+    ss["_dsp_lst_base"] = _df    # la base que ve el callback (posiciones = filas)
     _edl = st.data_editor(
         _df.drop(columns=["_clave"]), hide_index=True, use_container_width=True, key=_k,
+        on_change=_lst_cb, kwargs=dict(ss=ss, tks=tks, conectar=conectar, USR=USR, key=_k),
         height=min(38 * (len(_df) + 1) + 6, 460),
         disabled=["Grupo", "Tanque", "Cal.", "Disp. (L)", "Cap. (L)", "Compr. (L)",
                   "Medido (L)", "Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %", "Sector"],
@@ -610,13 +676,13 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
             _lineas_set(ss, _d2)
             ss["_dsp_last_ed"] = _d2.copy()
             _borr_guardar(conectar, USR, _d2)
-            st.rerun()
+            _rerun_frag()
     if c2.button("🧹 Destildar todo", key="dsp_lst_clear", use_container_width=True):
         _v = _base_vacia(_COLS_ED)
         _lineas_set(ss, _v)
         ss["_dsp_last_ed"] = _v.copy()
         _borr_guardar(conectar, USR, _v)
-        st.rerun()
+        _rerun_frag()
     c3.caption("Lo tildado acá **es** la carga: se refleja en la grilla de abajo y en el panel "
                "de Cumplimiento. Deshacer y Restablecer siguen funcionando igual.")
 
@@ -648,7 +714,7 @@ def _selector_tarjetas(ss, tp, fam, spec, tks, conectar, USR, inc_vacios):
             _df = pd.DataFrame(_nl).reindex(columns=_COLS_ED)
             _lineas_set(ss, _df)
             _borr_guardar(conectar, USR, _df)
-            st.rerun()
+            _rerun_frag()
     _sel = set(str(x) for x in cur["Tanque"].fillna("") if str(x).strip())
     _up = tp["producto_principal"].astype(str).str.strip().str.upper()
     _pool = tp[_up == str(_fsel)].copy()
@@ -702,7 +768,7 @@ def _selector_tarjetas(ss, tp, fam, spec, tks, conectar, USR, inc_vacios):
                     _lineas_set(ss, df)
                     ss["_dsp_last_ed"] = df.copy()
                     _borr_guardar(conectar, USR, df)
-                    st.rerun()
+                    _rerun_frag()
 
 
 def _resolver(ed: pd.DataFrame, tks: pd.DataFrame, prod_cod=None) -> pd.DataFrame:
@@ -1742,7 +1808,7 @@ def verificacion_planta(USR, cat, conectar):
                       {"verificacion_planta": _nreg, "despacho": int(sel)})
         cat.clear()
         st.success("Verificación guardada (%d línea(s) actualizadas)." % _nreg)
-        st.rerun()
+        _rerun_frag()
 
 
 # ------------------------------------------------------------------ borrador anticaidas
@@ -1960,6 +2026,32 @@ def _excel(cab, res, spec):
 
 # ------------------------------------------------------------------ UI
 
+def _rerun_frag():
+    """Redibuja SOLO el fragmento del armador cuando estamos dentro de uno (la
+    página no parpadea entera). Fuera de un fragmento cae al rerun normal. Los
+    RerunException son control de flujo de Streamlit: se dejan pasar SIEMPRE."""
+    try:
+        st.rerun(scope="fragment")
+    except TypeError:              # streamlit viejo sin scope
+        st.rerun()
+    except Exception as _e:
+        if "Rerun" in type(_e).__name__:
+            raise                  # el rerun en sí: control de flujo, no error
+        st.rerun()                 # scope="fragment" fuera de un fragmento
+
+
+try:
+    _FRAGMENT = st.fragment
+except AttributeError:             # sin fragmentos: decorador nulo, todo como antes
+    def _FRAGMENT(f):
+        return f
+
+
+@_FRAGMENT
+def _armar_frag(USR, cat, conectar):
+    _armar(USR, cat, conectar)
+
+
 def render(USR, cat, conectar):
     st.markdown(
         "<div style='background:linear-gradient(90deg,#0f766e,#0ea5e9);border-radius:14px;"
@@ -2009,7 +2101,8 @@ def render(USR, cat, conectar):
     elif _t.startswith("🔬"):
         _control(USR, cat, conectar)
     else:
-        _armar(USR, cat, conectar)
+        # el armador corre en su PROPIO fragmento: editar adentro no redibuja la página
+        _armar_frag(USR, cat, conectar)
 
 
 def _monitor_baja(USR, cat, conectar):
@@ -2183,7 +2276,7 @@ def _monitor_baja(USR, cat, conectar):
                 cat.clear()
                 st.success("%d despacho(s) cerrados: sus movimientos de stock pasan a "
                            "EJECUTADO." % len(_ids))
-                st.rerun()
+                _rerun_frag()
             except Exception as e:
                 st.error("No se pudieron cerrar: %s" % e)
 
@@ -2532,7 +2625,7 @@ def _armar(USR, cat, conectar):
                        if str(k).startswith(("dsp_", "_dsp"))]:
                 ss.pop(_k, None)
             ss.pop("_dsp_borr_ts", None)
-            st.rerun()
+            _rerun_frag()
     elif ss.get("_dsp_borr_has"):
         _rr1, _rr2 = st.columns([1.4, 3.6])
         if _rr1.button("♻️ Restablecer última carga", key="dsp_borr_re",
@@ -2544,7 +2637,7 @@ def _armar(USR, cat, conectar):
                 ss.pop(_k, None)
             ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
             _borr_restaurar(cat, USR)
-            st.rerun()
+            _rerun_frag()
         _rr2.caption("Cada cambio del despacho se guarda solo como borrador. Si algo se ve "
                      "vacío o distinto a lo que cargaste, este botón lo trae de vuelta.")
     tks = _tanques(cat)
@@ -2606,7 +2699,7 @@ def _armar(USR, cat, conectar):
                  "líneas se reemplazan por lo que quede acá." % int(ss["dsp_edit_id"]))
         if _cx.button("✖ Cancelar edición", key="dsp_edit_cancel", use_container_width=True):
             ss["dsp_edit_id"] = None
-            st.rerun()
+            _rerun_frag()
 
     # ---------- 1 · Cabecera ----------
     st.markdown("#### 1 · Datos de la orden de venta")
@@ -2818,7 +2911,7 @@ def _armar(USR, cat, conectar):
                               {"litros": float(_lu), "desde": "despachos"})
                 cat.clear()
                 st.success("Stock de %s actualizado a %s L." % (_ru["nombre"], f"{_lu:,.0f}"))
-                st.rerun()
+                _rerun_frag()
             except Exception as e:
                 st.error("No se pudo actualizar: %s" % e)
 
@@ -2881,7 +2974,7 @@ def _armar(USR, cat, conectar):
                                "desde": "despachos"})
                 cat.clear()
                 st.success("Parámetros de %s actualizados." % _rq["nombre"])
-                st.rerun()
+                _rerun_frag()
             except Exception as e:
                 st.error("No se pudo actualizar el lab: %s" % e)
     if not _s0.empty:
@@ -3010,7 +3103,7 @@ def _armar(USR, cat, conectar):
         else:
             _lineas_set(ss, _sug2)
             ss["dsp_props"] = None
-            st.rerun()
+            _rerun_frag()
     _hlp = ("Arma la formulación: mete el MÁXIMO de %s que cumpla la spec (o los litros que pongas) "
             "y completa con los AFE (AFE-S primero, mayor margen primero)."
             % _fam[0]) if _formulado else \
@@ -3023,19 +3116,19 @@ def _armar(USR, cat, conectar):
             cc.warning(_msg)
         else:
             _lineas_set(ss, _sug)
-            st.rerun()
+            _rerun_frag()
     if not ss.get("dsp_vaciar_arm"):
         if cb.button("🗑️ Vaciar", use_container_width=True):
             ss["dsp_vaciar_arm"] = True
-            st.rerun()
+            _rerun_frag()
     else:
         if cb.button("⚠️ Sí, vaciar TODO", type="primary", use_container_width=True):
             ss["dsp_vaciar_arm"] = False
             _lineas_set(ss, _base_vacia(_COLS_ED))
-            st.rerun()
+            _rerun_frag()
         if cb.button("Cancelar", use_container_width=True):
             ss["dsp_vaciar_arm"] = False
-            st.rerun()
+            _rerun_frag()
     if isinstance(ss.get("dsp_lineas_undo"), pd.DataFrame):
         if cb.button("↩️ Deshacer", use_container_width=True,
                      help="Vuelve la grilla a como estaba antes del último Vaciar, "
@@ -3047,7 +3140,7 @@ def _armar(USR, cat, conectar):
             ss["_dsp_last_ed"] = _n.copy() if isinstance(_n, pd.DataFrame) else None
             ss["_dsp_lst_fir"] = None
             ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
-            st.rerun()
+            _rerun_frag()
     pisar = cc.checkbox("✏️ Pisar valores de laboratorio a mano", key="dsp_pisar",
                         help="Sólo si el lab te pasó un valor que todavía no está en el sistema. "
                              "Por defecto los parámetros salen del tanque.")
@@ -3119,7 +3212,7 @@ def _armar(USR, cat, conectar):
                                          use_container_width=True):
                                 _lineas_set(ss, _p["df"])
                                 ss["dsp_props"] = None
-                                st.rerun()
+                                _rerun_frag()
                 st.caption("Ojo: la C se calcula con 0%% de margen aunque arriba tengas otro "
                            "valor — si la elegís, el panel de Cumplimiento no debería marcar "
                            "ningún desvío.")
@@ -3189,7 +3282,7 @@ def _armar(USR, cat, conectar):
         _f_low = _firma_lineas(_lineas_actuales(ss, tks))
         if ss.get("_dsp_lst_fir") is not None and ss.get("_dsp_lst_fir") != _f_low:
             ss["_dsp_lst_fir"] = None
-            st.rerun()
+            _rerun_frag()
     # Si cambió un TANQUE o la cantidad de filas, dsp_lineas toma lo editado y se
     # redibuja UNA vez: así Disp. y Calidad reflejan el tanque nuevo. Lo tipeado se
     # conserva porque viene de `ed` (esto no es el espejo continuo que revertía valores).
@@ -3198,7 +3291,7 @@ def _armar(USR, cat, conectar):
         _tq_ba = [str(x or "").strip() for x in base["Tanque"].fillna("")]
         if _tq_ed != _tq_ba:
             _lineas_set(ss, ed.reindex(columns=_cols))
-            st.rerun()
+            _rerun_frag()
     except Exception:
         pass
 
@@ -3587,7 +3680,7 @@ def _listado(USR, cat, conectar):
     if st.button("✏️ Modificar en el armador", key="dsp_ed_open",
                  help="Precarga cabecera y líneas en la vista de armado; al guardar se pisa este despacho."):
         _editar_despacho(cat, st.session_state, int(sel))
-        st.rerun()
+        _rerun_frag()
 
     r = df[df["id_despacho"] == sel].iloc[0]
     c1, c2, c3 = st.columns([1.2, 1, 2])
@@ -3612,7 +3705,7 @@ def _listado(USR, cat, conectar):
                            "(revisá que el despacho tenga líneas con tanque y litros).")
             else:
                 st.success("Estado actualizado. Se revirtieron los movimientos de stock del despacho.")
-            st.rerun()
+            _rerun_frag()
         except Exception as e:
             st.error(f"No se pudo actualizar: {e}")
     if c3.checkbox("Habilitar borrado", key="dsp_del_ok") and c3.button("🗑️ Borrar despacho"):
@@ -3620,7 +3713,7 @@ def _listado(USR, cat, conectar):
             with conectar(USR["id_usuario"]) as (conn, _a):
                 with conn.cursor() as cur:
                     cur.execute("DELETE FROM produccion.fact_despacho WHERE id_despacho=%s", (int(sel),))
-            cat.clear(); st.success("Despacho borrado."); st.rerun()
+            cat.clear(); st.success("Despacho borrado."); _rerun_frag()
         except Exception as e:
             st.error(f"No se pudo borrar: {e}")
 
@@ -3708,14 +3801,14 @@ def _borradores(USR, cat, conectar):
             if c3.button("✏️ Seguir editando", key="brr_ed_%d" % _idd,
                          use_container_width=True, type="primary"):
                 _editar_despacho(cat, ss, _idd)
-                st.rerun()
+                _rerun_frag()
             if c3.button("📄 Duplicar", key="brr_dup_%d" % _idd, use_container_width=True,
                          help="Abre una orden NUEVA con la misma cabecera y los mismos "
                               "tanques; el borrador original queda intacto."):
                 _editar_despacho(cat, ss, _idd)
                 ss["dsp_edit_id"] = None          # ← se guarda como uno nuevo
                 ss["dsp_titulo"] = (str(r["titulo"] or "") + " (copia)").strip()
-                st.rerun()
+                _rerun_frag()
             _ok_del = c4.checkbox("Habilitar", key="brr_delok_%d" % _idd,
                                   help="Tildá para habilitar el borrado de este borrador.")
             if c4.button("🗑️ Borrar", key="brr_del_%d" % _idd, use_container_width=True,
@@ -3732,7 +3825,7 @@ def _borradores(USR, cat, conectar):
                         st.success("Borrador #%d eliminado." % _idd)
                     else:
                         st.warning("El #%d ya no está en borrador: no se borró." % _idd)
-                    st.rerun()
+                    _rerun_frag()
                 except Exception as e:
                     st.error("No se pudo borrar: %s" % e)
 
@@ -3936,12 +4029,12 @@ def _control(USR, cat, conectar):
                     _nu = cur.rowcount
             cat.clear()
             st.success("%d línea(s) actualizadas con el último análisis de su tanque." % _nu)
-            st.rerun()
+            _rerun_frag()
         except Exception as e:
             st.error("No se pudo actualizar: %s" % e)
     if c2.button("✏️ Modificar en el armador", key="dsp_ctl_edit", use_container_width=True):
         _editar_despacho(cat, ss, int(sel))
-        st.rerun()
+        _rerun_frag()
     if _estado == "BORRADOR":
         if ok_g:
             _lbl_go = ("🚨 Confirmar CON DESVÍO e iniciar" if _dv_g else "✅ Cumple — confirmar e iniciar")
@@ -3963,7 +4056,7 @@ def _control(USR, cat, conectar):
                     cat.clear()
                     st.success("Despacho #%d CONFIRMADO%s." % (int(sel),
                                " con desvío registrado" if _dv_g else ""))
-                    st.rerun()
+                    _rerun_frag()
                 except Exception as e:
                     st.error("No se pudo confirmar: %s" % e)
         else:
@@ -3990,7 +4083,7 @@ def _control(USR, cat, conectar):
                     cat.clear()
                     st.success("Despacho #%d CONFIRMADO fuera de tolerancia, con desvío y motivo "
                                "registrados." % int(sel))
-                    st.rerun()
+                    _rerun_frag()
                 except Exception as e:
                     st.error("No se pudo confirmar: %s" % e)
     else:
@@ -4121,7 +4214,7 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                                     ([int(i) for i in _q],))
                         if rol == "SALIDA":
                             _desvio_balanza(cur, int(cab["id_despacho"]), USR.get("nombre"))
-                cat.clear(); st.success("Tickets desasignados (el stock se resincroniza solo)."); st.rerun()
+                cat.clear(); st.success("Tickets desasignados (el stock se resincroniza solo)."); _rerun_frag()
             except Exception as e:
                 st.error(f"No se pudo quitar: {e}")
     else:
@@ -4203,7 +4296,7 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                             _nok += 1
                         if rol == "SALIDA":
                             _desvio_balanza(cur, int(cab["id_despacho"]), USR.get("nombre"))
-                cat.clear(); st.success(f"{_nok} ticket(s) asignados."); st.rerun()
+                cat.clear(); st.success(f"{_nok} ticket(s) asignados."); _rerun_frag()
             except Exception as e:
                 st.error(f"No se pudieron asignar: {e}")
 
