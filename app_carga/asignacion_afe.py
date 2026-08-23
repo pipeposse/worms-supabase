@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """Asignación de Tanques a AFEs.
 
-Cada ticket de AFE evaluado por laboratorio recibe automáticamente 1 a 3 tanques
-de acopio sugeridos. El operario (Producción en planta) o la dirección (Centro de
+Cada ticket de AFE evaluado por laboratorio recibe automáticamente 1 a 7 tanques
+de acopio sugeridos (SOL-0009: con poco espacio de acopio un camión se reparte
+completando varios tanques a tope). El operario (Producción en planta) o la dirección (Centro de
 Planificación) confirma o edita tanque y cantidades.
 
 Al confirmar:
   * se anulan los movimientos automáticos previos del ticket (lab_sync / sistema)
-    y se insertan 1 a 3 movimientos de stock reales + su espejo de tanque;
+    y se insertan 1 a 7 movimientos de stock reales + su espejo de tanque;
   * se propagan los parámetros del ticket al tanque:
       - tanque vacío  -> parámetros del ticket
       - tanque con líquido -> promedio ponderado por kg asignados
@@ -301,10 +302,10 @@ def _rankear(df_cand, tk, litros, kg=None):
 
 
 def _sugerir(rank, kg, dens):
-    """Hasta 3 tanques. Se elige el mejor; si no absorbe todo, se suman hasta dos
-    más ponderando el score por cuánto del resto cubre cada uno (cubrir el 100%
-    no puede imponerse sobre la calidad). Entre los elegidos se llena primero el
-    más cargado (regla de planta).
+    """Hasta 7 tanques (SOL-0009). Se elige el mejor; si no absorbe todo, se van
+    sumando más ponderando el score por cuánto del resto cubre cada uno (cubrir
+    el 100% no puede imponerse sobre la calidad). Entre los elegidos se llena
+    primero el más cargado (regla de planta).
 
     El reparto respeta SIEMPRE el espacio disponible de cada tanque: nunca se
     asignan más kg de los que el tanque puede recibir. Lo que no entra queda en
@@ -317,7 +318,7 @@ def _sugerir(rank, kg, dens):
     eleg = [viables[0]]
     resto_lts = litros - max(0.0, viables[0]["_disp"])
     pool = list(viables[1:])
-    while resto_lts > 0.5 and pool and len(eleg) < 3:
+    while resto_lts > 0.5 and pool and len(eleg) < 7:
         def _sel(x):
             cob = min(1.0, max(0.0, x["_disp"]) / resto_lts) if resto_lts > 0 else 1.0
             return x["_score"] * (0.5 + 0.5 * cob)
@@ -663,11 +664,17 @@ def _pendientes(USR, cat, conectar, contexto):
                 return k
         return _keys[0]
 
-    _n_tq = st.radio("¿Cuántos tanques?", [1, 2, 3],
-                     index=(min(len(sug), 3) - 1 if sug else 0),
-                     horizontal=True, key="asg_ntq_%s" % r["tk"])
+    _n_tq = st.radio("¿Cuántos tanques?", [1, 2, 3, 4, 5, 6, 7],
+                     index=(min(len(sug), 7) - 1 if sug else 0),
+                     horizontal=True, key="asg_ntq_%s" % r["tk"],
+                     help="Con poco espacio de acopio el camión se reparte completando "
+                          "tanques a tope (SOL-0009).")
     lineas = []
-    cols = st.columns(int(_n_tq))
+    # hasta 4 columnas por fila: con 5-7 tanques una sola fila queda ilegible
+    _pf = int(_n_tq) if int(_n_tq) <= 4 else 4
+    cols = []
+    while len(cols) < int(_n_tq):
+        cols.extend(st.columns(_pf))
     # 1º los tanques (hacen falta los DOS elegidos para calcular el reparto por defecto)
     _sel = []
     for i in range(int(_n_tq)):
