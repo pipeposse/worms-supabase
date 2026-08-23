@@ -57,6 +57,7 @@ def _batches(cat):
         "       b.desg_reposo_modo, b.desg_id_tanque_reposo, b.desg_reposo_ini_ts, "
         "       b.reposo_plan_modo, "
         "       b.desg_agua_sed_pct, b.desg_lab_ok, b.desg_id_tanque_destino, "
+        "       b.desg_tanques_destino, "
         "       b.desg_recipiente_vacio, b.desg_confirmada_ts, b.id_producto_buscado, b.desg_incidente, b.desg_incidente_motivo, "
         "       b.parametros_proceso, b.litros_inicial, b.kg_inicial "
         "FROM produccion.fact_batch_proceso b "
@@ -73,6 +74,7 @@ def _batch_one(cat, id_batch):
         "       b.desg_reposo_modo, b.desg_id_tanque_reposo, b.desg_reposo_ini_ts, "
         "       b.reposo_plan_modo, "
         "       b.desg_agua_sed_pct, b.desg_lab_ok, b.desg_id_tanque_destino, "
+        "       b.desg_tanques_destino, "
         "       b.desg_recipiente_vacio, b.desg_confirmada_ts, b.id_producto_buscado, b.desg_incidente, b.desg_incidente_motivo, "
         "       b.parametros_proceso, b.litros_inicial, b.kg_inicial "
         "FROM produccion.fact_batch_proceso b "
@@ -137,6 +139,22 @@ def _hist_lab(cat, id_batch):
     if _h is not None and not _h.empty:
         st.caption("Historial de muestras de decantación (laboratorio, con horario):")
         st.dataframe(_h, use_container_width=True, hide_index=True)
+
+
+def _destinos_de(b):
+    """Lista de tanques destino del batch: desg_tanques_destino (jsonb) o, si no
+    hay, el desg_id_tanque_destino viejo. [] si no se definió nada."""
+    import json as _json
+    out = []
+    try:
+        _pl = b.get("desg_tanques_destino")
+        if _pl is not None and not (isinstance(_pl, float) and pd.isna(_pl)):
+            out = [int(x) for x in (_pl if isinstance(_pl, list) else _json.loads(_pl))]
+    except Exception:
+        out = []
+    if not out and pd.notna(b.get("desg_id_tanque_destino")):
+        out = [int(b["desg_id_tanque_destino"])]
+    return out
 
 
 def _pf_code(cat, b):
@@ -247,19 +265,28 @@ def planificacion(USR, cat, conectar):
         st.warning(f"No hay tanques que admitan {_pf}. Cargá el producto permitido en el tanque o elegí manualmente en Tanques.")
         return
     fop = ft.apply(lambda r: f"{r['nombre']} · {r['sector'] or ''} · {float(r['lt']):,.0f}/{float(r['cap']):,.0f} L", axis=1).tolist()
-    _curf = b["desg_id_tanque_destino"]
-    _ixf = next((i for i, (_, r) in enumerate(ft.iterrows())
-                 if int(r["id_tanque"]) == (int(_curf) if pd.notna(_curf) else -1)), 0)
-    fsel = st.selectbox(f"Tanque destino del {_pf}", fop, index=_ixf, key="desg_dest_tk")
-    dest_fin = int(ft.iloc[fop.index(fsel)]["id_tanque"])
-    if st.button("💾 Guardar destino final", type="primary", use_container_width=True, key="desg_save_dest"):
+    _ids = [int(x) for x in ft["id_tanque"]]
+    _prev = _destinos_de(b)
+    _def = [fop[_ids.index(i)] for i in _prev if i in _ids]
+    fsel = st.multiselect(f"Tanque(s) destino del {_pf} — hasta 5", fop, default=_def,
+                          max_selections=5, key="desg_dest_tk_ms",
+                          help="Con poco espacio de acopio el producto se reparte en varios "
+                               "tanques. Producción después carga cuántos litros fueron a "
+                               "cada uno.")
+    dests_sel = [_ids[fop.index(x)] for x in fsel]
+    if st.button("💾 Guardar destino final", type="primary", use_container_width=True,
+                 key="desg_save_dest", disabled=not dests_sel):
         try:
+            import json as _json
             with conectar(uid) as (conn, audit):
                 with conn.cursor() as cur:
-                    cur.execute("UPDATE produccion.fact_batch_proceso SET desg_id_tanque_destino=%s WHERE id_batch=%s",
-                                (dest_fin, int(b["id_batch"])))
-                audit.log("U", "fact_batch_proceso", int(b["id_batch"]), {"desg_destino": dest_fin})
-            st.success("Destino guardado. Producción confirma y valida el recipiente vacío.")
+                    cur.execute("UPDATE produccion.fact_batch_proceso SET "
+                                "desg_id_tanque_destino=%s, desg_tanques_destino=%s::jsonb "
+                                "WHERE id_batch=%s",
+                                (int(dests_sel[0]), _json.dumps(dests_sel), int(b["id_batch"])))
+                audit.log("U", "fact_batch_proceso", int(b["id_batch"]),
+                          {"desg_destinos": dests_sel})
+            st.success("Destino(s) guardado(s). Producción confirma y valida el recipiente vacío.")
             cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
@@ -337,12 +364,15 @@ def produccion(USR, cat, conectar, id_batch=None):
     if not bool(b["desg_lab_ok"]):
         st.info("Disponible cuando laboratorio confirme agua+sedimentos < 1,5 %.")
         return
-    dest = b["desg_id_tanque_destino"]
-    if pd.isna(dest) or dest is None:
-        st.warning(f"Falta que **Centro de Planificación** defina el tanque destino del {_pf}.")
+    dests = _destinos_de(b)
+    if not dests:
+        st.warning(f"Falta que **Centro de Planificación** defina el/los tanque(s) destino del {_pf}.")
         return
-    nt = cat("SELECT nombre FROM produccion.dim_tanque WHERE id_tanque=%s", (int(dest),))
-    dest_nm = nt.iloc[0]["nombre"] if (nt is not None and not nt.empty) else f"tanque {int(dest)}"
+    _nmq = cat("SELECT id_tanque, nombre FROM produccion.dim_tanque WHERE id_tanque = ANY(%s)",
+               (dests,))
+    _nm = ({int(r["id_tanque"]): str(r["nombre"]) for _, r in _nmq.iterrows()}
+           if (_nmq is not None and not _nmq.empty) else {})
+    dest_nm = " + ".join(_nm.get(i, "tanque %d" % i) for i in dests)
 
     # ---- envíos ya registrados (pases anteriores) ----
     _tot = cat("SELECT COALESCE(SUM(litros_afe),0) t FROM produccion.fact_desg_envio WHERE id_batch=%s", (int(b["id_batch"]),))
@@ -367,9 +397,26 @@ def produccion(USR, cat, conectar, id_batch=None):
     st.markdown("##### 🚚 Cierre con ajuste (lo que realmente salió y lo que quedó)")
     st.caption(f"Estimado a sacar en este pase: **{_lit_def:,.0f} L**. Cargá lo que **realmente vaciaste** a destino "
                "y **cuánto quedó** en el tanque.")
-    c1, c2, c3 = st.columns(3)
-    l_afe = c1.number_input(f"{_pf} vaciado a {dest_nm} (L)", min_value=0.0, max_value=1_000_000.0,
-                            value=float(round(_lit_def, 0)), step=10.0, key="desg_l_afe")
+    if len(dests) > 1:
+        st.caption("**%d tanques destino** (%s): cargá cuántos litros fueron a CADA uno — por "
+                   "defecto todo al primero; repartilo como fue en la realidad."
+                   % (len(dests), dest_nm))
+        _lts_por_tk = {}
+        _colsd = st.columns(min(len(dests), 4))
+        for _i, _idt in enumerate(dests):
+            with _colsd[_i % len(_colsd)]:
+                _lts_por_tk[int(_idt)] = st.number_input(
+                    "→ %s (L)" % _nm.get(int(_idt), _idt), min_value=0.0, max_value=1_000_000.0,
+                    value=(float(round(_lit_def, 0)) if _i == 0 else 0.0), step=10.0,
+                    key="desg_l_afe_%d" % int(_idt))
+        l_afe = float(sum(_lts_por_tk.values()))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total vaciado", f"{l_afe:,.0f} L")
+    else:
+        c1, c2, c3 = st.columns(3)
+        l_afe = c1.number_input(f"{_pf} vaciado a {dest_nm} (L)", min_value=0.0, max_value=1_000_000.0,
+                                value=float(round(_lit_def, 0)), step=10.0, key="desg_l_afe")
+        _lts_por_tk = {int(dests[0]): None}
     l_rem = c2.number_input("¿Cuánto quedó en el tanque? (L)", min_value=0.0, max_value=1_000_000.0,
                             value=0.0, step=10.0, key="desg_l_rem",
                             help="0 si vaciaste todo. Si quedó líquido, cargá el remanente estimado.")
@@ -404,16 +451,27 @@ def produccion(USR, cat, conectar, id_batch=None):
 
     def _envio(cur, vacio, es_err, l_rem_, motivo_):
         id_afe = int(b["id_producto_buscado"]) if pd.notna(b["id_producto_buscado"]) else AFE_S_ID
-        _mov(cur, b, uid, "PRODUCTO_FINAL", id_afe, _pf, int(dest), l_afe, DENS_AFE)
-        if l_fondo and l_fondo > 0:
-            _mov(cur, b, uid, "SUBPRODUCTO", FONDO_TK_ID, "Fondo de tanque", int(dest), l_fondo, 1.0)
-        cur.execute("INSERT INTO produccion.fact_desg_envio "
-                    "(id_batch,litros_afe,litros_fondo,id_tanque_destino,recipiente_vacio,es_error,"
-                    " litros_remanente,motivo,canilla_ok,vision_ok,id_usuario) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (int(b["id_batch"]), float(l_afe), float(l_fondo or 0), int(dest),
-                     bool(vacio), bool(es_err), (float(l_rem_) if l_rem_ else None), (motivo_ or None),
-                     bool(canilla_ok), bool(vision_ok), uid))
+        # un movimiento + un renglón de envío POR TANQUE con litros > 0; las marcas
+        # de cierre (vacío/incidente/motivo/fondo) van SOLO en el último renglón
+        _pares = [(int(t), (float(l) if l is not None else float(l_afe)))
+                  for t, l in _lts_por_tk.items()]
+        _pares = [(t, l) for t, l in _pares if l > 0] or [(int(dests[0]), float(l_afe))]
+        for _j, (_idt, _lts) in enumerate(_pares):
+            _ult = (_j == len(_pares) - 1)
+            if _lts > 0:
+                _mov(cur, b, uid, "PRODUCTO_FINAL", id_afe, _pf, _idt, _lts, DENS_AFE)
+            if _ult and l_fondo and l_fondo > 0:
+                _mov(cur, b, uid, "SUBPRODUCTO", FONDO_TK_ID, "Fondo de tanque", _idt, l_fondo, 1.0)
+            cur.execute("INSERT INTO produccion.fact_desg_envio "
+                        "(id_batch,litros_afe,litros_fondo,id_tanque_destino,recipiente_vacio,es_error,"
+                        " litros_remanente,motivo,canilla_ok,vision_ok,id_usuario) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (int(b["id_batch"]), float(_lts),
+                         (float(l_fondo or 0) if _ult else 0.0), _idt,
+                         bool(vacio) and _ult, bool(es_err) and _ult,
+                         (float(l_rem_) if (l_rem_ and _ult) else None),
+                         ((motivo_ or None) if _ult else None),
+                         bool(canilla_ok) and _ult, bool(vision_ok) and _ult, uid))
 
     if es_vacio:
         st.success("✅ Vaciado confirmado por canilla y visión. Al registrar, el desgomado queda FINALIZADO.")
