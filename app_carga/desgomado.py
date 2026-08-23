@@ -22,6 +22,7 @@ import pandas as pd
 import streamlit as st
 
 CONICO60_ID = 82                 # tanque "Cónico 60"
+TANQUE3_ID = 72                  # "Tanque 3" de Reactores (Acopio): también decanta
 AFE_S_ID = 1                     # producto AFE-S (final del desgomado)
 FONDO_TK_ID = 56                 # producto Fondo de tanque (subproducto)
 DENS_AFE = 0.92
@@ -95,10 +96,12 @@ def _reposo_eta(cat, b):
 
 
 def _recipiente_nombre(cat, b):
-    """Recipiente donde se hace la decantación (Cónico 60 o el reactor)."""
+    """Recipiente donde se hace la decantación (Cónico 60, Tanque 3 o el reactor)."""
     modo = b.get("desg_reposo_modo")
     if modo == "CONICO60":
         return "Cónico 60"
+    if modo == "TANQUE3":
+        return "Tanque 3 (acopio)"
     if modo == "REACTOR":
         return b.get("reactor") or "el reactor"
     return "el recipiente"
@@ -190,15 +193,18 @@ def planificacion(USR, cat, conectar):
     if not b["desg_reposo_modo"]:
         st.info(f"Elegí dónde reposa **{reposo_hs:.0f} h**. La decantación se hará en ese mismo recipiente.")
         _plan = str(b.get("reposo_plan_modo") or "")
+        _lbl_plan = {"CONICO60": "Cónico 60", "TANQUE3": "Tanque 3 (acopio)",
+                     "REACTOR": "el mismo reactor"}
         if _plan:
             st.caption("🛌 Dirección lo planificó reposando en **%s**. Podés cambiarlo si hizo falta."
-                       % ("Cónico 60" if _plan == "CONICO60" else "el mismo reactor"))
-        modo = st.radio("¿Dónde reposa?",
-                        ["🛢️ Transferir a Cónico 60", "⚗️ Queda en el reactor"],
-                        index=(0 if _plan == "CONICO60" else 1) if _plan else 0,
-                        key="desg_modo")
+                       % _lbl_plan.get(_plan, _plan))
+        _ops_rep = {"🛢️ Transferir a Cónico 60": ("CONICO60", CONICO60_ID),
+                    "🛢️ Transferir a Tanque 3 (acopio)": ("TANQUE3", TANQUE3_ID),
+                    "⚗️ Queda en el reactor": ("REACTOR", None)}
+        _ixp = {"CONICO60": 0, "TANQUE3": 1, "REACTOR": 2}.get(_plan, 0)
+        modo = st.radio("¿Dónde reposa?", list(_ops_rep.keys()), index=_ixp, key="desg_modo")
         if st.button("💾 Confirmar reposo (arranca el conteo de 12 h)", type="primary", key="desg_modo_ok"):
-            es_conico = modo.startswith("🛢️")
+            _modo_cod, _idt_rep = _ops_rep[modo]
             try:
                 with conectar(uid) as (conn, audit):
                     with conn.cursor() as cur:
@@ -207,12 +213,11 @@ def planificacion(USR, cat, conectar):
                             "SET desg_reposo_modo=%s, desg_id_tanque_reposo=%s, desg_reposo_ini_ts=now(), "
                             "    id_usuario_estado=%s, motivo_estado=%s "
                             "WHERE id_batch=%s",
-                            ("CONICO60" if es_conico else "REACTOR",
-                             (CONICO60_ID if es_conico else None), uid,
-                             ("Reposo en Cónico 60" if es_conico else "Reposo en el reactor"),
+                            (_modo_cod, _idt_rep, uid,
+                             "Reposo en %s" % _lbl_plan.get(_modo_cod, _modo_cod),
                              int(b["id_batch"])))
                     audit.log("U", "fact_batch_proceso", int(b["id_batch"]),
-                              {"desg_reposo_modo": "CONICO60" if es_conico else "REACTOR"})
+                              {"desg_reposo_modo": _modo_cod, "id_tanque_reposo": _idt_rep})
                 st.success("Reposo confirmado. Cuando pasen las 12 h, producción arranca la decantación.")
                 cat.clear(); st.rerun()
             except Exception as e:

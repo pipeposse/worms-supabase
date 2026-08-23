@@ -4138,12 +4138,16 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # ---------- Tanque de reposo: se define al planificar y el operario lo ve en el proceso ----------
     st.markdown("#### 🛌 Tanque de reposo")
     _rep_ops = {"⚗️ Mismo reactor": ("REACTOR", None), "🛢️ Cónico 60": ("CONICO60", 82)}
+    if proc == "DESGOMADO_ACUOSO":
+        # pedido de planta: decantar también en el Tanque 3 de acopio (RXA-TANQUE-3)
+        _rep_ops["🛢️ Tanque 3 (acopio)"] = ("TANQUE3", 72)
     if proc == "PRODUCCION_ARE":
         _rep_ops["🛢️ Cónico 20-1"] = ("CONICO20", 87)
         _rep_ops["🛢️ Cónico 20-2"] = ("CONICO20", 88)
     _rep_sel = st.radio("¿Dónde reposa cuando termine la reacción? *", list(_rep_ops.keys()),
                         index=None, horizontal=True, key="pl_reposo_tk",
-                        help=("OBLIGATORIO. Desgomado: el mismo reactor o el Cónico 60. Producción "
+                        help=("OBLIGATORIO. Desgomado: el mismo reactor, el Cónico 60 o el Tanque 3 "
+                              "de acopio. Producción "
                               "ARE: el mismo reactor, el Cónico 60 o un Cónico 20. El operario lo ve "
                               "durante el proceso y al pasar a reposo; en desgomado, la decisión de "
                               "reposo sale precargada con esto."))
