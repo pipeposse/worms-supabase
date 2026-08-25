@@ -32,11 +32,12 @@ def _datos(cat, d1, d2):
         "SELECT p.id_transaccion, p.fecha, to_char(p.fecha,'IYYY·\"S\"IW') AS semana, "
         "COALESCE(p.procedencia,'—') AS proveedor, p.ticket, abs(p.kg) AS kg, p.producto, "
         "l.prc_acidez, l.ppm_azufre, l.ppm_fosforo, l.calidad_final_lab, "
-        "l.rechazado, l.conclusion, l.patente_chasis, l.prc_sedimentos, l.empleado "
+        "l.rechazado, l.conclusion, l.patente_chasis, l.prc_sedimentos, l.empleado, "
+        "l.descuento_pct "
         "FROM produccion.v_porteria_ticket p "
         "LEFT JOIN LATERAL (SELECT pl.prc_acidez, pl.ppm_azufre, pl.ppm_fosforo, "
         "         pl.calidad_final_lab, pl.rechazado, pl.conclusion, pl.patente_chasis, "
-        "         pl.prc_sedimentos, pl.empleado "
+        "         pl.prc_sedimentos, pl.empleado, pl.descuento_pct "
         "  FROM produccion.procesos_lab pl "
         "  WHERE btrim(pl.ticket)=p.ticket::text AND COALESCE(pl.anulado,false)=false "
         "  ORDER BY pl.fecha DESC NULLS LAST LIMIT 1) l ON true "
@@ -45,7 +46,7 @@ def _datos(cat, d1, d2):
     if df is None or df.empty:
         return pd.DataFrame()
     df = df.copy()
-    for _c in ("kg", "prc_acidez", "ppm_azufre", "ppm_fosforo"):
+    for _c in ("kg", "prc_acidez", "ppm_azufre", "ppm_fosforo", "descuento_pct"):
         df[_c] = pd.to_numeric(df[_c], errors="coerce")
     df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
     df["dia"] = df["fecha"].dt.dayofweek.map(_DIAS)
@@ -67,9 +68,10 @@ def _tabla_vista(df):
     v = v.rename(columns={"fecha": "Fecha", "dia": "Día", "semana": "Semana",
                           "proveedor": "Proveedor", "ticket": "Ticket", "tn": "TN",
                           "acidez": "Acidez %", "ppm_fosforo": "Fósforo ppm",
-                          "ppm_azufre": "Azufre ppm", "calidad_final_lab": "Calidad"})
+                          "ppm_azufre": "Azufre ppm", "calidad_final_lab": "Calidad",
+                          "descuento_pct": "Descuento %"})
     return v[["Fecha", "Día", "Semana", "Proveedor", "Ticket", "TN", "Acidez %",
-              "Fósforo ppm", "Azufre ppm", "Calidad", "Lab"]]
+              "Fósforo ppm", "Azufre ppm", "Calidad", "Descuento %", "Lab"]]
 
 
 def _excel_bytes(v):
@@ -90,8 +92,9 @@ def _imagen_bytes(v, max_filas=60):
     import matplotlib.pyplot as plt
     x = v.head(max_filas).copy()
     x["Fecha"] = pd.to_datetime(x["Fecha"]).dt.strftime("%d/%m")
-    for c in ("Acidez %", "Fósforo ppm", "Azufre ppm"):
-        x[c] = x[c].map(lambda z: ("%.1f" % z) if pd.notna(z) else "—")
+    for c in ("Acidez %", "Fósforo ppm", "Azufre ppm", "Descuento %"):
+        if c in x.columns:
+            x[c] = x[c].map(lambda z: ("%.1f" % z) if pd.notna(z) else "—")
     x["TN"] = x["TN"].map(lambda z: ("%.2f" % z) if pd.notna(z) else "—")
     x = x.fillna("—").astype(str)
     fig, ax = plt.subplots(figsize=(13, 0.32 * (len(x) + 2) + 1))
@@ -206,7 +209,11 @@ def render(USR, cat, conectar):
                      "TN": st.column_config.NumberColumn(format="%.2f"),
                      "Acidez %": st.column_config.NumberColumn(format="%.2f"),
                      "Fósforo ppm": st.column_config.NumberColumn(format="%.1f"),
-                     "Azufre ppm": st.column_config.NumberColumn(format="%.1f")})
+                     "Azufre ppm": st.column_config.NumberColumn(format="%.1f"),
+                     "Descuento %": st.column_config.NumberColumn(
+                         format="%.1f", help="Descuento al precio del ticket por mala "
+                                             "calidad. Se aplica y edita al pie de esta "
+                                             "misma solapa (💸).")})
     st.caption("Acidez normalizada (Access mezcla fracción y %%: < 0.2 se toma como fracción ×100).")
 
     b1, b2 = st.columns(2)
@@ -227,6 +234,17 @@ def render(USR, cat, conectar):
 
     st.markdown("---")
     render_sin_lab(USR, cat, conectar)
+
+    # ---- descuentos en la MISMA solapa (pedido de planta: porteria + calidad +
+    # descuentos juntos). Es el mismo panel de siempre, un solo codigo.
+    st.markdown("---")
+    with st.expander("💸 Descuentos a tickets por calidad — ver, aplicar y editar",
+                     expanded=False):
+        try:
+            from planificacion import _descuentos_tickets as _dsc
+            _dsc(USR, cat, conectar)
+        except Exception as _e:
+            st.error("No se pudieron cargar los descuentos: %s" % _e)
 
 
 def _seccion_rechazados(r, d1, d2, solo=False):

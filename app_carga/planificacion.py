@@ -3528,7 +3528,11 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                    "🚚 Despachos", "🧮 Balance", "🔬 Análisis AFE", "🧪 Análisis Glicerina",
                    "🎯 Asignación AFE",
                    "♻️ Recuperación AG", "🧭 Tanques", "📦 Informe de stock",
-                   "💸 Descuentos", "🛂 Aprobaciones"]
+                   "🛂 Aprobaciones"]
+    # una pestaña retirada guardada en la sesión rompería el widget: se sanea
+    for _kk in ("pl_grupo_sc", "pl_grupo"):
+        if st.session_state.get(_kk) is not None and st.session_state.get(_kk) not in _grupo_opts:
+            st.session_state.pop(_kk, None)
     try:
         _grupo = st.segmented_control("Sección", _grupo_opts, default=_grupo_opts[0],
                                       key="pl_grupo_sc", label_visibility="collapsed")
@@ -3646,16 +3650,6 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         except Exception as _e:
             import traceback as _tb
             st.error("No se pudo cargar Recuperación AG: %s" % _e)
-            with st.expander("🔧 Detalle técnico"):
-                st.code(_tb.format_exc())
-        return
-
-    if _grupo.startswith("💸"):
-        try:
-            _descuentos_tickets(USR, cat, conectar)
-        except Exception as _e:
-            import traceback as _tb
-            st.error("No se pudo cargar Descuentos: %s" % _e)
             with st.expander("🔧 Detalle técnico"):
                 st.code(_tb.format_exc())
         return
