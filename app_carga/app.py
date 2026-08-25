@@ -763,10 +763,12 @@ if st.session_state.section is None:
                            use_container_width=True):
                 go_to("LAB")
         if int(k.get('esp_valid') or 0) > 0:
-            if _kb2.button("⏳ Ver las %d esperando validación" % int(k['esp_valid']),
-                           key="kpi_go_esp", use_container_width=True):
-                st.session_state["ep_focus_esp"] = True
-                go_to("ESTADO")
+            _abierto = bool(st.session_state.get("portada_esp_open"))
+            if _kb2.button(("✖ Ocultar la validación" if _abierto else
+                            "⚡ Validar las %d acá mismo" % int(k['esp_valid'])),
+                           key="kpi_go_esp", type="primary", use_container_width=True):
+                st.session_state["portada_esp_open"] = not _abierto
+                st.rerun()
             _cl = int(k.get('esp_con_lab') or 0)
             _kb3.caption(
                 "**Esperando validación**: la reacción terminó y se mandó muestra al "
@@ -774,6 +776,19 @@ if st.session_state.section is None:
                 "calidad del producto que ya está en el tanque sigue sin cerrar."
                 + ((" De esas, **%d ya tienen el análisis cargado** y sólo falta cerrarlas."
                     % _cl) if _cl else ""))
+            # ---- validación rápida EN LA PORTADA: el mismo panel de Estado de planta,
+            # sin navegar. Cerrar/validar acá actualiza el contador al instante.
+            if st.session_state.get("portada_esp_open"):
+                with st.container(border=True):
+                    st.markdown("#### ⚡ Validación rápida — sin salir de la portada")
+                    try:
+                        _panel_esperando_lab(cat, conectar, USR, pref="port")
+                    except Exception as _e:
+                        st.error("No se pudo cargar el panel de validación: %s" % _e)
+                    if st.button("Abrir completo en Estado de planta →", key="kpi_esp_full"):
+                        st.session_state["ep_focus_esp"] = True
+                        st.session_state.pop("portada_esp_open", None)
+                        go_to("ESTADO")
 
     st.markdown('<div class="section-title">Accesos</div>', unsafe_allow_html=True)
 
