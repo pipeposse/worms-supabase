@@ -28,8 +28,9 @@ SPEC_DEFAULT = {"acidez": 5.0, "ays": 2.0, "azufre": 50.0, "fosforo": 150.0}
 # (borra/sedimento decantado), que arruina la calidad de la mezcla.
 MIN_L_DESPACHO = 3500.0
 SECTORES_PRIORIDAD = ("Plataforma 1 (BPV)", "Plataforma 2 (BPN)", "Exportación")
-MIN_BASE_POR_CONT = 1000.0  # regla de dirección: mínimo de AG-E por contenedor.
-                            # Con N contenedores, la mezcla lleva al menos N × 1.000 L de base.
+MIN_BASE_POR_CONT = 1000.0  # regla de dirección: mínimo de MATERIAS PRIMAS por contenedor.
+                            # Con N contenedores, la mezcla lleva al menos N × 1.000 L de MP
+                            # (regla heredada del AG-E, hoy aplicada al total de MP).
 MIN_TOMA_DESPACHO = 3000.0  # mínimo de litros que vale la pena sacar de un tanque en una
                             # carga: menos es desperdicio operativo (regla de dirección).
                             # Única excepción: la última toma que CIERRA el objetivo.
@@ -37,14 +38,19 @@ TIPOS_CARGA = ["FLEX", "ISO TANK", "BULK", "CAMION", "TAMBORES"]
 ESTADOS = ["BORRADOR", "CONFIRMADO", "DESPACHADO", "ANULADO"]
 
 # El AG-E que sale a exportación no es el contenido de un solo tanque: es una FORMULACIÓN.
-# Siempre lleva UN componente base de AG-E (alto en acidez y azufre, fuera de spec por sí solo)
-# y el resto son AFE — casi siempre AFE-S — que lo diluyen hasta entrar en especificación.
-# FORMULADOS: producto despachado -> prefijos de los productos que lo diluyen. Se usan prefijos
-# y no una lista fija para que un AFE nuevo (AFE-M, AFE-P…) aparezca solo, sin tocar el código.
+# Desde el cambio de 2026 el AG-E crudo YA NO entra en la mezcla: la formulación lleva
+# MATERIAS PRIMAS (MP_DESPACHO + todos los ARE — altas en acidez/azufre, fuera de spec por
+# sí solas y LO MÁS BARATO) diluidas con AFE — casi siempre AFE-S, que es la mayoría del
+# volumen y LO MÁS CARO — hasta entrar en especificación.
+# FORMULADOS: producto de venta -> prefijos de los productos que lo diluyen. Se usan prefijos
+# y no una lista fija para que un AFE nuevo aparezca solo, sin tocar el código.
 FORMULADOS = {"AG-E": ("AFE",)}
-# Productos que NUNCA entran en un despacho, ni como diluyente ni en el selector:
-# el AFE-SG (con goma) arruina la carga de exportación. Regla de dirección.
-EXCLUIDOS_DESPACHO = ("AFE-SG",)
+# Materias primas FIJAS de la formulación de despacho; los ARE entran por prefijo
+# (_es_mp_despacho): cualquier ARE dado de alta en dim_producto es materia prima.
+MP_DESPACHO = ("AFE-M", "AG-C", "AG-A", "AG-B", "AFE-AL", "AFE-G")
+# Productos que NUNCA entran en un despacho, ni como componente ni en el selector:
+# el AFE-SG (con goma) arruina la carga; el AG-E crudo ya no se usa para la mezcla.
+EXCLUIDOS_DESPACHO = ("AFE-SG", "AG-E")
 # Orden de preferencia al listar y al sugerir diluyentes; el resto va después, alfabético.
 PREFERIDOS = ("AFE-S",)
 
@@ -62,30 +68,60 @@ def _base_vacia(cols):
                          for c in cols})
 
 
-def _familia(prod_cod, prods=None):
-    """Productos que puede tomar un despacho de prod_cod: el base + con lo que se lo formula.
+def _es_mp_despacho(c):
+    """True si el código es MATERIA PRIMA de la formulación de despacho:
+    los fijos de MP_DESPACHO o cualquier ARE (todos los ARE son materia prima)."""
+    c = str(c or "").strip().upper()
+    return c in MP_DESPACHO or c.startswith("ARE")
 
-    Devuelve [base] + diluyentes ordenados por preferencia (AFE-S primero). Los diluyentes se
-    leen de dim_producto por prefijo, así que dar de alta un AFE nuevo alcanza para que aparezca.
+
+def _mps_de(fam):
+    """Las materias primas de una familia."""
+    return [c for c in fam if _es_mp_despacho(c)]
+
+
+def _dils_de(fam):
+    """Los diluyentes (AFE) de una familia."""
+    return [c for c in fam if not _es_mp_despacho(c)]
+
+
+def _familia(prod_cod, prods=None):
+    """Productos que puede tomar un despacho de prod_cod.
+
+    Para un FORMULADO (el AG-E de venta) devuelve las MATERIAS PRIMAS presentes en
+    dim_producto (AFE-M, AG-A/B/C, AFE-AL, AFE-G y todos los ARE) + los diluyentes
+    AFE (AFE-S primero). El AG-E crudo ya no entra en la mezcla. Dar de alta un ARE
+    o un AFE nuevo alcanza para que aparezca, sin tocar el código.
     """
     cod = str(prod_cod or "").strip().upper()
     if cod not in FORMULADOS:
         return [cod]
     pref = FORMULADOS[cod]
-    extra = []
+    mps, extra = [], []
     if prods is not None and not getattr(prods, "empty", True):
         for c in prods["codigo_producto"].astype(str).str.strip().str.upper().tolist():
-            if c != cod and c not in EXCLUIDOS_DESPACHO and any(c.startswith(x) for x in pref):
+            if c == cod or c in EXCLUIDOS_DESPACHO:
+                continue
+            if _es_mp_despacho(c):
+                mps.append(c)
+            elif any(c.startswith(x) for x in pref):
                 extra.append(c)
+    if not mps:
+        mps = list(MP_DESPACHO)
+    mps = sorted(set(mps),
+                 key=lambda c: (MP_DESPACHO.index(c) if c in MP_DESPACHO else 50, c))
     if not extra:
         extra = list(PREFERIDOS)
     extra = sorted(set(extra),
                    key=lambda c: (PREFERIDOS.index(c) if c in PREFERIDOS else 99, c))
-    return [cod] + extra
+    return mps + extra
 
 
 def _es_base(prod, prod_cod):
-    """True si el producto del tanque es el componente base del despacho (el AG-E)."""
+    """True si el producto del tanque es componente BASE del despacho: para un
+    formulado (AG-E de venta), cualquier MATERIA PRIMA; para el resto, el mismo producto."""
+    if str(prod_cod or "").strip().upper() in FORMULADOS:
+        return _es_mp_despacho(prod)
     return str(prod or "").strip().upper() == str(prod_cod or "").strip().upper()
 
 
@@ -274,7 +310,7 @@ def _orden_opciones(tp, fam, spec):
     up = df["producto_principal"].astype(str).str.strip().str.upper()
 
     def _rol(c):
-        if c == fam[0]:
+        if (len(fam) > 1 and _es_mp_despacho(c)) or c == fam[0]:
             return 0
         return 1 + (PREFERIDOS.index(c) if c in PREFERIDOS else 50)
 
@@ -910,13 +946,12 @@ def _panel_specs(res: pd.DataFrame, spec: dict):
 
 
 def _estructura(res, prod_cod, prods=None):
-    """Controla que la carga respete la formulación: 1 componente base + N diluyentes AFE.
+    """Controla que la carga respete la formulación: materias primas + AFE que las diluye.
 
-    Devuelve (ok, mensajes). ok=False sólo cuando falta el base o falta el diluyente, que son los
-    dos casos en los que lo cargado no es el producto que se despacha.
+    Devuelve (ok, mensajes). ok=False sólo cuando faltan las MP o falta el diluyente, que son
+    los dos casos en los que lo cargado no es el producto que se despacha.
     """
     fam = _familia(prod_cod, prods)
-    base_cod = fam[0]
     if len(fam) == 1 or res.empty or "Rol" not in res.columns:
         return True, []
     tot = float(res["Litros"].sum()) or 1.0
@@ -925,12 +960,17 @@ def _estructura(res, prod_cod, prods=None):
     l_b = float(b["Litros"].sum())
     l_d = float(d["Litros"].sum())
     c1, c2, c3 = st.columns([1, 1, 1.6])
-    c1.metric("Componente %s" % base_cod, "{:,.0f} L".format(l_b),
+    _mpx = ", ".join(sorted(set(str(x) for x in b["Producto"].dropna()))) or "—"
+    c1.metric("Materias primas · %d tanque(s)" % len(b), "{:,.0f} L".format(l_b),
               "%.2f %% del total" % (100.0 * l_b / tot), delta_color="off",
-              help="El AG-E crudo: es el que aporta la acidez y el azufre altos.")
-    c2.metric("Diluyentes · %d tanque(s)" % len(d), "{:,.0f} L".format(l_d),
+              help="Las MP del despacho (AFE-M, AG-A/B/C, AFE-AL, AFE-G y los ARE): son lo "
+                   "más barato y aportan la acidez y el azufre altos. En esta carga: %s. "
+                   "El AG-E ya no entra en la mezcla." % _mpx)
+    c2.metric("AFE (diluyente) · %d tanque(s)" % len(d), "{:,.0f} L".format(l_d),
               "%.2f %% del total" % (100.0 * l_d / tot), delta_color="off",
-              help="Los AFE que bajan la mezcla hasta la especificación.")
+              help="El AFE que baja la mezcla hasta la especificación — la mayoría del "
+                   "volumen. El AFE-S es lo MÁS CARO de la carga: el motor mete el máximo "
+                   "de MP que la spec tolera para gastar el mínimo posible de AFE-S.")
     _mix = ", ".join(sorted(set(str(x) for x in d["Producto"].dropna()))) or "—"
     c3.metric("Con qué se diluye", _mix)
 
@@ -938,20 +978,16 @@ def _estructura(res, prod_cod, prods=None):
     ok = True
     if b.empty:
         ok = False
-        msgs.append(("error", "La carga **no tiene componente %s**. Un despacho de %s siempre lleva "
-                              "un tanque de %s más los AFE que lo diluyen: así como está, lo que se "
-                              "despacha no es %s." % (base_cod, base_cod, base_cod, base_cod)))
-    elif len(b) > 1:
-        msgs.append(("warning", "Hay %d líneas de %s (%s). Lo normal es que el componente base "
-                                "salga de un solo tanque de formulación."
-                     % (len(b), base_cod, ", ".join(b["Tanque"].astype(str)))))
+        msgs.append(("error", "La carga **no tiene materias primas**. Un despacho formulado "
+                              "lleva MP (AFE-M, AG-A/B/C, AFE-AL, AFE-G o ARE) más el AFE-S "
+                              "que las diluye: así como está, es 100%% AFE sin formular."))
     if d.empty:
         ok = False
-        msgs.append(("error", "La carga es 100%% %s sin diluir. Agregá los tanques de AFE "
-                              "(en general AFE-S) que bajan la acidez y el azufre." % base_cod))
+        msgs.append(("error", "La carga es 100%% materias primas sin diluir. Agregá los tanques "
+                              "de AFE (en general AFE-S) que bajan la acidez y el azufre."))
     else:
         _cods = set(str(x).strip().upper() for x in d["Producto"].dropna())
-        _raros = sorted(_cods - set(fam[1:]))
+        _raros = sorted(_cods - set(_dils_de(fam)))
         if _raros:
             msgs.append(("warning", "Hay componentes que no son AFE: %s. Revisá el producto "
                                     "principal de esos tanques." % ", ".join(_raros)))
@@ -966,11 +1002,12 @@ def _estructura(res, prod_cod, prods=None):
 
 def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar=False,
              min_l=MIN_L_DESPACHO, tol=0.0, lb_min=0.0, _dos_fases=True):
-    """Propone la carga respetando la formulación: primero el componente base, después los AFE.
+    """Propone la carga respetando la formulación: primero las materias primas, después el AFE.
 
     Dos palancas compiten por el MISMO margen de spec y no se pueden maximizar a la vez:
 
-    * los litros de componente base (AG-E), que es el más barato, y
+    * los litros de MATERIAS PRIMAS (AFE-M, AG-A/B/C, AFE-AL, AFE-G y los ARE),
+      que son lo más barato del despacho, y
     * la cantidad de AFE-S C+D que se logra colocar (el AFE-S A+B escasea y hay que
       reservarlo para los próximos despachos).
 
@@ -987,8 +1024,8 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     evaluar y queda afuera del promedio (el panel ya lo avisa).
     """
     fam = _familia(prod_cod, prods)
-    base_cod = fam[0]
     formulado = len(fam) > 1
+    base_cod = "MP" if formulado else fam[0]   # etiqueta para los mensajes
 
     # FASE 1: intentar cerrar SIN los sectores no prioritarios (tanques X y demás).
     # Regla de dirección: los X son último recurso — incluso maximizar la base se
@@ -996,7 +1033,8 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     # entre menos base), esa es la propuesta. Sólo si no cierra, FASE 2 con todo.
     if _dos_fases and not tks.empty and "sector" in tks.columns:
         _upx = tks["producto_principal"].astype(str).str.strip().str.upper()
-        _keep = _upx.isin([base_cod]) | tks["sector"].astype(str).str.strip().isin(
+        _kbase = _upx.map(_es_mp_despacho) if formulado else _upx.isin([base_cod])
+        _keep = _kbase | tks["sector"].astype(str).str.strip().isin(
             list(SECTORES_PRIORIDAD))
         _tks2 = tks[_keep]
         if len(_tks2) < len(tks) and not _tks2.empty:
@@ -1028,7 +1066,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     # pool de diluyentes: AFE-S primero. "d" queda MEJOR→peor (para saber qué es posible);
     # "d_peor" queda PEOR→mejor (para gastar primero el AFE-S malo y reservar el bueno,
     # que es el que escasea: ver Balance AFE-S ↔ Exportación).
-    cod_dil = fam[1:] if formulado else [base_cod]
+    cod_dil = _dils_de(fam) if formulado else [base_cod]
     d = tks[up.isin(cod_dil) & (dis >= min_l)].copy()
     d_peor = d
     if not d.empty:
@@ -1047,21 +1085,22 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         d_peor = d.sort_values(["_pref", "_x", "_sec", "score", "litros_actual"],
                                ascending=[True, True, True, False, False])
 
-    # Tanques del componente base: TODOS los que tienen stock útil, de mayor a menor.
-    # Antes se usaba uno solo ("el de más stock") y con el AG-E repartido en varios
-    # tanques la sugerencia ignoraba el resto del stock de base disponible.
+    # Tanques de MATERIAS PRIMAS: TODOS los que tienen stock útil. Desde el cambio de
+    # formulación (AG-E afuera) la "base" es el conjunto de MP — AFE-M, AG-A/B/C,
+    # AFE-AL, AFE-G y los ARE — lo barato del despacho; el AFE-S caro sólo completa.
     rb, hay, bpool = None, 0.0, []
     if formulado:
-        b = tks[up == base_cod].copy()
+        b = tks[up.map(_es_mp_despacho)].copy()
         if b.empty:
             return (pd.DataFrame(),
-                    "No hay ningún tanque con %s. Sin componente base no hay despacho de %s."
-                    % (base_cod, base_cod))
+                    "No hay ningún tanque con materias primas (%s). Sin MP no hay "
+                    "formulación: el despacho no puede ser 100%% AFE."
+                    % ", ".join(_mps_de(fam)))
         b["_d"] = b["litros_actual"].fillna(0)
         b = b.sort_values("_d", ascending=False)
         _bok = b[b["_d"] >= min_l].copy()
         if not _bok.empty:
-            # El base también se elige por CALIDAD: el AG-E más limpio primero — es el
+            # El base también se elige por CALIDAD: la MP más limpia primero — es la
             # que menos margen de spec quema, así entra más base o más AFE-S C+D. A igual
             # calidad, el de más stock. Sin análisis de lab, al final.
             # SUMA de parámetros relativos (no el peor solo): el máximo escondía a un
@@ -1242,7 +1281,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                 notas.append("los tanques de %s tienen %s L en total y se piden %s L"
                              % (base_cod, "{:,.0f}".format(hay), "{:,.0f}".format(lb)))
 
-    # Regla de dirección: piso de litros de base (1.000 L de AG-E por contenedor).
+    # Regla de dirección: piso de litros de base (1.000 L de MP por contenedor).
     # Se aplica SIEMPRE — a la bisección, al valor manual y a las propuestas — y si la
     # spec no cierra con ese piso, se avisa en vez de violar la regla.
     if formulado and lb_min and float(lb_min) > 0:
@@ -1291,7 +1330,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         msg += (" Máximo %s que cumple la spec: %s L (%.1f%% de la carga)."
                 % (base_cod, "{:,.0f}".format(lb), (100.0 * lb / acum if acum else 0.0)))
     elif formulado:
-        msg += " La primera línea es el componente %s; el resto son AFE (primero AFE-S)." % base_cod
+        msg += " Primero van las materias primas; el resto es AFE (primero AFE-S)."
     if _ldil > 0:
         msg += (" Diluyentes: se gasta primero el de PEOR calidad — entran %s L que sueltos "
                 "estarían fuera de spec (calidad media usada %.2f, donde 1,00 = el límite; "
@@ -1335,8 +1374,9 @@ def _stats_sug(sug, tks, spec, fam, tol):
         return max(rr) if rr else 0.90
 
     _up = m["producto_principal"].astype(str).str.strip().str.upper()
-    lb = float(m[_up == str(fam[0]).upper()]["Litros"].sum())
-    _d = m[_up != str(fam[0]).upper()].copy()
+    _mpm = _up.map(_es_mp_despacho) if len(fam) > 1 else (_up == str(fam[0]).upper())
+    lb = float(m[_mpm]["Litros"].sum())
+    _d = m[~_mpm].copy()
     feo = cal = 0.0
     _ld = float(_d["Litros"].sum())
     if _ld > 0:
@@ -1362,10 +1402,10 @@ def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol, lb_min=0.0):
                            maximizar=True, tol=tol, lb_min=lb_min)
     if not a_df.empty:
         sa = _stats_sug(a_df, tks, spec, fam, tol)
-        out.append({"nombre": "A · Máximo %s" % fam[0],
-                    "desc": "La mayor cantidad de %s que la spec tolera con %.0f%% de margen. "
-                            "El margen se gasta en el base, no en AFE C+D."
-                            % (fam[0], tol * 100),
+        out.append({"nombre": "A · Máximo de MP",
+                    "desc": "La mayor cantidad de materias primas que la spec tolera con "
+                            "%.0f%% de margen. El margen se gasta en MP (lo barato), no en "
+                            "AFE C+D." % (tol * 100),
                     "df": a_df, "st": sa})
         _piso = float(lb_min or 0.0)
         if sa["lb"] > _piso + 20:
@@ -1374,7 +1414,7 @@ def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol, lb_min=0.0):
             b_df, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods, lb_b,
                                 maximizar=False, tol=tol, lb_min=lb_min)
             if not b_df.empty:
-                out.append({"nombre": "B · Intermedio de %s" % fam[0],
+                out.append({"nombre": "B · Intermedio de MP",
                             "desc": "Punto medio entre el mínimo por regla y el máximo de A: "
                                     "el margen restante coloca AFE-S de baja calidad.",
                             "df": b_df, "st": _stats_sug(b_df, tks, spec, fam, tol)})
@@ -1387,19 +1427,19 @@ def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol, lb_min=0.0):
                 sb = _stats_sug(b_df, tks, spec, fam, tol)
                 if abs(float(sb["lb"]) - float(sa["lb"])) > 15:
                     out.append({"nombre": "B · Bajo el mínimo (spec primero)",
-                                "desc": "El máximo de %s que la spec tolera AUNQUE quede por "
+                                "desc": "El máximo de MP que la spec tolera AUNQUE quede por "
                                         "debajo del mínimo de %s L por contenedor — para "
                                         "cuando el piso no cierra. Validalo con dirección."
-                                        % (fam[0], "{:,.0f}".format(MIN_BASE_POR_CONT)),
+                                        % "{:,.0f}".format(MIN_BASE_POR_CONT),
                                 "df": b_df, "st": sb})
     _piso_c = float(lb_min or 0.0)
     c_df, _m = _sugerir(tks, prod_cod, litros_obj, spec, prods,
                         (_piso_c if _piso_c > 0 else None),
                         maximizar=(_piso_c <= 0), tol=0.0, lb_min=lb_min)
     if not c_df.empty:
-        out.append({"nombre": "C · Mínimo de %s · spec estricta" % fam[0],
-                    "desc": "El piso justo de %s (mínimo por contenedor) y sin gastar "
-                            "tolerancia: la carga más prolija posible." % fam[0],
+        out.append({"nombre": "C · Mínimo de MP · spec estricta",
+                    "desc": "El piso justo de materias primas (mínimo por contenedor) y sin "
+                            "gastar tolerancia: la carga más prolija posible.",
                     "df": c_df, "st": _stats_sug(c_df, tks, spec, fam, 0.0)})
     return out
 
@@ -1416,10 +1456,10 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
     if len(fam) < 2:
         return pd.DataFrame()
     up = tks["producto_principal"].astype(str).str.strip().str.upper()
-    b = tks[up == fam[0]]
+    b = tks[up.map(_es_mp_despacho)]
     if b.empty:
         return pd.DataFrame()
-    hay = float(b["litros_actual"].fillna(0).max())
+    hay = float(b["litros_actual"].fillna(0).sum())
     tope = min(hay, float(litros_obj))
     if tope <= 0:
         return pd.DataFrame()
@@ -1454,7 +1494,8 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
         _tot = float(m["Litros"].sum())
         if _tot < float(litros_obj) - 1.0:
             ok = False
-        _d = m[m["producto_principal"].astype(str).str.strip().str.upper() != fam[0]].copy()
+        _upf = m["producto_principal"].astype(str).str.strip().str.upper()
+        _d = m[~_upf.map(_es_mp_despacho)].copy()
         _ld = float(_d["Litros"].sum())
         _feo, _cal = 0.0, 0.0
         if _ld > 0:
@@ -1462,8 +1503,8 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
             _feo = float(_d[_d["_s"] > 1.0]["Litros"].sum())
             _cal = float((_d["_s"] * _d["Litros"]).sum() / _ld)
         return {
-            "%s (L)" % fam[0]: round(lb, 0),
-            "%s (%%)" % fam[0]: round(100.0 * lb / _tot, 1) if _tot else 0.0,
+            "MP (L)": round(lb, 0),
+            "MP (%)": round(100.0 * lb / _tot, 1) if _tot else 0.0,
             "AFE C+D (L)": round(_feo, 0),
             "Calidad AFE usada": round(_cal, 2),
             "Acidez %": round(prom["acidez"], 2) if prom["acidez"] is not None else None,
@@ -1501,7 +1542,7 @@ def _tradeoff(tks, prod_cod, litros_obj, spec, prods=None, tol=0.0, pasos=8,
                     filas.append(_f)
     if not filas:
         return pd.DataFrame()
-    _k = "%s (L)" % fam[0]
+    _k = "MP (L)"
     return (pd.DataFrame(filas).sort_values(_k)
             .drop_duplicates(subset=[_k]).reset_index(drop=True))
 
@@ -1515,18 +1556,23 @@ _VERIF_INV = {v: k for k, v in _VERIF_MAPA.items()}
 def _plan_contenedores(lineas, n_cont, base_cod):
     """Reparte las líneas del despacho en contenedores.
 
-    La BASE (AG-E) va en partes iguales en TODOS los contenedores: la calidad queda
-    homogénea y se respeta el mínimo por contenedor. Los diluyentes (AFE) se llenan
-    secuencialmente en el orden de la formulación, para hacer pocos cambios de
-    manguera. Devuelve [(contenedor, tanque, producto, litros)]."""
+    Las MATERIAS PRIMAS van en partes iguales en TODOS los contenedores: la calidad
+    queda homogénea y se respeta el mínimo por contenedor. Los diluyentes (AFE) se
+    llenan secuencialmente en el orden de la formulación, para hacer pocos cambios
+    de manguera. Devuelve [(contenedor, tanque, producto, litros)]."""
     n = max(1, int(n_cont or 1))
     _ls = [[str(t), str(p), float(l or 0)] for t, p, l in lineas if float(l or 0) > 0]
     tot = sum(x[2] for x in _ls)
     if tot <= 0:
         return []
     _up = str(base_cod or "").strip().upper()
-    base = [x for x in _ls if x[1].strip().upper() == _up]
-    dil = [x for x in _ls if x[1].strip().upper() != _up]
+    if _up in FORMULADOS:
+        _es_b = _es_mp_despacho                      # formulado: la base son las MP
+    else:
+        def _es_b(p):
+            return str(p).strip().upper() == _up
+    base = [x for x in _ls if _es_b(x[1])]
+    dil = [x for x in _ls if not _es_b(x[1])]
     base_tot = sum(x[2] for x in base)
     per_cont = tot / n
     per_base = base_tot / n
@@ -1768,7 +1814,8 @@ def verificacion_planta(USR, cat, conectar):
                        "el resto de los AFE en el orden de la formulación, para hacer pocos "
                        "cambios de manguera. Llenar contenedor por contenedor con estos litros."
                        % ("{:,.0f}".format(float(_tot_c.mean())),
-                          (_pcod if _pcod.strip().upper() in FORMULADOS else "base")))
+                          ("materias primas (MP)" if _pcod.strip().upper() in FORMULADOS
+                           else "base")))
             _spec_d = {}
             if _cab is not None and not _cab.empty:
                 _spec_d = {"acidez": _cab.iloc[0].get("spec_acidez_max"),
@@ -2781,13 +2828,18 @@ def _armar(USR, cat, conectar):
 
     # ---------- 2 · Tanques del producto ----------
     _fam = _familia(prod_cod, prods)
-    _extra = _fam[1:]
-    st.markdown(f"#### 2 · Tanques con **{prod_lbl}**" + (" y con lo que se formula" if _extra else ""))
+    _mps_f = _mps_de(_fam) if len(_fam) > 1 else []
+    _dils_f = _dils_de(_fam) if len(_fam) > 1 else []
+    _extra = _dils_f
+    st.markdown(f"#### 2 · Tanques para formular **{prod_lbl}**" if _extra
+                else f"#### 2 · Tanques con **{prod_lbl}**")
     if _extra:
-        st.caption("Un despacho de **%s** es una formulación: **un** componente de %s (el crudo, "
-                   "fuera de spec por sí solo) más los **AFE** que lo diluyen, en general **AFE-S**. "
-                   "Por eso acá aparecen los tanques de %s y de %s. Los litros de cada uno los "
-                   "ponés vos." % (prod_lbl, _fam[0], _fam[0], ", ".join(_extra)))
+        st.caption("Un despacho de **%s** es una formulación de **MATERIAS PRIMAS**: %s — "
+                   "el **AG-E ya no entra en la mezcla**. El volumen lo completa el **AFE-S**, "
+                   "que diluye las MP hasta la especificación y es **lo más caro** de la carga: "
+                   "por eso el motor mete el máximo de MP que la spec tolera y recién después "
+                   "completa con %s. Los litros de cada tanque los ponés vos."
+                   % (prod_lbl, ", ".join(_mps_f), ", ".join(_extra)))
     _tp = tks[tks["producto_principal"].astype(str).str.strip().str.upper()
               .isin(_fam)].copy()
     if _tp.empty:
@@ -3046,43 +3098,50 @@ def _armar(USR, cat, conectar):
     # ---------- 3 · Formulación ----------
     st.markdown("#### 3 · Formulación por tanque")
     if len(_fam) > 1:
-        with st.expander("📖 Cómo arma la mezcla el botón *Sugerir* (la nueva formulación)", expanded=False):
+        with st.expander("📖 Cómo arma la mezcla el botón *Sugerir* (formulación con materias primas)", expanded=False):
             st.markdown(
-                "**Objetivo:** cumplir la spec gastando lo más barato y lo que sobra, y cuidando lo que escasea.\n\n"
-                "1. **%(b)s al máximo.** Busca (por bisección) la mayor cantidad de %(b)s que la spec tolera "
-                "con los AFE disponibles: el %(b)s es más barato que el AFE-S, cada litro extra es margen. "
-                "Si preferís fijarlo vos (ej. el %% sostenible que indica 🧮 Balance), cargalo en "
-                "*Litros de %(b)s* y respeta ese valor.\n"
-                "2. **AFE-S de peor calidad primero.** Con el %(b)s fijado, recorre los diluyentes de PEOR a "
-                "mejor y a cada tanque C/D le toma el **máximo de litros que deja el resto todavía cerrable** "
-                "con los buenos que quedan libres (bisección por tanque). Sólo se agregan tanques buenos para "
-                "tapar lo que falta. Así el AFE-S A+B se reserva para los próximos despachos (es el que se "
-                "agota: ver 🧮 Balance).\n"
+                "**La formulación cambió: el AG-E ya no entra.** El despacho se arma con "
+                "**materias primas** (%(mp)s) diluidas con **AFE-S**, que sigue siendo la "
+                "mayoría del volumen y es **lo más caro de todo**.\n\n"
+                "**Objetivo:** cumplir la spec gastando lo más barato (las MP) y cuidando lo que "
+                "escasea y cuesta (el AFE-S bueno).\n\n"
+                "1. **MP al máximo.** Busca (por bisección) la mayor cantidad TOTAL de materias "
+                "primas que la spec tolera con los AFE disponibles: cada litro de MP que entra es "
+                "un litro de AFE-S caro que no se gasta. Si preferís fijarlo vos, cargalo en "
+                "*Litros de MP* y respeta ese valor.\n"
+                "2. **AFE-S de peor calidad primero.** Con las MP fijadas, recorre los diluyentes "
+                "de PEOR a mejor y a cada tanque C/D le toma el **máximo de litros que deja el "
+                "resto todavía cerrable** con los buenos que quedan libres (bisección por tanque). "
+                "Sólo se agregan tanques buenos para tapar lo que falta: el AFE-S A+B se reserva "
+                "para los próximos despachos.\n"
                 "3. **Restricciones:** promedios ponderados por **kg** (no por litros); tanques con menos de "
                 "%(m)s L no entran (fondo de tanque); en base plana sólo se usa el 90%% de la capacidad "
-                "(cónicos al 100%%); mismo total que el objetivo (contenedores × litros).\n"
+                "(cónicos al 100%%); mismo total que el objetivo (contenedores × litros); mínimo de "
+                "1.000 L de MP por contenedor.\n"
                 "4. **La sugerencia es un borrador**: el panel de *Cumplimiento* de abajo es el que manda, "
                 "y todo se puede pisar a mano línea por línea.\n\n"
                 "5. **Margen de spec.** El campo *Margen a gastar* habilita hasta un %(t)s%% de desvío sobre "
                 "la spec (el mismo que el panel de Cumplimiento registra como desvío tolerado). Ese margen es "
                 "el que permite meter AFE-S C+D. En 0%% la sugerencia trabaja con spec estricta.\n\n"
-                "⚠️ *Trade-off a saber:* los litros de %(b)s y el AFE-S C+D **compiten por el mismo margen**, "
-                "no se pueden maximizar los dos. Al máximo de %(b)s entran sólo tanques buenos. Usá "
+                "⚠️ *Trade-off a saber:* los litros de MP y el AFE-S C+D **compiten por el mismo margen**, "
+                "no se pueden maximizar los dos. Al máximo de MP entran sólo tanques buenos. Usá "
                 "🔀 *Trade-off* acá abajo para ver la tabla con datos reales y elegir el punto."
-                % {"b": _fam[0], "m": f"{MIN_L_DESPACHO:,.0f}", "t": f"{TOL_DESVIO*100:.0f}"})
+                % {"mp": ", ".join(_mps_f), "m": f"{MIN_L_DESPACHO:,.0f}",
+                   "t": f"{TOL_DESVIO*100:.0f}"})
     _formulado = len(_fam) > 1
     _thelp = ("Desvío admitido sobre la spec al armar la sugerencia. Es el margen que permite "
               "colocar AFE-S C+D: en 0%% sólo entran tanques A/B. El tope es %.0f%% y el panel "
               "de Cumplimiento registra el desvío real de la carga." % (TOL_DESVIO * 100))
     if _formulado:
         ca, cb, cd, ce, cc = st.columns([1.05, 0.75, 1.0, 0.95, 1.35])
-        _lb = cd.number_input("Litros de %s (0 = máximo)" % _fam[0], min_value=0.0, step=500.0,
+        _lb = cd.number_input("Litros de MP (0 = máximo)", min_value=0.0, step=500.0,
                               value=float(ss.get("dsp_lbase", 0.0)), key="dsp_lbase",
-                              help="En 0, la sugerencia calcula sola el MÁXIMO de %s que sigue "
-                                   "cumpliendo la especificación (el %s es más barato que el AFE-S, "
-                                   "conviene maximizar su participación). Con un valor, usa esos "
-                                   "litros exactos. Ojo: al máximo de %s no queda margen para meter "
-                                   "AFE-S C+D." % (_fam[0], _fam[0], _fam[0]))
+                              help="Litros TOTALES de materias primas (AFE-M, AG-A/B/C, AFE-AL, "
+                                   "AFE-G y los ARE — el AG-E ya no entra). En 0, la sugerencia "
+                                   "calcula sola el MÁXIMO de MP que sigue cumpliendo la "
+                                   "especificación: las MP son más baratas que el AFE-S, conviene "
+                                   "maximizarlas. Con un valor, usa esos litros exactos. Ojo: al "
+                                   "máximo de MP no queda margen para meter AFE-S C+D.")
         _tolp = ce.number_input("Margen a gastar (%)", min_value=0.0, max_value=TOL_DESVIO * 100,
                                 step=1.0, value=float(ss.get("dsp_tolp", TOL_DESVIO * 100)),
                                 key="dsp_tolp", help=_thelp)
@@ -3127,9 +3186,9 @@ def _armar(USR, cat, conectar):
             _lineas_set(ss, _sug2)
             ss["dsp_props"] = None
             _rerun_frag()
-    _hlp = ("Arma la formulación: mete el MÁXIMO de %s que cumpla la spec (o los litros que pongas) "
-            "y completa con los AFE (AFE-S primero, mayor margen primero)."
-            % _fam[0]) if _formulado else \
+    _hlp = ("Arma la formulación: mete el MÁXIMO de materias primas que cumpla la spec (o los "
+            "litros que pongas) y completa con los AFE (AFE-S primero, mayor margen primero). "
+            "El AG-E ya no entra en la mezcla.") if _formulado else \
            "Propone tanques del producto elegido, priorizando los de mayor margen contra la spec."
     if ca.button("🎯 Sugerir mezcla", use_container_width=True, help=_hlp):
         _sug, _msg = _sugerir(tks_sug, prod_cod, lit_obj, spec, prods, (_lb or None),
@@ -3169,15 +3228,15 @@ def _armar(USR, cat, conectar):
                              "Por defecto los parámetros salen del tanque.")
 
     if _formulado:
-        with st.expander("🔀 Trade-off %s ↔ AFE-S (simulación con el stock de hoy)" % _fam[0],
+        with st.expander("🔀 Trade-off MP ↔ AFE-S (simulación con el stock de hoy)",
                          expanded=False):
             st.caption(
-                "Cada litro de %s y cada litro de AFE-S C+D gastan el MISMO margen de spec. "
-                "La tabla recorre niveles de %s y muestra cuánto AFE fuera de spec se logra "
-                "colocar en cada uno, con el margen elegido arriba (%.0f%%). "
+                "Cada litro de materias primas y cada litro de AFE-S C+D gastan el MISMO margen "
+                "de spec. La tabla recorre niveles de MP y muestra cuánto AFE fuera de spec se "
+                "logra colocar en cada uno, con el margen elegido arriba (%.0f%%). "
                 "*Calidad AFE usada*: 1,00 = justo en el límite de la spec; más alto = se colocó "
-                "más AFE-S C+D colocado; más bajo = se quemó AFE-S A+B."
-                % (_fam[0], _fam[0], _tolp))
+                "más AFE-S C+D; más bajo = se quemó AFE-S A+B."
+                % _tolp)
             if st.button("Simular", key="dsp_btn_to", use_container_width=False):
                 with st.spinner("Simulando…"):
                     ss["dsp_tradeoff"] = _tradeoff(tks_sug, prod_cod, lit_obj, spec, prods, _tol,
@@ -3189,18 +3248,16 @@ def _armar(USR, cat, conectar):
                     st.info("La tabla es de una corrida con %.0f%% de margen. Volvé a simular."
                             % float(ss.get("dsp_tradeoff_tol") or 0))
                 st.dataframe(_to, hide_index=True, use_container_width=True)
-                st.caption("❌ en *Cierra* = con ese nivel de %s no hay AFE suficiente para "
+                st.caption("❌ en *Cierra* = con ese nivel de MP no hay AFE suficiente para "
                            "cerrar la spec ni gastando el margen. Elegí una fila, cargá esos "
-                           "litros en *Litros de %s* y volvé a *Sugerir mezcla*."
-                           % (_fam[0], _fam[0]))
+                           "litros en *Litros de MP* y volvé a *Sugerir mezcla*.")
     if _formulado:
         with st.expander("🎛️ Propuestas para elegir (3 variantes de la misma carga)",
                          expanded=False):
             st.caption("Tres formas de armar el mismo despacho con números comparables: "
-                       "A maximiza el %s, B resigna base para colocar el máximo de AFE-S "
-                       "C+D, C cumple la spec sin tolerancia. Elegís una y se carga en la "
-                       "formulación — la decisión es de quien despacha, no del algoritmo."
-                       % _fam[0])
+                       "A maximiza las materias primas, B resigna MP para colocar el máximo "
+                       "de AFE-S C+D, C cumple la spec sin tolerancia. Elegís una y se carga "
+                       "en la formulación — la decisión es de quien despacha, no del algoritmo.")
             if st.button("Generar propuestas", key="dsp_btn_props"):
                 with st.spinner("Armando variantes…"):
                     ss["dsp_props"] = _propuestas(tks_sug, prod_cod, lit_obj, spec, prods, _tol,
@@ -3217,7 +3274,7 @@ def _armar(USR, cat, conectar):
                             st.markdown("**%s**" % _p["nombre"])
                             st.caption(_p["desc"])
                             _ma, _mb = st.columns(2)
-                            _ma.metric(_fam[0], "%s L" % "{:,.0f}".format(_s["lb"]))
+                            _ma.metric("MP", "%s L" % "{:,.0f}".format(_s["lb"]))
                             _mb.metric("AFE C+D", "%s L" % "{:,.0f}".format(_s["feo"]))
                             st.caption("Calidad AFE usada **%.2f** (1,00 = límite; más alto "
                                        "= más AFE-S C+D colocado) · %d tanque(s)"
@@ -3401,7 +3458,7 @@ def _armar(USR, cat, conectar):
     m4.metric("Tanques usados", f"{len(res)}")
 
     if _formulado:
-        st.markdown("**Estructura de la formulación** (%s + AFE)" % _fam[0])
+        st.markdown("**Estructura de la formulación** (materias primas + AFE)")
     ok_est, _msg_est = _estructura(res, prod_cod, prods)
 
     st.markdown("**Cumplimiento de especificación** (promedios ponderados por kg)")
@@ -3420,11 +3477,12 @@ def _armar(USR, cat, conectar):
         _lb_regla = MIN_BASE_POR_CONT * float(n_cont)
         _lb_real = float(res[res["Rol"] == "BASE"]["Litros"].fillna(0).sum())
         if _lb_real + 0.5 < _lb_regla:
-            st.error("📏 **Regla de formulación:** mínimo %s L de %s por contenedor → "
-                     "%s L para %d contenedores. La mezcla tiene **%s L** de %s: faltan %s L."
-                     % ("{:,.0f}".format(MIN_BASE_POR_CONT), _fam[0],
+            st.error("📏 **Regla de formulación:** mínimo %s L de materias primas por "
+                     "contenedor → %s L para %d contenedores. La mezcla tiene **%s L** de "
+                     "MP: faltan %s L."
+                     % ("{:,.0f}".format(MIN_BASE_POR_CONT),
                         "{:,.0f}".format(_lb_regla), int(n_cont),
-                        "{:,.0f}".format(_lb_real), _fam[0],
+                        "{:,.0f}".format(_lb_real),
                         "{:,.0f}".format(_lb_regla - _lb_real)))
     ok = ok_spec and ok_est
 
@@ -3468,8 +3526,9 @@ def _armar(USR, cat, conectar):
         for a in avisos:
             st.warning(a)
     if not ok_est:
-        st.error("La carga **no respeta la formulación** de un despacho de %s: siempre es un "
-                 "componente de %s más los AFE que lo diluyen." % (prod_lbl, _fam[0]))
+        st.error("La carga **no respeta la formulación** de un despacho de %s: siempre son "
+                 "materias primas (AFE-M, AG-A/B/C, AFE-AL, AFE-G o ARE) más el AFE-S que "
+                 "las diluye." % prod_lbl)
     if not ok_spec:
         st.error("La mezcla se pasa de la especificación en **más del %.0f%%** de tolerancia. "
                  "Se puede guardar y confirmar igual, pero pide un **motivo obligatorio** y el "
@@ -4215,7 +4274,7 @@ def _tk_panel(USR, cat, conectar, cab, rol):
         if not _avi.empty:
             st.warning("⚠️ **Tickets sin pesada cerrada:** " +
                        ", ".join(str(int(t)) for t in _avi["ticket"].dropna()) +
-                       ". En AG-E de formulación (AG-E + AFE-S → AG-E de exportación) puede ser "
+                       ". En AG-E de formulación (MP + AFE-S → AG-E de exportación) puede ser "
                        "legítimo, pero esos kg no suman al control de carga.")
         _v = _a.rename(columns={"ticket": "Ticket", "fecha": "Fecha", "producto": "Producto",
                                 "destino": "Destino", "area": "Área", "patente": "Patente",
