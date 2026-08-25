@@ -128,7 +128,7 @@ _VALID_COLS = {
     "eflu_conductividad_ms", "eflu_prc_agua", "eflu_prc_sedimentos",
     "eflu_prc_grasa", "eflu_dequo_mg02_l", "borra_prc_grasa", "borra_ph",
     "borra_alcalinidad", "sebo_indice_yodo_gyodo_gmuestra", "concentracion",
-    "gli_glicerol", "gli_ceniza", "gli_mong", "descuento_pct",
+    "gli_glicerol", "gli_ceniza", "gli_mong", "descuento_pct", "es_externo",
 }
 
 
@@ -334,6 +334,10 @@ def _cierre(p, pf, tok, calidades, default_corriente=None):
 # Guardado comun
 # ---------------------------------------------------------------------------
 def _persistir(tipo, data, ctx, get_conn, usuario):
+    # muestra EXTERNA (liquido que no entro por porteria): queda marcada en la base
+    if st.session_state.get("_lab_externo"):
+        data = dict(data)
+        data["es_externo"] = True
     if not data.get("ticket") and tipo in ("AG", "ARE", "AFE"):
         st.error("Ticket is required")
         return False
@@ -987,7 +991,8 @@ def cargas_del_dia(get_conn=None, dia=None):
     """Evaluaciones de laboratorio cargadas en un día (default hoy), para la tabla resumen."""
     sql = ("select to_char(fecha,'HH24:MI') AS \"Hora\", ticket AS \"Ticket\", "
            "producto_lab AS \"Producto\", calidad_final_lab AS \"Calidad\", "
-           "rechazado AS \"Estado\", id_tanque_1 AS \"Tanque\", empleado AS \"Empleado\" "
+           "rechazado AS \"Estado\", id_tanque_1 AS \"Tanque\", empleado AS \"Empleado\", "
+           "case when COALESCE(es_externo,false) then '🌐 Externa' else '' end AS \"Externa\" "
            "from produccion.v_procesos_lab_efectivo "
            "where fecha::date = COALESCE(%s, (now() at time zone 'America/Argentina/Buenos_Aires')::date) "
            "order by fecha desc nulls last limit 300")
@@ -1040,8 +1045,49 @@ def render_laboratorio(get_conn=None, usr=None):
     if _force:
         ss["lab_modo"] = _force
 
-    modo = st.radio("Modo", ["➕ Nueva carga", "📋 Pendientes", "✏️ Buscar y editar"],
+    modo = st.radio("Modo", ["➕ Nueva carga", "📋 Pendientes", "✏️ Buscar y editar",
+                             "🌐 Muestra externa"],
                     horizontal=True, key="lab_modo")
+    # la marca es_externo la pone _persistir leyendo este flag de sesion
+    ss["_lab_externo"] = modo.startswith("🌐")
+
+    # -------- MUESTRA EXTERNA (liquido que NO entro por porteria) --------
+    if modo.startswith("🌐"):
+        st.markdown("**Muestra externa** — un líquido que **no entró por portería** "
+                    "(muestra de un cliente o proveedor, prueba, etc.). Se evalúa con el "
+                    "mismo formulario de siempre y queda marcada como **externa** en la "
+                    "base, para analizarla aparte — no genera stock ni entra en los "
+                    "análisis de camiones.")
+        ce1, ce2 = st.columns([1.4, 2])
+        _eid = ce1.text_input("Identificador de la muestra *", key="lab_ext_id",
+                              help="Un nombre único: cliente-fecha, remito, lo que usen. "
+                                   "Se guarda como EXT-<identificador>.")
+        _eorg = ce2.text_input("Origen / cliente de la muestra", key="lab_ext_org",
+                               help="De quién vino el líquido. Queda en la conclusión.")
+        try:
+            _pb_ext = productos_base(get_conn=get_conn)
+        except Exception:
+            _pb_ext = []
+        _bases_ext = sorted({b for b in _pb_ext if b}
+                            | {"AG", "AG-PES", "ARE", "AFE", "DISPOSICION FINAL DE LIQUIDOS",
+                               "BORRA", "BORRA-PES", "SEBO", "GLICERINA"}) + ["OTRO (genérico)"]
+        base_ext = st.selectbox("Producto a evaluar", _bases_ext, key="lab_ext_prod")
+        if not (_eid or "").strip():
+            st.info("Poné el **identificador** para abrir el formulario.")
+            return
+        _tk_ext = (_eid or "").strip().upper().replace(" ", "-")
+        if not _tk_ext.startswith("EXT"):
+            _tk_ext = "EXT-" + _tk_ext
+        st.caption("Se guarda con el ticket **%s** · dejá el *tanque destino* vacío: la "
+                   "muestra no entra al stock." % _tk_ext)
+        pf_ext = {"ticket": _tk_ext}
+        if base_ext != "OTRO (genérico)":
+            pf_ext["producto_lab"] = base_ext
+        if (_eorg or "").strip():
+            pf_ext["conclusion"] = "Origen externo: %s" % _eorg.strip()
+        _fn_ext = _form_para_base(base_ext)
+        _fn_ext(pf_ext, None, f"{ss['lab_tok']}_ext_{_tk_ext}_{base_ext}", get_conn, usuario)
+        return
 
     # -------- PENDIENTES (tickets evaluables del dia) --------
     if modo.startswith("📋"):
