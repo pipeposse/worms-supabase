@@ -12,6 +12,8 @@ import json
 import pandas as pd
 import streamlit as st
 
+DENS_ARE = 0.94   # densidad del ARE definida por dirección (antes 0.88)
+
 REPOSO_DECANT = ("REPOSO", "DECANTACION")
 GLI_RECUP_TANQUES = (88, 87, 81)   # cónico 20-2, cónico 20-1, Minion
 PURGA_CORTE = 2.0                  # glicerina <= 2% => purga OK
@@ -164,7 +166,7 @@ def destinos(USR, cat, conectar):
             _le = None
     st.markdown("##### 📦 ARE producido (evaluado por laboratorio)")
     _a1, _a2, _a3 = st.columns(3)
-    _a1.metric("ARE producido", f"{_are_kg/0.88:,.0f} L", f"{_are_kg:,.0f} kg")
+    _a1.metric("ARE producido", f"{_are_kg/DENS_ARE:,.0f} L", f"{_are_kg:,.0f} kg")
     if _le is not None and not _le.empty:
         _r = _le.iloc[0]
         _a2.metric("Calidad final", str(_r["calidad_final_lab"] or "—"))
@@ -319,7 +321,7 @@ def produccion(USR, cat, conectar, id_batch=None):
     _are_kg = float(p.get("are_objetivo_kg") or 0)
     _lit_gli_tot = float(p.get("litros_glicerina_total") or 0)
     _aporte = float(p.get("aporte_glicerina_pct") or 10)
-    l_are = _are_kg / 0.88
+    l_are = _are_kg / DENS_ARE
     l_gli = (1.0 - _aporte / 100.0) * _lit_gli_tot
     cc1, cc2 = st.columns(2)
     cc1.metric("Glicerina recuperada → " + (_nm.get(int(dg)) or "destino"),
@@ -356,7 +358,7 @@ def produccion(USR, cat, conectar, id_batch=None):
                     cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto='ARE-B'")
                     _r = cur.fetchone(); id_are = _r[0] if _r else None
                     _mov(cur, b, uid, "SUBPRODUCTO", id_gli, "Glicerina recuperada", int(dg), l_gli, 1.05)
-                    _mov(cur, b, uid, "PRODUCTO_FINAL", id_are, "ARE-B", int(df_), l_are, 0.88)
+                    _mov(cur, b, uid, "PRODUCTO_FINAL", id_are, "ARE-B", int(df_), l_are, DENS_ARE)
                     cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL",
                                 (int(b["id_batch"]),))
                     cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,fin_ts,id_usuario) "

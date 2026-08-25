@@ -1124,10 +1124,10 @@ def _control_rendimiento(USR, cat, conectar, idb):
     _mpq = cat("SELECT round(sum(abs(kg))::numeric,0) AS kg FROM produccion.fact_movimiento_stock "
                "WHERE id_batch=%s AND rol='MP' AND NOT COALESCE(anulado,false)", (int(idb),))
     _mpkg = float(_mpq.iloc[0]["kg"]) if (_mpq is not None and not _mpq.empty and _mpq.iloc[0]["kg"] is not None) else 0.0
-    _pf = cat("SELECT codigo_producto, COALESCE(densidad_g_ml,0.88)::float AS dens FROM produccion.dim_producto WHERE id_producto=%s",
+    _pf = cat("SELECT codigo_producto, COALESCE(densidad_g_ml,0.94)::float AS dens FROM produccion.dim_producto WHERE id_producto=%s",
               (int(b["id_producto_buscado"]),)) if pd.notna(b["id_producto_buscado"]) else None
     _pfcode = str(_pf.iloc[0]["codigo_producto"]) if (_pf is not None and not _pf.empty) else "Producto"
-    _pfdens = float(_pf.iloc[0]["dens"]) if (_pf is not None and not _pf.empty) else 0.88
+    _pfdens = float(_pf.iloc[0]["dens"]) if (_pf is not None and not _pf.empty) else 0.94
     if _es_are:
         _aguapct = float(_p.get("agua_agc_pct") or 0.0)
         _glil = float(_p.get("litros_glicerina_total") or 0.0)
@@ -3883,7 +3883,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         agua_kg = kg_used * agua_frac
         litros_gli_tot = float(gli_fresca.get("l") or 0) + float(gli_recup.get("l") or 0)
         are_kg = max(0.0, kg_used - agua_kg + (_aporte / 100.0) * litros_gli_tot)
-        dens_are = 0.88
+        dens_are = 0.94   # densidad ARE definida por dirección
         g1, g2, g3 = st.columns(3)
         g1.metric("Glicerol cargado", f"{glol_cargado:,.0f} kg",
                   f"fresca {glol_fresca:,.0f} + recup {glol_recup:,.0f}")
