@@ -736,6 +736,14 @@ if st.session_state.section is None:
             st.caption("**Failover automático:** si una PC no puede leer el Access (carpeta de red no accesible), "
                        "libera el turno y **sube la PC que sí tiene acceso**. Igual conviene dejar una PC titular por fuente.")
 
+    # Estado de los niveles WeDo SIEMPRE a la vista (la key vencida del 25/08
+    # pasó inadvertida y se formuló con litros viejos: nunca más).
+    try:
+        import wedo_estado
+        wedo_estado.portada(_home_df)
+    except Exception:
+        pass
+
     k = _landing_kpis()
     if k:
         esp_cls = "bad" if (k['esp_valid'] or 0) > 0 else "ok"
