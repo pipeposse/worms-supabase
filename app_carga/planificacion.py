@@ -3526,7 +3526,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # Ahora es la última opción del menú, como cualquier otra.
     _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administración de reacciones", "📅 Cronogramas",
                    "🚚 Despachos", "🧮 Balance", "🔬 Análisis AFE", "🧪 Análisis Glicerina",
-                   "🎯 Asignación AFE", "🔁 Cambio de categoría",
+                   "🎯 Asignación AFE", "📍 Disponibilidad de descarga",
+                   "🔁 Cambio de categoría",
                    "♻️ Recuperación AG", "🧭 Tanques", "📦 Informe de stock",
                    "🛂 Aprobaciones"]
     # una pestaña retirada guardada en la sesión rompería el widget: se sanea
@@ -3637,6 +3638,17 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         except Exception as _e:
             import traceback as _tb
             st.error("No se pudo cargar Análisis Glicerina: %s" % _e)
+            with st.expander("🔧 Detalle técnico"):
+                st.code(_tb.format_exc())
+        return
+
+    if _grupo.startswith("📍"):
+        try:
+            import disponibilidad_descarga
+            disponibilidad_descarga.render(USR, cat, conectar, "PLANIFICACION")
+        except Exception as _e:
+            import traceback as _tb
+            st.error("No se pudo cargar Disponibilidad de descarga: %s" % _e)
             with st.expander("🔧 Detalle técnico"):
                 st.code(_tb.format_exc())
         return
