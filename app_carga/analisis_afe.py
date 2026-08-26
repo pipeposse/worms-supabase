@@ -142,12 +142,25 @@ def render(USR, cat, conectar):
     # (un rechazo nuevo) el valor guardado en sesión deja de existir entre las opciones y
     # Streamlit tira StreamlitAPIException. El contador va en el caption.
     f_lab = st.radio(
-        "Vista", ["Todos", "✅ Con análisis", "❌ Sin análisis", "🚫 Rechazados"],
+        "Vista", ["Todos", "✅ Con análisis", "❌ Sin análisis", "🚫 Rechazados",
+                  "💸 Descuentos"],
         horizontal=True, key="aafe_lab",
         help="Los rechazados nunca entran en el análisis (no descargaron). Esta opción "
-             "los muestra solos, con el motivo del laboratorio y el detalle por proveedor.")
+             "los muestra solos, con el motivo del laboratorio y el detalle por proveedor. "
+             "Descuentos: ver, aplicar y editar los descuentos al precio de cada ticket "
+             "por mala calidad.")
     if _nrech_tot:
         st.caption("🚫 %d camión(es) rechazado(s) en el rango de fechas elegido." % _nrech_tot)
+    # Vista dedicada: panel COMPLETO de descuentos (mismo panel de siempre, un solo
+    # código; usa sus propios filtros de fecha).
+    if f_lab.startswith("💸"):
+        try:
+            from planificacion import _descuentos_tickets as _dsc
+            _dsc(USR, cat, conectar)
+        except Exception as _e:
+            st.error("No se pudieron cargar los descuentos: %s" % _e)
+        return
+
     if f_sem:
         df = df[df["semana"].isin(f_sem)]
     if f_prov:
@@ -235,16 +248,9 @@ def render(USR, cat, conectar):
     st.markdown("---")
     render_sin_lab(USR, cat, conectar)
 
-    # ---- descuentos en la MISMA solapa (pedido de planta: porteria + calidad +
-    # descuentos juntos). Es el mismo panel de siempre, un solo codigo.
-    st.markdown("---")
-    with st.expander("💸 Descuentos a tickets por calidad — ver, aplicar y editar",
-                     expanded=False):
-        try:
-            from planificacion import _descuentos_tickets as _dsc
-            _dsc(USR, cat, conectar)
-        except Exception as _e:
-            st.error("No se pudieron cargar los descuentos: %s" % _e)
+    st.caption("💸 Los **descuentos a tickets** se ven y editan en la vista *Descuentos* "
+               "(el filtro de Vista, acá arriba). La columna *Descuento %* de la tabla "
+               "sale de ahí.")
 
 
 def _seccion_rechazados(r, d1, d2, solo=False):
