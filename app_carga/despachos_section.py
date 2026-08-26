@@ -2138,7 +2138,7 @@ def render(USR, cat, conectar):
     ss = st.session_state
     _opts = ["🧪 Armar / editar orden de venta", "📝 Borradores", "🔬 Control y confirmación",
              "🎟️ Tickets de portería", "📋 Despachos cargados", "📊 Análisis",
-             "🔎 Baja de stock"]
+             "⬇️ Semanal (Excel/PNG)", "🔎 Baja de stock"]
     # "Modificar en el armador" pide cambiar de vista: va vía dsp_tab_next porque el estado de
     # un widget ya instanciado no se puede pisar dentro del mismo run.
     _nx = ss.pop("dsp_tab_next", None)
@@ -2166,6 +2166,15 @@ def render(USR, cat, conectar):
         _listado(USR, cat, conectar)
     elif _t.startswith("📊"):
         _analisis(USR, cat)
+    elif _t.startswith("⬇️"):
+        try:
+            from despachos_semanal import render as _render_dsw
+            _render_dsw(USR, cat, conectar)
+        except Exception as _e:
+            import traceback as _tb
+            st.error("No se pudo cargar la descarga semanal: %s" % _e)
+            with st.expander("🔧 Detalle técnico"):
+                st.code(_tb.format_exc())
     elif _t.startswith("🎟️"):
         _tickets(USR, cat, conectar)
     elif _t.startswith("🔬"):
