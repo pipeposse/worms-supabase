@@ -3543,7 +3543,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     # ----- Administrar procesos en curso (no es carga: se decide sobre reacciones ya arrancadas) -----
     if _grupo.startswith("⚙️"):
-        _admin_opts = ["🛠️ Gestión de reacciones", "✏️ Edición rápida", "🏁 Terminadas (objetivo vs real)", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"]
+        _admin_opts = ["🛠️ Gestión de reacciones", "✏️ Edición rápida", "⏱️ Edición de iniciadas", "🏁 Terminadas (objetivo vs real)", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"]
         try:
             _admin = st.segmented_control("Administrar", _admin_opts, default=_admin_opts[0],
                                           key="pl_admin_sc", label_visibility="collapsed")
@@ -3560,6 +3560,15 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             except Exception as _e:
                 import traceback as _tb
                 st.error("No se pudo cargar Edición rápida: %s" % _e)
+                with st.expander("🔧 Detalle técnico"):
+                    st.code(_tb.format_exc())
+        elif _admin.startswith("⏱️"):
+            try:
+                import editor_iniciadas
+                editor_iniciadas.render(USR, cat, conectar)
+            except Exception as _e:
+                import traceback as _tb
+                st.error("No se pudo cargar Edición de iniciadas: %s" % _e)
                 with st.expander("🔧 Detalle técnico"):
                     st.code(_tb.format_exc())
         elif _admin.startswith("🏁"):
