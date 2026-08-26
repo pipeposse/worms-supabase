@@ -4489,7 +4489,7 @@ if st.session_state.section != "CARGAS":
 
     elif st.session_state.section == "INICIAR":
         # =================== PRODUCCIÓN EN PLANTA ===================
-        _ip_view = st.radio("Vista", ["👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🎯 Asignación AFE", "📍 Disponibilidad de descarga", "♻️ Recuperación AG", "🚢 Despachos", "🧭 Visualización", "📦 Informe de stock", "🛢️ Tanques"],
+        _ip_view = st.radio("Vista", ["👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🎯 Asignación AFE", "🔁 Cambio de categoría", "📍 Disponibilidad de descarga", "♻️ Recuperación AG", "🚢 Despachos", "🧭 Visualización", "📦 Informe de stock", "🛢️ Tanques"],
                             horizontal=True, key="iniciar_view", label_visibility="collapsed")
         if _ip_view.startswith("👷"):
             try:
@@ -4549,6 +4549,12 @@ if st.session_state.section != "CARGAS":
             try:
                 from asignacion_afe import render as _render_asig_afe
                 _render_asig_afe(USR, cat, conectar, "PLANTA")
+            except Exception as _e:
+                st.exception(_e)
+        elif _ip_view.startswith("🔁"):
+            try:
+                from cambio_categoria import render as _render_cc
+                _render_cc(USR, cat, conectar, "PLANTA")
             except Exception as _e:
                 st.exception(_e)
         elif _ip_view.startswith("📍"):

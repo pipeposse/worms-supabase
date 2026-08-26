@@ -573,7 +573,10 @@ def render(USR, cat, conectar, contexto="PLANIFICACION"):
     st.markdown("### 🔁 Cambio de categoría AFE-S ↔ AFE-SG")
     st.caption("Pasá toneladas o kilolitros de una categoría a la otra moviéndolas de tanque. "
                "Si hay ticket de portería, su peso valida la cantidad; el stock se actualiza en el acto.")
-    if USR.get("rol") not in ROLES_DIRECCION and "PLANIFICACION" not in (USR.get("secciones_app") or []):
+    # En Producción en planta (contexto PLANTA) lo usa el operario que hace el movimiento;
+    # el acceso ya lo controla la sección. En Planificación queda para dirección.
+    if contexto != "PLANTA" and USR.get("rol") not in ROLES_DIRECCION \
+       and "PLANIFICACION" not in (USR.get("secciones_app") or []):
         st.warning("Sección exclusiva de dirección.")
         return
     prods = _productos(cat)
