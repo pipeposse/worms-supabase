@@ -249,6 +249,11 @@ def render(USR, cat, conectar, contexto="PLANTA"):
         "tanque conviene descargar cada camión — mapa visual, recomendador y la asignación "
         "de AFEs en un solo lugar.</div></div>",
         unsafe_allow_html=True)
+    try:
+        import wedo_estado
+        wedo_estado.banner(cat)   # elegir dónde descargar con niveles viejos = desastre
+    except Exception:
+        pass
     _opts = ["🗺️ Mapa de espacio", "🧭 Recomendador", "🎯 Asignación AFE (tickets)"]
     try:
         _v = st.segmented_control("Vista", _opts, default=_opts[0],

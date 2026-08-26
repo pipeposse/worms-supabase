@@ -267,6 +267,11 @@ def render(USR, cat, conectar=None):
         "<div style='color:#e0f2fe;font-size:.88rem;margin-top:3px'>Qué hay de cada producto, "
         "en qué tanque, cuánto está comprometido en despachos y cuánto queda realmente "
         "disponible.</div></div>", unsafe_allow_html=True)
+    try:
+        import wedo_estado
+        wedo_estado.banner(cat)
+    except Exception:
+        pass
     _secs = USR.get("secciones_app") or []
     if (USR.get("rol") not in ROLES_DIRECCION
             and "PLANIFICACION" not in _secs and "INICIAR" not in _secs):

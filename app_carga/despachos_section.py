@@ -2836,6 +2836,11 @@ def _armar(USR, cat, conectar):
     spec = {"acidez": sp_ac, "ays": sp_ays, "azufre": sp_az, "fosforo": sp_fos}
 
     # ---------- 2 · Tanques del producto ----------
+    try:
+        import wedo_estado
+        wedo_estado.banner(cat)   # niveles viejos = formulación armada con litros irreales
+    except Exception:
+        pass
     _fam = _familia(prod_cod, prods)
     _mps_f = _mps_de(_fam) if len(_fam) > 1 else []
     _dils_f = _dils_de(_fam) if len(_fam) > 1 else []
