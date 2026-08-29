@@ -175,7 +175,7 @@ def _pf_code(cat, b):
 
 # ============================================================ PLANIFICACIÓN
 def planificacion(USR, cat, conectar):
-    st.subheader("🫗 Desgomado acuoso — decisiones (dirección)")
+    st.subheader("🫧 Producción AFE — decisiones (dirección)")
     st.caption("La reacción cortó al llegar a 85 °C y pasó a **reposo**. Decidí el reposo "
                "(transferir a **Cónico 60** o dejarlo en el **reactor**) y, cuando laboratorio "
                "confirme agua+sedimentos < 1,5 %, el **destino final** del producto.")

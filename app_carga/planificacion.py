@@ -3524,8 +3524,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
     # Aprobaciones dejó de renderizarse acá arriba: era lo primero que veía el
     # director al entrar y le tapaba lo que realmente hace la sección (planificar).
     # Ahora es la última opción del menú, como cualquier otra.
-    _grupo_opts = ["➕ Cargar nueva reacción", "⚙️ Administración de reacciones", "📅 Cronogramas",
-                   "🚚 Despachos", "🧮 Balance", "🔬 Análisis AFE", "🧪 Análisis Glicerina",
+    _grupo_opts = ["📈 Gestión semanal", "➕ Nueva producción", "⚙️ Administración de producción", "📅 Cronogramas",
+                   "🚢 Exportación", "🧮 Balance", "🔬 Análisis AFE", "🧪 Análisis Glicerina",
                    "🎯 Asignación AFE", "📍 Disponibilidad de descarga",
                    "🔁 Cambio de categoría",
                    "♻️ Recuperación AG", "🧭 Tanques", "📦 Informe de stock",
@@ -3544,7 +3544,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     # ----- Administrar procesos en curso (no es carga: se decide sobre reacciones ya arrancadas) -----
     if _grupo.startswith("⚙️"):
-        _admin_opts = ["🛠️ Gestión de reacciones", "✏️ Edición rápida", "⏱️ Edición de iniciadas", "🏁 Terminadas (objetivo vs real)", "🧴 Decantación ARE", "🫧 Desgomado acuoso", "⏭️ Avanzar fase (manual)"]
+        _admin_opts = ["🛠️ Gestión de producción", "✏️ Edición rápida", "⏱️ Edición de iniciadas", "🏁 Terminadas (objetivo vs real)", "🧴 Producción ARE", "🫧 Producción AFE", "⏭️ Avanzar fase (manual)"]
         try:
             _admin = st.segmented_control("Administrar", _admin_opts, default=_admin_opts[0],
                                           key="pl_admin_sc", label_visibility="collapsed")
@@ -3620,7 +3620,18 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             st.error("No se pudo cargar Análisis AFE: %s" % _e)
         return
 
-    if _grupo.startswith("🚚"):
+    if _grupo.startswith("📈"):
+        try:
+            import gestion_semanal
+            gestion_semanal.render(USR, cat, conectar, "PLANIFICACION")
+        except Exception as _e:
+            import traceback as _tb
+            st.error("No se pudo cargar Gestión semanal: %s" % _e)
+            with st.expander("🔧 Detalle técnico"):
+                st.code(_tb.format_exc())
+        return
+
+    if _grupo.startswith("🚢"):
         try:
             from despachos_section import render as _render_dsp
             _render_dsp(USR, cat, conectar)

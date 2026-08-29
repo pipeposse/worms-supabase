@@ -3077,7 +3077,7 @@ if st.session_state.section != "CARGAS":
         _lab_view = st.radio("Vista", ["➕ Carga / Edición", "🛢️ Parámetros por tanque", "🚛 Entrada diaria", "📦 Asignación a tanque", "📊 Resultados", "🚦 Sin evaluación", "🚨 AFEs sin analizar", "🔬 Producciones en marcha"],
                              horizontal=True, key="lab_view_sel", label_visibility="collapsed")
         if _lab_view.startswith("🔬"):
-            _pm_tipo = st.radio("Tipo de proceso", ["🧴 ARE (decantación)", "🫧 Desgomado acuoso"],
+            _pm_tipo = st.radio("Tipo de proceso", ["🧴 Producción ARE", "🫧 Producción AFE"],
                                 horizontal=True, key="lab_prodmarcha_tipo", label_visibility="collapsed")
             if _pm_tipo.startswith("🫧"):
                 import desgomado
@@ -4497,9 +4497,15 @@ if st.session_state.section != "CARGAS":
 
     elif st.session_state.section == "INICIAR":
         # =================== PRODUCCIÓN EN PLANTA ===================
-        _ip_view = st.radio("Vista", ["👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🎯 Asignación AFE", "🔁 Cambio de categoría", "📍 Disponibilidad de descarga", "♻️ Recuperación AG", "🚢 Despachos", "🧭 Visualización", "📦 Informe de stock", "🛢️ Tanques"],
+        _ip_view = st.radio("Vista", ["📈 Gestión semanal", "👷 Iniciar producción", "🧪 Laboratorio", "🚛 Ingresos", "🎯 Asignación AFE", "🔁 Cambio de categoría", "📍 Disponibilidad de descarga", "♻️ Recuperación AG", "🚢 Exportación", "🧭 Visualización", "📦 Informe de stock", "🛢️ Tanques"],
                             horizontal=True, key="iniciar_view", label_visibility="collapsed")
-        if _ip_view.startswith("👷"):
+        if _ip_view.startswith("📈"):
+            try:
+                import gestion_semanal
+                gestion_semanal.render(USR, cat, conectar, "PLANTA")
+            except Exception as _e:
+                st.exception(_e)
+        elif _ip_view.startswith("👷"):
             try:
                 from carga_por_id import render as _render_iniciar
                 _render_iniciar(USR, cat, conectar, etapas_de_proceso, params_proceso)

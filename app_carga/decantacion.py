@@ -123,7 +123,7 @@ def _tanques(cat, ids):
 
 # ---------------------------------------------------------------- PLANIFICACIÓN
 def destinos(USR, cat, conectar):
-    st.subheader("🧴 Decantación ARE — destinos (dirección)")
+    st.subheader("🧴 Producción ARE — destinos (dirección)")
     st.caption("Cuando la acidez llegó a ≤13 la reacción pasó a reposo y luego a decantación. "
                "Elegí a qué tanque va la **glicerina recuperada** (purga) y el **destino final del ARE**.")
     b, _ = _sel_batch(cat, "dec_dest_sel")
@@ -249,7 +249,7 @@ def destinos(USR, cat, conectar):
 
 # ---------------------------------------------------------------- PRODUCCIÓN
 def produccion(USR, cat, conectar, id_batch=None):
-    st.header("🧴 Decantación (purga ARE)")
+    st.header("🧴 Producción ARE — purga")
     st.caption("Durante la decantación hacés la **prueba de solubilidad**: si el material purgado **flota**, "
                "ese proceso terminó. Mandás muestra a laboratorio: corta cuando la glicerina del purgado es ≤ 2%.")
     if id_batch is not None:
