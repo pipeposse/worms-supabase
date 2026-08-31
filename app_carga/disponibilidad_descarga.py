@@ -73,6 +73,11 @@ def _mapa(USR, cat):
     tks["_pct"] = (100.0 * tks["_lts"] / tks["_cap"].replace(0, pd.NA)).fillna(0.0)
     tks["_banda"] = [_banda(r["producto_principal"], r["azufre"], r["fosforo"])
                      for _, r in tks.iterrows()]
+    try:
+        import composicion_tanques as _ct
+        _comp = _ct.etiquetas(cat)   # tanques con mezcla declarada: mostrar la mezcla
+    except Exception:
+        _comp = {}
 
     f1, f2, f3, f4 = st.columns([1.4, 1.4, 1.1, 1.1])
     _prods = sorted(tks["producto_principal"].dropna().astype(str).unique().tolist())
@@ -153,7 +158,8 @@ def _mapa(USR, cat):
                 "<div style='font-size:.8rem'>Libre <b>%.2f kL</b> · %.0f%% lleno</div>"
                 "</div>"
                 % (_brd, str(r["nombre"]), _chip,
-                   str(r["producto_principal"] or "sin producto"),
+                   _comp.get(int(r["id_tanque"]),
+                             str(r["producto_principal"] or "sin producto")),
                    _bar, _pct, _lib / 1000.0, _pct))
         st.markdown("<div style='display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px'>"
                     + "".join(_cards) + "</div>", unsafe_allow_html=True)

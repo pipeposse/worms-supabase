@@ -214,6 +214,20 @@ def render(USR, cat, conectar=None):
         "sobre capacidad, producto, calidad, comprometido en despachos, medidor y últimos "
         "movimientos.</div></div>", unsafe_allow_html=True)
 
+    # ---- vista: mapa de planta o editor de composicion multi-producto ----
+    if conectar is not None:
+        try:
+            _vt = st.segmented_control(
+                "Vista", ["🗺️ Mapa de planta", "🧪 Composición por tanque"],
+                default="🗺️ Mapa de planta", key="tv_vista", label_visibility="collapsed")
+        except Exception:
+            _vt = st.radio("Vista", ["🗺️ Mapa de planta", "🧪 Composición por tanque"],
+                           horizontal=True, key="tv_vista_rd")
+        if (_vt or "").startswith("🧪"):
+            import composicion_tanques
+            composicion_tanques.render(USR, cat, conectar)
+            return
+
     df = cat("SELECT id_tanque, nombre, sector, producto_principal, producto_rotulo, "
              "capacidad_litros, "
              "litros_actual, kg_actual, litros_comprometido, litros_disponible, densidad, "
@@ -230,6 +244,15 @@ def render(USR, cat, conectar=None):
     # etiqueta visible = rótulo oficial (con calidad); el código queda para la lógica
     df["prod_lbl"] = (df["producto_rotulo"].fillna(df["producto_principal"])
                         .fillna("—").astype(str))
+    # tanques con composicion declarada (multi-producto): la etiqueta muestra la mezcla real
+    try:
+        import composicion_tanques as _ct
+        _comp = _ct.etiquetas(cat)
+        if _comp:
+            df["prod_lbl"] = [_comp.get(int(i), l)
+                              for i, l in zip(df["id_tanque"], df["prod_lbl"])]
+    except Exception:
+        pass
     # banda de calidad por tanque: AFE-S/AG-E por laboratorio (spec de venta); el
     # resto por la letra del código (AG-C → C). None = producto sin calidad.
     df["banda"] = [(c[0] if c else None) for c in
