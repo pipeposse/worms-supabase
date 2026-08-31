@@ -66,6 +66,13 @@ thead th.l,tbody td.l{min-width:150px;width:1%}
 tbody tr:hover td{background:var(--bg3)}
 tbody tr:hover td.res{background:var(--bg3);filter:brightness(.99)}
 .desp{font-weight:700;font-size:.95rem;line-height:1.2}
+.tit{width:100%;max-width:210px;height:30px;text-align:left;border:1.5px solid transparent;
+  border-radius:8px;padding:0 7px;margin-left:-7px;background:transparent;font:inherit;
+  font-size:.92rem;font-weight:700;color:var(--ink);transition:border-color .1s,background .1s}
+.tit:hover{border-color:var(--line2);background:var(--bg)}
+.tit:focus{border-color:var(--brand);background:var(--bg);outline:none;
+  box-shadow:0 0 0 3.5px rgba(79,70,229,.14)}
+.tit.ed{background:var(--edbg);color:var(--ed);border-color:var(--ed)}
 .meta{color:var(--mut);font-size:.74rem;margin-top:2px;display:flex;align-items:center;gap:6px}
 .tag{display:inline-block;background:var(--edbg);color:var(--ed);border-radius:5px;
   padding:0 6px;font-size:.66rem;font-weight:800;letter-spacing:.02em}
@@ -148,8 +155,9 @@ function fit() { var h = Math.ceil(document.getElementById("app").getBoundingCli
 function send(v) { post("streamlit:setComponentValue", {value: v, dataType: "json"}); }
 
 /* --------------------------------- estado ---------------------------------- */
-var S = {rev: -1, seq: 0, mps: [], rows: [], titulo: "", ed: {}, undo: [], nota: null};
-/* S.ed = { "<idFila>|<mp>": tn }  -> SÓLO lo que el usuario tocó en esta sesión.
+var S = {rev: -1, seq: 0, mps: [], rows: [], titulo: "", ed: {}, edT: {}, undo: [], nota: null};
+/* S.ed  = { "<idFila>|<mp>": tn }     -> celdas de TN que el usuario tocó.
+   S.edT = { "<idFila>": "titulo" }    -> renombres de despacho pendientes.
    Nada de esto viaja al servidor hasta que se aprieta Guardar: por eso no hay
    ni un rerun mientras se edita. */
 
@@ -168,6 +176,9 @@ function val(r, mp) { var k = K(r.id, mp);
   return (r.v && r.v[mp] !== undefined && r.v[mp] !== null) ? num(r.v[mp]) : 0; }
 function formulado(r, mp) { return (r.f && r.f[mp] !== undefined && r.f[mp] !== null) ? num(r.f[mp]) : 0; }
 function tocada(r, mp) { return S.ed.hasOwnProperty(K(r.id, mp)); }
+function titulo(r) { return S.edT.hasOwnProperty(r.id) ? S.edT[r.id] : r.desp; }
+function tituloCambiado(r) { return S.edT.hasOwnProperty(r.id)
+  && String(S.edT[r.id]).trim() !== "" && String(S.edT[r.id]).trim() !== String(r.desp); }
 function mezcla(r) { var t = 0; S.mps.forEach(function (m) { t += val(r, m); }); return t; }
 function dif(r) { return mezcla(r) - num(r.bal); }
 function tocadaFila(r) { for (var i = 0; i < S.mps.length; i++)
@@ -178,19 +189,24 @@ function sem(r) {
   var p = Math.abs(dif(r)) / b * 100;
   return p <= 0.3 ? "g" : (p <= 1.5 ? "y" : "r");
 }
-function nCambios() { var n = 0; for (var k in S.ed) n++; return n; }
+function nCambios() { var n = 0; for (var k in S.ed) n++;
+  S.rows.forEach(function (r) { if (tituloCambiado(r)) n++; }); return n; }
 
 /* ------------------------------- persistencia ------------------------------- */
 function guardarLocal() { try {
-  window.localStorage.setItem(LS, JSON.stringify({rev: S.rev, ed: S.ed})); } catch (e) {} }
+  window.localStorage.setItem(LS, JSON.stringify({rev: S.rev, ed: S.ed, edT: S.edT}));
+} catch (e) {} }
 function leerLocal() { try {
   var o = JSON.parse(window.localStorage.getItem(LS) || "null");
-  if (o && o.rev === S.rev && o.ed) return o.ed; } catch (e) {} return null; }
+  if (o && o.rev === S.rev && (o.ed || o.edT)) return {ed: o.ed || {}, edT: o.edT || {}};
+} catch (e) {} return null; }
 function borrarLocal() { try { window.localStorage.removeItem(LS); } catch (e) {} }
 
 /* -------------------------------- acciones --------------------------------- */
-function snap() { S.undo.push(JSON.stringify(S.ed)); if (S.undo.length > 50) S.undo.shift(); }
-function deshacer() { if (!S.undo.length) return; S.ed = JSON.parse(S.undo.pop());
+function snap() { S.undo.push(JSON.stringify({ed: S.ed, edT: S.edT}));
+  if (S.undo.length > 50) S.undo.shift(); }
+function deshacer() { if (!S.undo.length) return;
+  var o = JSON.parse(S.undo.pop()); S.ed = o.ed || {}; S.edT = o.edT || {};
   guardarLocal(); draw(); }
 function setCelda(r, mp, v, sinSnap) { if (!sinSnap) snap();
   S.ed[K(r.id, mp)] = Math.max(0, num(v)); guardarLocal(); }
@@ -210,6 +226,7 @@ function revertirFila(r) { snap();
     if (r.aj) S.ed[K(r.id, m)] = formulado(r, m);
     else delete S.ed[K(r.id, m)];
   });
+  delete S.edT[r.id];
   guardarLocal(); }
 /* Deja la fila EXACTAMENTE en lo que pesó la balanza, repartiendo la diferencia
    entre las materias primas en la misma proporción que tienen ahora. Es la
@@ -232,7 +249,7 @@ function cerrarTodas() { snap(); var n = 0;
   S.nota = n ? ("Se cerraron " + n + " despacho(s) contra la balanza. Revisá y guardá.")
              : "Ninguno de estos despachos tiene kg pesados en portería todavía.";
   draw(); }
-function descartar() { snap(); S.ed = {}; borrarLocal(); S.nota = null; draw(); }
+function descartar() { snap(); S.ed = {}; S.edT = {}; borrarLocal(); S.nota = null; draw(); }
 
 function guardar() {
   var cam = [];
@@ -246,10 +263,14 @@ function guardar() {
     cam.push({id: Number(id), mp: mp,
               tn: (r.aj && Math.abs(v - formulado(r, mp)) < 0.005) ? null : v});
   }
-  if (!cam.length) { S.nota = "No hay nada distinto para guardar."; draw(); return; }
+  var tits = [];
+  S.rows.forEach(function (r) {
+    if (tituloCambiado(r)) tits.push({id: Number(r.id), titulo: String(S.edT[r.id]).trim()});
+  });
+  if (!cam.length && !tits.length) { S.nota = "No hay nada distinto para guardar."; draw(); return; }
   S.seq++;
-  send({action: "save", rev: S.rev, seq: S.seq, cambios: cam});
-  S.nota = "Guardando " + cam.length + " ajuste(s)…";
+  send({action: "save", rev: S.rev, seq: S.seq, cambios: cam, titulos: tits});
+  S.nota = "Guardando " + (cam.length + tits.length) + " cambio(s)…";
   draw();
 }
 /* --------------------------------- pintado --------------------------------- */
@@ -267,7 +288,9 @@ function filaHTML(r, i) {
       '" inputmode="decimal" placeholder="0,00"></td>';
   }).join("");
   return '<tr data-r="' + i + '">' +
-    '<td class="l"><div class="desp">' + esc(r.desp) + '</div>' +
+    '<td class="l"><input class="tit' + (tituloCambiado(r) ? " ed" : "") +
+      '" data-t="' + i + '" value="' + esc(titulo(r)) + '" maxlength="80" ' +
+      'title="El nombre del despacho: escribí acá para renombrarlo (se guarda con Guardar)">' +
       '<div class="meta">' + esc(r.fecha) + ' · ' + (r.cont || 0) + ' cont.' +
       (r.aj ? ' <span class="tag">KG REALES</span>' : '') + '</div></td>' +
     tds +
@@ -346,6 +369,9 @@ function paint() {
     var ch = tds[base + 2].firstChild;
     if (ch) { ch.textContent = b > 0 ? (d >= 0 ? "+" : "") + nf(d) : "—";
               ch.className = "chip " + sem(r); }
+    var ti = tr.querySelector(".tit");
+    if (ti && document.activeElement !== ti) {
+      ti.value = titulo(r); ti.className = "tit" + (tituloCambiado(r) ? " ed" : ""); }
     S.mps.forEach(function (mp, j) {
       var inp = tds[1 + j].firstChild; if (!inp) return;
       var v = val(r, mp), fo = formulado(r, mp);
@@ -391,7 +417,16 @@ function wire() {
     if (el.id === "b_desc") { descartar(); return; }
   };
   app.addEventListener("input", function (e) {
-    var el = e.target; if (!el.classList || !el.classList.contains("c")) return;
+    var el = e.target;
+    if (el.classList && el.classList.contains("tit")) {
+      var rr = S.rows[parseInt(el.getAttribute("data-t"), 10)];
+      if (rr) { S.edT[rr.id] = el.value;
+        if (String(el.value).trim() === String(rr.desp)) delete S.edT[rr.id];
+        el.className = "tit" + (tituloCambiado(rr) ? " ed" : "");
+        guardarLocal(); paint(); }
+      return;
+    }
+    if (!el.classList || !el.classList.contains("c")) return;
     var i = parseInt(el.getAttribute("data-r"), 10), mp = el.getAttribute("data-m");
     // se acepta coma o punto decimal y se ignoran los separadores de miles
     var raw = el.value.replace(/[^\d.,-]/g, "");
@@ -402,7 +437,8 @@ function wire() {
     paint();
   });
   app.addEventListener("focusin", function (e) {
-    if (e.target.classList && e.target.classList.contains("c")) snap();
+    if (e.target.classList && (e.target.classList.contains("c")
+        || e.target.classList.contains("tit"))) snap();
   });
   app.addEventListener("blur", function (e) {
     var el = e.target; if (!el.classList || !el.classList.contains("c")) return;
@@ -414,7 +450,17 @@ function wire() {
       e.preventDefault(); deshacer(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
       e.preventDefault(); guardar(); return; }
-    var el = e.target; if (!el.classList || !el.classList.contains("c")) return;
+    var el = e.target;
+    if (el.classList && el.classList.contains("tit")) {
+      if (e.key === "Escape") { e.preventDefault();
+        var rr = S.rows[parseInt(el.getAttribute("data-t"), 10)];
+        if (rr) { delete S.edT[rr.id]; el.value = rr.desp; el.className = "tit";
+                  guardarLocal(); paint(); }
+        el.blur(); }
+      else if (e.key === "Enter") { e.preventDefault(); el.blur(); }
+      return;
+    }
+    if (!el.classList || !el.classList.contains("c")) return;
     var i = parseInt(el.getAttribute("data-r"), 10), j = S.mps.indexOf(el.getAttribute("data-m"));
     if (e.key === "Enter" || e.key === "ArrowDown") { e.preventDefault(); foco(i + 1, j); }
     else if (e.key === "ArrowUp") { e.preventDefault(); if (i > 0) foco(i - 1, j); }
@@ -465,11 +511,11 @@ function onRender(ev) {
     // mientras se edita no se manda nada.
     S.rev = num(a.rev); S.undo = []; S.nota = null;
     var rec = leerLocal();
-    if (rec && Object.keys(rec).length) {
-      S.ed = rec;
-      S.nota = "Se recuperaron " + Object.keys(rec).length + " cambio(s) sin guardar de " +
-               "este navegador. Revisalos y guardá, o tocá Descartar.";
-    } else { S.ed = {}; borrarLocal(); }
+    if (rec && (Object.keys(rec.ed).length || Object.keys(rec.edT).length)) {
+      S.ed = rec.ed; S.edT = rec.edT;
+      S.nota = "Se recuperaron " + (Object.keys(rec.ed).length + Object.keys(rec.edT).length) +
+               " cambio(s) sin guardar de este navegador. Revisalos y guardá, o tocá Descartar.";
+    } else { S.ed = {}; S.edT = {}; borrarLocal(); }
   }
   draw();
 }

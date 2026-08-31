@@ -159,6 +159,29 @@ def _aplicar_ajustes(df, aj):
     return df
 
 
+def _guardar_titulos(conectar, USR, renombres):
+    """Renombra despachos desde la grilla. renombres = [(id_despacho, titulo)].
+
+    El título es de fact_despacho: renombrar acá lo renombra en TODA la app (armador,
+    listado, control, brief). Queda auditado con usuario y fecha."""
+    if not renombres:
+        return 0
+    n = 0
+    with conectar(int(USR["id_usuario"])) as (conn, audit):
+        with conn.cursor() as cur:
+            for idd, tit in renombres:
+                tit = str(tit or "").strip()[:80]
+                if not tit:
+                    continue
+                cur.execute("UPDATE produccion.fact_despacho "
+                            "SET titulo=%s, actualizado_en=now() WHERE id_despacho=%s",
+                            (tit, int(idd)))
+                audit.log("U", "fact_despacho", int(idd),
+                          {"titulo": tit, "desde": "semanal"})
+                n += 1
+    return n
+
+
 def _guardar_ajustes(conectar, USR, cambios):
     """Upsert de los kg reales. cambios = [(id_despacho, mp, kg_real|None)].
 
@@ -511,8 +534,14 @@ def _grilla_reales(df_s, mps, tk, aj, cat, conectar, USR, semana):
     ss = st.session_state
     st.caption("Lo formulado **no se pisa**: el ajuste se guarda aparte con tu usuario y fecha. "
                "**Balanza** es lo que pesó portería y **⚖** reparte la diferencia para que el "
-               "total dé exactamente eso.")
+               "total dé exactamente eso. El **nombre del despacho** también se edita acá y "
+               "se renombra en toda la app.")
     _rev = int(ss.get("dsw_rev") or 0)
+    # la confirmación se muestra DESPUÉS del rerun (un st.success antes de st.rerun
+    # aparece medio parpadeo y desaparece: nadie llega a leerlo)
+    _msg_ok = ss.pop("dsw_msg", None)
+    if _msg_ok:
+        st.success(_msg_ok)
     val = _grilla_mp(rows=_filas_grilla(df_s, mps, tk, aj), mps=mps, rev=_rev,
                      titulo="Semana %s" % semana, key="dsw_grilla")
     if isinstance(val, dict) and val.get("action") == "save" \
@@ -527,16 +556,28 @@ def _grilla_reales(df_s, mps, tk, aj, cat, conectar, USR, semana):
                                 None if _tn is None else float(_tn) * 1000.0))
             except Exception:
                 continue
-        if cambios:
+        renombres = []
+        for c in (val.get("titulos") or []):
+            try:
+                renombres.append((int(c["id"]), str(c.get("titulo") or "")))
+            except Exception:
+                continue
+        if cambios or renombres:
             if conectar is None:
                 st.error("Esta vista se abrió sin permisos de escritura.")
             else:
                 try:
-                    n = _guardar_ajustes(conectar, USR, cambios)
+                    n = _guardar_ajustes(conectar, USR, cambios) if cambios else 0
+                    nt = _guardar_titulos(conectar, USR, renombres) if renombres else 0
                     cat.clear()
                     ss["dsw_rev"] = _rev + 1      # rev nueva: la grilla se resincroniza
-                    st.success("Guardado: %d ajuste(s). La tabla, el Excel y los PNG ya usan "
-                               "estos kg." % n)
+                    _msg = []
+                    if n:
+                        _msg.append("%d ajuste(s) de kg" % n)
+                    if nt:
+                        _msg.append("%d despacho(s) renombrado(s)" % nt)
+                    ss["dsw_msg"] = ("Guardado: %s. La tabla, el Excel y los PNG ya lo "
+                                     "muestran." % " y ".join(_msg))
                     st.rerun()
                 except Exception as e:
                     st.error("No se pudo guardar: %s" % e)
@@ -716,34 +757,45 @@ _CSS = """
 """
 
 
+_COLS_TXT = ("Despacho", "Semana", "Fecha", "Rango", "Cliente", "Destino", "Estado")
+_COLS_INT = ("Cont", "Despachos", "Contenedores")
+
+
 def _tabla_html(t, mp_cols):
-    """La tabla de la semana como HTML: los ceros apagados y el total con jerarquía."""
+    """Tabla como HTML: ceros apagados, conteos sin decimales y el total con jerarquía.
+
+    El TEXTO es el caso general y el número el particular: con la lista blanca al revés,
+    columnas como Semana o Rango caían al formateador numérico, float("2026-S35")
+    explotaba y la celda quedaba vacía."""
     cols = [c for c in t.columns if c not in ("Producto", "_aj")]
-    h = "".join('<th class="l">%s</th>' % c if c in ("Despacho", "Fecha", "Cliente", "Destino")
+    h = "".join('<th class="l">%s</th>' % c if c in _COLS_TXT
                 else "<th>%s</th>" % c for c in cols)
+    _pri = next((c for c in cols if c in _COLS_TXT), cols[0] if cols else None)
     filas = []
     for i, r in t.iterrows():
-        _tot = str(r.get("Despacho") or "").startswith("TOTAL")
+        _tot = str(r.get(_pri) or "").startswith("TOTAL")
         tds = []
         for c in cols:
             v = r[c]
-            if c in ("Despacho", "Fecha", "Cliente", "Destino"):
-                _txt = "" if pd.isna(v) else str(v)
-                if c == "Despacho" and bool(r.get("_aj", False)):
-                    _txt += '<span class="tag" title="Este despacho tiene los kg reales '\
-                            'cargados a mano">KG REALES</span>'
-                tds.append('<td class="l%s">%s</td>'
-                           % (" d" if c == "Despacho" else " m", _txt))
-            elif c == "Cont":
-                tds.append('<td>%s</td>' % ("" if (v is None or v == "" or pd.isna(v)) else int(v)))
-            else:
+            if c in _COLS_INT:
+                tds.append('<td>%s</td>'
+                           % ("" if (v is None or v == "" or pd.isna(v)) else int(v)))
+                continue
+            _num = None
+            if c not in _COLS_TXT:
                 try:
-                    x = float(v)
+                    _num = float(v)
                 except Exception:
-                    tds.append("<td></td>")
-                    continue
-                _cl = "tt" if c == "TN total" else ("z" if abs(x) < 0.005 else "")
-                tds.append('<td class="%s">%s</td>' % (_cl, _fmt(x)))
+                    _num = None
+            if _num is not None and not pd.isna(_num):
+                _cl = "tt" if c == "TN total" else ("z" if abs(_num) < 0.005 else "")
+                tds.append('<td class="%s">%s</td>' % (_cl, _fmt(_num)))
+                continue
+            _txt = "" if (v is None or (isinstance(v, float) and pd.isna(v))) else str(v)
+            if c == _pri and _txt.startswith("TOTAL") is False and bool(r.get("_aj", False)):
+                _txt += '<span class="tag" title="Este despacho tiene los kg reales '\
+                        'cargados a mano">KG REALES</span>'
+            tds.append('<td class="l%s">%s</td>' % (" d" if c == _pri else " m", _txt))
         filas.append('<tr class="%s">%s</tr>' % ("tot" if _tot else "", "".join(tds)))
     return '<table class="dsw-t"><thead><tr>%s</tr></thead><tbody>%s</tbody></table>' % (
         h, "".join(filas))
