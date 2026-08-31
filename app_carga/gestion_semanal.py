@@ -7,7 +7,7 @@ El hilo conductor de dirección, en una sola pantalla:
 
 Todo se mide en TN sobre la MISMA grilla (producto × sector × semana ISO) y sale
 de una única fuente, vw_gestion_semanal, para que no existan dos versiones del
-mismo número. Los tres sectores de gestión son Reactores, Piletas y bachas y
+mismo número. Los cuatro sectores de gestión son Reactores, Piletas, Bachas y
 Exportación; el nombre de cada unidad de gestión es **Sector + Producto**
 ("Exportación AG-E"), nunca el booking ni el cliente.
 

@@ -203,7 +203,7 @@ def _mezclar(tq, tk, kg_antes, kg_add):
 
 
 def _confirmar(conectar, USR, tk, dat, clasif, prod_row, destino_tipo, tanque, obs,
-               id_jornada):
+               id_jornada, sector_gestion=None):
     """Clasifica el ticket en una sola transacción.
 
     RECUPERACION con tanque: anula el movimiento automático del lab_sync (que
@@ -319,8 +319,8 @@ def _confirmar(conectar, USR, tk, dat, clasif, prod_row, destino_tipo, tanque, o
                 "INSERT INTO produccion.fact_recuperacion_ticket "
                 "(ticket, id_jornada, fecha_ticket, kg, clasificacion, id_producto, producto, "
                 " destino_tipo, id_tanque, tanque_label, id_mov_stock, lab_num_muestra, "
-                " lab_calidad, conductor, patente, id_usuario, observaciones) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                " lab_calidad, conductor, patente, id_usuario, observaciones, sector_gestion) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "ON CONFLICT (ticket) DO UPDATE SET "
                 " id_jornada=EXCLUDED.id_jornada, fecha_ticket=EXCLUDED.fecha_ticket, "
                 " kg=EXCLUDED.kg, clasificacion=EXCLUDED.clasificacion, "
@@ -329,6 +329,7 @@ def _confirmar(conectar, USR, tk, dat, clasif, prod_row, destino_tipo, tanque, o
                 " tanque_label=EXCLUDED.tanque_label, id_mov_stock=EXCLUDED.id_mov_stock, "
                 " lab_num_muestra=EXCLUDED.lab_num_muestra, lab_calidad=EXCLUDED.lab_calidad, "
                 " id_usuario=EXCLUDED.id_usuario, observaciones=EXCLUDED.observaciones, "
+                " sector_gestion=EXCLUDED.sector_gestion, "
                 " anulado=false, actualizado_en=now() "
                 "RETURNING id_rec",
                 (tk, (int(id_jornada) if id_jornada else None), dat.get("fecha_entrada"),
@@ -341,7 +342,8 @@ def _confirmar(conectar, USR, tk, dat, clasif, prod_row, destino_tipo, tanque, o
                  id_mov, str(dat.get("lab_num_muestra") or "") or None,
                  str(dat.get("lab_calidad") or "") or None,
                  str(dat.get("conductor") or "") or None,
-                 str(dat.get("patente_chasis") or "") or None, uid, (obs or None)))
+                 str(dat.get("patente_chasis") or "") or None, uid, (obs or None),
+                 (sector_gestion if clasif == "RECUPERACION" else None)))
             id_rec = int(cur.fetchone()[0])
         audit.log("U", "fact_recuperacion_ticket", id_rec,
                   {"ticket": tk, "clasificacion": clasif, "destino": destino_tipo,
@@ -482,6 +484,10 @@ def _panel_bandeja(cat, conectar, USR, cand, j):
                                     "Tanque 5 acopio → MP 3 → MP 4. Viene preseleccionado el "
                                     "primero. Si fue a plataforma, elegí Plataforma: no suma a "
                                     "ningún tanque y se anula el crédito automático al Tanque 4.")
+            sec_g = st.radio("Trabajado en", ["🏊 Piletas", "🛁 Bachas"], horizontal=True,
+                             key="rec_sec_%s" % tk,
+                             help="Sector de gestión al que suma este recuperado en 📈 Gestión "
+                                  "semanal (Piletas y Bachas se miden por separado).")
             obs = st.text_input("Observaciones", key="rec_obs_%s" % tk,
                                 placeholder="opcional — ej. pileta terciaria 3")
             b1, b2, _sp = st.columns([1.1, 1.3, 2])
@@ -499,7 +505,8 @@ def _panel_bandeja(cat, conectar, USR, cand, j):
                     st.error("No existe el producto %s en dim_producto." % cal)
                 else:
                     _confirmar(conectar, USR, tk, r.to_dict(), "RECUPERACION", prod,
-                               destino_tipo, tanque, obs, id_j)
+                               destino_tipo, tanque, obs, id_j,
+                               sector_gestion=("BACHAS" if "Bachas" in sec_g else "PILETAS"))
                     cat.clear()
                     st.rerun()
             if b2.button("🚫 NO es recuperación", key="rec_no_%s" % tk,
