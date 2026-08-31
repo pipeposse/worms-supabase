@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Ajuste de kg reales</title>
+<style>
+:root{
+  --bg:#fff; --bg2:#f8fafc; --bg3:#f1f5f9; --fg:#0f172a; --fg2:#475569; --fg3:#94a3b8;
+  --bd:#e2e8f0; --bd2:#cbd5e1; --acc:#4f46e5; --acc2:#eef2ff;
+  --ok:#16a34a; --okbg:#dcfce7; --warn:#d97706; --warnbg:#fef3c7;
+  --bad:#dc2626; --badbg:#fee2e2; --ed:#7c3aed; --edbg:#f5f3ff;
+  --sh:0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.1);
+}
+.dark{
+  --bg:#0e1117; --bg2:#161b22; --bg3:#1f2630; --fg:#e6edf3; --fg2:#9aa7b4; --fg3:#6b7684;
+  --bd:#2a323d; --bd2:#3a4552; --acc:#818cf8; --acc2:#1e2140;
+  --ok:#4ade80; --okbg:#14311f; --warn:#fbbf24; --warnbg:#3a2c08;
+  --bad:#f87171; --badbg:#3a1414; --ed:#c4b5fd; --edbg:#241b3d;
+  --sh:0 1px 2px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:transparent;color:var(--fg);font-size:14px;
+  font-family:"Source Sans Pro",Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased}
+#app{padding:2px 1px 8px}
+.card{background:var(--bg);border:1px solid var(--bd);border-radius:14px;box-shadow:var(--sh);overflow:hidden}
+.hd{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:10px 12px;background:var(--bg2);
+  border-bottom:1px solid var(--bd)}
+.hd h3{margin:0;font-size:15px;font-weight:800}
+.sub{color:var(--fg2);font-size:12px}
+.spacer{flex:1}
+button{font-family:inherit;font-size:13px;color:var(--fg)}
+.btn{background:var(--bg);border:1px solid var(--bd2);border-radius:9px;padding:6px 11px;cursor:pointer;
+  font-weight:600;white-space:nowrap;transition:.12s}
+.btn:hover{background:var(--bg3);border-color:var(--acc)}
+.btn:active{transform:translateY(1px)}
+.btn.p{background:var(--acc);border-color:var(--acc);color:#fff}
+.btn.p:hover{filter:brightness(1.08)}
+.btn.sm{padding:3px 8px;font-size:11.5px;border-radius:7px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.pill{border-radius:999px;padding:2px 10px;font-size:11.5px;font-weight:800}
+.pill.d{background:var(--okbg);color:var(--ok)} .pill.p{background:var(--edbg);color:var(--ed)}
+.wrap{max-height:520px;min-height:120px;overflow:auto;overscroll-behavior:contain}
+table{width:100%;border-collapse:separate;border-spacing:0;font-variant-numeric:tabular-nums}
+thead th{position:sticky;top:0;z-index:3;background:var(--bg2);border-bottom:1px solid var(--bd);
+  padding:7px 8px;text-align:right;font-size:10.5px;font-weight:800;color:var(--fg2);
+  text-transform:uppercase;letter-spacing:.045em;white-space:nowrap}
+thead th.l{text-align:left}
+tbody td{padding:3px 6px;border-bottom:1px solid var(--bd);text-align:right;white-space:nowrap;font-size:13px}
+tbody td.l{text-align:left}
+tbody tr:hover{background:var(--bg2)}
+.nm{font-weight:700}
+.mut{color:var(--fg3);font-size:11px}
+.c{width:86px;text-align:right;border:1px solid transparent;border-radius:7px;padding:4px 6px;
+  background:transparent;font:inherit;font-variant-numeric:tabular-nums;color:var(--fg)}
+.c:hover{border-color:var(--bd2)}
+.c:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc2);outline:none;background:var(--bg)}
+.c.dif{border-color:var(--bd2);background:var(--edbg);color:var(--ed);font-weight:700}
+.c.ed{border-color:var(--ed);background:var(--edbg);color:var(--ed);font-weight:800}
+.tot{font-weight:800}
+.dif{font-weight:800}
+.dif.g{color:var(--ok)} .dif.y{color:var(--warn)} .dif.r{color:var(--bad)}
+tfoot td{position:sticky;bottom:0;background:var(--bg3);border-top:2px solid var(--bd2);
+  padding:7px 8px;text-align:right;font-weight:800;font-size:13px}
+tfoot td.l{text-align:left}
+.ft{display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:10px 12px;background:var(--bg2);
+  border-top:1px solid var(--bd)}
+.msg{padding:7px 12px;font-size:12px;border-bottom:1px solid var(--bd);background:var(--warnbg);color:var(--warn)}
+kbd{background:var(--bg3);border:1px solid var(--bd2);border-bottom-width:2px;border-radius:5px;
+  padding:0 4px;font-size:10.5px;font-weight:700;color:var(--fg2)}
+.wrap::-webkit-scrollbar{width:9px;height:9px}
+.wrap::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:5px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ---------------------------- protocolo Streamlit --------------------------- */
+var READY = false;
+function post(t, o) { var m = {isStreamlitMessage: true, type: t};
+  for (var k in o) m[k] = o[k]; window.parent.postMessage(m, "*"); }
+function ready() { if (READY) return; READY = true;
+  post("streamlit:componentReady", {apiVersion: 1}); }
+var _h = -1;
+function fit() { var h = Math.ceil(document.getElementById("app").getBoundingClientRect().height) + 4;
+  if (h !== _h && h > 0) { _h = h; post("streamlit:setFrameHeight", {height: h}); } }
+function send(v) { post("streamlit:setComponentValue", {value: v, dataType: "json"}); }
+
+/* --------------------------------- estado ---------------------------------- */
+var S = {rev: -1, seq: 0, mps: [], rows: [], titulo: "", ed: {}, undo: [], nota: null};
+/* S.ed = { "<idFila>|<mp>": tn }  -> SÓLO lo que el usuario tocó en esta sesión.
+   Nada de esto viaja al servidor hasta que se aprieta Guardar: por eso no hay
+   ni un rerun mientras se edita. */
+
+function nf(v, d) { if (v === null || v === undefined || isNaN(v)) return "—";
+  return Number(v).toLocaleString("es-AR", {minimumFractionDigits: d === undefined ? 2 : d,
+                                            maximumFractionDigits: d === undefined ? 2 : d}); }
+function num(v) { var n = parseFloat(v); return isNaN(n) ? 0 : n; }
+function esc(s) { return String(s === null || s === undefined ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function K(id, mp) { return id + "|" + mp; }
+var LS = "worms_ajuste_mp";
+
+/* valor vigente de una celda: lo editado si se tocó, si no lo que vino del servidor */
+function val(r, mp) { var k = K(r.id, mp);
+  if (S.ed.hasOwnProperty(k)) return S.ed[k];
+  return (r.v && r.v[mp] !== undefined && r.v[mp] !== null) ? num(r.v[mp]) : 0; }
+function formulado(r, mp) { return (r.f && r.f[mp] !== undefined && r.f[mp] !== null) ? num(r.f[mp]) : 0; }
+function tocada(r, mp) { return S.ed.hasOwnProperty(K(r.id, mp)); }
+function mezcla(r) { var t = 0; S.mps.forEach(function (m) { t += val(r, m); }); return t; }
+function dif(r) { return mezcla(r) - num(r.bal); }
+function sem(r) { var b = num(r.bal); if (!(b > 0)) return "";
+  var p = Math.abs(dif(r)) / b * 100; return p <= 0.5 ? "g" : (p <= 2 ? "y" : "r"); }
+function nCambios() { var n = 0; for (var k in S.ed) n++; return n; }
+
+/* ------------------------------- persistencia ------------------------------- */
+function guardarLocal() { try {
+  window.localStorage.setItem(LS, JSON.stringify({rev: S.rev, ed: S.ed})); } catch (e) {} }
+function leerLocal() { try {
+  var o = JSON.parse(window.localStorage.getItem(LS) || "null");
+  if (o && o.rev === S.rev && o.ed) return o.ed; } catch (e) {} return null; }
+function borrarLocal() { try { window.localStorage.removeItem(LS); } catch (e) {} }
+
+/* -------------------------------- acciones --------------------------------- */
+function snap() { S.undo.push(JSON.stringify(S.ed)); if (S.undo.length > 50) S.undo.shift(); }
+function deshacer() { if (!S.undo.length) return; S.ed = JSON.parse(S.undo.pop());
+  guardarLocal(); draw(); }
+function setCelda(r, mp, v, sinSnap) { if (!sinSnap) snap();
+  S.ed[K(r.id, mp)] = Math.max(0, num(v)); guardarLocal(); }
+/* Volver a lo formulado tiene DOS significados según de dónde venga la fila:
+   - si el despacho todavía no tiene kg reales guardados, alcanza con olvidar la
+     edición local (la celda vuelve sola a lo formulado);
+   - si YA los tiene, hay que dejar la celda EN el valor formulado y marcarla como
+     pendiente, porque lo que hay que mandarle al servidor es un borrado del ajuste.
+     Sin esto, tocar ↩︎ en una fila ajustada no dejaba nada para guardar y el botón
+     quedaba deshabilitado: la reversión no se podía aplicar nunca. */
+function revertirCelda(r, mp) { snap();
+  if (r.aj) S.ed[K(r.id, mp)] = formulado(r, mp);
+  else delete S.ed[K(r.id, mp)];
+  guardarLocal(); }
+function revertirFila(r) { snap();
+  S.mps.forEach(function (m) {
+    if (r.aj) S.ed[K(r.id, m)] = formulado(r, m);
+    else delete S.ed[K(r.id, m)];
+  });
+  guardarLocal(); }
+/* Deja la fila EXACTAMENTE en lo que pesó la balanza, repartiendo la diferencia
+   entre las materias primas en la misma proporción que tienen ahora. Es la
+   operación que se hace todo el tiempo: el total tiene que dar lo de portería. */
+function cerrarFila(r, sinSnap) {
+  var b = num(r.bal); if (!(b > 0)) return false;
+  var tot = mezcla(r); if (!(tot > 0)) return false;
+  if (!sinSnap) snap();
+  var f = b / tot, acum = 0, ult = null;
+  S.mps.forEach(function (m) { var v = val(r, m); if (v <= 0) return;
+    var nv = Math.round(v * f * 100) / 100; S.ed[K(r.id, m)] = nv; acum += nv; ult = m; });
+  if (ult !== null) {  // el redondeo se le carga a la última: el total cierra exacto
+    S.ed[K(r.id, ult)] = Math.round((S.ed[K(r.id, ult)] + (b - acum)) * 100) / 100;
+    if (S.ed[K(r.id, ult)] < 0) S.ed[K(r.id, ult)] = 0;
+  }
+  guardarLocal(); return true;
+}
+function cerrarTodas() { snap(); var n = 0;
+  S.rows.forEach(function (r) { if (cerrarFila(r, true)) n++; });
+  S.nota = n ? ("Se cerraron " + n + " despacho(s) contra la balanza. Revisá y guardá.")
+             : "Ninguno de estos despachos tiene kg pesados en portería todavía.";
+  draw(); }
+function descartar() { snap(); S.ed = {}; borrarLocal(); S.nota = null; draw(); }
+
+function guardar() {
+  var cam = [];
+  for (var k in S.ed) {
+    var p = k.split("|"), id = p[0], mp = p.slice(1).join("|");
+    var r = S.rows.filter(function (x) { return String(x.id) === String(id); })[0];
+    if (!r) continue;
+    var v = S.ed[k];
+    // volver EXACTO a lo formulado se manda como null: borra el ajuste en la base
+    if (!r.aj && Math.abs(v - formulado(r, mp)) < 0.005) continue;
+    cam.push({id: Number(id), mp: mp,
+              tn: (r.aj && Math.abs(v - formulado(r, mp)) < 0.005) ? null : v});
+  }
+  if (!cam.length) { S.nota = "No hay nada distinto para guardar."; draw(); return; }
+  S.seq++;
+  send({action: "save", rev: S.rev, seq: S.seq, cambios: cam});
+  S.nota = "Guardando " + cam.length + " ajuste(s)…";
+  draw();
+}
+/* --------------------------------- pintado --------------------------------- */
+function filaHTML(r, i) {
+  var m = mezcla(r), d = dif(r), sm = sem(r), b = num(r.bal);
+  var tds = S.mps.map(function (mp) {
+    var v = val(r, mp), fo = formulado(r, mp);
+    var cls = tocada(r, mp) ? "ed" : (Math.abs(v - fo) > 0.005 ? "dif" : "");
+    var ti = "Formulado: " + nf(fo) + " TN";
+    if (cls) ti += " · " + (cls === "ed" ? "editado sin guardar" : "kg reales ya guardados");
+    return '<td><input class="c ' + cls + '" data-r="' + i + '" data-m="' + esc(mp) +
+      '" value="' + (v > 0 ? nf(v) : "") + '" title="' + esc(ti) +
+      '" inputmode="decimal" placeholder="0,00"></td>';
+  }).join("");
+  return '<tr data-r="' + i + '">' +
+    '<td class="l"><div class="nm">' + esc(r.desp) + '</div>' +
+      '<div class="mut">' + esc(r.fecha) + ' · ' + (r.cont || 0) + ' cont.' +
+      (r.aj ? ' · <b style="color:var(--ed)">kg reales</b>' : '') + '</div></td>' +
+    tds +
+    '<td class="tot">' + nf(m) + '</td>' +
+    '<td class="mut" style="font-size:13px">' + (b > 0 ? nf(b) : "—") + '</td>' +
+    '<td class="dif ' + sm + '">' + (b > 0 ? (d >= 0 ? "+" : "") + nf(d) : "—") + '</td>' +
+    '<td class="l"><button class="btn sm" data-cerrar="' + i + '"' + (b > 0 ? "" : " disabled") +
+      ' title="Reparte la diferencia entre las materias primas para que el total dé ' +
+      'exactamente lo que pesó la balanza">⚖️ cerrar</button> ' +
+      '<button class="btn sm" data-rev="' + i + '" title="Vuelve esta fila a lo formulado">↩︎</button>' +
+    '</td></tr>';
+}
+function pieHTML() {
+  var tm = S.mps.map(function (mp) { var t = 0;
+    S.rows.forEach(function (r) { t += val(r, mp); }); return t; });
+  var tot = tm.reduce(function (a, b) { return a + b; }, 0);
+  var tb = 0; S.rows.forEach(function (r) { tb += num(r.bal); });
+  var td = tot - tb;
+  return '<tr><td class="l">TOTAL SEMANA</td>' +
+    tm.map(function (t) { return '<td>' + nf(t) + '</td>'; }).join("") +
+    '<td>' + nf(tot) + '</td><td>' + (tb > 0 ? nf(tb) : "—") + '</td>' +
+    '<td class="' + (tb > 0 ? "dif " + (Math.abs(td) / tb * 100 <= 0.5 ? "g" :
+      (Math.abs(td) / tb * 100 <= 2 ? "y" : "r")) : "") + '">' +
+      (tb > 0 ? (td >= 0 ? "+" : "") + nf(td) : "—") + '</td><td></td></tr>';
+}
+function draw() {
+  var n = nCambios();
+  document.getElementById("app").innerHTML =
+   '<div class="card">' +
+    '<div class="hd"><h3>✏️ Kg reales por materia prima</h3>' +
+      '<span class="sub">' + esc(S.titulo) + ' · ' + S.rows.length + ' despacho(s) · ' +
+      'se edita al instante, <b>sin recargar</b>; nada se manda hasta que tocás Guardar</span>' +
+      '<span class="spacer"></span>' +
+      '<span class="pill ' + (n ? "p" : "d") + '">' +
+        (n ? n + " sin guardar" : "todo guardado") + '</span></div>' +
+    (S.nota ? '<div class="msg">⚠️ ' + esc(S.nota) + '</div>' : "") +
+    '<div class="wrap"><table><thead><tr>' +
+      '<th class="l">Despacho</th>' +
+      S.mps.map(function (m) { return '<th>' + esc(m) + '</th>'; }).join("") +
+      '<th>Mezcla</th><th>Balanza</th><th>Dif.</th><th class="l">Acciones</th>' +
+      '</tr></thead><tbody>' +
+      (S.rows.length ? S.rows.map(filaHTML).join("")
+        : '<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--fg3)">' +
+          'No hay despachos en esta semana.</td></tr>') +
+      '</tbody><tfoot>' + pieHTML() + '</tfoot></table></div>' +
+    '<div class="ft">' +
+      '<button class="btn p" id="b_save"' + (n ? "" : " disabled") + '>💾 Guardar ' +
+        (n ? "(" + n + ")" : "") + '</button>' +
+      '<button class="btn" id="b_cerrar_todo">⚖️ Cerrar todas contra balanza</button>' +
+      '<button class="btn" id="b_undo"' + (S.undo.length ? "" : " disabled") + '>↩︎ Deshacer</button>' +
+      '<button class="btn" id="b_desc"' + (n ? "" : " disabled") + '>🧹 Descartar cambios</button>' +
+      '<span class="spacer"></span>' +
+      '<span class="mut"><kbd>Tab</kbd>/<kbd>Enter</kbd> siguiente · <kbd>↑</kbd><kbd>↓</kbd> ' +
+        'misma columna · <kbd>Esc</kbd> vuelve la celda a lo formulado · <kbd>Ctrl</kbd>+<kbd>Z</kbd>' +
+      '</span></div>' +
+   '</div>';
+  wire(); fit();
+}
+/* repinta lo derivado SIN tocar los inputs: por eso se puede tipear sin perder el foco */
+function paint() {
+  S.rows.forEach(function (r, i) {
+    var tr = document.querySelector('tr[data-r="' + i + '"]'); if (!tr) return;
+    var tds = tr.children, base = 1 + S.mps.length;
+    var m = mezcla(r), d = dif(r), b = num(r.bal);
+    tds[base].textContent = nf(m);
+    tds[base + 2].textContent = b > 0 ? (d >= 0 ? "+" : "") + nf(d) : "—";
+    tds[base + 2].className = "dif " + sem(r);
+    S.mps.forEach(function (mp, j) {
+      var inp = tds[1 + j].firstChild; if (!inp) return;
+      var v = val(r, mp), fo = formulado(r, mp);
+      inp.className = "c " + (tocada(r, mp) ? "ed" : (Math.abs(v - fo) > 0.005 ? "dif" : ""));
+      if (document.activeElement !== inp) inp.value = v > 0 ? nf(v) : "";
+    });
+  });
+  var tf = document.querySelector("tfoot"); if (tf) tf.innerHTML = pieHTML();
+  var n = nCambios();
+  var p = document.querySelector(".pill");
+  if (p) { p.className = "pill " + (n ? "p" : "d");
+           p.textContent = n ? n + " sin guardar" : "todo guardado"; }
+  var bs = document.getElementById("b_save");
+  if (bs) { bs.disabled = !n; bs.textContent = "💾 Guardar " + (n ? "(" + n + ")" : ""); }
+  var bd = document.getElementById("b_desc"); if (bd) bd.disabled = !n;
+  var bu = document.getElementById("b_undo"); if (bu) bu.disabled = !S.undo.length;
+}
+/* --------------------------------- eventos --------------------------------- */
+function foco(i, j) {
+  var tr = document.querySelector('tr[data-r="' + i + '"]'); if (!tr) return false;
+  var inp = tr.children[1 + j] && tr.children[1 + j].firstChild;
+  if (!inp) return false;
+  inp.focus(); inp.select(); inp.scrollIntoView({block: "nearest"}); return true;
+}
+function wire() {
+  var app = document.getElementById("app");
+  app.onclick = function (e) {
+    var el = e.target;
+    var c = el.closest("[data-cerrar]");
+    if (c) { var r = S.rows[parseInt(c.getAttribute("data-cerrar"), 10)];
+      snap(); if (!cerrarFila(r, true)) S.nota = "Ese despacho todavía no tiene kg de balanza.";
+      draw(); return; }
+    var v = el.closest("[data-rev]");
+    if (v) { revertirFila(S.rows[parseInt(v.getAttribute("data-rev"), 10)]); draw(); return; }
+    if (el.id === "b_save") { guardar(); return; }
+    if (el.id === "b_cerrar_todo") { cerrarTodas(); return; }
+    if (el.id === "b_undo") { deshacer(); return; }
+    if (el.id === "b_desc") { descartar(); return; }
+  };
+  app.addEventListener("input", function (e) {
+    var el = e.target; if (!el.classList || !el.classList.contains("c")) return;
+    var i = parseInt(el.getAttribute("data-r"), 10), mp = el.getAttribute("data-m");
+    // se acepta coma o punto decimal y se ignoran los separadores de miles
+    var raw = el.value.replace(/[^\d.,-]/g, "");
+    var pt = raw.lastIndexOf("."), cm = raw.lastIndexOf(",");
+    if (cm > pt) raw = raw.replace(/\./g, "").replace(",", ".");
+    else raw = raw.replace(/,/g, "");
+    setCelda(S.rows[i], mp, raw, true);
+    paint();
+  });
+  app.addEventListener("focusin", function (e) {
+    if (e.target.classList && e.target.classList.contains("c")) snap();
+  });
+  app.addEventListener("blur", function (e) {
+    var el = e.target; if (!el.classList || !el.classList.contains("c")) return;
+    var i = parseInt(el.getAttribute("data-r"), 10), mp = el.getAttribute("data-m");
+    var v = val(S.rows[i], mp); el.value = v > 0 ? nf(v) : "";
+  }, true);
+  app.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault(); deshacer(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault(); guardar(); return; }
+    var el = e.target; if (!el.classList || !el.classList.contains("c")) return;
+    var i = parseInt(el.getAttribute("data-r"), 10), j = S.mps.indexOf(el.getAttribute("data-m"));
+    if (e.key === "Enter" || e.key === "ArrowDown") { e.preventDefault(); foco(i + 1, j); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); if (i > 0) foco(i - 1, j); }
+    else if (e.key === "Escape") { e.preventDefault();
+      revertirCelda(S.rows[i], el.getAttribute("data-m")); paint(); el.blur(); }
+    else if (e.key === "Tab") {                    // Tab recorre la grilla entera
+      e.preventDefault();
+      var nj = j + (e.shiftKey ? -1 : 1), ni = i;
+      if (nj >= S.mps.length) { nj = 0; ni = i + 1; }
+      if (nj < 0) { nj = S.mps.length - 1; ni = i - 1; }
+      if (ni >= 0) foco(ni, nj);
+    }
+  });
+  // pegar una fila de Excel: los valores caen en las columnas a partir de la celda
+  app.addEventListener("paste", function (e) {
+    var el = e.target; if (!el.classList || !el.classList.contains("c")) return;
+    var txt = (e.clipboardData || window.clipboardData).getData("text") || "";
+    if (!/[\t\n]/.test(txt)) return;                 // un solo valor: comportamiento normal
+    e.preventDefault(); snap();
+    var i0 = parseInt(el.getAttribute("data-r"), 10),
+        j0 = S.mps.indexOf(el.getAttribute("data-m"));
+    txt.replace(/\r/g, "").split("\n").forEach(function (lin, di) {
+      if (!lin.trim()) return;
+      lin.split("\t").forEach(function (cel, dj) {
+        var r = S.rows[i0 + di], mp = S.mps[j0 + dj];
+        if (!r || !mp) return;
+        var s2 = cel.replace(/[^\d.,-]/g, "");
+        var pt = s2.lastIndexOf("."), cm = s2.lastIndexOf(",");
+        s2 = cm > pt ? s2.replace(/\./g, "").replace(",", ".") : s2.replace(/,/g, "");
+        if (s2 !== "") setCelda(r, mp, s2, true);
+      });
+    });
+    draw();
+  });
+}
+
+/* --------------------------- mensajes de Streamlit -------------------------- */
+function onRender(ev) {
+  var d = ev.data; if (!d || d.type !== "streamlit:render") return;
+  var a = d.args || {};
+  if (d.theme && d.theme.base) document.body.className = d.theme.base === "dark" ? "dark" : "";
+  S.mps = a.mps || []; S.titulo = a.titulo || "";
+  S.rows = a.rows || [];
+  var nueva = (num(a.rev) !== S.rev);
+  if (nueva) {
+    // rev nueva = el servidor mandó datos nuevos (se guardó, cambió la semana o los
+    // filtros): recién acá se pisa lo local. El eco de lo propio nunca llega, porque
+    // mientras se edita no se manda nada.
+    S.rev = num(a.rev); S.undo = []; S.nota = null;
+    var rec = leerLocal();
+    if (rec && Object.keys(rec).length) {
+      S.ed = rec;
+      S.nota = "Se recuperaron " + Object.keys(rec).length + " cambio(s) sin guardar de " +
+               "este navegador. Revisalos y guardá, o tocá Descartar.";
+    } else { S.ed = {}; borrarLocal(); }
+  }
+  draw();
+}
+window.addEventListener("message", function (ev) {
+  try { onRender(ev); } catch (err) {
+    document.getElementById("app").innerHTML =
+      '<div class="card"><div class="msg">⚠️ La grilla no pudo dibujarse: ' +
+      esc(err && err.message) + '</div></div>'; fit(); }
+});
+window.addEventListener("resize", fit);
+new MutationObserver(fit).observe(document.getElementById("app"), {childList: true, subtree: true});
+try {
+  window.parent.addEventListener("beforeunload", function (e) {
+    if (nCambios()) { e.preventDefault(); e.returnValue = ""; }
+  });
+} catch (e) {}
+ready(); fit();
+</script>
+</body>
+</html>
