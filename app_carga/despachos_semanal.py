@@ -220,9 +220,16 @@ def _tabla_semana(df_s, mps):
     piv["TN total"] = piv.sum(axis=1)
     t = cab.merge(piv.reset_index(), on="id_despacho", how="left").sort_values(["Fecha", "id_despacho"])
     t["Fecha"] = t["Fecha"].dt.strftime("%d/%m/%Y")
+    # marca de "kg reales": se ve en la tabla HTML, y las descargas la ignoran
+    if "ajustado" in df_s.columns:
+        _aj = df_s.groupby("id_despacho")["ajustado"].any()
+        t["_aj"] = t["id_despacho"].map(_aj).fillna(False)
+    else:
+        t["_aj"] = False
     t = t.drop(columns=["id_despacho"])
     mp_cols = [c for c in t.columns if c in mps] + ["TN total"]
     tot = {c: "" for c in t.columns}
+    tot["_aj"] = False
     tot["Despacho"] = "TOTAL SEMANA"
     tot["Cont"] = int(t["Cont"].sum())
     for c in mp_cols:
@@ -270,6 +277,7 @@ def _excel(df, mps):
         for s in semanas:
             df_s = df[df["Semana"] == s]
             t, mp_cols = _tabla_semana(df_s, mps)
+            t = t.drop(columns=[c for c in ("_aj",) if c in t.columns])
             nombre = ("%s %s" % (s, df_s["Rango"].iloc[0])).replace("/", "-")[:31]
             t.to_excel(w, sheet_name=nombre, index=False)
             hojas.append((nombre, t, mp_cols))
@@ -501,12 +509,9 @@ def _grilla_reales(df_s, mps, tk, aj, cat, conectar, USR, semana):
     if not _grilla_ok():
         return False
     ss = st.session_state
-    st.caption("Escribí las **TN reales** de cada materia prima. Lo formulado **no se pisa**: "
-               "el ajuste se guarda aparte con tu usuario y fecha, y de ahí en más la tabla, "
-               "el Excel y los PNG muestran este número. **Balanza** es lo que pesó portería: "
-               "el botón *⚖️ cerrar* reparte la diferencia entre las materias primas de esa "
-               "fila para que el total dé exactamente eso. Se puede pegar un bloque de celdas "
-               "copiado de Excel.")
+    st.caption("Lo formulado **no se pisa**: el ajuste se guarda aparte con tu usuario y fecha. "
+               "**Balanza** es lo que pesó portería y **⚖** reparte la diferencia para que el "
+               "total dé exactamente eso.")
     _rev = int(ss.get("dsw_rev") or 0)
     val = _grilla_mp(rows=_filas_grilla(df_s, mps, tk, aj), mps=mps, rev=_rev,
                      titulo="Semana %s" % semana, key="dsw_grilla")
@@ -668,12 +673,91 @@ def _editor_reales(df_s, mps, tk, cat, conectar, USR, semana):
                "formulación, así el detalle de líneas del Excel sigue cerrando.")
 
 
+_CSS = """
+<style>
+/* Vista semanal: legibilidad de planta. Números grandes y tabulares, el color sólo
+   cuando significa algo, y los ceros apagados para que no compitan con los valores. */
+.dsw-hero{background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 60%,#9333ea 100%);
+  border-radius:18px;padding:18px 22px;color:#fff;margin:0 0 14px;position:relative;
+  overflow:hidden;box-shadow:0 14px 34px -20px rgba(124,58,237,.75)}
+.dsw-hero .g{position:absolute;right:-40px;top:-60px;width:190px;height:190px;
+  background:radial-gradient(circle,rgba(255,255,255,.26),transparent 70%);pointer-events:none}
+.dsw-hero h2{margin:0;color:#fff;font-size:1.22rem;font-weight:800;letter-spacing:-.01em}
+.dsw-hero p{margin:5px 0 0;opacity:.93;font-size:.85rem;line-height:1.5;max-width:70ch}
+.dsw-k{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 14px}
+.dsw-k .b{background:#fff;border:1px solid #e6e8f0;border-radius:15px;padding:13px 16px;
+  box-shadow:0 1px 2px rgba(16,24,40,.05)}
+.dsw-k .b.hi{background:linear-gradient(135deg,#eef2ff,#faf5ff);border-color:#e0e7ff}
+.dsw-k .l{font-size:.66rem;text-transform:uppercase;letter-spacing:.07em;color:#64748b;font-weight:700}
+.dsw-k .v{font-size:1.8rem;font-weight:800;color:#0f172a;line-height:1.1;margin-top:4px;
+  font-variant-numeric:tabular-nums;font-family:'Plus Jakarta Sans','Inter',sans-serif}
+.dsw-k .s{font-size:.75rem;color:#64748b;margin-top:2px}
+.dsw-k .s.ok{color:#7c3aed;font-weight:700}
+.dsw-t{width:100%;border-collapse:separate;border-spacing:0;background:#fff;
+  border:1px solid #e6e8f0;border-radius:15px;overflow:hidden;font-variant-numeric:tabular-nums;
+  box-shadow:0 1px 2px rgba(16,24,40,.05)}
+.dsw-t th{background:#fafbff;border-bottom:1.5px solid #d7dbe8;padding:9px 11px;text-align:right;
+  font-size:.66rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.07em;
+  white-space:nowrap}
+.dsw-t th.l{text-align:left}
+.dsw-t td{padding:0 11px;height:46px;border-bottom:1px solid #eef0f6;text-align:right;
+  font-size:.9rem;white-space:nowrap}
+.dsw-t td.l{text-align:left}
+.dsw-t tr:last-child td{border-bottom:0}
+.dsw-t .d{font-weight:700}
+.dsw-t .m{color:#64748b;font-size:.75rem}
+.dsw-t .z{color:#a5aec0;font-weight:400}
+.dsw-t .tt{font-weight:800;font-size:.98rem;font-family:'Plus Jakarta Sans','Inter',sans-serif}
+.dsw-t .tot td{background:#f4f5fb;border-top:2px solid #d7dbe8;height:50px;font-weight:800}
+.dsw-t .tag{display:inline-block;background:#f3f0ff;color:#7c3aed;border-radius:5px;
+  padding:0 6px;font-size:.62rem;font-weight:800;margin-left:6px;vertical-align:1px}
+@media (max-width:740px){ .dsw-t td,.dsw-t th{padding:0 6px;font-size:.8rem} }
+</style>
+"""
+
+
+def _tabla_html(t, mp_cols):
+    """La tabla de la semana como HTML: los ceros apagados y el total con jerarquía."""
+    cols = [c for c in t.columns if c not in ("Producto", "_aj")]
+    h = "".join('<th class="l">%s</th>' % c if c in ("Despacho", "Fecha", "Cliente", "Destino")
+                else "<th>%s</th>" % c for c in cols)
+    filas = []
+    for i, r in t.iterrows():
+        _tot = str(r.get("Despacho") or "").startswith("TOTAL")
+        tds = []
+        for c in cols:
+            v = r[c]
+            if c in ("Despacho", "Fecha", "Cliente", "Destino"):
+                _txt = "" if pd.isna(v) else str(v)
+                if c == "Despacho" and bool(r.get("_aj", False)):
+                    _txt += '<span class="tag" title="Este despacho tiene los kg reales '\
+                            'cargados a mano">KG REALES</span>'
+                tds.append('<td class="l%s">%s</td>'
+                           % (" d" if c == "Despacho" else " m", _txt))
+            elif c == "Cont":
+                tds.append('<td>%s</td>' % ("" if (v is None or v == "" or pd.isna(v)) else int(v)))
+            else:
+                try:
+                    x = float(v)
+                except Exception:
+                    tds.append("<td></td>")
+                    continue
+                _cl = "tt" if c == "TN total" else ("z" if abs(x) < 0.005 else "")
+                tds.append('<td class="%s">%s</td>' % (_cl, _fmt(x)))
+        filas.append('<tr class="%s">%s</tr>' % ("tot" if _tot else "", "".join(tds)))
+    return '<table class="dsw-t"><thead><tr>%s</tr></thead><tbody>%s</tbody></table>' % (
+        h, "".join(filas))
+
+
 def render(USR, cat, conectar=None):
-    st.markdown("#### ⬇️ Despachos por semana — Excel y PNG")
-    st.caption("Cada semana con sus despachos y las materias primas en TN. Los despachos que "
-               "tengan **kg reales cargados** se muestran con esos kg; el resto, con los "
-               "formulados. Excel: resumen + una hoja por semana + detalle de líneas. "
-               "PNG: una lámina por semana.")
+    st.markdown(_CSS, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="dsw-hero"><div class="g"></div>'
+        '<h2>📦 Despachos por semana</h2>'
+        '<p>Cada semana con sus despachos y las materias primas en TN. Los que tengan '
+        '<b>kg reales cargados</b> se muestran con esos kg; el resto, con los formulados. '
+        'Abajo se descargan en Excel y PNG, y se ajustan a lo que realmente se cargó.</p>'
+        '</div>', unsafe_allow_html=True)
     f1, f2, f3 = st.columns([1, 1.4, 1.6])
     sem = int(f1.number_input("Semanas hacia atrás", min_value=1, max_value=52, value=8, step=1, key="dsw_sem"))
     est = f2.multiselect("Estados", ["CONFIRMADO", "DESPACHADO", "BORRADOR", "ANULADO"], default=ESTADOS_DEF,
@@ -717,15 +801,20 @@ def render(USR, cat, conectar=None):
 
     # ---- resumen + descargas globales
     res = _tabla_resumen(df, mps)
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Semanas", int(len(res) - 1))
-    k2.metric("Despachos", int(res["Despachos"].iloc[-1]))
-    k3.metric("Contenedores", int(res["Contenedores"].iloc[-1]))
-    k4.metric("TN totales", _fmt(res["TN total"].iloc[-1]),
-              ("%d despacho(s) con kg reales" % _n_aj) if _n_aj else "todo formulado",
-              help="Kg EFECTIVOS: el real donde alguien lo ajustó y el formulado donde no.")
-    st.dataframe(res, hide_index=True, use_container_width=True,
-                 column_config={c: st.column_config.NumberColumn(format="%.2f") for c in mps + ["TN total"]})
+    st.markdown(
+        '<div class="dsw-k">'
+        '<div class="b"><div class="l">Semanas</div><div class="v">%d</div></div>'
+        '<div class="b"><div class="l">Despachos</div><div class="v">%d</div></div>'
+        '<div class="b"><div class="l">Contenedores</div><div class="v">%d</div></div>'
+        '<div class="b hi"><div class="l">TN totales</div><div class="v">%s</div>'
+        '<div class="s%s">%s</div></div>'
+        '</div>' % (int(len(res) - 1), int(res["Despachos"].iloc[-1]),
+                    int(res["Contenedores"].iloc[-1]), _fmt(res["TN total"].iloc[-1]),
+                    " ok" if _n_aj else "",
+                    ("%d con kg reales" % _n_aj) if _n_aj else "todo formulado"),
+        unsafe_allow_html=True)
+    with st.expander("📅 Resumen por semana", expanded=False):
+        st.markdown(_tabla_html(res, mps + ["TN total"]), unsafe_allow_html=True)
 
     with st.spinner("Armando Excel y láminas…"):
         try:
@@ -733,29 +822,37 @@ def render(USR, cat, conectar=None):
         except Exception as e:
             st.error("No se pudo armar el paquete: %s" % e)
             return
-    d1, d2, d3 = st.columns(3)
-    d1.download_button("⬇️ Excel (todas las semanas)", xlsx, file_name="despachos_semanal.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       key="dsw_xlsx", use_container_width=True, type="primary")
-    d2.download_button("⬇️ PNG resumen semanas", _png_resumen(df, mps), file_name="resumen_semanas.png",
-                       mime="image/png", key="dsw_png_res", use_container_width=True)
-    d3.download_button("⬇️ ZIP · Excel + PNG de cada semana", zipb, file_name="despachos_semanal.zip",
-                       mime="application/zip", key="dsw_zip", use_container_width=True)
+    with st.expander("⬇️ Descargar todo (Excel · PNG · ZIP)", expanded=False):
+        d1, d2, d3 = st.columns(3)
+        d1.download_button("Excel · todas las semanas", xlsx, file_name="despachos_semanal.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           key="dsw_xlsx", use_container_width=True, type="primary")
+        d2.download_button("PNG · resumen de semanas", _png_resumen(df, mps),
+                           file_name="resumen_semanas.png", mime="image/png",
+                           key="dsw_png_res", use_container_width=True)
+        d3.download_button("ZIP · Excel + PNG de cada semana", zipb,
+                           file_name="despachos_semanal.zip", mime="application/zip",
+                           key="dsw_zip", use_container_width=True)
 
     # ---- una semana
-    st.markdown("---")
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
     semanas = sorted(df["Semana"].unique().tolist(), reverse=True)
-    c1, c2 = st.columns([1, 3])
+    c1, c2 = st.columns([1.5, 2.5])
     s = c1.selectbox("Semana", semanas, key="dsw_semana",
                      format_func=lambda x: "%s · %s" % (x, df[df["Semana"] == x]["Rango"].iloc[0]))
     df_s = df[df["Semana"] == s]
     t, mp_cols = _tabla_semana(df_s, mps)
     png = _png_semana(df_s, mps, s, df_s["Rango"].iloc[0])
-    c2.write("")
-    c2.download_button("⬇️ PNG semana %s" % s, png, file_name="despachos_%s.png" % s, mime="image/png",
-                       key="dsw_png_sem", use_container_width=True)
-    st.dataframe(t, hide_index=True, use_container_width=True,
-                 column_config={c: st.column_config.NumberColumn(format="%.2f") for c in mp_cols})
+    _nd = int(df_s["id_despacho"].nunique())
+    _nc = int(df_s.groupby("id_despacho")["n_contenedores"].first().sum())
+    c2.markdown(
+        "<div style='padding-top:30px;color:#64748b;font-size:.86rem'>"
+        "<b style='color:#0f172a;font-size:1.05rem'>%d despachos</b> · %d contenedores · "
+        "<b style='color:#0f172a'>%s TN</b></div>" % (_nd, _nc, _fmt(float(df_s["tn"].sum()))),
+        unsafe_allow_html=True)
+    st.markdown(_tabla_html(t, mp_cols), unsafe_allow_html=True)
+    st.download_button("⬇️ PNG de la semana %s" % s, png, file_name="despachos_%s.png" % s,
+                       mime="image/png", key="dsw_png_sem")
 
     # ---- ajuste a los kg reales de esa semana ----
     if conectar is not None:
@@ -772,4 +869,5 @@ def render(USR, cat, conectar=None):
                 st.error("No se pudo abrir el editor: %s" % _e)
                 st.code(_tb.format_exc())
 
-    st.image(png, use_container_width=True)
+    with st.expander("🖼️ Ver la lámina de la semana (la misma que se descarga)", expanded=False):
+        st.image(png, use_container_width=True)

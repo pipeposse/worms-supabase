@@ -3,73 +3,134 @@
 <head>
 <meta charset="utf-8">
 <title>Ajuste de kg reales</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@700;800&display=swap" rel="stylesheet">
 <style>
+/* Diseño alineado con el CSS global de la app (Inter + Plus Jakarta, indigo/violeta).
+   Criterio: legibilidad de planta. Los números mandan, el color sólo significa algo
+   (verde/ámbar/rojo = qué tan lejos está de la balanza) y los ceros se apagan para que
+   no compitan con los valores que sí importan. Filas altas para usar con una tablet. */
 :root{
-  --bg:#fff; --bg2:#f8fafc; --bg3:#f1f5f9; --fg:#0f172a; --fg2:#475569; --fg3:#94a3b8;
-  --bd:#e2e8f0; --bd2:#cbd5e1; --acc:#4f46e5; --acc2:#eef2ff;
-  --ok:#16a34a; --okbg:#dcfce7; --warn:#d97706; --warnbg:#fef3c7;
-  --bad:#dc2626; --badbg:#fee2e2; --ed:#7c3aed; --edbg:#f5f3ff;
-  --sh:0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.1);
+  --bg:#fff; --bg2:#fafbff; --bg3:#f4f5fb; --ink:#0f172a; --mut:#64748b; --mut2:#a5aec0;
+  --line:#e6e8f0; --line2:#d7dbe8; --brand:#4f46e5; --brand2:#7c3aed;
+  --grad:linear-gradient(135deg,#4f46e5 0%,#7c3aed 60%,#9333ea 100%);
+  --ok:#059669; --okbg:#d1fae5; --warn:#d97706; --warnbg:#fef3c7;
+  --bad:#dc2626; --badbg:#fee2e2; --ed:#7c3aed; --edbg:#f3f0ff;
 }
 .dark{
-  --bg:#0e1117; --bg2:#161b22; --bg3:#1f2630; --fg:#e6edf3; --fg2:#9aa7b4; --fg3:#6b7684;
-  --bd:#2a323d; --bd2:#3a4552; --acc:#818cf8; --acc2:#1e2140;
-  --ok:#4ade80; --okbg:#14311f; --warn:#fbbf24; --warnbg:#3a2c08;
-  --bad:#f87171; --badbg:#3a1414; --ed:#c4b5fd; --edbg:#241b3d;
-  --sh:0 1px 2px rgba(0,0,0,.4);
+  --bg:#0e1117; --bg2:#141922; --bg3:#1b212c; --ink:#e6edf3; --mut:#9aa7b4; --mut2:#5c6675;
+  --line:#252c38; --line2:#333c4b; --brand:#818cf8; --brand2:#a78bfa;
+  --ok:#4ade80; --okbg:#0f2e1e; --warn:#fbbf24; --warnbg:#382a08;
+  --bad:#f87171; --badbg:#3a1414; --ed:#c4b5fd; --edbg:#221b3a;
 }
 *{box-sizing:border-box}
-html,body{margin:0;padding:0;background:transparent;color:var(--fg);font-size:14px;
-  font-family:"Source Sans Pro",Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+html,body{margin:0;padding:0;background:transparent;color:var(--ink);font-size:14px;
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   -webkit-font-smoothing:antialiased}
-#app{padding:2px 1px 8px}
-.card{background:var(--bg);border:1px solid var(--bd);border-radius:14px;box-shadow:var(--sh);overflow:hidden}
-.hd{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:10px 12px;background:var(--bg2);
-  border-bottom:1px solid var(--bd)}
-.hd h3{margin:0;font-size:15px;font-weight:800}
-.sub{color:var(--fg2);font-size:12px}
+#app{padding:0 0 6px}
+.card{background:var(--bg);border:1px solid var(--line);border-radius:18px;overflow:hidden;
+  box-shadow:0 1px 3px rgba(16,24,40,.05)}
+
+/* ---------------------------------- barra ---------------------------------- */
+.bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 18px;
+  background:linear-gradient(180deg,var(--bg2),var(--bg));border-bottom:1px solid var(--line)}
+.bar h3{margin:0;font-family:'Plus Jakarta Sans','Inter',sans-serif;font-size:1.02rem;
+  font-weight:800;letter-spacing:-.01em}
+.bar .sub{color:var(--mut);font-size:.8rem;margin-top:2px}
 .spacer{flex:1}
-button{font-family:inherit;font-size:13px;color:var(--fg)}
-.btn{background:var(--bg);border:1px solid var(--bd2);border-radius:9px;padding:6px 11px;cursor:pointer;
-  font-weight:600;white-space:nowrap;transition:.12s}
-.btn:hover{background:var(--bg3);border-color:var(--acc)}
-.btn:active{transform:translateY(1px)}
-.btn.p{background:var(--acc);border-color:var(--acc);color:#fff}
-.btn.p:hover{filter:brightness(1.08)}
-.btn.sm{padding:3px 8px;font-size:11.5px;border-radius:7px}
-.btn:disabled{opacity:.4;cursor:not-allowed}
-.pill{border-radius:999px;padding:2px 10px;font-size:11.5px;font-weight:800}
-.pill.d{background:var(--okbg);color:var(--ok)} .pill.p{background:var(--edbg);color:var(--ed)}
-.wrap{max-height:520px;min-height:120px;overflow:auto;overscroll-behavior:contain}
-table{width:100%;border-collapse:separate;border-spacing:0;font-variant-numeric:tabular-nums}
-thead th{position:sticky;top:0;z-index:3;background:var(--bg2);border-bottom:1px solid var(--bd);
-  padding:7px 8px;text-align:right;font-size:10.5px;font-weight:800;color:var(--fg2);
-  text-transform:uppercase;letter-spacing:.045em;white-space:nowrap}
-thead th.l{text-align:left}
-tbody td{padding:3px 6px;border-bottom:1px solid var(--bd);text-align:right;white-space:nowrap;font-size:13px}
-tbody td.l{text-align:left}
-tbody tr:hover{background:var(--bg2)}
-.nm{font-weight:700}
-.mut{color:var(--fg3);font-size:11px}
-.c{width:86px;text-align:right;border:1px solid transparent;border-radius:7px;padding:4px 6px;
-  background:transparent;font:inherit;font-variant-numeric:tabular-nums;color:var(--fg)}
-.c:hover{border-color:var(--bd2)}
-.c:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc2);outline:none;background:var(--bg)}
-.c.dif{border-color:var(--bd2);background:var(--edbg);color:var(--ed);font-weight:700}
-.c.ed{border-color:var(--ed);background:var(--edbg);color:var(--ed);font-weight:800}
-.tot{font-weight:800}
-.dif{font-weight:800}
-.dif.g{color:var(--ok)} .dif.y{color:var(--warn)} .dif.r{color:var(--bad)}
-tfoot td{position:sticky;bottom:0;background:var(--bg3);border-top:2px solid var(--bd2);
-  padding:7px 8px;text-align:right;font-weight:800;font-size:13px}
-tfoot td.l{text-align:left}
-.ft{display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:10px 12px;background:var(--bg2);
-  border-top:1px solid var(--bd)}
-.msg{padding:7px 12px;font-size:12px;border-bottom:1px solid var(--bd);background:var(--warnbg);color:var(--warn)}
-kbd{background:var(--bg3);border:1px solid var(--bd2);border-bottom-width:2px;border-radius:5px;
-  padding:0 4px;font-size:10.5px;font-weight:700;color:var(--fg2)}
-.wrap::-webkit-scrollbar{width:9px;height:9px}
-.wrap::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:5px}
+.estado{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 13px;
+  font-size:.76rem;font-weight:700;letter-spacing:.01em;white-space:nowrap}
+.estado.d{background:var(--okbg);color:var(--ok)}
+.estado.p{background:var(--edbg);color:var(--ed)}
+.estado .pt{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.estado.p .pt{animation:lat 1.4s ease-in-out infinite}
+@keyframes lat{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* --------------------------------- tabla ----------------------------------- */
+.wrap{max-height:560px;min-height:120px;overflow:auto;overscroll-behavior:contain}
+table{width:100%;border-collapse:separate;border-spacing:0;
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+thead th{position:sticky;top:0;z-index:3;background:var(--bg);border-bottom:1.5px solid var(--line2);
+  padding:9px 7px;text-align:right;font-size:.66rem;font-weight:700;color:var(--mut);
+  text-transform:uppercase;letter-spacing:.07em;white-space:nowrap}
+thead th.l{text-align:left;padding-left:16px}
+thead th.res{background:var(--bg3)}
+tbody td{padding:0 7px;height:52px;border-bottom:1px solid var(--line);text-align:right;
+  white-space:nowrap;font-size:.95rem}
+tbody td.l{text-align:left;padding-left:16px}
+tbody td.res{background:var(--bg2)}
+thead th.res:first-of-type,tbody td.res:nth-last-child(4),tfoot td.res:nth-last-child(4){
+  border-left:1px solid var(--line2)}
+thead th.l,tbody td.l{min-width:150px;width:1%}
+tbody tr:hover td{background:var(--bg3)}
+tbody tr:hover td.res{background:var(--bg3);filter:brightness(.99)}
+.desp{font-weight:700;font-size:.95rem;line-height:1.2}
+.meta{color:var(--mut);font-size:.74rem;margin-top:2px;display:flex;align-items:center;gap:6px}
+.tag{display:inline-block;background:var(--edbg);color:var(--ed);border-radius:5px;
+  padding:0 6px;font-size:.66rem;font-weight:800;letter-spacing:.02em}
+
+/* celdas editables: sin bordes hasta que las tocás, y el cero apagado */
+.c{width:88px;height:38px;text-align:right;border:1.5px solid transparent;border-radius:9px;
+  padding:0 9px;background:transparent;font:inherit;font-size:.95rem;font-weight:600;
+  color:var(--ink);font-variant-numeric:tabular-nums;transition:border-color .1s,background .1s}
+.c::placeholder{color:var(--mut2);font-weight:400}
+.c:hover{border-color:var(--line2);background:var(--bg)}
+.c:focus{border-color:var(--brand);background:var(--bg);outline:none;
+  box-shadow:0 0 0 3.5px rgba(79,70,229,.14)}
+.c.dif{background:var(--edbg);color:var(--ed);font-weight:700}
+.c.ed{background:var(--edbg);color:var(--ed);font-weight:800;border-color:var(--ed)}
+.c.cero{color:var(--mut2);font-weight:400}
+
+.mez{font-weight:800;font-size:1rem;font-family:'Plus Jakarta Sans','Inter',sans-serif}
+.bal{color:var(--mut);font-size:.92rem}
+.chip{display:inline-block;border-radius:8px;padding:3px 8px;font-size:.83rem;font-weight:800;
+  min-width:64px;text-align:center;font-variant-numeric:tabular-nums}
+.chip.g{background:var(--okbg);color:var(--ok)}
+.chip.y{background:var(--warnbg);color:var(--warn)}
+.chip.r{background:var(--badbg);color:var(--bad)}
+.chip.n{color:var(--mut2)}
+
+.acc{display:flex;gap:4px;align-items:center;justify-content:flex-end;padding-right:10px}
+.ib{width:32px;height:32px;border-radius:9px;border:1px solid var(--line2);background:var(--bg);
+  cursor:pointer;font-size:.95rem;line-height:1;display:inline-flex;align-items:center;
+  justify-content:center;transition:.12s;color:var(--ink);padding:0}
+.ib:hover{border-color:var(--brand);background:var(--bg3);transform:translateY(-1px)}
+.ib:active{transform:translateY(0)}
+.ib:disabled{opacity:.3;cursor:not-allowed;transform:none}
+.ib.go{border-color:#c7cbf5;color:var(--brand);font-weight:700}
+
+tfoot td{position:sticky;bottom:0;background:var(--bg3);border-top:2px solid var(--line2);
+  padding:11px 7px;text-align:right;font-weight:800;font-size:.95rem}
+tfoot td.l{text-align:left;padding-left:16px;font-family:'Plus Jakarta Sans','Inter',sans-serif}
+tfoot td.res{background:var(--bg3)}
+
+/* ---------------------------------- pie ------------------------------------ */
+.ft{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:13px 18px;
+  background:var(--bg2);border-top:1px solid var(--line)}
+.btn{background:var(--bg);border:1px solid var(--line2);border-radius:12px;padding:9px 15px;
+  cursor:pointer;font-weight:600;font-size:.86rem;white-space:nowrap;min-height:42px;
+  font-family:inherit;color:var(--ink);transition:transform .12s,box-shadow .12s,border-color .12s}
+.btn:hover{transform:translateY(-1px);border-color:#c7cbf5;
+  box-shadow:0 6px 16px -8px rgba(79,70,229,.45)}
+.btn:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
+.btn.p{background:var(--grad);border:0;color:#fff;font-weight:700;
+  box-shadow:0 8px 20px -10px rgba(124,58,237,.7)}
+.btn.p:hover{filter:brightness(1.06)}
+.btn.p:disabled{background:var(--bg3);color:var(--mut);box-shadow:none;opacity:1;
+  border:1px solid var(--line2)}
+.ayuda{color:var(--mut);font-size:.76rem;line-height:1.7}
+kbd{background:var(--bg);border:1px solid var(--line2);border-bottom-width:2px;border-radius:5px;
+  padding:1px 5px;font-size:.7rem;font-family:inherit;font-weight:700;color:var(--mut)}
+.aviso{display:flex;gap:9px;align-items:flex-start;padding:11px 18px;font-size:.83rem;
+  background:var(--warnbg);color:var(--warn);border-bottom:1px solid var(--line);font-weight:500}
+.vacio{padding:34px;text-align:center;color:var(--mut2);font-size:.9rem}
+.wrap::-webkit-scrollbar{width:10px;height:10px}
+.wrap::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px;
+  border:2px solid var(--bg)}
+.wrap::-webkit-scrollbar-track{background:transparent}
+@media (max-width:1200px){ .ayuda{display:none} }
+@media (max-width:900px){ .c{width:72px} tbody td{height:48px} }
 </style>
 </head>
 <body>
@@ -109,8 +170,14 @@ function formulado(r, mp) { return (r.f && r.f[mp] !== undefined && r.f[mp] !== 
 function tocada(r, mp) { return S.ed.hasOwnProperty(K(r.id, mp)); }
 function mezcla(r) { var t = 0; S.mps.forEach(function (m) { t += val(r, m); }); return t; }
 function dif(r) { return mezcla(r) - num(r.bal); }
-function sem(r) { var b = num(r.bal); if (!(b > 0)) return "";
-  var p = Math.abs(dif(r)) / b * 100; return p <= 0.5 ? "g" : (p <= 2 ? "y" : "r"); }
+function tocadaFila(r) { for (var i = 0; i < S.mps.length; i++)
+  if (tocada(r, S.mps[i])) return true; return false; }
+function sem(r) {
+  var b = num(r.bal); if (!(b > 0)) return "n";
+  if (!r.aj && !tocadaFila(r)) return "n";      // todavía es el formulado: sin color
+  var p = Math.abs(dif(r)) / b * 100;
+  return p <= 0.3 ? "g" : (p <= 1.5 ? "y" : "r");
+}
 function nCambios() { var n = 0; for (var k in S.ed) n++; return n; }
 
 /* ------------------------------- persistencia ------------------------------- */
@@ -191,25 +258,29 @@ function filaHTML(r, i) {
   var tds = S.mps.map(function (mp) {
     var v = val(r, mp), fo = formulado(r, mp);
     var cls = tocada(r, mp) ? "ed" : (Math.abs(v - fo) > 0.005 ? "dif" : "");
+    if (!cls && v <= 0) cls = "cero";        // los ceros no compiten con los valores
     var ti = "Formulado: " + nf(fo) + " TN";
-    if (cls) ti += " · " + (cls === "ed" ? "editado sin guardar" : "kg reales ya guardados");
+    if (cls === "ed") ti += " · editado, sin guardar";
+    else if (cls === "dif") ti += " · kg reales ya guardados";
     return '<td><input class="c ' + cls + '" data-r="' + i + '" data-m="' + esc(mp) +
       '" value="' + (v > 0 ? nf(v) : "") + '" title="' + esc(ti) +
       '" inputmode="decimal" placeholder="0,00"></td>';
   }).join("");
   return '<tr data-r="' + i + '">' +
-    '<td class="l"><div class="nm">' + esc(r.desp) + '</div>' +
-      '<div class="mut">' + esc(r.fecha) + ' · ' + (r.cont || 0) + ' cont.' +
-      (r.aj ? ' · <b style="color:var(--ed)">kg reales</b>' : '') + '</div></td>' +
+    '<td class="l"><div class="desp">' + esc(r.desp) + '</div>' +
+      '<div class="meta">' + esc(r.fecha) + ' · ' + (r.cont || 0) + ' cont.' +
+      (r.aj ? ' <span class="tag">KG REALES</span>' : '') + '</div></td>' +
     tds +
-    '<td class="tot">' + nf(m) + '</td>' +
-    '<td class="mut" style="font-size:13px">' + (b > 0 ? nf(b) : "—") + '</td>' +
-    '<td class="dif ' + sm + '">' + (b > 0 ? (d >= 0 ? "+" : "") + nf(d) : "—") + '</td>' +
-    '<td class="l"><button class="btn sm" data-cerrar="' + i + '"' + (b > 0 ? "" : " disabled") +
-      ' title="Reparte la diferencia entre las materias primas para que el total dé ' +
-      'exactamente lo que pesó la balanza">⚖️ cerrar</button> ' +
-      '<button class="btn sm" data-rev="' + i + '" title="Vuelve esta fila a lo formulado">↩︎</button>' +
-    '</td></tr>';
+    '<td class="res mez">' + nf(m) + '</td>' +
+    '<td class="res bal">' + (b > 0 ? nf(b) : "—") + '</td>' +
+    '<td class="res"><span class="chip ' + sm + '">' +
+      (b > 0 ? (d >= 0 ? "+" : "") + nf(d) : "—") + '</span></td>' +
+    '<td class="res"><div class="acc">' +
+      '<button class="ib go" data-cerrar="' + i + '"' + (b > 0 ? "" : " disabled") +
+      ' title="Cerrar contra la balanza: reparte la diferencia entre las materias primas ' +
+      'para que el total dé exactamente los ' + nf(b) + ' TN que pesó portería">⚖</button>' +
+      '<button class="ib" data-rev="' + i + '" title="Volver esta fila a lo formulado">↩</button>' +
+    '</div></td></tr>';
 }
 function pieHTML() {
   var tm = S.mps.map(function (mp) { var t = 0;
@@ -217,42 +288,50 @@ function pieHTML() {
   var tot = tm.reduce(function (a, b) { return a + b; }, 0);
   var tb = 0; S.rows.forEach(function (r) { tb += num(r.bal); });
   var td = tot - tb;
+  var hay = S.rows.some(function (r) { return r.aj || tocadaFila(r); });
+  var scls = (tb > 0 && hay) ? (Math.abs(td) / tb * 100 <= 0.3 ? "g"
+                       : (Math.abs(td) / tb * 100 <= 1.5 ? "y" : "r")) : "n";
   return '<tr><td class="l">TOTAL SEMANA</td>' +
     tm.map(function (t) { return '<td>' + nf(t) + '</td>'; }).join("") +
-    '<td>' + nf(tot) + '</td><td>' + (tb > 0 ? nf(tb) : "—") + '</td>' +
-    '<td class="' + (tb > 0 ? "dif " + (Math.abs(td) / tb * 100 <= 0.5 ? "g" :
-      (Math.abs(td) / tb * 100 <= 2 ? "y" : "r")) : "") + '">' +
-      (tb > 0 ? (td >= 0 ? "+" : "") + nf(td) : "—") + '</td><td></td></tr>';
+    '<td class="res mez">' + nf(tot) + '</td>' +
+    '<td class="res bal">' + (tb > 0 ? nf(tb) : "—") + '</td>' +
+    '<td class="res"><span class="chip ' + scls + '">' +
+      (tb > 0 ? (td >= 0 ? "+" : "") + nf(td) : "—") + '</span></td>' +
+    '<td class="res"></td></tr>';
 }
 function draw() {
   var n = nCambios();
+  var ncols = S.mps.length + 5;
   document.getElementById("app").innerHTML =
    '<div class="card">' +
-    '<div class="hd"><h3>✏️ Kg reales por materia prima</h3>' +
-      '<span class="sub">' + esc(S.titulo) + ' · ' + S.rows.length + ' despacho(s) · ' +
-      'se edita al instante, <b>sin recargar</b>; nada se manda hasta que tocás Guardar</span>' +
+    '<div class="bar"><div><h3>Kg reales por materia prima</h3>' +
+      '<div class="sub">' + esc(S.titulo) + ' · ' + S.rows.length + ' despacho(s) · ' +
+      'se edita al instante, <b>sin recargar la página</b></div></div>' +
       '<span class="spacer"></span>' +
-      '<span class="pill ' + (n ? "p" : "d") + '">' +
-        (n ? n + " sin guardar" : "todo guardado") + '</span></div>' +
-    (S.nota ? '<div class="msg">⚠️ ' + esc(S.nota) + '</div>' : "") +
+      '<span class="estado ' + (n ? "p" : "d") + '"><span class="pt"></span>' +
+        (n ? n + (n === 1 ? " cambio sin guardar" : " cambios sin guardar") : "todo guardado") +
+      '</span></div>' +
+    (S.nota ? '<div class="aviso"><span>⚠️</span><span>' + esc(S.nota) + '</span></div>' : "") +
     '<div class="wrap"><table><thead><tr>' +
       '<th class="l">Despacho</th>' +
       S.mps.map(function (m) { return '<th>' + esc(m) + '</th>'; }).join("") +
-      '<th>Mezcla</th><th>Balanza</th><th>Dif.</th><th class="l">Acciones</th>' +
+      '<th class="res">Mezcla</th><th class="res">Balanza</th><th class="res">Dif.</th>' +
+      '<th class="res"></th>' +
       '</tr></thead><tbody>' +
       (S.rows.length ? S.rows.map(filaHTML).join("")
-        : '<tr><td colspan="9" style="padding:24px;text-align:center;color:var(--fg3)">' +
-          'No hay despachos en esta semana.</td></tr>') +
+        : '<tr><td colspan="' + ncols + '"><div class="vacio">No hay despachos en esta ' +
+          'semana.</div></td></tr>') +
       '</tbody><tfoot>' + pieHTML() + '</tfoot></table></div>' +
     '<div class="ft">' +
-      '<button class="btn p" id="b_save"' + (n ? "" : " disabled") + '>💾 Guardar ' +
-        (n ? "(" + n + ")" : "") + '</button>' +
-      '<button class="btn" id="b_cerrar_todo">⚖️ Cerrar todas contra balanza</button>' +
-      '<button class="btn" id="b_undo"' + (S.undo.length ? "" : " disabled") + '>↩︎ Deshacer</button>' +
-      '<button class="btn" id="b_desc"' + (n ? "" : " disabled") + '>🧹 Descartar cambios</button>' +
+      '<button class="btn p" id="b_save"' + (n ? "" : " disabled") + '>Guardar' +
+        (n ? " " + n + " cambio" + (n === 1 ? "" : "s") : "") + '</button>' +
+      '<button class="btn" id="b_cerrar_todo">⚖ Cerrar todas contra balanza</button>' +
+      '<button class="btn" id="b_undo"' + (S.undo.length ? "" : " disabled") + '>↩ Deshacer</button>' +
+      '<button class="btn" id="b_desc"' + (n ? "" : " disabled") + '>Descartar</button>' +
       '<span class="spacer"></span>' +
-      '<span class="mut"><kbd>Tab</kbd>/<kbd>Enter</kbd> siguiente · <kbd>↑</kbd><kbd>↓</kbd> ' +
-        'misma columna · <kbd>Esc</kbd> vuelve la celda a lo formulado · <kbd>Ctrl</kbd>+<kbd>Z</kbd>' +
+      '<span class="ayuda"><kbd>Tab</kbd> recorre la grilla · <kbd>↑</kbd><kbd>↓</kbd> ' +
+        'misma columna · <kbd>Esc</kbd> vuelve la celda a lo formulado · ' +
+        '<kbd>Ctrl</kbd>+<kbd>Z</kbd> deshacer · se puede pegar desde Excel' +
       '</span></div>' +
    '</div>';
   wire(); fit();
@@ -264,22 +343,28 @@ function paint() {
     var tds = tr.children, base = 1 + S.mps.length;
     var m = mezcla(r), d = dif(r), b = num(r.bal);
     tds[base].textContent = nf(m);
-    tds[base + 2].textContent = b > 0 ? (d >= 0 ? "+" : "") + nf(d) : "—";
-    tds[base + 2].className = "dif " + sem(r);
+    var ch = tds[base + 2].firstChild;
+    if (ch) { ch.textContent = b > 0 ? (d >= 0 ? "+" : "") + nf(d) : "—";
+              ch.className = "chip " + sem(r); }
     S.mps.forEach(function (mp, j) {
       var inp = tds[1 + j].firstChild; if (!inp) return;
       var v = val(r, mp), fo = formulado(r, mp);
-      inp.className = "c " + (tocada(r, mp) ? "ed" : (Math.abs(v - fo) > 0.005 ? "dif" : ""));
+      var cls = tocada(r, mp) ? "ed" : (Math.abs(v - fo) > 0.005 ? "dif" : "");
+      if (!cls && v <= 0) cls = "cero";
+      inp.className = "c " + cls;
       if (document.activeElement !== inp) inp.value = v > 0 ? nf(v) : "";
     });
   });
   var tf = document.querySelector("tfoot"); if (tf) tf.innerHTML = pieHTML();
   var n = nCambios();
-  var p = document.querySelector(".pill");
-  if (p) { p.className = "pill " + (n ? "p" : "d");
-           p.textContent = n ? n + " sin guardar" : "todo guardado"; }
+  var p = document.querySelector(".estado");
+  if (p) { p.className = "estado " + (n ? "p" : "d");
+           p.innerHTML = '<span class="pt"></span>' +
+             (n ? n + (n === 1 ? " cambio sin guardar" : " cambios sin guardar")
+                : "todo guardado"); }
   var bs = document.getElementById("b_save");
-  if (bs) { bs.disabled = !n; bs.textContent = "💾 Guardar " + (n ? "(" + n + ")" : ""); }
+  if (bs) { bs.disabled = !n;
+            bs.textContent = "Guardar" + (n ? " " + n + " cambio" + (n === 1 ? "" : "s") : ""); }
   var bd = document.getElementById("b_desc"); if (bd) bd.disabled = !n;
   var bu = document.getElementById("b_undo"); if (bu) bu.disabled = !S.undo.length;
 }
