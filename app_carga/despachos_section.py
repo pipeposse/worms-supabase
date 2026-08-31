@@ -16,6 +16,7 @@ render(USR, cat, conectar)
 """
 import io
 import json
+import threading as _threading
 import datetime as _dt
 
 import pandas as pd
@@ -60,6 +61,19 @@ _COLS_ED = _COLS_MIN + _COLS_LAB
 _PARAMS = (("Acidez %", "acidez"), ("Fósforo ppm", "fosforo"),
            ("Azufre ppm", "azufre"), ("AyS %", "agua_sedimento"))
 _NAN = float("nan")
+
+# Claves cortas del componente <-> columnas de la grilla.
+_OVK = (("ac", "Acidez %"), ("fos", "Fósforo ppm"), ("az", "Azufre ppm"), ("ays", "AyS %"))
+
+# El formulador propio (carpeta formulador/) reemplaza a los DOS st.data_editor
+# espejados que se desmontaban con cada edición. Si por lo que sea no carga, la
+# sección sigue funcionando con el modo clásico de siempre.
+try:
+    from formulador import formulador as _formulador, disponible as _form_ok, motivo as _form_msg
+except Exception as _e:            # pragma: no cover
+    _formulador = None
+    _form_ok = lambda: False
+    _form_msg = lambda _m=str(_e): _m
 
 
 def _base_vacia(cols):
@@ -445,6 +459,188 @@ def _lst_cb(ss=None, tks=None, conectar=None, USR=None, key=None):
             pass
     except Exception:
         pass    # ante cualquier duda: no romper el run; el commit post-render respalda
+
+
+def _jf(v, dec=None):
+    """float apto para JSON (nunca NaN: json.dumps lo escribe 'NaN' y el navegador
+    no lo puede parsear, así que la ficha del componente llegaría rota)."""
+    try:
+        if v is None or pd.isna(v):
+            return None
+        v = float(v)
+        return round(v, dec) if dec is not None else v
+    except Exception:
+        return None
+
+
+def _firma_full(df):
+    """Firma que incluye los pisados de laboratorio (la de _firma_lineas sólo mira
+    tanque y litros: sin esto, cambiar una acidez a mano no se guardaba)."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return ""
+    _p = []
+    for _, r in df.iterrows():
+        _t = str(r.get("Tanque") or "").strip()
+        if not _t:
+            continue
+        _q = []
+        for _kk, _col in _OVK:
+            _v = r.get(_col)
+            _q.append("" if _v is None or pd.isna(_v) else "%s%.4f" % (_kk, float(_v)))
+        try:
+            _l = float(r.get("Litros") or 0)
+        except Exception:
+            _l = 0.0
+        _p.append("%s=%.0f/%s" % (_t, _l, ",".join(_q)))
+    return "|".join(sorted(_p))
+
+
+def _lineas_a_payload(df, tks):
+    """DataFrame de líneas -> lista JSON para el componente."""
+    out = []
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return out
+    for _, r in df.iterrows():
+        _k = _clave_de(r.get("Tanque"), tks)
+        if not _k:
+            continue
+        try:
+            _l = float(r.get("Litros") or 0)
+        except Exception:
+            _l = 0.0
+        if _l <= 0:
+            continue
+        _ov = {}
+        for _kk, _col in _OVK:
+            _v = _jf(r.get(_col))
+            if _v is not None:
+                _ov[_kk] = _v
+        out.append({"k": _k, "l": round(_l, 0), "ov": _ov})
+    return out
+
+
+def _payload_a_lineas(lines):
+    """Lo que devuelve el componente -> DataFrame con las columnas de la grilla."""
+    filas = []
+    for _l in (lines or []):
+        try:
+            _lit = float(_l.get("l") or 0)
+        except Exception:
+            _lit = 0.0
+        if _lit <= 0 or not _l.get("k"):
+            continue
+        _ov = _l.get("ov") or {}
+        _f = {"Tanque": str(_l["k"]), "Litros": round(_lit, 0)}
+        for _kk, _col in _OVK:
+            _v = _ov.get(_kk)
+            _f[_col] = float(_v) if _v is not None else _NAN
+        filas.append(_f)
+    return (pd.DataFrame(filas).reindex(columns=_COLS_ED) if filas
+            else _base_vacia(_COLS_ED))
+
+
+def _selector_componente(ss, tp, fam, spec, tks, conectar, USR, inc_vacios,
+                         prod_cod, lit_obj, pisar, n_cont):
+    """Formulador en un solo componente propio (ver formulador/__init__.py).
+
+    Devuelve el DataFrame de líneas vigente, o None si el componente no está
+    disponible (ahí el armador cae solo al modo clásico de siempre).
+    """
+    if not _form_ok():
+        return None
+    cur = _lineas_actuales(ss, tks)
+    _sel = set(str(x or "").strip() for x in cur["Tanque"].fillna(""))
+
+    # Un tanque con stock medido puede quedar en 0 disponible por el fondo de tanque
+    # (10% en base plana) y por lo COMPROMETIDO en despachos confirmados. Se explica,
+    # no se lo hace desaparecer.
+    _fuera = []
+    if not inc_vacios:
+        _vis = ((tp["litros_actual"].fillna(0) > 0) | (tp["clave"].astype(str).isin(_sel)))
+        for _, _r0 in tp[~_vis].iterrows():
+            _br = float(_r0.get("litros_brutos") or 0)
+            if _br <= 0:
+                continue
+            _mot = []
+            if float(_r0.get("comprometido_l") or 0) > 0:
+                _mot.append("%s L comprometidos" % "{:,.0f}".format(float(_r0["comprometido_l"])))
+            if float(_r0.get("reserva_fondo") or 0) > 0:
+                _mot.append("%s L de fondo" % "{:,.0f}".format(float(_r0["reserva_fondo"])))
+            _fuera.append("**%s** (%s L medidos: %s)"
+                          % (_r0["nombre"], "{:,.0f}".format(_br),
+                             " y ".join(_mot) if _mot else "sin stock útil"))
+        _pool = tp[_vis].copy()
+    else:
+        _pool = tp.copy()
+    if _fuera:
+        st.info("🔒 **%d tanque(s) con stock medido no están disponibles:** %s. Si esos "
+                "despachos ya salieron, vinculá sus tickets en *Tickets de portería*; si no "
+                "van a salir, anulalos. Para usarlos igual, tildá *Permitir tanques vacíos o "
+                "con fondo* más arriba." % (len(_fuera), " · ".join(_fuera)))
+    if _pool.empty:
+        st.info("No hay tanques con stock para este producto.")
+        return _base_vacia(_COLS_ED)
+
+    _hoy = pd.Timestamp.now()
+    tanks = []
+    for _, r in _pool.iterrows():
+        _ld = None
+        try:
+            _t0 = pd.to_datetime(r.get("lab_actualizado_en"), errors="coerce")
+            if pd.notna(_t0):
+                if getattr(_t0, "tzinfo", None) is not None:
+                    _t0 = _t0.tz_localize(None)
+                _ld = int((_hoy - _t0).days)
+        except Exception:
+            _ld = None
+        tanks.append({
+            "k": str(r["clave"]),
+            "n": str(r["nombre"]),
+            "sec": str(r["sector"] or "—"),
+            "prod": str(r["producto_principal"] or "—"),
+            "px": 0 if str(r["sector"] or "").strip() in SECTORES_PRIORIDAD else 1,
+            "disp": _jf(r["litros_actual"], 0) or 0.0,
+            "med": _jf(r.get("litros_brutos"), 0),
+            "cap": _jf(r.get("capacidad_litros"), 0),
+            "comp": _jf(r.get("comprometido_l"), 0) or 0.0,
+            "dens": _jf(r.get("densidad"), 4) or 0.91,
+            "ac": _jf(r.get("acidez"), 3),
+            "fos": _jf(r.get("fosforo"), 2),
+            "az": _jf(r.get("azufre"), 2),
+            "ays": _jf(r.get("agua_sedimento"), 3),
+            "ldias": _ld,
+            "mp": bool(_es_base(r["producto_principal"], prod_cod)),
+        })
+
+    # el producto cambió -> la familia de tanques es otra: se fuerza sincronización
+    if ss.get("_dsp_prod_prev") != str(prod_cod):
+        ss["_dsp_prod_prev"] = str(prod_cod)
+        ss["dsp_rev"] = int(ss.get("dsp_rev") or 0) + 1
+
+    _rev = int(ss.get("dsp_rev") or 0)
+    st.caption("Tildá un tanque para meterlo con **todo lo disponible**, o escribí los litros. "
+               "Todo se recalcula al instante — litros, toneladas y los ponderados por kg "
+               "contra la spec — **sin recargar la página**. Atajos: `Enter`/`↑`/`↓` para "
+               "moverte, `Re Pág`/`Av Pág` ±500 L (con `Shift` ±5.000), `*` para el tope, "
+               "`Ctrl+Z` para deshacer.")
+    val = _formulador(tanks=tanks, lines=_lineas_a_payload(cur, tks), spec={
+                          "acidez": _jf(spec.get("acidez")), "ays": _jf(spec.get("ays")),
+                          "azufre": _jf(spec.get("azufre")), "fosforo": _jf(spec.get("fosforo"))},
+                      rev=_rev, objetivo=float(lit_obj or 0.0), tol=TOL_DESVIO,
+                      min_toma=MIN_TOMA_DESPACHO, min_tanque=MIN_L_DESPACHO,
+                      permitir_manual=bool(pisar), key="dsp_formulador")
+
+    if isinstance(val, dict) and int(val.get("rev", -1)) == _rev:
+        _new = _payload_a_lineas(val.get("lines"))
+        if _firma_full(_new) != _firma_full(cur):
+            # NO se toca dsp_rev: este cambio lo hizo el usuario en el propio
+            # componente, que ya lo tiene en pantalla. Pisarlo sería revertirlo.
+            ss["dsp_lineas"] = _new
+            ss["_dsp_last_ed"] = _new.copy()
+            ss["_dsp_lst_fir"] = None
+            _borr_guardar(conectar, USR, _new)
+            cur = _new
+    return cur
 
 
 def _selector_tanques(ss, tp, fam, spec, tks, conectar, USR, inc_vacios,
@@ -1893,7 +2089,37 @@ def verificacion_planta(USR, cat, conectar):
 _BORR_KEYS = ("dsp_titulo", "dsp_destino", "dsp_cliente", "dsp_prod", "dsp_tipo", "dsp_fecha",
               "dsp_ncont", "dsp_lcont", "dsp_spac", "dsp_spays", "dsp_spaz", "dsp_spfos",
               "dsp_lbase", "dsp_tolp", "dsp_incv", "dsp_pisar", "dsp_estado", "dsp_obs",
-              "dsp_motivo_desv", "dsp_exc_ms")
+              "dsp_motivo_desv", "dsp_exc_ms", "dsp_sec_dil")
+
+
+# El autosave del borrador corría DENTRO del render: conexión nueva a Supabase +
+# INSERT + commit (0,5-1 s) en CADA cambio de un input, y hasta tres veces por
+# rerun. Era la mitad del "toco algo y se cuelga". Ahora el render sólo deja el
+# payload en una cola de UNO por usuario y sigue; un hilo lo escribe atrás y se
+# queda siempre con el último (el borrador es un snapshot: los intermedios no
+# aportan nada). Si el hilo falla, la carga en pantalla no se entera.
+_BORR_LK = _threading.Lock()
+_BORR_Q = {}
+_BORR_RUN = set()
+
+
+def _borr_worker(conectar, uid):
+    while True:
+        with _BORR_LK:
+            payload = _BORR_Q.pop(uid, None)
+            if payload is None:
+                _BORR_RUN.discard(uid)
+                return
+        try:
+            with conectar(int(uid)) as (conn, _a):
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO produccion.despacho_borrador (id_usuario, payload, actualizado) "
+                        "VALUES (%s,%s::jsonb,now()) "
+                        "ON CONFLICT (id_usuario) DO UPDATE SET payload=EXCLUDED.payload, "
+                        "actualizado=now()", (int(uid), payload))
+        except Exception:
+            pass
 
 
 def _borr_guardar(conectar, USR, lineas_ed=None):
@@ -1919,13 +2145,15 @@ def _borr_guardar(conectar, USR, lineas_ed=None):
             return
         ss["_dsp_borr_last"] = payload
         ss["_dsp_borr_has"] = True
-        with conectar(int(USR["id_usuario"])) as (conn, _a):
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO produccion.despacho_borrador (id_usuario, payload, actualizado) "
-                    "VALUES (%s,%s::jsonb,now()) "
-                    "ON CONFLICT (id_usuario) DO UPDATE SET payload=EXCLUDED.payload, actualizado=now()",
-                    (int(USR["id_usuario"]), payload))
+        uid = int(USR["id_usuario"])
+        with _BORR_LK:
+            _BORR_Q[uid] = payload
+            arrancar = uid not in _BORR_RUN
+            if arrancar:
+                _BORR_RUN.add(uid)
+        if arrancar:
+            _threading.Thread(target=_borr_worker, args=(conectar, uid),
+                              daemon=True, name="dsp-borrador-%d" % uid).start()
     except Exception:
         pass
 
@@ -1939,6 +2167,12 @@ def _borr_restaurar(cat, USR):
     """
     ss = st.session_state
     try:
+        # Si YA hay campos vivos en pantalla no hay nada que restaurar: se sale ANTES
+        # de tocar la base. Esta consulta corría en cada rerun (una conexión nueva a
+        # Supabase por tecla) y era el otro medio segundo del "se cuelga al tipear".
+        if any(k in ss for k in _BORR_KEYS):
+            ss.setdefault("_dsp_borr_has", False)
+            return
         # SIEMPRE directo a la base, NUNCA por cat(): el cache de 5 minutos guardaba el
         # "no hay borrador" de la primera entrada, y al volver dentro de esa ventana la
         # restauración leía el vacío cacheado aunque el borrador existiera. Ese era el
@@ -1979,6 +2213,7 @@ def _borr_restaurar(cat, USR):
             ss["_dsp_last_ed"] = ss["dsp_lineas"].copy()
             ss["_dsp_lst_fir"] = None
             ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
+            ss["dsp_rev"] = int(ss.get("dsp_rev") or 0) + 1
         ss["_dsp_borr_ts"] = str(df.iloc[0]["ts"])
     except Exception:
         pass
@@ -2126,7 +2361,7 @@ def render(USR, cat, conectar):
     st.markdown(
         "<div style='background:linear-gradient(90deg,#0f766e,#0ea5e9);border-radius:14px;"
         "padding:16px 20px;margin:0 0 12px'>"
-        "<div style='color:#fff;font-size:1.4rem;font-weight:900'>🚢 Despachos</div>"
+        "<div style='color:#fff;font-size:1.4rem;font-weight:900'>🚢 Exportación</div>"
         "<div style='color:#e0f2fe;font-size:.88rem;margin-top:3px'>Armá la formulación de un despacho "
         "combinando tanques: los litros, la densidad y el laboratorio salen del sistema y se controla "
         "la especificación antes de confirmar.</div></div>", unsafe_allow_html=True)
@@ -2683,6 +2918,10 @@ def _lineas_set(ss, df):
     ss["_dsp_lst_fir"] = None      # la lista se rearma en ESTE rerun, no en el próximo click
     # grilla fresca: sin esto el data_editor arrastra ediciones viejas sobre datos nuevos
     ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
+    # rev: le avisa al formulador que ESTE cambio vino del servidor (Sugerir, Deshacer,
+    # propuesta, borrador…) y que tiene que pisar su estado local. El eco de lo que
+    # edita el usuario llega con la misma rev y se ignora, así nada se revierte.
+    ss["dsp_rev"] = int(ss.get("dsp_rev") or 0) + 1
 
 
 def _armar(USR, cat, conectar):
@@ -3180,6 +3419,54 @@ def _armar(USR, cat, conectar):
                 if n not in _limpio and any(str(v).startswith(n + " ·") for v in _viejo)]
     if _limpio != _viejo:
         ss["dsp_exc_ms"] = _limpio
+    # ---- de qué SECTOR sale el diluyente ----
+    # Mezclar AFE-S de dos plataformas es mover camiones entre sectores y eso cuesta.
+    # Acá se fija el sector (o los sectores) de donde puede salir el AFE-S; las
+    # MATERIAS PRIMAS siguen saliendo de donde estén, porque son pocos litros y no
+    # siempre hay de todas en el mismo lado.
+    _secs_dil = []
+    if _dils_f:
+        _updil = tks["producto_principal"].astype(str).str.strip().str.upper()
+        _dp = tks[_updil.isin(_dils_f) & (tks["litros_actual"].fillna(0) >= MIN_L_DESPACHO)]
+        if not _dp.empty:
+            _dsec = _dp.copy()
+            _dsec["_s"] = _dsec["sector"].fillna("—").astype(str)
+            _agg = _dsec.groupby("_s").agg(l=("litros_actual", "sum"),
+                                           n=("id_tanque", "count")).sort_values(
+                                               "l", ascending=False)
+            _opc_sec = [str(x) for x in _agg.index]
+            _lbl_sec = {str(i): "%s · %s L en %d tanque(s)"
+                        % (i, "{:,.0f}".format(float(r["l"])), int(r["n"]))
+                        for i, r in _agg.iterrows()}
+            # sanear elecciones viejas de un producto/stock que ya no existe
+            _sv = [x for x in (ss.get("dsp_sec_dil") or []) if x in _opc_sec]
+            if _sv != (ss.get("dsp_sec_dil") or []):
+                ss["dsp_sec_dil"] = _sv
+            sc1, sc2 = st.columns([2.6, 1.2])
+            _secs_dil = sc1.multiselect(
+                "📍 Sector del que sale el %s" % " / ".join(_dils_f), _opc_sec,
+                format_func=lambda x: _lbl_sec.get(x, x), key="dsp_sec_dil",
+                placeholder="todos los sectores (sin restricción)",
+                help="Limita la SUGERENCIA, las propuestas y el trade-off a los "
+                     "diluyentes de estos sectores. Sacar el AFE-S de un solo sector "
+                     "ahorra movimientos de camión entre plataformas; si con ese "
+                     "sector no cierra la spec o el volumen, el motor lo avisa y "
+                     "podés sumar otro. Las materias primas no se restringen.")
+            _dtot = float(_agg["l"].sum())
+            _dsel = float(_agg.loc[_agg.index.isin(_secs_dil), "l"].sum()) if _secs_dil else _dtot
+            sc2.metric("%s disponible" % _dils_f[0], "%s L" % "{:,.0f}".format(_dsel),
+                       ("%s L fuera del filtro" % "{:,.0f}".format(_dtot - _dsel))
+                       if _secs_dil else None,
+                       help="Suma de los tanques diluyentes usables (≥%s L) de los "
+                            "sectores elegidos. Comparalo con el objetivo del despacho."
+                            % "{:,.0f}".format(MIN_L_DESPACHO))
+            if _secs_dil and _dsel < float(lit_obj) * 0.5:
+                st.warning("📍 En %s hay **%s L** de %s usable y el despacho pide %s L. "
+                           "La sugerencia va a tener que meter mucha materia prima o no "
+                           "va a cerrar: sumá otro sector si hace falta."
+                           % (" + ".join(_secs_dil), "{:,.0f}".format(_dsel),
+                              " / ".join(_dils_f), "{:,.0f}".format(float(lit_obj))))
+
     ex1, ex2 = st.columns([2.6, 1.2])
     _exc = ex1.multiselect("🚫 Tanques excluidos de la sugerencia", _opc_exc,
                            key="dsp_exc_ms",
@@ -3187,6 +3474,11 @@ def _armar(USR, cat, conectar):
                                 "propuestas ni en el trade-off. Agregá el que quieras sacar "
                                 "y tocá Re-sugerir: la mezcla se rearma sin él.")
     tks_sug = tks[~tks["nombre"].astype(str).isin(set(_exc))] if _exc else tks
+    if _secs_dil:
+        _upS = tks_sug["producto_principal"].astype(str).str.strip().str.upper()
+        # los diluyentes SÓLO de los sectores elegidos; las MP, de donde estén
+        tks_sug = tks_sug[(~_upS.isin(_dils_f))
+                          | tks_sug["sector"].fillna("—").astype(str).isin(_secs_dil)]
     if ex2.button("🔁 Re-sugerir sin excluidos", use_container_width=True,
                   disabled=not _exc, key="dsp_exc_go",
                   help="Rearma la sugerencia ignorando los tanques excluidos, con los mismos "
@@ -3236,6 +3528,7 @@ def _armar(USR, cat, conectar):
             ss["_dsp_last_ed"] = _n.copy() if isinstance(_n, pd.DataFrame) else None
             ss["_dsp_lst_fir"] = None
             ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
+            ss["dsp_rev"] = int(ss.get("dsp_rev") or 0) + 1
             _rerun_frag()
     pisar = cc.checkbox("✏️ Pisar valores de laboratorio a mano", key="dsp_pisar",
                         help="Sólo si el lab te pasó un valor que todavía no está en el sistema. "
@@ -3311,83 +3604,127 @@ def _armar(USR, cat, conectar):
                            "valor — si la elegís, el panel de Cumplimiento no debería marcar "
                            "ningún desvío.")
 
-    _selector_tanques(ss, _tp, _fam, spec, tks, conectar, USR, _inc_vacios,
-                      prod_cod=prod_cod, lit_obj=lit_obj)
-
     _cols = _COLS_ED if pisar else _COLS_MIN
 
-    base = ss.get("dsp_lineas")
-    if base is None or not isinstance(base, pd.DataFrame):
-        base = _base_vacia(_COLS_ED)
-    base = _normalizar_lineas(base, tks)   # líneas viejas (borrador/sesión) -> clave estable
-    base = base.reindex(columns=_cols)
-    base["Tanque"] = base["Tanque"].astype("object")
-    for _c in _cols[1:]:
-        base[_c] = pd.to_numeric(base[_c], errors="coerce")
-    # columnas informativas (solo lectura): disponible y último lab del tanque elegido
-    base = _info_lineas(base, tks, spec)
-    base = base.reindex(columns=["Tanque", "Litros", "Disp.", "Calidad"]
-                        + [c for c in _cols if c not in ("Tanque", "Litros")])
+    # ---------- selección + litros: UN solo componente ----------
+    # Antes había dos st.data_editor espejados sobre dsp_lineas. st.data_editor
+    # calcula su identidad hasheando LOS DATOS que recibe, así que cada edición en
+    # uno cambiaba los datos del otro, Streamlit lo trataba como widget nuevo y lo
+    # DESMONTABA: se perdía el foco, el scroll y lo tipeado entre el click y el
+    # redibujo ("toco un tanque y se reinicia / no se guarda lo que puse").
+    # El componente propio lleva `key`, y con key Streamlit fija su identidad en
+    # component_name+url+key: el iframe NO se vuelve a montar aunque cambien todos
+    # sus argumentos. Además calcula todo en el navegador y manda al servidor una
+    # sola vez, después de ~400 ms sin tocar nada.
+    ed = None
+    if _form_ok() and not ss.get("dsp_modo_clasico"):
+        try:
+            ed = _selector_componente(ss, _tp, _fam, spec, tks, conectar, USR,
+                                      _inc_vacios, prod_cod, lit_obj, pisar, n_cont)
+        except Exception as _e:
+            ed = None
+            st.warning("El formulador nuevo falló (%s): se usa el modo clásico." % _e)
+    if ed is not None:
+        if not pisar:                     # sin "pisar", los valores de lab salen del tanque
+            ed = ed.copy()
+            for _c in _COLS_LAB:
+                ed[_c] = _NAN
+        ed = ed.reindex(columns=list(_COLS_ED))
+        _cl, _cr = st.columns([1.1, 4.9])
+        if _cl.button("🧱 Modo clásico", key="dsp_go_clasico", use_container_width=True,
+                      help="Vuelve a la tabla vieja de Streamlit (más lenta) por si algo del "
+                           "formulador nuevo no funciona en tu navegador."):
+            ss["dsp_modo_clasico"] = True
+            _rerun_frag()
+        _cr.caption("Lo que tildás y los litros que escribís **son** la carga: alimentan el "
+                    "panel de Cumplimiento, la planilla y el guardado. *Sugerir*, *Deshacer* y "
+                    "las propuestas siguen funcionando igual y se ven acá arriba al instante.")
+    if ed is None:
+        if ss.get("dsp_modo_clasico"):
+            _cl, _cr = st.columns([1.3, 4.7])
+            if _cl.button("⚡ Volver al formulador", key="dsp_go_nuevo",
+                          use_container_width=True):
+                ss["dsp_modo_clasico"] = False
+                ss["dsp_rev"] = int(ss.get("dsp_rev") or 0) + 1
+                _rerun_frag()
+            _cr.caption("Estás en el modo clásico: cada cambio vuelve al servidor y la tabla "
+                        "se redibuja entera.")
+        _selector_tanques(ss, _tp, _fam, spec, tks, conectar, USR, _inc_vacios,
+                          prod_cod=prod_cod, lit_obj=lit_obj)
 
-    # Opciones ESTABLES: TODAS las claves de la familia, SIEMPRE, y cacheadas por
-    # sesión. Si la lista cambiara con el stock (una medición nueva movía tanques
-    # entre "usables" y "fondo"), Streamlit ve columnas distintas, trata al editor
-    # como un widget NUEVO y descarta todo lo cargado ("actualicé la medida y se
-    # borró todo"). El orden es por calidad (mejor primero, AG-E adelante).
-    _oq = _orden_opciones(_tp, _fam, spec)
-    _okey = "dsp_opts_%s" % str(prod_cod or "")
-    if not ss.get(_okey) or set(ss[_okey]) != set(_oq):
-        ss[_okey] = _oq
-    _o = ss[_okey]
-    _cfg = {
-        "Tanque": st.column_config.SelectboxColumn("Tanque", options=_o, width="large", required=True,
-                                                   help="Tanques con " + " / ".join(_fam) + "."),
-        "Litros": st.column_config.NumberColumn("Litros a cargar", min_value=0.0, step=500.0,
-                                                format="%.0f"),
-        "Disp.": st.column_config.NumberColumn("Disp. (L)", format="%.0f", disabled=True,
-                                               help="Disponible AHORA del tanque elegido (ya "
-                                                    "descontado fondo y comprometidos)."),
-        "Calidad": st.column_config.TextColumn("Calidad (último lab)", disabled=True,
-                                               help="Semáforo contra la spec del despacho."),
-    }
-    if pisar:
-        _cfg.update({
-            "Acidez %": st.column_config.NumberColumn("Acidez % (pisar)", format="%.2f",
-                                                      help="Vacío = usa el último lab del tanque."),
-            "Fósforo ppm": st.column_config.NumberColumn("Fósforo ppm (pisar)", format="%.1f"),
-            "Azufre ppm": st.column_config.NumberColumn("Azufre ppm (pisar)", format="%.1f"),
-            "AyS %": st.column_config.NumberColumn("AyS % (pisar)", format="%.2f"),
-        })
-    _edk = ("dsp_ed_p%d" if pisar else "dsp_ed%d") % int(ss.get("dsp_ed_nonce") or 0)
-    ed = st.data_editor(base, num_rows="dynamic", hide_index=True, use_container_width=True,
-                        key=_edk, column_config=_cfg)
-    st.caption("Elegí el tanque y los litros. Producto, densidad, acidez, fósforo, azufre y AyS "
-               "se completan solos con el último análisis del tanque.")
-    # OJO: lo editado NO se re-inyecta como input del editor (eso hacía que los valores
-    # tipeados se revirtieran y hubiera que tipear varias veces). El borrador se guarda
-    # directo desde `ed`, y dsp_lineas sólo cambia por acciones (Sugerir, Deshacer, etc.).
-    ed = ed.reindex(columns=list(_cols) + ["Disp.", "Calidad"])
-    _borr_guardar(conectar, USR, ed.reindex(columns=_cols))  # autosave sin columnas informativas
-    ss["_dsp_last_ed"] = ed.reindex(columns=_cols).copy()    # para el selector de tarjetas
-    # La LISTA de arriba ya se dibujó en este run: si acá cambiaron litros o filas se
-    # resincroniza AHORA con un rerun programático. Antes quedaba desfasada y se
-    # rearmaba recién con el próximo click del usuario, comiéndose esa edición.
-    if ss.get("_dsp_lst_on"):
-        _f_low = _firma_lineas(_lineas_actuales(ss, tks))
-        if ss.get("_dsp_lst_fir") is not None and ss.get("_dsp_lst_fir") != _f_low:
-            ss["_dsp_lst_fir"] = None
-            _rerun_frag()
-    # Si cambió un TANQUE o la cantidad de filas, dsp_lineas toma lo editado y se
-    # redibuja UNA vez: así Disp. y Calidad reflejan el tanque nuevo. Lo tipeado se
-    # conserva porque viene de `ed` (esto no es el espejo continuo que revertía valores).
-    try:
-        _tq_ed = [str(x or "").strip() for x in ed["Tanque"].fillna("")]
-        _tq_ba = [str(x or "").strip() for x in base["Tanque"].fillna("")]
-        if _tq_ed != _tq_ba:
-            _lineas_set(ss, ed.reindex(columns=_cols))
-            _rerun_frag()
-    except Exception:
-        pass
+
+        base = ss.get("dsp_lineas")
+        if base is None or not isinstance(base, pd.DataFrame):
+            base = _base_vacia(_COLS_ED)
+        base = _normalizar_lineas(base, tks)   # líneas viejas (borrador/sesión) -> clave estable
+        base = base.reindex(columns=_cols)
+        base["Tanque"] = base["Tanque"].astype("object")
+        for _c in _cols[1:]:
+            base[_c] = pd.to_numeric(base[_c], errors="coerce")
+        # columnas informativas (solo lectura): disponible y último lab del tanque elegido
+        base = _info_lineas(base, tks, spec)
+        base = base.reindex(columns=["Tanque", "Litros", "Disp.", "Calidad"]
+                            + [c for c in _cols if c not in ("Tanque", "Litros")])
+
+        # Opciones ESTABLES: TODAS las claves de la familia, SIEMPRE, y cacheadas por
+        # sesión. Si la lista cambiara con el stock (una medición nueva movía tanques
+        # entre "usables" y "fondo"), Streamlit ve columnas distintas, trata al editor
+        # como un widget NUEVO y descarta todo lo cargado ("actualicé la medida y se
+        # borró todo"). El orden es por calidad (mejor primero, AG-E adelante).
+        _oq = _orden_opciones(_tp, _fam, spec)
+        _okey = "dsp_opts_%s" % str(prod_cod or "")
+        if not ss.get(_okey) or set(ss[_okey]) != set(_oq):
+            ss[_okey] = _oq
+        _o = ss[_okey]
+        _cfg = {
+            "Tanque": st.column_config.SelectboxColumn("Tanque", options=_o, width="large", required=True,
+                                                       help="Tanques con " + " / ".join(_fam) + "."),
+            "Litros": st.column_config.NumberColumn("Litros a cargar", min_value=0.0, step=500.0,
+                                                    format="%.0f"),
+            "Disp.": st.column_config.NumberColumn("Disp. (L)", format="%.0f", disabled=True,
+                                                   help="Disponible AHORA del tanque elegido (ya "
+                                                        "descontado fondo y comprometidos)."),
+            "Calidad": st.column_config.TextColumn("Calidad (último lab)", disabled=True,
+                                                   help="Semáforo contra la spec del despacho."),
+        }
+        if pisar:
+            _cfg.update({
+                "Acidez %": st.column_config.NumberColumn("Acidez % (pisar)", format="%.2f",
+                                                          help="Vacío = usa el último lab del tanque."),
+                "Fósforo ppm": st.column_config.NumberColumn("Fósforo ppm (pisar)", format="%.1f"),
+                "Azufre ppm": st.column_config.NumberColumn("Azufre ppm (pisar)", format="%.1f"),
+                "AyS %": st.column_config.NumberColumn("AyS % (pisar)", format="%.2f"),
+            })
+        _edk = ("dsp_ed_p%d" if pisar else "dsp_ed%d") % int(ss.get("dsp_ed_nonce") or 0)
+        ed = st.data_editor(base, num_rows="dynamic", hide_index=True, use_container_width=True,
+                            key=_edk, column_config=_cfg)
+        st.caption("Elegí el tanque y los litros. Producto, densidad, acidez, fósforo, azufre y AyS "
+                   "se completan solos con el último análisis del tanque.")
+        # OJO: lo editado NO se re-inyecta como input del editor (eso hacía que los valores
+        # tipeados se revirtieran y hubiera que tipear varias veces). El borrador se guarda
+        # directo desde `ed`, y dsp_lineas sólo cambia por acciones (Sugerir, Deshacer, etc.).
+        ed = ed.reindex(columns=list(_cols) + ["Disp.", "Calidad"])
+        _borr_guardar(conectar, USR, ed.reindex(columns=_cols))  # autosave sin columnas informativas
+        ss["_dsp_last_ed"] = ed.reindex(columns=_cols).copy()    # para el selector de tarjetas
+        # La LISTA de arriba ya se dibujó en este run: si acá cambiaron litros o filas se
+        # resincroniza AHORA con un rerun programático. Antes quedaba desfasada y se
+        # rearmaba recién con el próximo click del usuario, comiéndose esa edición.
+        if ss.get("_dsp_lst_on"):
+            _f_low = _firma_lineas(_lineas_actuales(ss, tks))
+            if ss.get("_dsp_lst_fir") is not None and ss.get("_dsp_lst_fir") != _f_low:
+                ss["_dsp_lst_fir"] = None
+                _rerun_frag()
+        # Si cambió un TANQUE o la cantidad de filas, dsp_lineas toma lo editado y se
+        # redibuja UNA vez: así Disp. y Calidad reflejan el tanque nuevo. Lo tipeado se
+        # conserva porque viene de `ed` (esto no es el espejo continuo que revertía valores).
+        try:
+            _tq_ed = [str(x or "").strip() for x in ed["Tanque"].fillna("")]
+            _tq_ba = [str(x or "").strip() for x in base["Tanque"].fillna("")]
+            if _tq_ed != _tq_ba:
+                _lineas_set(ss, ed.reindex(columns=_cols))
+                _rerun_frag()
+        except Exception:
+            pass
 
     res = _resolver(ed, tks, prod_cod)
     # Una línea con 0 litros simplemente NO cuenta (el resolvedor la ignora). Si no queda
@@ -3525,6 +3862,20 @@ def _armar(USR, cat, conectar):
         avisos.append("Sin análisis completo de laboratorio: " +
                       ", ".join(_sin["Tanque"].astype(str).tolist()) +
                       " — el promedio ponderado ignora esa masa y puede quedar optimista.")
+    try:
+        _secs_carga = sorted(set(str(x or "—") for x in res["Sector"].fillna("—")))
+        if len(_secs_carga) > 1:
+            _det_s = " · ".join(
+                "%s: %s L" % (_s, "{:,.0f}".format(
+                    float(res[res["Sector"].fillna("—").astype(str) == _s]["Litros"].sum())))
+                for _s in _secs_carga)
+            avisos.append("🚚 **La carga toma de %d sectores** (%s). Cada sector extra es "
+                          "mover camiones entre plataformas: si podés, cerrala con los "
+                          "tanques de un solo sector — el filtro *Sector del que sale el "
+                          "AFE-S* de arriba arma la sugerencia así."
+                          % (len(_secs_carga), _det_s))
+    except Exception:
+        pass
     _multi = res["Producto"].dropna().unique().tolist()
     if len(_multi) > 1:
         _fuera = [p for p in _multi if str(p).strip().upper() not in _fam]
@@ -3779,6 +4130,105 @@ def _listado(USR, cat, conectar):
         _rerun_frag()
 
     r = df[df["id_despacho"] == sel].iloc[0]
+
+    # ---- Renombrar: el booking definitivo suele llegar despues (remanentes "A DEFINIR") ----
+    _rn1, _rn2 = st.columns([3, 1])
+    _tit_now = str(r["titulo"] or "")
+    _tit_ed = _rn1.text_input("✏️ Booking / título de la orden", value=_tit_now,
+                              key="dsp_ren_%d" % int(sel),
+                              help="Cuando el cliente confirme el booking definitivo, "
+                                   "escribilo acá y guardá. Vale para cualquier orden.")
+    _rn2.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+    if _rn2.button("Guardar nombre", key="dsp_ren_go", use_container_width=True,
+                   disabled=((_tit_ed or "").strip() in ("", _tit_now))):
+        try:
+            with conectar(USR["id_usuario"]) as (conn, _a):
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE produccion.fact_despacho SET titulo=%s, "
+                                "actualizado_en=now() WHERE id_despacho=%s",
+                                ((_tit_ed or "").strip(), int(sel)))
+                _a.log("RENOMBRAR", "fact_despacho", int(sel),
+                       {"titulo_anterior": _tit_now, "titulo_nuevo": (_tit_ed or "").strip()})
+            cat.clear()
+            st.success("Orden #%d renombrada: %s → %s" % (int(sel), _tit_now or "—",
+                                                          (_tit_ed or "").strip()))
+            _rerun_frag()
+        except Exception as e:
+            st.error("No se pudo renombrar: %s" % e)
+
+    # ---- Cierre parcial: se cargo menos de lo pedido y el resto sale otro dia ----
+    _ncont = int(float(r["n_contenedores"])) if pd.notna(r["n_contenedores"]) else 0
+    _ntk = int(r["n_tk"]) if pd.notna(r["n_tk"]) else 0
+    if str(r["estado"]) == "CONFIRMADO" and 0 < _ntk < _ncont:
+        _rem = _ncont - _ntk
+        with st.expander("🔀 Cierre parcial — se cargaron %d de %d contenedores" % (_ntk, _ncont)):
+            st.caption("Cierra ESTA orden en lo realmente cargado (%d contenedores, pasa a "
+                       "DESPACHADO con sus tickets) y crea OTRA orden con los %d restantes "
+                       "para otra fecha. Como el remanente suele salir con otro booking, la "
+                       "orden nueva nace como *A DEFINIR* y el nombre final se pone después "
+                       "con ✏️ Renombrar (acá arriba)." % (_ntk, _rem))
+            _cp1, _cp2 = st.columns(2)
+            _f_nva = _cp1.date_input("Fecha de la nueva orden",
+                                     value=_dt.date.today() + _dt.timedelta(days=1),
+                                     key="dsp_cp_f")
+            _t_nva = _cp2.text_input("Booking de la nueva orden (si ya lo sabés)", value="",
+                                     key="dsp_cp_t", placeholder="vacío → A DEFINIR")
+            if st.button("🔀 Cerrar esta orden y crear la del remanente (%d cont.)" % _rem,
+                         key="dsp_cp_go", type="primary"):
+                try:
+                    _tit_nva = ((_t_nva or "").strip()
+                                or "A DEFINIR — remanente %s" % (_tit_now or "#%d" % int(sel)))
+                    _f_orig = str(r["fecha_despacho"])[:10]
+                    with conectar(USR["id_usuario"]) as (conn, _a):
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT destino, cliente, producto_codigo, tipo_carga, "
+                                "litros_por_contenedor, spec_acidez_max, spec_ays_max, "
+                                "spec_azufre_max, spec_fosforo_max "
+                                "FROM produccion.fact_despacho WHERE id_despacho=%s", (int(sel),))
+                            _c = cur.fetchone()
+                            cur.execute(
+                                "UPDATE produccion.fact_despacho SET n_contenedores=%s, "
+                                "estado='DESPACHADO', actualizado_en=now(), "
+                                "observaciones=trim(coalesce(observaciones,'') || %s) "
+                                "WHERE id_despacho=%s",
+                                (_ntk,
+                                 " Orden original de %d contenedores; se cargaron %d. Los %d "
+                                 "restantes pasan a la orden '%s' del %s (cierre parcial)."
+                                 % (_ncont, _ntk, _rem, _tit_nva, _f_nva.strftime("%d/%m/%Y")),
+                                 int(sel)))
+                            cur.execute(
+                                "INSERT INTO produccion.fact_despacho "
+                                "(titulo, destino, cliente, producto_codigo, tipo_carga, "
+                                " fecha_despacho, semana_iso, anio, n_contenedores, "
+                                " litros_por_contenedor, spec_acidez_max, spec_ays_max, "
+                                " spec_azufre_max, spec_fosforo_max, estado, observaciones, "
+                                " creado_por) "
+                                "VALUES (%s,%s,%s,%s,%s,%s, "
+                                " EXTRACT(week FROM %s::date)::int, "
+                                " EXTRACT(isoyear FROM %s::date)::int, "
+                                " %s,%s,%s,%s,%s,%s,'CONFIRMADO',%s,%s) RETURNING id_despacho",
+                                (_tit_nva, _c[0], _c[1], _c[2], _c[3],
+                                 _f_nva, _f_nva, _f_nva, _rem, _c[4], _c[5], _c[6], _c[7], _c[8],
+                                 "Remanente de la orden '%s' (#%d) del %s: %d de los %d "
+                                 "contenedores originales. Booking definitivo pendiente si "
+                                 "figura A DEFINIR." % (_tit_now, int(sel), _f_orig, _rem, _ncont),
+                                 USR.get("nombre")))
+                            _idn = int(cur.fetchone()[0])
+                        _a.log("CIERRE_PARCIAL", "fact_despacho", int(sel),
+                               {"cerrada_en": _ntk, "remanente": _rem,
+                                "nueva_orden": _idn, "titulo_nuevo": _tit_nva})
+                    cat.clear()
+                    st.success("✅ Orden #%d cerrada en %d contenedores (DESPACHADO). Nueva "
+                               "orden #%d «%s» para el %s con %d contenedores. La formulación "
+                               "de la nueva se arma en el armador cuando toque; el booking "
+                               "final se pone con ✏️ Renombrar."
+                               % (int(sel), _ntk, _idn, _tit_nva,
+                                  _f_nva.strftime("%d/%m/%Y"), _rem))
+                    _rerun_frag()
+                except Exception as e:
+                    st.error("No se pudo hacer el cierre parcial: %s" % e)
+
     c1, c2, c3 = st.columns([1.2, 1, 2])
     _nuevo = c1.selectbox("Cambiar estado", ESTADOS, index=ESTADOS.index(r["estado"]), key="dsp_est_up")
     if c2.button("Aplicar", use_container_width=True):
