@@ -32,6 +32,11 @@ SECTORES_PRIORIDAD = ("Plataforma 1 (BPV)", "Plataforma 2 (BPN)", "Exportación"
 MIN_BASE_POR_CONT = 1000.0  # regla de dirección: mínimo de MATERIAS PRIMAS por contenedor.
                             # Con N contenedores, la mezcla lleva al menos N × 1.000 L de MP
                             # (regla heredada del AG-E, hoy aplicada al total de MP).
+MP_TRAMO_CALIDAD = 1.0      # las MP se ordenan por calidad EN TRAMOS de este ancho (suma
+                            # de los 4 parámetros relativos a la spec); dentro del tramo
+                            # manda el SECTOR de los diluyentes elegidos y después el stock.
+                            # Sin tramos, el sector nunca desempataba y las MP arrastraban
+                            # la carga a 4-5 sectores aunque el AFE-S saliera de uno solo.
 MIN_TOMA_DESPACHO = 3000.0  # mínimo de litros que vale la pena sacar de un tanque en una
                             # carga: menos es desperdicio operativo (regla de dirección).
                             # Única excepción: la última toma que CIERRA el objetivo.
@@ -1093,6 +1098,31 @@ TOL_DESVIO = 0.10   # hasta 10% por encima de la spec se permite, con alarma y r
 _AIRE_SPEC = 0.001  # colchón de construcción de la mezcla (0,1%): ver _cumple
 
 
+def _panel_specs_calc(res: pd.DataFrame, spec: dict):
+    """Mismo cálculo que _panel_specs pero SIN dibujar: (ok, desvios).
+
+    Lo usa la vista de Reglas, que chequea la carga sin volver a pintar el panel."""
+    filas = [("Acidez %", "Acidez %", spec.get("acidez")),
+             ("AyS %", "AyS %", spec.get("ays")),
+             ("Azufre ppm", "Azufre ppm", spec.get("azufre")),
+             ("Fósforo ppm", "Fósforo ppm", spec.get("fosforo"))]
+    ok_total, desvios = True, []
+    for titulo, col, lim in filas:
+        val, _cob = _ponderar(res, col)
+        if val is None or not lim:
+            continue
+        lim = float(lim)
+        if val <= lim:
+            continue
+        _exc = 100.0 * (val - lim) / lim
+        _d = {"param": titulo, "valor": float(val), "limite": lim, "exceso": _exc}
+        if val > lim * (1.0 + TOL_DESVIO):
+            _d["grave"] = True
+            ok_total = False
+        desvios.append(_d)
+    return ok_total, desvios
+
+
 def _panel_specs(res: pd.DataFrame, spec: dict):
     """Tarjetas de cumplimiento. Devuelve (ok, desvios).
 
@@ -1196,8 +1226,253 @@ def _estructura(res, prod_cod, prods=None):
 
 # ------------------------------------------------------------------ sugerencia de mezcla
 
+# ============================================================================
+# REGLAS DE LA FORMULACIÓN — FUENTE ÚNICA
+# ----------------------------------------------------------------------------
+# Todo lo que el motor de sugerencia y los controles dan por sabido vive acá, en
+# UN solo lugar, con la constante real del código al lado (no una copia en prosa
+# que se desactualiza). La vista "📏 Reglas" las muestra y, cuando hay una carga
+# armada, las chequea contra ella.
+#
+# Cada regla: id · titulo · regla (qué se hace) · porque (por qué se hace) ·
+#             valor (constante viva) · donde (dónde se aplica en el código) ·
+#             check (opcional: (ctx) -> (estado, detalle); estado ok|warn|bad|na)
+# ============================================================================
+
+def _r_fmt(v, d=0):
+    try:
+        return ("{:,.%df}" % d).format(float(v))
+    except Exception:
+        return str(v)
+
+
+def _chk_min_mp(c):
+    if not c.get("formulado"):
+        return ("na", "Sólo aplica a los despachos formulados (AG-E).")
+    piso = MIN_BASE_POR_CONT * float(c["n_cont"])
+    real = float(c["mp_l"])
+    if real + 0.5 >= piso:
+        return ("ok", "%s L de materias primas para %d contenedores (pide %s L)."
+                % (_r_fmt(real), int(c["n_cont"]), _r_fmt(piso)))
+    return ("bad", "Faltan %s L: hay %s L de MP y la regla pide %s L (%s L × %d "
+                   "contenedores)." % (_r_fmt(piso - real), _r_fmt(real), _r_fmt(piso),
+                                       _r_fmt(MIN_BASE_POR_CONT), int(c["n_cont"])))
+
+
+def _chk_toma_min(c):
+    ch = c.get("tomas_chicas") or []
+    if not ch:
+        return ("ok", "Ninguna toma por debajo de %s L." % _r_fmt(MIN_TOMA_DESPACHO))
+    return ("warn", "Tomas chicas: %s. Se permite sólo si es la que cierra el objetivo; "
+                    "si no, conviene repartir esos litros en un tanque ya abierto."
+            % " · ".join("%s (%s L)" % (t, _r_fmt(l)) for t, l in ch))
+
+
+def _chk_spec(c):
+    d = c.get("desvios") or []
+    if not d:
+        return ("ok", "Todos los parámetros dentro de la especificación.")
+    peor = max(x["exceso"] for x in d)
+    if peor <= TOL_DESVIO * 100:
+        return ("warn", "Desvío TOLERADO (≤%.0f%%): %s. Se puede confirmar; queda "
+                        "registrado con usuario y fecha."
+                % (TOL_DESVIO * 100,
+                   " · ".join("%s +%.1f%%" % (x["param"], x["exceso"]) for x in d)))
+    return ("bad", "Fuera de tolerancia: %s. Pide motivo obligatorio y lo ve dirección."
+            % " · ".join("%s +%.1f%%" % (x["param"], x["exceso"]) for x in d))
+
+
+def _chk_sin_lab(c):
+    pct = float(c.get("sinlab_pct") or 0.0)
+    if pct <= 0.01:
+        return ("ok", "Toda la masa de la carga tiene análisis de laboratorio.")
+    if pct < 10:
+        return ("warn", "%.1f%% de la masa sin análisis completo (%s). Los promedios de "
+                        "arriba ignoran esa masa." % (pct, ", ".join(c.get("sinlab") or [])))
+    return ("bad", "%.1f%% de la masa sin análisis completo (%s). Los promedios ponderados "
+                   "IGNORAN esa masa: el cumplimiento que ves puede ser optimista. Pedí el "
+                   "análisis antes de confirmar." % (pct, ", ".join(c.get("sinlab") or [])))
+
+
+def _chk_sectores(c):
+    s = c.get("sec_carga") or []
+    if len(s) <= 1:
+        return ("ok", "Toda la carga sale de %s." % (s[0] if s else "un solo sector"))
+    sd = c.get("sec_dil") or []
+    if len(sd) <= 1:
+        return ("warn", "El AFE-S sale de un solo sector (%s), pero las materias primas "
+                        "suman otros: %s." % (sd[0] if sd else "—", " · ".join(s)))
+    return ("warn", "La carga toca %d sectores (%s). Cada sector extra es mover camiones "
+                    "entre plataformas: probá 🗺️ *Comparar de dónde sacar el AFE-S*."
+            % (len(s), " · ".join(s)))
+
+
+def _chk_stock(c):
+    ex = c.get("excede") or []
+    if not ex:
+        return ("ok", "Ningún tanque pide más litros de los que tiene disponibles.")
+    return ("bad", "Piden más de lo disponible: %s. Se puede guardar igual (el stock a "
+                   "veces está viejo) y queda constancia de medido vs cargado en la línea."
+            % " · ".join(ex))
+
+
+REGLAS = (
+    dict(id="R1", grupo="Qué se mezcla", titulo="La formulación es MP + AFE",
+         regla="Un despacho de AG-E se arma con MATERIAS PRIMAS (%s y cualquier ARE) "
+               "diluidas con AFE — casi siempre AFE-S. El AG-E crudo y el AFE-SG NO entran."
+               % ", ".join(MP_DESPACHO),
+         porque="Las MP son lo más barato de la carga y solas están fuera de spec; el "
+                "AFE-S es lo más caro y es el que las lleva a especificación. El AFE-SG "
+                "tiene goma y arruina la carga.",
+         valor=lambda: "excluidos: %s" % ", ".join(EXCLUIDOS_DESPACHO),
+         donde="FORMULADOS / MP_DESPACHO / EXCLUIDOS_DESPACHO · _estructura()"),
+    dict(id="R2", grupo="Qué se mezcla", titulo="Mínimo de materias primas por contenedor",
+         regla="Al menos %s L de MP por contenedor. Con N contenedores, la mezcla lleva "
+               "como mínimo N × %s L." % (_r_fmt(MIN_BASE_POR_CONT), _r_fmt(MIN_BASE_POR_CONT)),
+         porque="Regla de dirección heredada del AG-E, hoy aplicada al total de MP: sin un "
+                "piso de MP el despacho se convierte en AFE-S puro, que es lo caro y lo "
+                "que escasea.",
+         excepcion="Si con el piso completo la spec NO cierra y con menos MP sí, gana la "
+                   "spec: la sugerencia baja la MP y lo avisa para validarlo con dirección.",
+         valor=lambda: "MIN_BASE_POR_CONT = %s L" % _r_fmt(MIN_BASE_POR_CONT),
+         donde="_sugerir() (piso lb_min) · panel 'Regla de formulación'",
+         check=_chk_min_mp),
+    dict(id="R3", grupo="Cuánto se puede sacar", titulo="Fondo de tanque",
+         regla="En BASE PLANA sólo se puede usar el 90% de la capacidad: el 10% queda "
+               "siempre como fondo. Los CÓNICOS se usan al 100%.",
+         porque="El fondo es borra y sedimento decantado: si entra a la mezcla arruina la "
+                "calidad de toda la carga.",
+         valor=lambda: "reserva = 10% de la capacidad (0% en cónicos)",
+         donde="_tanques() → reserva_fondo / litros_actual"),
+    dict(id="R4", grupo="Cuánto se puede sacar", titulo="Piso de stock para entrar",
+         regla="Un tanque con menos de %s L no se ofrece ni se sugiere." % _r_fmt(MIN_L_DESPACHO),
+         porque="Menos que eso es fondo de tanque. Se puede habilitar a mano con "
+                "'Permitir tanques vacíos o con fondo' cuando el stock está desactualizado.",
+         valor=lambda: "MIN_L_DESPACHO = %s L" % _r_fmt(MIN_L_DESPACHO),
+         donde="_sugerir() (min_l) · selector de tanques"),
+    dict(id="R5", grupo="Cuánto se puede sacar", titulo="Mínimo por toma",
+         regla="De un tanque se sacan al menos %s L. La única excepción es la toma que "
+               "CIERRA el objetivo." % _r_fmt(MIN_TOMA_DESPACHO),
+         porque="Abrir un tanque para sacarle 500 L es una maniobra que no paga: mangueras, "
+                "bomba y un operario por nada.",
+         valor=lambda: "MIN_TOMA_DESPACHO = %s L" % _r_fmt(MIN_TOMA_DESPACHO),
+         donde="_sugerir() → _armar_mezcla / _relleno / _diluir / _base_lineas",
+         check=_chk_toma_min),
+    dict(id="R6", grupo="Cómo se calcula", titulo="Los promedios se ponderan por KG",
+         regla="Acidez, AyS, azufre y fósforo se promedian ponderando por KILOS, nunca por "
+               "litros. kg = litros × densidad del tanque.",
+         porque="Son fracciones másicas (% y ppm). Ponderar por litros mezcla densidades "
+                "distintas (AFE-S 0,89 vs AG-E 0,92) y da un resultado sesgado — a favor, "
+                "que es lo peligroso.",
+         valor=lambda: "kg = litros × densidad",
+         donde="_ponderar() · _panel_specs() · _cumple() dentro de _sugerir()"),
+    dict(id="R7", grupo="Cómo se calcula", titulo="Sólo se pondera la masa MEDIDA",
+         regla="Un tanque sin análisis no entra al promedio: su masa se descuenta del "
+               "denominador y el panel muestra qué porcentaje de la masa quedó afuera.",
+         porque="No se puede promediar lo que no se midió. El efecto colateral es que meter "
+                "tanques sin lab BAJA los promedios declarados sin que nadie sepa qué hay "
+                "adentro — por eso existe R12.",
+         valor=lambda: "cobertura = % de kg con ese parámetro medido",
+         donde="_ponderar() (devuelve valor y cobertura)"),
+    dict(id="R8", grupo="Especificación", titulo="Tolerancia de desvío",
+         regla="Se admite hasta %.0f%% por encima de cada máximo de la spec. Por encima de "
+               "eso el guardado pide MOTIVO obligatorio." % (TOL_DESVIO * 100),
+         porque="El margen es una decisión de negocio (colocar AFE-S C+D, meter más MP), no "
+                "un error: por eso se permite, se alarma, y queda registrado con usuario, "
+                "fecha y motivo para que dirección lo vea en Control y confirmación.",
+         valor=lambda: "TOL_DESVIO = %.0f%%" % (TOL_DESVIO * 100),
+         donde="TOL_DESVIO · _panel_specs() · guardado con fact_despacho_desvio",
+         check=_chk_spec),
+    dict(id="R9", grupo="Especificación", titulo="Colchón de construcción",
+         regla="La sugerencia construye contra el %.1f%% por DEBAJO del límite y redondea "
+               "los litros hacia abajo." % (_AIRE_SPEC * 100),
+         porque="Sin ese aire, el redondeo de litros deja mezclas en 150,0001 sobre un tope "
+                "de 150 y el panel las marcaría como desvío por nada.",
+         valor=lambda: "_AIRE_SPEC = %.1f%%" % (_AIRE_SPEC * 100),
+         donde="_cumple() dentro de _sugerir()"),
+    dict(id="R10", grupo="Bandas de calidad", titulo="A / B / C / D",
+         regla="La banda de un tanque es su PEOR parámetro relativo a la spec del despacho: "
+               "A ≤ 0,80 · B ≤ 0,90 · C ≤ 1,00 · D > 1,00. Sin análisis: '—'.",
+         porque="Mismo idioma y mismos umbrales que el Balance, para que un tanque sea 'B' "
+                "en toda la plataforma y no una cosa distinta en cada pantalla.",
+         valor=lambda: "A≤0,80 · B≤0,90 · C≤1,00 · D>1,00",
+         donde="_banda_tk() · BANDA_EMOJI"),
+    dict(id="R11", grupo="Cómo elige el motor", titulo="Máximo de materias primas",
+         regla="Con 'Litros de MP' en 0 la sugerencia busca por bisección la MAYOR cantidad "
+               "de MP que la spec todavía tolera.",
+         porque="Cada litro de MP que entra es un litro de AFE-S caro que no se gasta.",
+         excepcion="Al máximo de MP no queda margen para colocar AFE-S C+D: las dos cosas "
+                   "compiten por el MISMO margen de spec. Para verlo con números está "
+                   "🔀 Trade-off y las 3 propuestas.",
+         valor=lambda: "bisección de 30 pasos sobre los litros de MP",
+         donde="_sugerir(maximizar=True) · _tradeoff() · _propuestas()"),
+    dict(id="R12", grupo="Cómo elige el motor", titulo="No formular a ciegas",
+         regla="Los tanques SIN análisis completo son el último recurso: la sugerencia se "
+               "arma primero sólo con tanques analizados y únicamente si así no cierra el "
+               "volumen vuelve a intentar con los demás, avisando.",
+         porque="Un tanque sin lab no mejora la mezcla: la esconde (ver R7). Antes el motor "
+                "encima los PREFERÍA — sin datos su score valía 0,90, mejor que un C real. "
+                "Medido en banco de pruebas: cargas con 38% de la masa sin analizar "
+                "declarando acidez 5,44 sobre 5,0, cuando si esos tanques hubieran sido los "
+                "peores del parque la mezcla real daba 9,4.",
+         valor=lambda: "masa sin lab en el banco: 11,8% → 0%",
+         donde="_sugerir() FASE 0 · columna _nolab en el orden de diluyentes",
+         check=_chk_sin_lab),
+    dict(id="R13", grupo="Cómo elige el motor", titulo="Mínimos sectores de AFE-S",
+         regla="🗺️ *Comparar de dónde sacar el AFE-S* prueba cada sector solo, después los "
+               "pares y después todo el parque, y muestra sólo las variantes que CIERRAN "
+               "volumen y spec, ordenadas de menos a más sectores.",
+         porque="Cada sector extra que toca un despacho es mover camiones entre plataformas "
+                "y eso se paga todos los días. En el banco el motor tocaba 3 a 5 sectores "
+                "de AFE-S en cargas que cerraban con uno o dos.",
+         excepcion="Concentrar el AFE-S suele hacer entrar MENOS materia prima (queda menos "
+                   "AFE-S bueno para diluir): ~35% menos en el banco. Por eso la tabla "
+                   "muestra los dos números y elegís vos, no el algoritmo.",
+         valor=lambda: "MP ordenada por calidad en tramos de %.1f y después por sector"
+                       % MP_TRAMO_CALIDAD,
+         donde="_opciones_sector() · _filtrar_sectores() · sec_pref en _sugerir()",
+         check=_chk_sectores),
+    dict(id="R14", grupo="Cómo elige el motor", titulo="El AFE-S malo se gasta primero",
+         regla="Los diluyentes se recorren de PEOR a mejor calidad y a cada tanque C/D se "
+               "le toma, por bisección, el máximo de litros que deja el resto todavía "
+               "cerrable con los buenos que quedan libres.",
+         porque="El AFE-S A y B escasea y hay que reservarlo para los próximos despachos; "
+                "el C y D hay que colocarlo. Cargando primero los mejores hasta que la "
+                "spec cerraba, los C y D no entraban nunca.",
+         valor=lambda: "bisección de 22 pasos por tanque",
+         donde="_sugerir() → _diluir() (orden d_peor)"),
+    dict(id="R15", grupo="Cómo elige el motor", titulo="Sectores prioritarios",
+         regla="Se intenta cerrar primero SIN los sectores fuera de %s. Sólo si así no "
+               "cierra se abre el parque completo." % " / ".join(SECTORES_PRIORIDAD),
+         porque="Regla de dirección: los tanques X son último recurso, incluso a costa de "
+                "meter menos materia prima.",
+         valor=lambda: "SECTORES_PRIORIDAD = %s" % ", ".join(SECTORES_PRIORIDAD),
+         donde="_sugerir() FASE 1"),
+    dict(id="R16", grupo="Stock", titulo="Lo comprometido no está disponible",
+         regla="Un despacho CONFIRMADO compromete el 100% de sus líneas hasta que TODOS sus "
+               "contenedores pesaron en portería. Ese stock se descuenta del disponible.",
+         porque="Portería no informa de qué tanque cargó cada camión, así que no se puede "
+                "liberar de a partes sin arriesgar vender dos veces el mismo producto.",
+         valor=lambda: "vw_despacho_comprometido",
+         donde="_comprometidos() · _tanques() → comprometido_l"),
+    dict(id="R17", grupo="Stock", titulo="No se puede pedir más de lo que hay",
+         regla="Si una línea pide más litros de los disponibles se avisa, y se puede guardar "
+               "igual: queda constancia en la línea de lo medido contra lo cargado.",
+         porque="El stock del sistema a veces está desactualizado y la carga real manda; "
+                "pero tiene que quedar auditable.",
+         valor=lambda: "constancia en fact_despacho_linea",
+         donde="_resolver() → Excede · avisos del armador",
+         check=_chk_stock),
+)
+
+REGLAS_GRUPOS = ("Qué se mezcla", "Cuánto se puede sacar", "Cómo se calcula",
+                 "Especificación", "Bandas de calidad", "Cómo elige el motor", "Stock")
+_REG_ICO = {"ok": "🟢", "warn": "🟡", "bad": "🔴", "na": "⚪"}
+
+
 def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar=False,
-             min_l=MIN_L_DESPACHO, tol=0.0, lb_min=0.0, _dos_fases=True):
+             min_l=MIN_L_DESPACHO, tol=0.0, lb_min=0.0, _dos_fases=True, _con_lab=True,
+             sec_pref=None):
     """Propone la carga respetando la formulación: primero las materias primas, después el AFE.
 
     Dos palancas compiten por el MISMO margen de spec y no se pueden maximizar a la vez:
@@ -1222,6 +1497,36 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     fam = _familia(prod_cod, prods)
     formulado = len(fam) > 1
     base_cod = "MP" if formulado else fam[0]   # etiqueta para los mensajes
+    _aviso_ciego = None
+
+    # FASE 0 — NO FORMULAR A CIEGAS. Un tanque sin análisis completo no mejora la mezcla:
+    # la esconde. _cumple pondera sólo la masa MEDIDA, así que meter un tanque sin lab
+    # BAJA los promedios declarados sin que nadie sepa qué hay adentro — y el motor,
+    # encima, lo prefería (su score sin datos valía 0,90, mejor que un C real). Medido
+    # en el banco: cargas con 38% de la masa sin analizar declarando acidez 5,44/5,0
+    # cuando, si esos tanques fueran los peores del parque, la mezcla real daba 9,4.
+    # Por eso se intenta PRIMERO sin ellos y sólo se los usa si sin ellos no cierra.
+    if _con_lab and not tks.empty:
+        try:
+            _ciego = tks.apply(lambda r: len(_faltan_lab(r)) > 0, axis=1)
+        except Exception:
+            _ciego = None
+        if _ciego is not None and bool(_ciego.any()) and bool((~_ciego).any()):
+            _r0, _m0 = _sugerir(tks[~_ciego], prod_cod, litros_obj, spec, prods, l_base,
+                                maximizar, min_l, tol, lb_min, _dos_fases, _con_lab=False,
+                                sec_pref=sec_pref)
+            if not _r0.empty:
+                try:
+                    _s0 = _stats_sug(_r0, tks, spec, fam, tol)
+                    if _s0["ok"] and _s0["total"] >= float(litros_obj) - 1.0:
+                        return _r0, _m0
+                except Exception:
+                    pass
+            _ln = float(tks[_ciego]["litros_actual"].fillna(0).sum())
+            _aviso_ciego = ("con los tanques ANALIZADOS no alcanza, así que entran tanques "
+                            "SIN laboratorio completo (%s L disponibles): los promedios de "
+                            "abajo ignoran esa masa y pueden quedar optimistas — pedí el "
+                            "análisis antes de confirmar" % "{:,.0f}".format(_ln))
 
     # FASE 1: intentar cerrar SIN los sectores no prioritarios (tanques X y demás).
     # Regla de dirección: los X son último recurso — incluso maximizar la base se
@@ -1235,7 +1540,8 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         _tks2 = tks[_keep]
         if len(_tks2) < len(tks) and not _tks2.empty:
             _r2, _m2 = _sugerir(_tks2, prod_cod, litros_obj, spec, prods, l_base,
-                                maximizar, min_l, tol, lb_min, _dos_fases=False)
+                                maximizar, min_l, tol, lb_min, _dos_fases=False,
+                                sec_pref=sec_pref)
             if not _r2.empty:
                 try:
                     _st2 = _stats_sug(_r2, tks, spec, fam, tol)
@@ -1272,14 +1578,18 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         d["_sec"] = d["sector"].astype(str).str.strip().apply(
             lambda x: SECTORES_PRIORIDAD.index(x) if x in SECTORES_PRIORIDAD else 9)
         d["_x"] = (d["_sec"] >= 9).astype(int)   # 1 = fuera de los sectores prioritarios
+        # Sin análisis completo = ÚLTIMO recurso en los DOS órdenes. En "d" (relleno con
+        # los mejores) porque no se sabe si es bueno; en "d_peor" (gasto de lo malo)
+        # porque si no, un tanque sin datos se gastaría primero, que es justo al revés.
+        d["_nolab"] = d.apply(lambda r: 1 if len(_faltan_lab(r)) > 0 else 0, axis=1)
         # d = orden del ORÁCULO y del relleno: calidad primero (si no, el oráculo llena
         # con tanques de fósforo alto, concluye "no cierra" y termina abriendo tanques X).
         # Los X van al final también acá: sólo entran si sin ellos la mezcla no cierra.
-        d = d.sort_values(["_pref", "_x", "score", "litros_actual"],
-                          ascending=[True, True, True, False])
+        d = d.sort_values(["_pref", "_x", "_nolab", "score", "litros_actual"],
+                          ascending=[True, True, True, True, False])
         # d_peor = orden del GASTO de C+D: prioridad completa de sectores.
-        d_peor = d.sort_values(["_pref", "_x", "_sec", "score", "litros_actual"],
-                               ascending=[True, True, True, False, False])
+        d_peor = d.sort_values(["_pref", "_x", "_nolab", "_sec", "score", "litros_actual"],
+                               ascending=[True, True, True, True, False, False])
 
     # Tanques de MATERIAS PRIMAS: TODOS los que tienen stock útil. Desde el cambio de
     # formulación (AG-E afuera) la "base" es el conjunto de MP — AFE-M, AG-A/B/C,
@@ -1309,7 +1619,18 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
                         rr.append(float(r[c]) / float(lim))
                 return sum(rr) if rr else 990.0
             _bok["_bsc"] = _bok.apply(_bsum, axis=1)
-            _bok = _bok.sort_values(["_bsc", "_d"], ascending=[True, False])
+            # Dentro de un TRAMO de calidad parecida gana la MP que está en el mismo
+            # sector que los diluyentes elegidos: mismo margen de spec quemado, un
+            # camión menos cruzando la planta. Sin esto la carga terminaba tocando 5
+            # sectores aunque el AFE-S saliera de uno solo.
+            _bok["_tr"] = (_bok["_bsc"] / float(MP_TRAMO_CALIDAD)).round(0)
+            if sec_pref:
+                _bok["_sp"] = (~_bok["sector"].fillna("—").astype(str)
+                               .isin(list(sec_pref))).astype(int)
+            else:
+                _bok["_sp"] = 0
+            _bok = _bok.sort_values(["_tr", "_sp", "_bsc", "_d"],
+                                    ascending=[True, True, True, False])
             bpool = [(r, float(r["_d"])) for _, r in _bok.iterrows()]
         else:
             # sin stock medido: el tanque de formulación (se llena al armar la carga);
@@ -1320,12 +1641,19 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         hay = sum(_dsp for _, _dsp in bpool)
 
     def _base_lineas(lb):
-        """Reparte lb litros de base entre los tanques del pool, de mayor a menor stock."""
+        """Reparte lb litros de MP entre los tanques del pool (bpool ya viene ordenado
+        por CALIDAD y, a igual calidad, por stock).
+
+        Mismo piso por tanque que los diluyentes: abrir un tanque para sacarle 300 L es
+        una maniobra que no paga. La excepción es la toma que CIERRA el reparto."""
         out, resto = [], float(lb)
-        for _rbase, _disp in bpool:
+        for _i, (_rbase, _disp) in enumerate(bpool):
             if resto <= 0.5:
                 break
             _t = min(_disp, resto) if _disp > 0 else resto
+            _ultimo = (_i == len(bpool) - 1) or (_t >= resto - 0.5)
+            if _t < MIN_TOMA_DESPACHO and not _ultimo:
+                continue
             if _t > 0.5:
                 out.append((_rbase, _t))
                 resto -= _t
@@ -1543,6 +1871,169 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     if notas:
         msg += " Ojo: " + "; ".join(notas) + "."
     return pd.DataFrame(out), msg
+
+
+def _sectores_dil(tks, fam, min_l=MIN_L_DESPACHO):
+    """Sectores con diluyentes usables y cuántos litros hay en cada uno (mayor primero)."""
+    _d = _dils_de(fam)
+    if not _d or tks is None or tks.empty:
+        return []
+    up = tks["producto_principal"].astype(str).str.strip().str.upper()
+    p = tks[up.isin(_d) & (tks["litros_actual"].fillna(0) >= min_l)]
+    if p.empty:
+        return []
+    g = (p.assign(_s=p["sector"].fillna("—").astype(str))
+          .groupby("_s")["litros_actual"].sum().sort_values(ascending=False))
+    return [(str(k), float(v)) for k, v in g.items()]
+
+
+def _filtrar_sectores(tks, fam, sectores):
+    """Deja los diluyentes SÓLO de esos sectores; las materias primas, de donde estén."""
+    _d = _dils_de(fam)
+    if not sectores or not _d:
+        return tks
+    up = tks["producto_principal"].astype(str).str.strip().str.upper()
+    return tks[(~up.isin(_d))
+               | tks["sector"].fillna("—").astype(str).isin(list(sectores))]
+
+
+def _elegir_sectores(tks, prod_cod, litros_obj, spec, prods=None, l_base=None,
+                     maximizar=False, tol=0.0, lb_min=0.0, max_sectores=2):
+    """Busca el MÍNIMO de sectores de AFE-S con el que la carga todavía cierra.
+
+    Cada sector extra que toca un despacho es mover camiones entre plataformas, y eso
+    cuesta plata todos los días. El motor no lo miraba: ordenaba por sector pero armaba
+    con lo que fuera, y en el banco terminaba tocando 4 de 5 sectores en cargas que
+    cerraban perfecto con uno o dos.
+
+    Prueba primero cada sector solo (el de más stock primero), después de a pares, y se
+    queda con la PRIMERA combinación que cierra volumen Y especificación. Si ninguna
+    cierra, devuelve [] = sin restricción (el comportamiento de siempre).
+
+    Devuelve (sectores_elegidos, detalle) donde detalle es la lista de
+    (sectores_probados, cerró, litros, motivo) para poder mostrar por qué.
+    """
+    fam = _familia(prod_cod, prods)
+    if len(fam) < 2:
+        return [], []
+    secs = _sectores_dil(tks, fam)
+    if len(secs) <= 1:
+        return [], []
+    nombres = [n for n, _ in secs]
+    detalle = []
+
+    def _prueba(combo):
+        _t = _filtrar_sectores(tks, fam, combo)
+        try:
+            _r, _m = _sugerir(_t, prod_cod, litros_obj, spec, prods, l_base, maximizar,
+                              MIN_L_DESPACHO, tol, lb_min, _dos_fases=False,
+                              sec_pref=(combo or None))
+        except Exception:
+            return None
+        if _r.empty:
+            detalle.append((combo, False, 0.0, "no se pudo armar"))
+            return None
+        try:
+            _s = _stats_sug(_r, tks, spec, fam, tol)
+        except Exception:
+            return None
+        _cierra = bool(_s["ok"]) and _s["total"] >= float(litros_obj) - 1.0
+        detalle.append((combo, _cierra, float(_s["total"]),
+                        "" if _cierra else ("faltan %s L" % "{:,.0f}".format(
+                            float(litros_obj) - _s["total"])
+                            if _s["total"] < float(litros_obj) - 1.0 else "no cierra la spec")))
+        return _r if _cierra else None
+
+    for n in nombres:                       # 1 solo sector, el de más stock primero
+        if _prueba([n]) is not None:
+            return [n], detalle
+    if max_sectores >= 2:                   # de a dos, empezando por los de más stock
+        vistos = 0
+        for i in range(len(nombres)):
+            for j in range(i + 1, len(nombres)):
+                if vistos >= 6:             # tope de intentos: esto corre en un click
+                    break
+                vistos += 1
+                if _prueba([nombres[i], nombres[j]]) is not None:
+                    return [nombres[i], nombres[j]], detalle
+    return [], detalle
+
+
+def _opciones_sector(tks, prod_cod, litros_obj, spec, prods=None, l_base=None,
+                     maximizar=False, tol=0.0, lb_min=0.0, tope_pares=6):
+    """Compara de dónde sacar el AFE-S: cada sector solo, los pares, y todo el parque.
+
+    Concentrar el AFE-S en un sector ahorra camiones entre plataformas, pero con menos
+    AFE-S bueno para diluir suele entrar MENOS materia prima, que es lo barato. Los dos
+    efectos son reales y tiran para lados opuestos, así que esto NO elige por el usuario:
+    corre las variantes y devuelve los números de cada una para decidir mirando.
+
+    Medido en el banco (12 parques, objetivo 364.000 L): sin restricción el motor tocaba
+    3-5 sectores de AFE-S; con la mínima combinación que cierra, 1 sector en la mitad de
+    los casos y 2 en el resto, con 4,4x más AFE-S C+D colocado y ~35% menos de MP.
+
+    Devuelve una lista de dicts {sectores, etiqueta, df, st, n_sec} ordenada por cantidad
+    de sectores; sólo entran las variantes que CIERRAN volumen y especificación.
+    """
+    fam = _familia(prod_cod, prods)
+    if len(fam) < 2:
+        return []
+    secs = _sectores_dil(tks, fam)
+    if not secs:
+        return []
+    nombres = [n for n, _ in secs]
+    disp = dict(secs)
+    vistos, out = set(), []
+
+    def _correr(combo, etiqueta, n_sec):
+        _key = tuple(sorted(combo)) if combo else ("*",)
+        if _key in vistos:
+            return
+        vistos.add(_key)
+        _t = _filtrar_sectores(tks, fam, combo) if combo else tks
+        try:
+            _r, _m = _sugerir(_t, prod_cod, litros_obj, spec, prods, l_base, maximizar,
+                              MIN_L_DESPACHO, tol, lb_min, _dos_fases=False,
+                              sec_pref=(combo or None))
+            if _r.empty:
+                return
+            _s = _stats_sug(_r, tks, spec, fam, tol)
+        except Exception:
+            return
+        if not (_s["ok"] and _s["total"] >= float(litros_obj) - 1.0):
+            return
+        # sectores REALES de la carga armada (las MP pueden venir de otro lado)
+        try:
+            _mm = _r[["Tanque"]].merge(tks[["clave", "sector"]], left_on="Tanque",
+                                       right_on="clave", how="left")
+            _sc_carga = sorted(set(str(x or "—") for x in _mm["sector"].fillna("—")))
+        except Exception:
+            _sc_carga = []
+        out.append({"sectores": list(combo), "etiqueta": etiqueta, "df": _r, "st": _s,
+                    "n_sec": n_sec, "sec_carga": _sc_carga, "msg": _m})
+
+    for n in nombres:
+        _correr([n], n, 1)
+    _p = 0
+    for i in range(len(nombres)):
+        for j in range(i + 1, len(nombres)):
+            if _p >= tope_pares:
+                break
+            _p += 1
+            _correr([nombres[i], nombres[j]],
+                    "%s + %s" % (nombres[i], nombres[j]), 2)
+    _correr([], "Todo el parque (sin restricción)", 99)
+    # Se ordena por los sectores REALES de la carga armada (las materias primas pueden
+    # sumar sectores por su cuenta): ese es el número que se paga en camiones. A igual
+    # cantidad de sectores gana la que mete más materia prima, que es lo barato.
+    # "Todo el parque" queda SIEMPRE al final, como línea de base para comparar.
+    out.sort(key=lambda o: (1 if not o["sectores"] else 0,
+                            len(o["sec_carga"]) or o["n_sec"],
+                            -float(o["st"]["lb"])))
+    for o in out:
+        o["disp"] = sum(disp.get(x, 0.0) for x in o["sectores"]) if o["sectores"] else \
+            sum(disp.values())
+    return out
 
 
 def _stats_sug(sug, tks, spec, fam, tol):
@@ -2373,7 +2864,7 @@ def render(USR, cat, conectar):
     ss = st.session_state
     _opts = ["🧪 Armar / editar orden de venta", "📝 Borradores", "🔬 Control y confirmación",
              "🎟️ Tickets de portería", "📋 Despachos cargados", "📊 Análisis",
-             "⬇️ Semanal (Excel/PNG)", "🔎 Baja de stock"]
+             "⬇️ Semanal (Excel/PNG)", "🔎 Baja de stock", "📏 Reglas"]
     # "Modificar en el armador" pide cambiar de vista: va vía dsp_tab_next porque el estado de
     # un widget ya instanciado no se puede pisar dentro del mismo run.
     _nx = ss.pop("dsp_tab_next", None)
@@ -2393,7 +2884,9 @@ def render(USR, cat, conectar):
     _t = _t or _opts[0]
     st.write("")
 
-    if _t.startswith("📝"):
+    if _t.startswith("📏"):
+        _reglas(USR, cat, conectar)
+    elif _t.startswith("📝"):
         _borradores(USR, cat, conectar)
     elif _t.startswith("🔎"):
         _monitor_baja(USR, cat, conectar)
@@ -2417,6 +2910,163 @@ def render(USR, cat, conectar):
     else:
         # el armador corre en su PROPIO fragmento: editar adentro no redibuja la página
         _armar_frag(USR, cat, conectar)
+
+
+def _ctx_reglas(res, spec, n_cont, desvios=None, formulado=True):
+    """Contexto para los chequeos de REGLAS a partir de la carga resuelta."""
+    ctx = {"formulado": bool(formulado), "n_cont": int(n_cont or 1),
+           "desvios": list(desvios or []), "vacio": True}
+    if res is None or not isinstance(res, pd.DataFrame) or res.empty:
+        return ctx
+    ctx["vacio"] = False
+    ctx["mp_l"] = float(res[res["Rol"] == "BASE"]["Litros"].fillna(0).sum())
+    ctx["total_l"] = float(res["Litros"].fillna(0).sum())
+    ctx["tomas_chicas"] = [(str(r["Tanque"]), float(r["Litros"]))
+                           for _, r in res.iterrows()
+                           if float(r["Litros"] or 0) < MIN_TOMA_DESPACHO]
+    _sin = res[res[["Acidez %", "Fósforo ppm", "Azufre ppm", "AyS %"]].isna().any(axis=1)]
+    _kt = float(res["kg"].sum()) or 1.0
+    ctx["sinlab"] = [str(x) for x in _sin["Tanque"]]
+    ctx["sinlab_pct"] = 100.0 * float(_sin["kg"].sum()) / _kt
+    ctx["sec_carga"] = sorted(set(str(x or "—") for x in res["Sector"].fillna("—")))
+    _d = res[res["Rol"] != "BASE"]
+    ctx["sec_dil"] = sorted(set(str(x or "—") for x in _d["Sector"].fillna("—"))) if not _d.empty else []
+    ctx["excede"] = ["%s (pide %s L, hay %s L)"
+                     % (r["Tanque"], "{:,.0f}".format(float(r["Litros"])),
+                        "{:,.0f}".format(float(r["Disp. (L)"])))
+                     for _, r in res[res["Excede"]].iterrows()]
+    return ctx
+
+
+def _reglas_check(ctx):
+    """[(regla, estado, detalle)] para las reglas que se pueden chequear."""
+    out = []
+    for r in REGLAS:
+        f = r.get("check")
+        if not f:
+            continue
+        if ctx.get("vacio"):
+            out.append((r, "na", "Todavía no hay carga armada."))
+            continue
+        try:
+            e, d = f(ctx)
+        except Exception as _e:
+            e, d = "na", "no se pudo evaluar (%s)" % _e
+        out.append((r, e, d))
+    return out
+
+
+def _reglas_semaforo(res, spec, n_cont, desvios=None, formulado=True, compacto=True):
+    """Semáforo de reglas de la carga actual. Se dibuja donde esté la carga."""
+    ctx = _ctx_reglas(res, spec, n_cont, desvios, formulado)
+    chk = _reglas_check(ctx)
+    _n = {"ok": 0, "warn": 0, "bad": 0, "na": 0}
+    for _, e, _d in chk:
+        _n[e] = _n.get(e, 0) + 1
+    _tit = ("📏 Reglas de la formulación — %d 🟢 · %d 🟡 · %d 🔴"
+            % (_n["ok"], _n["warn"], _n["bad"]))
+    with st.expander(_tit, expanded=bool(_n["bad"])):
+        st.caption("Las reglas completas, con el porqué de cada una y la constante que usa "
+                   "el código, están en la vista **📏 Reglas** de Despachos.")
+        for r, e, d in chk:
+            st.markdown("%s **%s · %s** — %s" % (_REG_ICO.get(e, "⚪"), r["id"],
+                                                 r["titulo"], d))
+        if not compacto:
+            st.caption("⚪ = no aplica a esta carga.")
+    return ctx, chk
+
+
+def _reglas_md():
+    """Las reglas como markdown, para bajarlas e imprimirlas."""
+    out = ["# Reglas de la formulación de despachos",
+           "", "Generado por la app desde el código: los valores son las constantes que el "
+           "motor usa de verdad.", ""]
+    for g in REGLAS_GRUPOS:
+        rr = [r for r in REGLAS if r["grupo"] == g]
+        if not rr:
+            continue
+        out.append("## %s" % g)
+        out.append("")
+        for r in rr:
+            out.append("### %s · %s" % (r["id"], r["titulo"]))
+            out.append("")
+            out.append("**Regla.** %s" % r["regla"])
+            out.append("")
+            out.append("**Por qué.** %s" % r["porque"])
+            if r.get("excepcion"):
+                out.append("")
+                out.append("**Excepción.** %s" % r["excepcion"])
+            out.append("")
+            out.append("`%s` — %s" % (r["valor"](), r["donde"]))
+            out.append("")
+    return "\n".join(out)
+
+
+def _reglas(USR, cat, conectar):
+    """Vista 📏 Reglas: qué reglas rigen la formulación, por qué, y cómo quedó esta carga."""
+    st.markdown("#### 📏 Reglas de la formulación")
+    st.caption("Todo lo que el motor de sugerencia y los controles dan por sabido, en un "
+               "solo lugar. **Los valores salen del código**, no de una copia escrita a "
+               "mano: si mañana cambia una constante, cambia acá.")
+
+    ss = st.session_state
+    # ¿hay una carga armada en el armador? entonces se chequea contra ella
+    _res, _spec, _nc, _form = None, SPEC_DEFAULT, int(ss.get("dsp_ncont") or 1), True
+    try:
+        _tks = _tanques(cat)
+        _cur = _lineas_actuales(ss, _tks)
+        _prods = _productos(cat)
+        _pl = str(ss.get("dsp_prod") or "")
+        _pcod = dict(zip(_prods["producto"], _prods["codigo_producto"])) if not _prods.empty else {}
+        _cod = _pcod.get(_pl, _pl) or "AG-E"
+        _spec = {"acidez": float(ss.get("dsp_spac", SPEC_DEFAULT["acidez"])),
+                 "ays": float(ss.get("dsp_spays", SPEC_DEFAULT["ays"])),
+                 "azufre": float(ss.get("dsp_spaz", SPEC_DEFAULT["azufre"])),
+                 "fosforo": float(ss.get("dsp_spfos", SPEC_DEFAULT["fosforo"]))}
+        _form = len(_familia(_cod, _prods)) > 1
+        _res = _resolver(_cur, _tks, _cod)
+    except Exception:
+        _res = None
+
+    if _res is not None and not _res.empty:
+        _desv = []
+        try:
+            _ok, _desv = _panel_specs_calc(_res, _spec)
+        except Exception:
+            _desv = []
+        st.markdown("##### La carga que tenés armada ahora")
+        _ctx = _ctx_reglas(_res, _spec, _nc, _desv, _form)
+        _chk = _reglas_check(_ctx)
+        for r, e, d in _chk:
+            st.markdown("%s **%s · %s** — %s" % (_REG_ICO.get(e, "⚪"), r["id"],
+                                                 r["titulo"], d))
+        st.divider()
+    else:
+        st.info("No hay ninguna carga armada en el armador: abajo están las reglas y, en "
+                "cuanto cargues tanques en 🧪 *Armar*, esta vista las chequea contra esa "
+                "carga.")
+
+    _g = st.segmented_control("Grupo", ("Todas",) + REGLAS_GRUPOS, default="Todas",
+                              key="dsp_reg_g") if hasattr(st, "segmented_control") else "Todas"
+    _g = _g or "Todas"
+    for g in REGLAS_GRUPOS:
+        if _g != "Todas" and _g != g:
+            continue
+        rr = [r for r in REGLAS if r["grupo"] == g]
+        if not rr:
+            continue
+        st.markdown("##### %s" % g)
+        for r in rr:
+            with st.container(border=True):
+                st.markdown("**%s · %s**" % (r["id"], r["titulo"]))
+                st.markdown(r["regla"])
+                st.caption("**Por qué:** %s" % r["porque"])
+                if r.get("excepcion"):
+                    st.caption("**Excepción:** %s" % r["excepcion"])
+                st.caption("`%s` · se aplica en %s" % (r["valor"](), r["donde"]))
+    st.download_button("⬇️ Bajar las reglas (.md)", _reglas_md().encode("utf-8"),
+                       file_name="reglas_formulacion_despachos.md", mime="text/markdown",
+                       help="Para imprimir o pegar en el manual de planta.")
 
 
 def _monitor_baja(USR, cat, conectar):
@@ -3438,6 +4088,12 @@ def _armar(USR, cat, conectar):
             _lbl_sec = {str(i): "%s · %s L en %d tanque(s)"
                         % (i, "{:,.0f}".format(float(r["l"])), int(r["n"]))
                         for i, r in _agg.iterrows()}
+            # "Usar #N" del comparador pide cambiar el sector: va por una clave
+            # pendiente porque el estado de un widget ya instanciado no se puede pisar
+            # dentro del mismo run (mismo patrón que dsp_tab_next).
+            _nx = ss.pop("dsp_sec_dil_next", None)
+            if _nx is not None:
+                ss["dsp_sec_dil"] = [x for x in _nx if x in _opc_sec]
             # sanear elecciones viejas de un producto/stock que ya no existe
             _sv = [x for x in (ss.get("dsp_sec_dil") or []) if x in _opc_sec]
             if _sv != (ss.get("dsp_sec_dil") or []):
@@ -3466,6 +4122,90 @@ def _armar(USR, cat, conectar):
                            "va a cerrar: sumá otro sector si hace falta."
                            % (" + ".join(_secs_dil), "{:,.0f}".format(_dsel),
                               " / ".join(_dils_f), "{:,.0f}".format(float(lit_obj))))
+
+    # ---- comparador: ¿de dónde conviene sacar el AFE-S? ----
+    if _dils_f:
+        # queda ABIERTO mientras haya una comparación en pantalla: si no, el rerun del
+        # botón lo colapsa y el resultado que acabás de pedir desaparece de la vista.
+        with st.expander("🗺️ ¿De dónde conviene sacar el %s? — comparar sectores"
+                         % " / ".join(_dils_f), expanded=bool(ss.get("dsp_secops"))):
+            st.caption(
+                "Prueba **cada sector solo**, después los **pares** y después **todo el "
+                "parque**, y muestra sólo las variantes que CIERRAN el volumen y la spec. "
+                "Concentrar el %s en un sector ahorra camiones entre plataformas, pero "
+                "con menos %s bueno para diluir suele entrar **menos materia prima**, que "
+                "es lo barato: los dos efectos son reales y tiran para lados opuestos, así "
+                "que los números están a la vista y elegís vos. Regla **R13**."
+                % (" / ".join(_dils_f), " / ".join(_dils_f)))
+            _cs1, _cs2 = st.columns([1.2, 3.8])
+            if _cs1.button("🗺️ Comparar", key="dsp_secops_go", use_container_width=True):
+                with st.spinner("Probando sectores…"):
+                    ss["dsp_secops"] = _opciones_sector(
+                        tks[~tks["nombre"].astype(str).isin(set(ss.get("dsp_exc_ms") or []))],
+                        prod_cod, lit_obj, spec, prods, (_lb or None),
+                        maximizar=(_formulado and not _lb), tol=_tol,
+                        lb_min=MIN_BASE_POR_CONT * float(n_cont))
+                # el expanded del expander ya se evaluó ARRIBA en este mismo run (con
+                # dsp_secops todavía vacío): sin este redibujo el resultado que acabás
+                # de pedir aparece dentro de un expander cerrado.
+                _rerun_frag()
+            _cs2.caption("Tarda unos segundos: arma una mezcla completa por variante.")
+            _ops = ss.get("dsp_secops")
+            if _ops:
+                _base = next((o for o in _ops if not o["sectores"]), None)
+                _fil = []
+                for _i, _o in enumerate(_ops):
+                    _st = _o["st"]
+                    _dmp = (float(_st["lb"]) - float(_base["st"]["lb"])) if _base else None
+                    _fil.append({
+                        "": "⭐" if _i == 0 and _o["sectores"] else "",
+                        "#": _i + 1,
+                        "AFE de": _o["etiqueta"],
+                        "Sect. AFE": (len(_o["sectores"]) if _o["sectores"]
+                                      else len(_sectores_dil(tks, _fam))),
+                        "Sectores de la carga": len(_o["sec_carga"]),
+                        "Tanques": int(_st["tanques"]),
+                        "MP (L)": "{:,.0f}".format(float(_st["lb"])),
+                        "MP vs sin restricción": ("{:+,.0f}".format(_dmp)
+                                                  if _dmp is not None else "—"),
+                        "AFE C+D (L)": "{:,.0f}".format(float(_st["feo"])),
+                        "Acidez %": (("%.2f" % _st["prom"]["acidez"])
+                                     if _st["prom"].get("acidez") is not None else "—"),
+                        "Fósforo ppm": (("%.1f" % _st["prom"]["fosforo"])
+                                        if _st["prom"].get("fosforo") is not None else "—"),
+                    })
+                st.dataframe(pd.DataFrame(_fil), hide_index=True, use_container_width=True,
+                             column_config={
+                                 "": st.column_config.TextColumn("", width="small",
+                                     help="Recomendada: la que cierra con menos sectores."),
+                                 "MP (L)": st.column_config.TextColumn(
+                                     help="Materias primas: lo BARATO de la carga. Más es mejor."),
+                                 "MP vs sin restricción": st.column_config.TextColumn(
+                                     help="Cuánta materia prima resigna esta variante contra "
+                                          "usar todo el parque. Ese es el precio del ahorro "
+                                          "logístico."),
+                                 "AFE C+D (L)": st.column_config.TextColumn(
+                                     help="AFE-S de baja calidad colocado: el que hay que "
+                                          "sacar de encima."),
+                                 "Sectores de la carga": st.column_config.NumberColumn(
+                                     help="Cuenta también los sectores de las materias primas: "
+                                          "es el número que se paga en camiones.")})
+                st.caption("Ordenadas por **sectores de la carga** (lo que se paga) y, a igual "
+                           "cantidad, por **materia prima** (lo barato). La última fila es "
+                           "*todo el parque*: la línea de base contra la que comparar. Mirá "
+                           "**MP vs sin restricción** para saber cuánto cuesta el ahorro "
+                           "logístico — si da 0 o positivo, concentrar sectores sale gratis.")
+                _cc = st.columns(min(4, len(_ops)))
+                for _i, _o in enumerate(_ops[:4]):
+                    if _cc[_i].button("✅ Usar #%d" % (_i + 1), key="dsp_secop_%d" % _i,
+                                      use_container_width=True,
+                                      help=_o["etiqueta"]):
+                        _lineas_set(ss, _o["df"])
+                        ss["dsp_secops"] = None
+                        ss["dsp_props"] = None
+                        if _o["sectores"]:
+                            ss["dsp_sec_dil_next"] = list(_o["sectores"])
+                        _rerun_frag()
 
     ex1, ex2 = st.columns([2.6, 1.2])
     _exc = ex1.multiselect("🚫 Tanques excluidos de la sugerencia", _opc_exc,
@@ -3824,6 +4564,13 @@ def _armar(USR, cat, conectar):
             st.toast("🚨 Despacho con desvío de especificación", icon="🚨")
         except Exception:
             pass
+    # Semáforo de las reglas contra ESTA carga. Las reglas completas, con el porqué y la
+    # constante que usa el código, están en la vista 📏 Reglas.
+    try:
+        _reglas_semaforo(res, spec, n_cont, _desv, _formulado)
+    except Exception:
+        pass
+
     if _formulado:
         _lb_regla = MIN_BASE_POR_CONT * float(n_cont)
         _lb_real = float(res[res["Rol"] == "BASE"]["Litros"].fillna(0).sum())
