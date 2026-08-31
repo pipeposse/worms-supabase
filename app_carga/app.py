@@ -194,6 +194,16 @@ def inject_global_css():
     </style>
     """, unsafe_allow_html=True)
 
+# Vigía de recarga: cuando Streamlit Cloud redeploya, los chunks JS cambian de hash y una
+# pestaña que quedó abierta pide archivos que ya no existen ("Failed to fetch dynamically
+# imported module"). Esto la recupera sola en vez de dejar a alguien mirando un TypeError
+# en el login. Ver autorecarga.py.
+try:
+    import autorecarga as _autorec
+    _autorec.instalar()
+except Exception:
+    pass
+
 inject_global_css()
 
 
