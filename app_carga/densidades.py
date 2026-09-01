@@ -41,7 +41,8 @@ def render(USR, cat, conectar):
         "stock y reacciones. Un solo catálogo, editable acá.</div></div>",
         unsafe_allow_html=True)
 
-    df = cat("SELECT codigo_producto, nombre_producto, densidad_g_ml, activo "
+    df = cat("SELECT codigo_producto, nombre_producto, densidad_g_ml, activo, "
+             "COALESCE(es_liquido, false) AS es_liquido "
              "FROM produccion.dim_producto ORDER BY codigo_producto")
     if df is None or df.empty:
         st.info("Sin productos en el maestro.")
@@ -49,6 +50,8 @@ def render(USR, cat, conectar):
     df = df.copy()
     df["densidad_g_ml"] = pd.to_numeric(df["densidad_g_ml"], errors="coerce")
     df["fam"] = df["codigo_producto"].map(_familia)
+    _solidos = df[~df["es_liquido"].fillna(False)]
+    df = df[df["es_liquido"].fillna(False)]   # acá solo LÍQUIDOS: acero/caucho/sales no
 
     _solo_act = st.toggle("Solo productos activos", value=True, key="dns_act")
     v = df[df["activo"].fillna(False)] if _solo_act else df
@@ -56,7 +59,7 @@ def render(USR, cat, conectar):
     _sin = v[v["densidad_g_ml"].isna()]
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Productos", "%d" % len(v))
+    k1.metric("Líquidos", "%d" % len(v))
     k2.metric("Con densidad", "%d" % len(_con))
     k3.metric("Sin densidad", "%d" % len(_sin),
               help="Usan el default %.2f al convertir litros↔kg. Si alguno es un líquido "
@@ -129,6 +132,43 @@ def render(USR, cat, conectar):
         c2.caption("Editá la columna *Densidad* y apretá Guardar. Los cambios NO tocan "
                    "las densidades medidas por laboratorio tanque por tanque: esto es el "
                    "valor de catálogo del producto.")
+
+    # ---------- qué es líquido y qué no ----------
+    with st.expander("🧱 No líquidos (fuera de esta tabla) — reclasificar"):
+        st.caption("Estos productos están marcados como NO líquidos y no llevan densidad de "
+                   "conversión (acero, caucho, sales…). Si alguno está mal clasificado, "
+                   "tildá/destildá *Líquido* y guardá.")
+        _todos = pd.concat([_solidos, df]).sort_values("codigo_producto")
+        _todos = _todos[_todos["activo"].fillna(False)] if _solo_act else _todos
+        _bl = pd.DataFrame({"Código": _todos["codigo_producto"].astype(str),
+                            "Producto": _todos["nombre_producto"].fillna("").astype(str),
+                            "Líquido": _todos["es_liquido"].fillna(False).astype(bool)})
+        edl = st.data_editor(_bl, hide_index=True, use_container_width=True,
+                             key="dns_ed_liq", num_rows="fixed",
+                             disabled=["Código", "Producto"])
+        _cl = []
+        for _i in range(len(edl)):
+            _cod = str(edl.iloc[_i]["Código"])
+            _nvo = bool(edl.iloc[_i]["Líquido"])
+            _fila = _todos[_todos["codigo_producto"] == _cod]
+            if not _fila.empty and bool(_fila.iloc[0]["es_liquido"]) != _nvo:
+                _cl.append((_cod, _nvo))
+        if st.button("💾 Guardar clasificación", key="dns_save_liq", disabled=(not _cl)):
+            try:
+                with conectar(USR["id_usuario"]) as (conn, _a):
+                    with conn.cursor() as cur:
+                        for _cod, _nvo in _cl:
+                            cur.execute("UPDATE produccion.dim_producto SET es_liquido=%s, "
+                                        "actualizado_en=now() WHERE codigo_producto=%s",
+                                        (_nvo, _cod))
+                            _a.log("ES_LIQUIDO", "dim_producto", _cod, {"liquido": _nvo})
+                cat.clear()
+                st.success("✅ Clasificación actualizada: %s."
+                           % ", ".join("%s→%s" % (c, "líquido" if n else "no líquido")
+                                       for c, n in _cl))
+                st.rerun()
+            except Exception as e:
+                st.error("No se pudo guardar: %s" % e)
 
     # ---------- insumos ----------
     with st.expander("🧪 Densidades de insumos (dic_insumo)"):
