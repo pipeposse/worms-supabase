@@ -3528,7 +3528,8 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
                    "🚢 Exportación", "🧮 Balance", "🔬 Análisis AFE", "🧪 Análisis Glicerina",
                    "🎯 Asignación AFE", "📍 Disponibilidad de descarga",
                    "🔁 Cambio de categoría",
-                   "♻️ Recuperación AG", "🧭 Tanques", "📦 Informe de stock",
+                   "♻️ Recuperación AG", "🏊 Recuperado en piletas",
+                   "🧭 Tanques", "📦 Informe de stock",
                    "🛂 Aprobaciones"]
     # una pestaña retirada guardada en la sesión rompería el widget: se sanea
     for _kk in ("pl_grupo_sc", "pl_grupo"):
@@ -3693,6 +3694,17 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         except Exception as _e:
             import traceback as _tb
             st.error("No se pudo cargar Recuperación AG: %s" % _e)
+            with st.expander("🔧 Detalle técnico"):
+                st.code(_tb.format_exc())
+        return
+
+    if _grupo.startswith("🏊"):
+        try:
+            import recuperado_piletas
+            recuperado_piletas.render(USR, cat, conectar)
+        except Exception as _e:
+            import traceback as _tb
+            st.error("No se pudo cargar Recuperado en piletas: %s" % _e)
             with st.expander("🔧 Detalle técnico"):
                 st.code(_tb.format_exc())
         return
