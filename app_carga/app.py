@@ -4092,12 +4092,30 @@ if st.session_state.section != "CARGAS":
                                 "(se corrige en *Cargar medición → incluir WeDo*). Acá podés editar "
                                 "**producto, capacidad y estado**.")
                     _codes = _prods["codigo_producto"].tolist()
-                    _pp2 = _prods[_prods["id_producto"] == _r2["id_producto_principal"]]["codigo_producto"].tolist()
-                    _ppal_sel = st.selectbox("Producto que contiene (principal)", ["(sin asignar)"] + _codes,
-                                             index=(_codes.index(_pp2[0]) + 1 if _pp2 else 0), key="tq_ppal_e", format_func=_fmt_prod)
+                    # Lo ya asignado al tanque puede estar INACTIVO en dim_producto (pasó con
+                    # AFE-M): si no entra en las opciones, el default del multiselect queda
+                    # fuera de options y Streamlit tira StreamlitAPIException. Se agregan esos
+                    # códigos a las opciones, marcados, para poder verlos y sacarlos a mano.
                     _curp = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
-                                "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto WHERE tp.id_tanque=%s", (_idt2,))["codigo_producto"].tolist()
-                    _puede = st.multiselect("Productos que puede almacenar", _codes, default=_curp, key="tq_puede_e", format_func=_fmt_prod)
+                                "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
+                                "WHERE tp.id_tanque=%s", (_idt2,))["codigo_producto"].tolist()
+                    _pp2 = _prods[_prods["id_producto"] == _r2["id_producto_principal"]]["codigo_producto"].tolist()
+                    if not _pp2 and pd.notna(_r2["id_producto_principal"]):
+                        _pp0 = cat("SELECT codigo_producto FROM produccion.dim_producto WHERE id_producto=%s",
+                                   (int(_r2["id_producto_principal"]),))
+                        if _pp0 is not None and not _pp0.empty:
+                            _pp2 = _pp0["codigo_producto"].tolist()
+                    _inact_e = sorted({c for c in _curp + _pp2 if c not in _codes})
+                    _codes_ui = _codes + _inact_e
+                    def _fmt_prod_e(_c):
+                        return _fmt_prod(_c) + (" · ⛔ inactivo" if _c in _inact_e else "")
+                    if _inact_e:
+                        st.caption("⚠️ Asignado(s) a este tanque pero **inactivos** en el maestro de "
+                                   "productos: %s. Se muestran igual; sacalos de la lista si ya no van." % ", ".join(_inact_e))
+                    _ppal_sel = st.selectbox("Producto que contiene (principal)", ["(sin asignar)"] + _codes_ui,
+                                             index=(_codes_ui.index(_pp2[0]) + 1 if _pp2 else 0), key="tq_ppal_e", format_func=_fmt_prod_e)
+                    _puede = st.multiselect("Productos que puede almacenar", _codes_ui,
+                                            default=[c for c in _curp if c in _codes_ui], key="tq_puede_e", format_func=_fmt_prod_e)
                     _act = st.checkbox("Tanque activo (en uso)", value=bool(_r2["activo"]), key="tq_act_e")
                     if st.button("Guardar tanque", type="primary", use_container_width=True, key="tq_save_e"):
                         try:
