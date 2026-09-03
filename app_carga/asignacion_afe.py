@@ -380,6 +380,38 @@ def _mezclar(tq, tk, kg_antes, kg_add):
     return antes, aporte, despues, vacio
 
 
+def _snap_restar(cur, tk, idt, kg_m, lts_m, uid, motivo):
+    """Si este ticket dejó un snapshot medido en el tanque, lo corrige restando
+    lo que había sumado (nunca por debajo de 0). Sin snapshot previo del ticket
+    no toca nada (asignaciones viejas, anteriores a esta mejora)."""
+    try:
+        _kg = float(kg_m or 0)
+        _lt = float(lts_m or 0)
+    except Exception:
+        return
+    if idt is None or (_kg <= 0 and _lt <= 0):
+        return
+    cur.execute("SELECT count(*) FROM produccion.fact_stock_tanque "
+                "WHERE id_tanque=%s AND observaciones LIKE %s",
+                (int(idt), "Asignación AFE ticket " + str(tk) + "%"))
+    if not cur.fetchone()[0]:
+        return
+    cur.execute(
+        "INSERT INTO produccion.fact_stock_tanque "
+        "(id_tanque, id_producto, medido_en, litros, kg, nivel_pct, id_usuario, observaciones) "
+        "SELECT s.id_tanque, s.id_producto, now(), GREATEST(COALESCE(s.litros,0)-%s,0), "
+        "       GREATEST(COALESCE(s.kg,0)-%s,0), "
+        "       CASE WHEN t.capacidad_litros > 0 THEN "
+        "            round(GREATEST(COALESCE(s.litros,0)-%s,0)/t.capacidad_litros*100.0, 1) END, "
+        "       %s, %s "
+        "FROM produccion.vw_stock_snapshot_ultimo s "
+        "JOIN produccion.dim_tanque t ON t.id_tanque = s.id_tanque "
+        "WHERE s.id_tanque=%s",
+        (_lt, _kg, _lt, uid,
+         "Asignación AFE ticket %s (%s): se restan %.0f L / %.0f kg" % (tk, motivo, _lt, _kg),
+         int(idt)))
+
+
 def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
     """Escribe todo en una transacción. lineas: [{id_tanque,label,kg,fue_sugerido,motivo}]"""
     uid = int(USR.get("id_usuario") or 0)
@@ -396,12 +428,18 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
                 "WHERE regexp_replace(COALESCE(ticket_porteria,''),'\\.0+$','') = %s "
                 "  AND COALESCE(anulado,false) = false "
                 "  AND COALESCE(origen,'') IN ('lab_sync','sistema','asignacion_afe') "
-                "RETURNING id_mov_stock", (tk,))
-            _viejos = [r[0] for r in cur.fetchall()]
+                "RETURNING id_mov_stock, id_tanque, kg, litros, origen", (tk,))
+            _viejos_full = cur.fetchall()
+            _viejos = [r[0] for r in _viejos_full]
             cur.execute(
                 "DELETE FROM produccion.fact_movimiento_tanque "
                 "WHERE observaciones LIKE %s OR id_mov_stock = ANY(%s)",
                 ("lab_sync ticket %" + tk, _viejos or [0]))
+            # si una asignación previa de este ticket ya había sumado al stock
+            # MEDIDO, restarlo antes de volver a sumar (reasignación sin duplicar)
+            for _vm in _viejos_full:
+                if str(_vm[4] or "") == "asignacion_afe":
+                    _snap_restar(cur, tk, _vm[1], _vm[2], _vm[3], uid, "reasignado")
 
             # 2) cabecera
             cur.execute(
@@ -440,12 +478,16 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
                 # del sistema (puede ser una medición vieja) y el ponderado parte de 0:
                 # el tanque toma los parámetros del ticket.
                 cur.execute(
-                    "SELECT COALESCE(s.kg_estimado, s.kg_actual, 0) "
+                    "SELECT COALESCE(s.kg_estimado, s.kg_actual, 0), "
+                    "       COALESCE(s.litros_estimado, s.litros_actual, 0), s.capacidad_litros "
                     "FROM produccion.vw_stock_tanque_actual s WHERE s.id_tanque=%s", (idt,))
                 _r = cur.fetchone()
                 kg_antes = float(_r[0]) if _r and _r[0] is not None else 0.0
+                lts_antes = float(_r[1]) if _r and _r[1] is not None else 0.0
+                _cap = float(_r[2]) if _r and _r[2] is not None else 0.0
                 if ln.get("vacio_real"):
                     kg_antes = 0.0
+                    lts_antes = 0.0
                 cur.execute(
                     "SELECT acidez_pct, agua_pct, sedimentos_pct, densidad_g_ml, ppm_azufre, ppm_fosforo, "
                     "       COALESCE(parametros_extra,'{}'::jsonb) "
@@ -487,6 +529,22 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
                     "VALUES (%s,%s,'IN',%s,%s,%s,%s,'ASIGNACION_AFE',%s,%s)",
                     (idt, int(cab["id_producto"]), lts, kg, cab.get("fecha"), uid,
                      "Asignación AFE ticket %s" % tk, id_mov))
+
+                # 4') el stock MEDIDO del tanque se actualiza AL INSTANTE: nuevo
+                # snapshot = lo que había + lo que descargó el camión. En tanques
+                # con WeDo, la próxima lectura del sensor vuelve a ser la verdad;
+                # en tanques sin sensor, éste ES el medido vigente.
+                _kg_nuevo = round(kg_antes + kg, 1)
+                _lts_nuevo = round(lts_antes + lts, 1)
+                _pct_nuevo = round(_lts_nuevo / _cap * 100.0, 1) if _cap > 0 else None
+                cur.execute(
+                    "INSERT INTO produccion.fact_stock_tanque "
+                    "(id_tanque, id_producto, medido_en, litros, kg, nivel_pct, "
+                    " id_usuario, observaciones) "
+                    "VALUES (%s,%s,now(),%s,%s,%s,%s,%s)",
+                    (idt, int(cab["id_producto"]), _lts_nuevo, _kg_nuevo, _pct_nuevo, uid,
+                     "Asignación AFE ticket %s: +%.0f L / +%.0f kg (previo %.0f L)"
+                     % (tk, lts, kg, lts_antes)))
 
                 # 5) parámetros del tanque (ponderado)
                 extra = json.dumps({"mezcla_ticket": tk, "mezcla_kg": kg,
@@ -541,9 +599,12 @@ def _anular(conectar, USR, tk, id_asig):
                 "UPDATE produccion.fact_movimiento_stock SET anulado=true "
                 "WHERE regexp_replace(COALESCE(ticket_porteria,''),'\\.0+$','')=%s "
                 "  AND COALESCE(origen,'')='asignacion_afe' AND COALESCE(anulado,false)=false "
-                "RETURNING id_mov_stock", (tk,))
-            _ids = [r[0] for r in cur.fetchall()] or [0]
+                "RETURNING id_mov_stock, id_tanque, kg, litros", (tk,))
+            _movs = cur.fetchall()
+            _ids = [r[0] for r in _movs] or [0]
             cur.execute("DELETE FROM produccion.fact_movimiento_tanque WHERE id_mov_stock = ANY(%s)", (_ids,))
+            for _vm in _movs:
+                _snap_restar(cur, tk, _vm[1], _vm[2], _vm[3], uid, "anulado")
             cur.execute("UPDATE produccion.fact_asignacion_afe SET estado='ANULADO', actualizado_en=now() "
                         "WHERE ticket=%s", (tk,))
         audit.log("U", "fact_asignacion_afe", int(id_asig or 0), {"ticket": tk, "accion": "ANULAR"})
