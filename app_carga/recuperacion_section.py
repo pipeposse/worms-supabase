@@ -5,7 +5,7 @@ Recuperación de Ácidos Grasos (piletas).
 
 El proceso real: la cuadrilla arranca 10-12 h (barreras + posicionar camiones),
 extrae de las piletas con camión de vacío, laboratorio muestrea cada camión
-(en general AG-C, a veces AG-D), se pesa en portería, se descarga en la zona de
+(en general AG-C, también AG-D y AG-B), se pesa en portería, se descarga en la zona de
 reactores (Tanque 4 de acopio y tanques de materia prima 3 y 4) y el ticket de
 pesada es el comprobante con el que se controla el stock recuperado. Trabajan
 hasta las 20 h y las pesadas se cierran ~18 h: al cierre de la jornada tiene
@@ -17,7 +17,7 @@ así que el stock recuperado no se podía medir. Acá:
 
 1.  La bandeja detecta sola los candidatos (mov. interno + producto AG +
     piletas + pesada cerrada) y los muestra con su análisis de lab precargado.
-2.  El operario CONFIRMA cada ticket: calidad final (AG-C/AG-D) y destino real
+2.  El operario CONFIRMA cada ticket: calidad final (AG-C/AG-D/AG-B/AG-A) y destino real
     (tanque, plataforma u otro). O lo marca "no es recuperación" y no molesta más.
 3.  Confirmar con tanque destino impacta el stock del tanque (ponderando los
     parámetros como Asignación AFE) y ANULA el movimiento automático que el
@@ -40,7 +40,8 @@ import streamlit as st
 DIAS_BANDEJA = 21          # cuántos días hacia atrás busca candidatos la bandeja
 DENS_DEFAULT = 0.92        # densidad AG si no hay dato de lab
 VACIO_KG = 300.0           # menos que esto = tanque vacío: toma los parámetros del ticket
-CALIDADES = ("AG-C", "AG-D", "AG-B", "AG-A")   # C/D es lo normal; el lab a veces da B
+CALIDADES = ("AG-C", "AG-D", "AG-B", "AG-A")   # las cuatro salen de pileta: C es la
+                                              # habitual, pero B y D tambien se recuperan
 SIN_TANQUE = (("PLATAFORMA", "🏗️ Plataforma (sin tanque)"),
               ("OTRO", "📍 Otro destino (sin tanque)"))
 # Destinos habituales de la recuperación, EN ORDEN DE PRIORIDAD (definido por dirección):
@@ -375,20 +376,32 @@ def _kpis(cat):
     k = cat(
         "SELECT COALESCE(SUM(kg) FILTER (WHERE fecha_ticket = current_date),0) AS hoy, "
         "       COALESCE(SUM(kg) FILTER (WHERE fecha_ticket >= date_trunc('week', current_date)::date),0) AS semana, "
-        "       COALESCE(SUM(kg) FILTER (WHERE fecha_ticket >= date_trunc('month', current_date)::date),0) AS mes, "
-        "       COALESCE(SUM(kg) FILTER (WHERE producto='AG-C' AND fecha_ticket >= date_trunc('month', current_date)::date),0) AS mes_c, "
-        "       COALESCE(SUM(kg) FILTER (WHERE producto='AG-D' AND fecha_ticket >= date_trunc('month', current_date)::date),0) AS mes_d "
+        "       COALESCE(SUM(kg) FILTER (WHERE fecha_ticket >= date_trunc('month', current_date)::date),0) AS mes "
         "FROM produccion.fact_recuperacion_ticket "
         "WHERE clasificacion='RECUPERACION' AND NOT anulado")
     r = k.iloc[0] if not k.empty else None
+    # Desglose del mes por calidad SIN cablear cuáles: antes decía "Mes C / D" y lo
+    # recuperado como AG-B (o AG-A) no figuraba en ninguna parte.
+    d = cat(
+        "SELECT COALESCE(NULLIF(btrim(producto),''),'(sin calidad)') AS calidad, "
+        "       SUM(kg) AS kg "
+        "FROM produccion.fact_recuperacion_ticket "
+        "WHERE clasificacion='RECUPERACION' AND NOT anulado "
+        "  AND fecha_ticket >= date_trunc('month', current_date)::date "
+        "GROUP BY 1 ORDER BY SUM(kg) DESC")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("♻️ Hoy", "%s kg" % _n(r["hoy"] if r is not None else 0))
     c2.metric("Semana", "%s kg" % _n(r["semana"] if r is not None else 0))
     c3.metric("Mes", "%s kg" % _n(r["mes"] if r is not None else 0))
-    if r is not None and (float(r["mes_c"]) > 0 or float(r["mes_d"]) > 0):
-        c4.metric("Mes C / D", "%s / %s" % (_n(r["mes_c"]), _n(r["mes_d"])))
+    if d is not None and not d.empty:
+        _txt = " · ".join("<b>%s</b> %s kg" % (str(_r["calidad"]).replace("AG-", ""), _n(_r["kg"]))
+                          for _, _r in d.iterrows())
+        c4.markdown(
+            "<div style='font-size:.8rem;color:#666;margin-bottom:2px'>Mes por calidad</div>"
+            "<div style='font-size:.95rem;line-height:1.35'>%s</div>" % _txt,
+            unsafe_allow_html=True)
     else:
-        c4.metric("Mes C / D", "—")
+        c4.metric("Mes por calidad", "—")
 
 
 def _panel_jornada(cat, conectar, USR, n_pend):
@@ -469,7 +482,9 @@ def _panel_bandeja(cat, conectar, USR, cand, j):
             cal = c2.selectbox("Calidad final", list(CALIDADES),
                                index=(list(CALIDADES).index(_cal_def) if _cal_def in CALIDADES else 0),
                                key="rec_cal_%s" % tk,
-                               help="Precargada con lo que evaluó laboratorio para este ticket.")
+                               help="Precargada con lo que evaluó laboratorio para este ticket. "
+                                    "Las cuatro calidades (AG-C, AG-D, AG-B y AG-A) valen para "
+                                    "la recuperación de piletas y suman al total del mes.")
             if _cal_def is None:
                 c2.caption("⚠️ Sin muestra de lab: calidad a criterio del responsable.")
             _tqo, _npref = _orden_destinos(tqs, r["kg"])
