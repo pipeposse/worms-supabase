@@ -4063,13 +4063,52 @@ if st.session_state.section != "CARGAS":
                                         st.success(f"Producto {_del_sel} borrado.")
                                         cat.clear(); st.rerun()
                                     except Exception:
+                                        # No se pudo borrar (tiene historia). Segundo intento:
+                                        # desactivarlo. OJO: un producto que sigue asignado a
+                                        # tanques NO se puede desactivar (proteccion en la base,
+                                        # puesta despues del incidente de AFE-M). Por eso se
+                                        # verifica el resultado en vez de cantar exito.
                                         try:
                                             with conectar(USR["id_usuario"]) as (conn, audit):
                                                 with conn.cursor() as cur:
-                                                    cur.execute("UPDATE produccion.dim_producto SET activo=false WHERE codigo_producto=%s", (_del_sel,))
-                                                audit.log("U", "dim_producto", 0, {"codigo": _del_sel, "desactivado": True})
-                                            st.warning(f"**{_del_sel}** está en uso (tanques o movimientos): no se puede borrar del todo, así que lo **desactivé** (deja de aparecer).")
-                                            cat.clear(); st.rerun()
+                                                    cur.execute("UPDATE produccion.dim_producto SET activo=false "
+                                                                "WHERE codigo_producto=%s", (_del_sel,))
+                                                    cur.execute("SELECT COALESCE(activo,false), id_producto "
+                                                                "FROM produccion.dim_producto WHERE codigo_producto=%s",
+                                                                (_del_sel,))
+                                                    _chk = cur.fetchone()
+                                                    _sigue = bool(_chk[0]) if _chk else False
+                                                    _tqs = []
+                                                    if _sigue and _chk:
+                                                        cur.execute(
+                                                            "SELECT t.nombre FROM produccion.dim_tanque t "
+                                                            "WHERE t.id_producto_principal=%s "
+                                                            "UNION "
+                                                            "SELECT t.nombre FROM produccion.dim_tanque_producto tp "
+                                                            "JOIN produccion.dim_tanque t ON t.id_tanque=tp.id_tanque "
+                                                            "WHERE tp.id_producto=%s ORDER BY 1",
+                                                            (int(_chk[1]), int(_chk[1])))
+                                                        _tqs = [r[0] for r in cur.fetchall()]
+                                                audit.log("U", "dim_producto", 0,
+                                                          {"codigo": _del_sel, "desactivado": (not _sigue),
+                                                           "bloqueado_por_uso": _sigue})
+                                            if _sigue:
+                                                st.error(
+                                                    "**%s** sigue **asignado a %d tanque(s)**, así que no se puede "
+                                                    "borrar ni desactivar: el sistema lo protege para que las "
+                                                    "pantallas de tanques no queden apuntando a un producto que no "
+                                                    "existe. Para darlo de baja, primero sacalo de esos tanques "
+                                                    "(acá abajo, en *Productos que puede almacenar* y *Producto que "
+                                                    "contiene*) y volvé a intentarlo.%s"
+                                                    % (_del_sel, len(_tqs),
+                                                       ("\n\nTanques: " + ", ".join(_tqs[:20])
+                                                        + (" y %d más…" % (len(_tqs) - 20) if len(_tqs) > 20 else ""))
+                                                       if _tqs else ""))
+                                            else:
+                                                st.warning("**%s** tiene movimientos históricos: no se puede borrar "
+                                                           "del todo, así que lo **desactivé** (deja de aparecer en "
+                                                           "los selectores)." % _del_sel)
+                                                cat.clear(); st.rerun()
                                         except Exception as e:
                                             st.exception(e)
                         _npc1, _npc2 = st.columns(2)
