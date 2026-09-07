@@ -80,7 +80,13 @@ def _jornada_hoy(cat):
 
 
 def _candidatos(cat):
-    """Tickets de portería que 'huelen' a recuperación y todavía no fueron clasificados."""
+    """Tickets de portería que 'huelen' a recuperación y todavía no fueron clasificados.
+
+    El producto se reconoce por toda la familia AG (AG, AG-A…AG-E), tanto por el
+    producto_base normalizado de portería como por el texto crudo del ticket: si
+    una variante está mal catalogada en porteria_limpieza —le pasó a AG-B, que
+    tenía producto_base='AG-B'— el camión igual entra en la bandeja. AGUA no
+    entra: el patrón pide espacio, guion o fin después de 'AG'."""
     return cat(
         "SELECT t.transaccion, t.fecha_entrada, t.hora_e, t.hora_s, t.conductor, "
         "       t.patente_chasis, ABS(t.peso_neto) AS kg, t.producto, t.balanza, "
@@ -89,7 +95,9 @@ def _candidatos(cat):
         "       t.lab_ppm_azufre, t.lab_ppm_fosforo, t.lab_densidad "
         "FROM produccion.v_transacciones_limpias t "
         "WHERE upper(coalesce(t.cliente,'')) LIKE '%%MOVIMIENTO%%' "
-        "  AND upper(coalesce(t.producto_base,'')) = 'AG' "
+        "  AND (upper(coalesce(t.producto_base,'')) = 'AG' "
+        "       OR upper(coalesce(t.producto_base,'')) LIKE 'AG-%%' "
+        "       OR upper(coalesce(t.producto,'')) ~ '^AG([ -]|$)') "
         "  AND (upper(coalesce(t.procedencia,'')) LIKE '%%PILETA%%' "
         "       OR upper(coalesce(t.destino_final,'')) LIKE '%%PILETA%%') "
         "  AND t.peso_neto < 0 "
