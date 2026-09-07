@@ -58,10 +58,10 @@ def render(USR, cat, conectar):
     st.markdown(
         "<div style='background:linear-gradient(90deg,#7c2d12,#b45309);border-radius:14px;"
         "padding:14px 20px;margin:0 0 12px'>"
-        "<div style='color:#fff;font-size:1.3rem;font-weight:900'>⏱️ Edición rápida de iniciadas</div>"
-        "<div style='color:#ffedd5;font-size:.86rem;margin-top:3px'>Reacciones EN CURSO: volumen "
-        "inicial, TN de materia prima, insumos y tiempos — corrección de datos con auditoría, "
-        "sin frenar el proceso.</div></div>",
+        "<div style='color:#fff;font-size:1.3rem;font-weight:900'>⏱️ Edición de materia prima e insumos</div>"
+        "<div style='color:#ffedd5;font-size:.86rem;margin-top:3px'>Reacciones en curso y también "
+        "terminadas (desgomado, glicerólisis, ARE): volumen inicial, TN de materia prima, insumos "
+        "y tiempos — corrección de datos con auditoría.</div></div>",
         unsafe_allow_html=True)
     if USR.get("rol") not in ROLES_DIRECCION and "PLANIFICACION" not in (USR.get("secciones_app") or []):
         st.warning("Sección exclusiva de dirección.")
@@ -69,26 +69,46 @@ def render(USR, cat, conectar):
     ss = st.session_state
     uid = int(USR.get("id_usuario") or 0)
 
-    bs = cat("SELECT id_batch, identificador_unidad, fecha::text AS fecha, tipo_proceso, "
-             "estado, etapa_actual, kg_inicial, litros_inicial, catalizador_tipo, "
-             "tiempo_estimado_horas, parametros_proceso, observaciones "
-             "FROM produccion.fact_batch_proceso "
-             "WHERE NOT COALESCE(anulado, false) AND COALESCE(estado,'') NOT IN %s "
-             "ORDER BY fecha DESC, id_batch DESC", (_ESTADOS_FIN,))
+    _t1, _t2 = st.columns([1.4, 2.6])
+    _inc_fin = _t1.toggle("Incluir terminadas", value=False, key="edi_inc_fin",
+                          help="Las reacciones FINALIZADAS no aparecen por defecto. Activalo para "
+                               "corregir la materia prima (kg) o los insumos de una que ya cerró.")
+    _dias_fin = _t2.slider("Terminadas de los últimos días", 7, 180, 45, step=1,
+                           key="edi_dias_fin", disabled=not _inc_fin)
+    if _inc_fin:
+        bs = cat("SELECT id_batch, identificador_unidad, fecha::text AS fecha, tipo_proceso, "
+                 "estado, etapa_actual, kg_inicial, litros_inicial, catalizador_tipo, "
+                 "tiempo_estimado_horas, parametros_proceso, observaciones "
+                 "FROM produccion.fact_batch_proceso "
+                 "WHERE NOT COALESCE(anulado, false) "
+                 "  AND (COALESCE(estado,'') NOT IN %s OR fecha >= current_date - %s) "
+                 "ORDER BY fecha DESC, id_batch DESC", (_ESTADOS_FIN, int(_dias_fin)))
+    else:
+        bs = cat("SELECT id_batch, identificador_unidad, fecha::text AS fecha, tipo_proceso, "
+                 "estado, etapa_actual, kg_inicial, litros_inicial, catalizador_tipo, "
+                 "tiempo_estimado_horas, parametros_proceso, observaciones "
+                 "FROM produccion.fact_batch_proceso "
+                 "WHERE NOT COALESCE(anulado, false) AND COALESCE(estado,'') NOT IN %s "
+                 "ORDER BY fecha DESC, id_batch DESC", (_ESTADOS_FIN,))
     if bs is None or bs.empty:
-        st.info("No hay reacciones iniciadas (sin finalizar) para editar. Las terminadas se "
-                "corrigen en **✏️ Edición rápida**.")
+        st.info("No hay reacciones iniciadas (sin finalizar) para editar. Activá **Incluir "
+                "terminadas** para corregir una que ya cerró.")
         return
 
-    _lbl = {int(r["id_batch"]): "#%d · %s · %s · %s · %s%s" % (
+    _lbl = {int(r["id_batch"]): "%s#%d · %s · %s · %s · %s%s" % (
+        "✅ " if str(r["estado"] or "") in _ESTADOS_FIN else "",
         int(r["id_batch"]), str(r["identificador_unidad"] or "s/nombre"),
         str(r["fecha"]), str(r["tipo_proceso"] or "—"), str(r["estado"] or "—"),
         (" (%s)" % r["etapa_actual"]) if r["etapa_actual"] else "")
         for _, r in bs.iterrows()}
-    sel = st.selectbox("Reacción iniciada", bs["id_batch"].astype(int).tolist(),
+    sel = st.selectbox("Reacción", bs["id_batch"].astype(int).tolist(),
                        format_func=lambda i: _lbl.get(int(i), str(i)), key="edi_sel")
     b = bs[bs["id_batch"].astype(int) == int(sel)].iloc[0]
     idb = int(b["id_batch"])
+    if str(b["estado"] or "") in _ESTADOS_FIN:
+        st.info("✅ Reacción **terminada**: lo que corrijas acá (materia prima, insumos, tiempos) "
+                "reescribe el dato registrado y queda auditado. El rendimiento y los informes "
+                "que la usan se recalculan solos.")
     _nz = int(ss.get("edi_nonce_%d" % idb) or 0)
     _pp = b["parametros_proceso"]
     if isinstance(_pp, str):

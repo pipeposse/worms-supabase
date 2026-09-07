@@ -3545,7 +3545,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
 
     # ----- Administrar procesos en curso (no es carga: se decide sobre reacciones ya arrancadas) -----
     if _grupo.startswith("⚙️"):
-        _admin_opts = ["🛠️ Gestión de producción", "✏️ Edición rápida", "⏱️ Edición de iniciadas", "🏁 Terminadas (objetivo vs real)", "🧴 Producción ARE", "🫧 Producción AFE", "⏭️ Avanzar fase (manual)"]
+        _admin_opts = ["🛠️ Gestión de producción", "✏️ Edición rápida", "⏱️ Materia prima e insumos", "🏁 Terminadas (objetivo vs real)", "🧴 Producción ARE", "🫧 Producción AFE", "⏭️ Avanzar fase (manual)"]
         try:
             _admin = st.segmented_control("Administrar", _admin_opts, default=_admin_opts[0],
                                           key="pl_admin_sc", label_visibility="collapsed")
