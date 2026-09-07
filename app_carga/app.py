@@ -4111,6 +4111,98 @@ if st.session_state.section != "CARGAS":
                                                 cat.clear(); st.rerun()
                                         except Exception as e:
                                             st.exception(e)
+                        # ---------- editar un producto existente ----------
+                        st.markdown("---")
+                        st.markdown("**✏️ Editar un producto existente**")
+                        _ep_all = cat("SELECT id_producto, codigo_producto, nombre_producto, "
+                                      "COALESCE(tipo_producto,'MP') AS tipo, COALESCE(corriente,'') AS corriente, "
+                                      "densidad_g_ml, COALESCE(es_liquido,false) AS es_liquido, "
+                                      "COALESCE(NULLIF(rotulo_oficial,''), codigo_producto) AS rotulo, "
+                                      "COALESCE(activo,true) AS activo "
+                                      "FROM produccion.dim_producto ORDER BY codigo_producto")
+                        if _ep_all is None or _ep_all.empty:
+                            st.caption("No hay productos para editar.")
+                        else:
+                            _ep_cods = _ep_all["codigo_producto"].astype(str).tolist()
+                            _ep_sel = st.selectbox("Producto a editar", ["—"] + _ep_cods, key="ep_sel",
+                                                   format_func=lambda c: c if c == "—" else
+                                                   "%s · %s" % (c, _ep_all[_ep_all["codigo_producto"] == c].iloc[0]["nombre_producto"]))
+                            if _ep_sel != "—":
+                                _epr = _ep_all[_ep_all["codigo_producto"] == _ep_sel].iloc[0]
+                                _e1, _e2 = st.columns(2)
+                                _ep_cod = (_e1.text_input("Código", value=str(_epr["codigo_producto"]),
+                                                          key="ep_cod",
+                                                          help="Es la identidad del producto. Cambiarlo NO pierde "
+                                                               "historia (las tablas apuntan por id), pero sí cambia "
+                                                               "cómo lo ven todas las pantallas.") or "").strip().upper()
+                                _ep_nom = (_e2.text_input("Nombre", value=str(_epr["nombre_producto"] or ""),
+                                                          key="ep_nom") or "").strip()
+                                _e3, _e4, _e5 = st.columns(3)
+                                _tipos_p = ["MP", "INSUMO", "FINAL", "SUBPRODUCTO"]
+                                _ep_tipo = _e3.selectbox("Tipo", _tipos_p, key="ep_tipo",
+                                                         index=(_tipos_p.index(str(_epr["tipo"]))
+                                                                if str(_epr["tipo"]) in _tipos_p else 0))
+                                _corrs = ["", "VEGETAL", "ANIMAL"]
+                                _ep_corr = _e4.selectbox("Corriente", _corrs, key="ep_corr",
+                                                         index=(_corrs.index(str(_epr["corriente"]))
+                                                                if str(_epr["corriente"]) in _corrs else 0))
+                                _ep_dens = _e5.number_input(
+                                    "Densidad (kg/L)", 0.0, 5.0, step=0.01, key="ep_dens",
+                                    value=(float(_epr["densidad_g_ml"]) if pd.notna(_epr["densidad_g_ml"]) else 0.0),
+                                    help="0 = sin densidad propia (convierte con 0,91 por defecto).")
+                                _e6, _e7 = st.columns(2)
+                                _ep_liq = _e6.checkbox("Es líquido (entra en ⚖️ Densidades)",
+                                                       value=bool(_epr["es_liquido"]), key="ep_liq")
+                                _ep_act = _e7.checkbox("Activo", value=bool(_epr["activo"]), key="ep_act",
+                                                       help="Un producto asignado a tanques no se puede desactivar: "
+                                                            "primero hay que sacarlo de esos tanques.")
+                                _ep_rot = st.text_input("Rótulo oficial (lo que se muestra en pantalla)",
+                                                        value=str(_epr["rotulo"] or ""), key="ep_rot")
+                                if _ep_cod != str(_epr["codigo_producto"]):
+                                    st.warning("⚠️ Vas a cambiar el **código** de `%s` a `%s`. La historia se "
+                                               "mantiene, pero si otro sistema (laboratorio, portería, el maestro "
+                                               "en Excel) manda el código viejo, va a dejar de coincidir."
+                                               % (_epr["codigo_producto"], _ep_cod or "—"))
+                                if st.button("💾 Guardar cambios del producto", key="ep_save", type="primary"):
+                                    if not _ep_cod or not _ep_nom:
+                                        st.error("Código y nombre son obligatorios.")
+                                    else:
+                                        try:
+                                            with conectar(USR["id_usuario"]) as (conn, audit):
+                                                with conn.cursor() as cur:
+                                                    if _ep_cod != str(_epr["codigo_producto"]):
+                                                        cur.execute("SELECT 1 FROM produccion.dim_producto "
+                                                                    "WHERE UPPER(codigo_producto)=%s AND id_producto<>%s",
+                                                                    (_ep_cod, int(_epr["id_producto"])))
+                                                        if cur.fetchone():
+                                                            raise RuntimeError("Ya existe otro producto con código %s." % _ep_cod)
+                                                    cur.execute(
+                                                        "UPDATE produccion.dim_producto SET codigo_producto=%s, "
+                                                        "nombre_producto=%s, tipo_producto=%s, corriente=%s, "
+                                                        "densidad_g_ml=%s, es_liquido=%s, rotulo_oficial=%s, "
+                                                        "activo=%s, actualizado_en=now() WHERE id_producto=%s",
+                                                        (_ep_cod, _ep_nom, _ep_tipo, (_ep_corr or None),
+                                                         (float(_ep_dens) if _ep_dens else None), bool(_ep_liq),
+                                                         (_ep_rot or None), bool(_ep_act), int(_epr["id_producto"])))
+                                                    cur.execute("SELECT COALESCE(activo,false) FROM produccion.dim_producto "
+                                                                "WHERE id_producto=%s", (int(_epr["id_producto"]),))
+                                                    _act_real = bool(cur.fetchone()[0])
+                                                audit.log("U", "dim_producto", int(_epr["id_producto"]),
+                                                          {"codigo_antes": str(_epr["codigo_producto"]),
+                                                           "codigo": _ep_cod, "nombre": _ep_nom,
+                                                           "densidad": _ep_dens, "es_liquido": bool(_ep_liq),
+                                                           "activo": _act_real})
+                                            if (not _ep_act) and _act_real:
+                                                st.warning("Guardado, pero **%s sigue activo**: está asignado a "
+                                                           "tanques y el sistema no deja desactivarlo. Sacalo de "
+                                                           "esos tanques y volvé a intentar." % _ep_cod)
+                                            else:
+                                                st.success("Producto **%s** actualizado." % _ep_cod)
+                                            cat.clear(); st.rerun()
+                                        except Exception as e:
+                                            st.error("No se pudo guardar: %s" % e)
+                        st.markdown("---")
+                        st.markdown("**➕ Crear un producto nuevo**")
                         _npc1, _npc2 = st.columns(2)
                         _np_cod = (_npc1.text_input("Código *", key="np_cod", placeholder="ej. ACEITE-X") or "").strip().upper()
                         _np_nom = (_npc2.text_input("Nombre *", key="np_nom", placeholder="ej. Aceite X") or "").strip()
