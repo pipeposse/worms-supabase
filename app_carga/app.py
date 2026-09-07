@@ -3580,10 +3580,34 @@ if st.session_state.section != "CARGAS":
         _prods = cat("SELECT id_producto, codigo_producto, COALESCE(densidad_g_ml,0.91) AS dens, "
                      "COALESCE(NULLIF(rotulo_oficial,''), codigo_producto) AS rotulo "
                      "FROM produccion.dim_producto WHERE activo ORDER BY codigo_producto")
-        _rotmap = (dict(zip(_prods["codigo_producto"].tolist(), _prods["rotulo"].tolist()))
-                   if _prods is not None and not _prods.empty else {})
+        # Catalogo COMPLETO (incluye inactivos): un producto puede seguir asignado a
+        # tanques despues de que la reconciliacion del maestro lo desactive (paso con
+        # AFE-M / AFE-MN). Para densidad y rotulos se usa este; para ofrecer productos
+        # nuevos se sigue usando _prods (solo activos).
+        _prods_all = cat("SELECT id_producto, codigo_producto, COALESCE(densidad_g_ml,0.91) AS dens, "
+                         "COALESCE(NULLIF(rotulo_oficial,''), codigo_producto) AS rotulo, "
+                         "COALESCE(activo,false) AS activo FROM produccion.dim_producto "
+                         "ORDER BY codigo_producto")
+        if _prods_all is None or _prods_all.empty:
+            _prods_all = _prods
+        _rotmap = (dict(zip(_prods_all["codigo_producto"].tolist(), _prods_all["rotulo"].tolist()))
+                   if _prods_all is not None and not _prods_all.empty else {})
+        _densmap = (dict(zip(_prods_all["codigo_producto"].tolist(),
+                             pd.to_numeric(_prods_all["dens"], errors="coerce").fillna(0.91).tolist()))
+                    if _prods_all is not None and not _prods_all.empty else {})
+        _inactset = (set(_prods_all[~_prods_all["activo"].fillna(False).astype(bool)]["codigo_producto"].tolist())
+                     if _prods_all is not None and not _prods_all.empty else set())
+        def _dens_de_prod(_c):
+            """Densidad kg/L de un codigo de producto. Nunca rompe: 0.91 por defecto."""
+            try:
+                _d = float(_densmap.get(_c, 0.91))
+                return _d if _d > 0 else 0.91
+            except Exception:
+                return 0.91
         def _fmt_prod(_c):
-            return "(sin asignar)" if _c == "(sin asignar)" else _rotmap.get(_c, _c)
+            if _c == "(sin asignar)":
+                return "(sin asignar)"
+            return _rotmap.get(_c, _c) + (" · ⛔ inactivo" if _c in _inactset else "")
         if _panel.empty:
             st.info("No hay tanques cargados.")
         else:
@@ -3829,14 +3853,21 @@ if st.session_state.section != "CARGAS":
                         _perm = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
                                     "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
                                     "WHERE tp.id_tanque=%s ORDER BY tp.es_principal DESC, p.codigo_producto", (_idt,))
-                        _plist = _perm["codigo_producto"].tolist() or _prods["codigo_producto"].tolist()
-                        _ppal = _prods[_prods["id_producto"] == _row["id_producto_principal"]]["codigo_producto"].tolist()
-                        _defp = _ppal[0] if (_ppal and _ppal[0] in _plist) else _plist[0]
+                        _plist = (_perm["codigo_producto"].tolist()
+                                  or _prods["codigo_producto"].tolist()
+                                  or _prods_all["codigo_producto"].tolist())
+                        # el principal puede estar inactivo: se busca en el catalogo completo
+                        _ppal = _prods_all[_prods_all["id_producto"] == _row["id_producto_principal"]]["codigo_producto"].tolist()
+                        if _ppal and _ppal[0] not in _plist:
+                            _plist = _ppal + _plist
+                        _defp = _ppal[0] if (_ppal and _ppal[0] in _plist) else (_plist[0] if _plist else "(sin asignar)")
                         KG_BOLSA = 25.0
                         _es_bolsa = str(_row["tipo_tanque"] or "").strip().upper() == "BOLSA"
                         cc1, cc2 = st.columns(2)
                         _defprod = _cpr if (_cpr != "Todos" and _cpr in _plist) else _defp
-                        _pcod = cc1.selectbox("Producto medido", _plist, index=_plist.index(_defprod), key="tq_prod_c", format_func=_fmt_prod)
+                        _pcod = cc1.selectbox("Producto medido", _plist,
+                                              index=(_plist.index(_defprod) if _defprod in _plist else 0),
+                                              key="tq_prod_c", format_func=_fmt_prod)
                         _cambiar_prod = False
                         if _ppal and _pcod != _ppal[0]:
                             _cambiar_prod = st.checkbox(
@@ -3845,7 +3876,12 @@ if st.session_state.section != "CARGAS":
                                      "Marcá esto SOLO si el tanque ahora contiene otro producto.")
                         _unidades = ["Bolsas (25 kg)", "Kilos", "Litros"] if _es_bolsa else ["Litros", "Kilos", "Bolsas (25 kg)"]
                         _unid = cc2.selectbox("Unidad de carga", _unidades, key=f"tq_unid_c_{_idt}")
-                        _densp = float(_prods[_prods["codigo_producto"] == _pcod]["dens"].iloc[0])
+                        _densp = _dens_de_prod(_pcod)
+                        if _pcod in _inactset:
+                            st.caption("⛔ **%s** está marcado como INACTIVO en el maestro de productos "
+                                       "pero sigue asignado a este tanque. La medición se puede cargar "
+                                       "igual (densidad %g kg/L); si el producto vale, reactivalo en el "
+                                       "maestro." % (_pcod, _densp))
                         _last_lts = float(_row.get("litros_actual")) if pd.notna(_row.get("litros_actual")) else 0.0
                         _last_kg = float(_row.get("kg_actual")) if pd.notna(_row.get("kg_actual")) else 0.0
                         if _last_lts > 0 or _last_kg > 0:
@@ -3966,9 +4002,11 @@ if st.session_state.section != "CARGAS":
                         _aperm = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
                                      "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
                                      "WHERE tp.id_tanque=%s ORDER BY tp.es_principal DESC, p.codigo_producto", (_aid,))
-                        _aplist = _aperm["codigo_producto"].tolist() or _prods["codigo_producto"].tolist()
+                        _aplist = (_aperm["codigo_producto"].tolist()
+                                   or _prods["codigo_producto"].tolist()
+                                   or _prods_all["codigo_producto"].tolist())
                         _apcod = st.selectbox("Producto", _aplist, key="afo_prod", format_func=_fmt_prod)
-                        _adens = float(_prods[_prods["codigo_producto"] == _apcod]["dens"].iloc[0])
+                        _adens = _dens_de_prod(_apcod)
                         _akg = _vol * _adens
                         ma1, ma2, ma3, ma4 = st.columns(4)
                         ma1.metric("Volumen", f"{_vol:,.0f} L")
@@ -4099,7 +4137,7 @@ if st.session_state.section != "CARGAS":
                     _curp = cat("SELECT p.codigo_producto FROM produccion.dim_tanque_producto tp "
                                 "JOIN produccion.dim_producto p ON p.id_producto=tp.id_producto "
                                 "WHERE tp.id_tanque=%s", (_idt2,))["codigo_producto"].tolist()
-                    _pp2 = _prods[_prods["id_producto"] == _r2["id_producto_principal"]]["codigo_producto"].tolist()
+                    _pp2 = _prods_all[_prods_all["id_producto"] == _r2["id_producto_principal"]]["codigo_producto"].tolist()
                     if not _pp2 and pd.notna(_r2["id_producto_principal"]):
                         _pp0 = cat("SELECT codigo_producto FROM produccion.dim_producto WHERE id_producto=%s",
                                    (int(_r2["id_producto_principal"]),))
