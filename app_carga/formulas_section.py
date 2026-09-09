@@ -78,7 +78,18 @@ def render(USR, cat, conectar):
     procs = cat("SELECT codigo FROM produccion.dic_tipo_proceso WHERE activo ORDER BY codigo")["codigo"].tolist()
     uid = int(USR["id_usuario"])
 
-    t_list, t_edit, t_new, t_cond = st.tabs(["📋 Todas las fórmulas", "✏️ Editar / default", "➕ Nueva fórmula", "🧮 Condicionales"])
+    _tabs = ["📋 Todas las fórmulas", "✏️ Editar / default", "➕ Nueva fórmula", "🧮 Condicionales", "📑 Pasos (instructivo)"]
+    if (st.session_state.get("nav") or {}).get("vista") == "FORMULACION":
+        _tabs = [_tabs[-1]] + _tabs[:-1]        # desde la tarjeta Formulación del sector: el instructivo primero
+    _tobj = dict(zip(_tabs, st.tabs(_tabs)))
+    t_list, t_edit, t_new, t_cond, t_pasos = (_tobj[n] for n in
+        ["📋 Todas las fórmulas", "✏️ Editar / default", "➕ Nueva fórmula", "🧮 Condicionales", "📑 Pasos (instructivo)"])
+    with t_pasos:
+        try:
+            import formula_pasos as _fp
+            _fp.render(USR, cat, conectar)
+        except Exception as _e:
+            st.error(f"No se pudo cargar el instructivo: {_e}")
     with t_cond:
         st.caption("**Todas las condiciones en un solo lugar.** Umbrales de producción (acidez, purga, % glicerina), "
                    "objetivos por proceso y parámetros aceptables por tanque. Se editan acá y se aplican al instante.")
