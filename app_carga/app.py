@@ -699,7 +699,8 @@ if st.session_state.section is None:
     if _nav_on:
         try:
             _nav.render_landing({
-                "USR": USR, "conn_factory": _lab_conn, "puede_seccion": puede_seccion,
+                "USR": USR, "conn_factory": _lab_conn, "conectar": conectar,
+                "puede_seccion": puede_seccion,
                 "secciones": [s for s, _ in SECCIONES_APP],
                 "tiles": [{"icono": i, "titulo": t, "desc": d, "sec": s}
                           for (i, t, d, s, _k, _p) in _TILES_LANDING],

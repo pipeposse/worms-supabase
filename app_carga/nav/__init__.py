@@ -17,7 +17,7 @@ Uso desde app.py (dos hooks de 6 líneas, ver docs/PLAN_NAVEGACION_V2.md):
 
     import nav
     if nav.activo(USR, _lab_conn):
-        nav.render_landing(USR, ctx)   # reemplaza la portada clásica
+        nav.render_landing(ctx)        # reemplaza la portada clásica (ctx: USR, conn_factory, conectar, ...)
         st.stop()
 
     nav.sidebar_toggle(USR, _lab_conn)  # botón Vista nueva / Vista clásica
@@ -28,3 +28,4 @@ from .state import (  # noqa: F401
 )
 from .portada import render_landing, sidebar_toggle, breadcrumb  # noqa: F401
 from .sectores import sectores_nav  # noqa: F401
+from .kpis import render_kpis_area  # noqa: F401

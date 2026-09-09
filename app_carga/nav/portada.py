@@ -139,13 +139,12 @@ def _area_produccion(ctx):
     USR, puede = ctx["USR"], ctx["puede_seccion"]
     _hero("ÁREA PRODUCCIÓN", USR, icono="🏭")
 
-    # --- Indicadores del área: Fase 1 (a validar con Eugenia, Pablo y Fernando) ---
-    kpis = ctx.get("render_kpis_area")
-    if callable(kpis):
-        kpis(ctx)
-    else:
-        st.caption("Indicadores del área: próximamente (acopio disponible · descargas pendientes · "
-                   "personal en planta · sectores activos · tickets pendientes de análisis).")
+    # --- Indicadores del área (Fase 1): acopio · descargas · personal · sectores · tickets ---
+    try:
+        from .kpis import render_kpis_area
+        render_kpis_area(ctx)
+    except Exception as _e:
+        st.caption(f"Indicadores del área no disponibles: {_e}")
 
     # --- Planificación / Reportes / Panel de Control ---
     fijas = [dict(icono=i, titulo=t, desc=d, key=f"nav_prod_{s}", on_click=_ir(ctx, "PRODUCCION", None, s))
