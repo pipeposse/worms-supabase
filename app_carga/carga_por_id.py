@@ -124,6 +124,12 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
                                f"{_tp_short.get(r['tipo_proceso'], r['tipo_proceso'] or '—')} · {r['reactor'] or '—'} · "
                                f"MP: {r['mp']} ({float(r['mp_tn'] or 0):.1f} t) · "
                                f"{_label.get(r['estado'], r['estado'])} · 🗓️ {r['creado_fmt'] or '—'}", axis=1).tolist()
+    # Llegada desde la planificación semanal (botón Cargar): preseleccionar esa OP
+    _pre = st.session_state.pop("pp_sel_id_batch", None)
+    if _pre is not None:
+        _ids = act["id_batch"].astype(int).tolist()
+        if int(_pre) in _ids:
+            st.session_state["pp_sel"] = opts[_ids.index(int(_pre))]
     sel = st.selectbox("¿En qué producción vas a trabajar?", opts, key="pp_sel")
     b = act.iloc[opts.index(sel)]
     estado = str(b["estado"])

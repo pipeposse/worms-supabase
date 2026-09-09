@@ -24,8 +24,8 @@ from .sectores import sector_por_codigo
 # (vista, icono, título, descripción, sección clásica, presets de widgets)
 _COMUNES = [
     ("PLAN", "🗓️", "Planificación",
-     "Producciones planificadas y alta de nuevas órdenes para el sector.",
-     "PLANIFICACION", {"pl_grupo_sc": "➕ Nueva producción", "pl_grupo": "➕ Nueva producción"}),
+     "Plan semanal por OP: día, fórmula, horario, responsable y el botón Cargar de cada orden.",
+     None, {}),          # None = vista propia de nav (plan_semanal.py); el alta sigue en el Centro de Planificación
     ("SEGUIMIENTO", "👷", "Seguimiento Producción",
      "Orden del día: arrancar la producción y avanzarla etapa por etapa.",
      "INICIAR", {"iniciar_view": "👷 Iniciar producción"}),
@@ -93,7 +93,7 @@ def _ir_vista(ctx, sec, vista, seccion, presets):
         _st.set_nav("PRODUCCION", sec["codigo"], vista, rerun=False)
         for k, v in presets.items():
             st.session_state[k] = v
-        st.session_state.section = seccion
+        st.session_state.section = seccion      # None → la vista vive en la portada (nav)
     return _cb
 
 
@@ -182,7 +182,7 @@ def render_sector(ctx, codigo):
 
     items = []
     for vista, ic, tit, desc, seccion, presets in tarjetas(sec):
-        habil = puede(seccion)
+        habil = True if seccion is None else puede(seccion)
         items.append(dict(icono=ic, titulo=tit, desc=desc, key=f"nav_sv_{sec['codigo']}_{vista}",
                           disabled=not habil, label=("Entrar" if habil else "Sin acceso"),
                           tipo=("primary" if habil else "secondary"), atenuado=not habil,

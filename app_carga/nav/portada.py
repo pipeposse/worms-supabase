@@ -68,7 +68,9 @@ def _bc_cb(area, volver_portada):
 
 def _bc_sector_cb():
     def _cb():
-        st.session_state.section = None   # vuelve al home del sector (nav queda como está)
+        nav = _st.get_nav()
+        _st.set_nav(nav["area"], nav["sector"], None, rerun=False)   # home del sector (sin vista)
+        st.session_state.section = None
     return _cb
 
 
@@ -86,7 +88,7 @@ def breadcrumb(ctx, mostrar_raiz=True, volver_portada=False):
         sec = sector_por_codigo(ctx["conn_factory"], nav["sector"])
         if sec:
             from .sector import tiene_home
-            fn = _bc_sector_cb() if (volver_portada and tiene_home(sec)) else None
+            fn = _bc_sector_cb() if ((volver_portada or nav["vista"]) and tiene_home(sec)) else None
             partes.append((f"{sec['icono']} {sec['nombre_ui']}", fn))
     if not partes:
         return
@@ -233,6 +235,13 @@ def render_landing(ctx):
         return
     if nav["sector"]:
         from .sector import render_sector
+        if nav["vista"] == "PLAN":
+            sec = sector_por_codigo(ctx["conn_factory"], nav["sector"])
+            if sec:
+                from .plan_semanal import render_plan
+                render_plan(ctx, sec)
+                _pie_soporte(ctx)
+                return
         if render_sector(ctx, nav["sector"]):
             return
         _st.set_nav("PRODUCCION", rerun=False)   # sector sin home: se muestra el área
