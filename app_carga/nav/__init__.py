@@ -29,3 +29,4 @@ from .state import (  # noqa: F401
 from .portada import render_landing, sidebar_toggle, breadcrumb  # noqa: F401
 from .sectores import sectores_nav  # noqa: F401
 from .kpis import render_kpis_area  # noqa: F401
+from .sector import render_sector  # noqa: F401

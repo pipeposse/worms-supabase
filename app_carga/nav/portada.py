@@ -66,6 +66,12 @@ def _bc_cb(area, volver_portada):
     return _cb
 
 
+def _bc_sector_cb():
+    def _cb():
+        st.session_state.section = None   # vuelve al home del sector (nav queda como está)
+    return _cb
+
+
 def breadcrumb(ctx, mostrar_raiz=True, volver_portada=False):
     """Migas: Sistema › Área › Sector. En la portada navega entre niveles; arriba de
     una sección (``volver_portada=True``) además sale de la sección."""
@@ -79,7 +85,9 @@ def breadcrumb(ctx, mostrar_raiz=True, volver_portada=False):
     if nav["sector"]:
         sec = sector_por_codigo(ctx["conn_factory"], nav["sector"])
         if sec:
-            partes.append((f"{sec['icono']} {sec['nombre_ui']}", None))
+            from .sector import tiene_home
+            fn = _bc_sector_cb() if (volver_portada and tiene_home(sec)) else None
+            partes.append((f"{sec['icono']} {sec['nombre_ui']}", fn))
     if not partes:
         return
     cols = st.columns([1] * len(partes) + [max(1, 6 - len(partes))])
@@ -98,6 +106,18 @@ def _ir(ctx, area, sector, seccion):
         _st.set_nav(area, sector, rerun=False)
         st.session_state.section = seccion
     return _cb
+
+
+def _ir_sector(ctx, sec):
+    """Tarjeta de sector: si el sector tiene home propio (unidad de gestión) se queda en la
+    portada mostrando ese home; si no, salta a la sección clásica que lo cubre."""
+    from .sector import tiene_home
+    if tiene_home(sec):
+        def _cb():
+            _st.set_nav("PRODUCCION", sec["codigo"], rerun=False)
+            st.session_state.section = None
+        return _cb
+    return _ir(ctx, "PRODUCCION", sec["codigo"], sec.get("seccion_clasica"))
 
 
 def _areas_permitidas(ctx):
@@ -159,9 +179,10 @@ def _area_produccion(ctx):
     st.markdown('<div class="section-title">Sectores</div>', unsafe_allow_html=True)
     df = sectores_nav(ctx["conn_factory"])
     items = []
+    from .sector import tiene_home
     for _, r in df.iterrows():
         sec_cl = r.get("seccion_clasica")
-        habil = bool(sec_cl) and puede(sec_cl)
+        habil = (bool(sec_cl) and puede(sec_cl)) or tiene_home(r.to_dict())
         sin_datos = not bool(r.get("tiene_datos"))
         if not sec_cl:
             lbl, dis, tipo = "Próximamente", True, "secondary"
@@ -172,7 +193,7 @@ def _area_produccion(ctx):
         items.append(dict(icono=r["icono"], titulo=r["nombre_ui"], desc=r.get("descripcion") or "",
                           key=f"nav_sec_{r['codigo']}", disabled=dis, label=lbl, tipo=tipo,
                           atenuado=sin_datos or dis,
-                          on_click=(_ir(ctx, "PRODUCCION", r["codigo"], sec_cl) if habil else None)))
+                          on_click=(_ir_sector(ctx, r.to_dict()) if habil else None)))
     _grid(items, por_fila=3)
 
     # --- Todo lo que hoy existe y todavía no tiene tarjeta propia: no se pierde nada ---
@@ -209,8 +230,13 @@ def render_landing(ctx):
     breadcrumb(ctx)
     if nav["area"] == "ADMIN":
         _area_admin(ctx)
-    else:
-        _area_produccion(ctx)
+        return
+    if nav["sector"]:
+        from .sector import render_sector
+        if render_sector(ctx, nav["sector"]):
+            return
+        _st.set_nav("PRODUCCION", rerun=False)   # sector sin home: se muestra el área
+    _area_produccion(ctx)
 
 
 def sidebar_toggle(USR, conn_factory, roles=("ADMIN", "SUPERVISOR")):

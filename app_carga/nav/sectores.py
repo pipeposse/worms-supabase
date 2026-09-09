@@ -14,14 +14,14 @@ _SQL = """
 
 # Respaldo si la tabla no existe en el entorno (dev local sin la migración):
 # la grilla del director, en su orden.
-_FALLBACK = [
-    ("REACTORES", "Reactor", "⚙️", "REACTORES", "INICIAR"), ("BACHAS", "Bachas", "🛢️", "BACHAS", "INICIAR"),
-    ("PILETAS", "Piletas", "🌊", "PILETAS", "RECUPERACION"), ("EXPORTACION", "Exportación", "🚢", "EXPORTACION", "STOCK"),
-    ("DF_LIQUIDOS", "Disp. Final Líquidos", "💧", None, "LAB"), ("DF_SOLIDOS", "Disp. Final Sólidos", "🗑️", None, None),
-    ("SOLIDOS", "Sólidos", "🧱", None, None), ("NFU", "NFU", "♻️", None, None),
-    ("COMPOST", "Compost & Fertilizante", "🌱", None, None), ("TALLER", "Taller & Mantenimiento", "🔧", None, "REPUESTOS"),
-    ("LABORATORIO", "Laboratorio", "🧪", None, "LAB"), ("PORTERIA", "Portería", "🚧", None, "LAB"),
-    ("INTENDENCIA", "Intendencia", "🧹", None, None), ("LOGISTICA", "Logística", "🚚", None, None),
+_FALLBACK = [  # (codigo, nombre_ui, icono, sector_gestion, sector_batch, seccion_clasica)
+    ("REACTORES", "Reactor", "⚙️", "REACTORES", "REACTORES", "INICIAR"), ("BACHAS", "Bachas", "🛢️", "BACHAS", "BACHAS", "INICIAR"),
+    ("PILETAS", "Piletas", "🌊", "PILETAS", "RECUPERACION", "RECUPERACION"), ("EXPORTACION", "Exportación", "🚢", "EXPORTACION", "EXPO", "STOCK"),
+    ("DF_LIQUIDOS", "Disp. Final Líquidos", "💧", None, None, "LAB"), ("DF_SOLIDOS", "Disp. Final Sólidos", "🗑️", None, None, None),
+    ("SOLIDOS", "Sólidos", "🧱", None, None, None), ("NFU", "NFU", "♻️", None, None, None),
+    ("COMPOST", "Compost & Fertilizante", "🌱", None, None, None), ("TALLER", "Taller & Mantenimiento", "🔧", None, None, "REPUESTOS"),
+    ("LABORATORIO", "Laboratorio", "🧪", None, None, "LAB"), ("PORTERIA", "Portería", "🚧", None, None, "LAB"),
+    ("INTENDENCIA", "Intendencia", "🧹", None, None, None), ("LOGISTICA", "Logística", "🚚", None, None, None),
 ]
 
 
@@ -52,7 +52,7 @@ def _cargar(conn_factory) -> pd.DataFrame:
     except Exception:
         pass
     rows = [dict(codigo=c, nombre_ui=n, icono=i, orden=(k + 1) * 10, activo=True,
-                 tiene_datos=bool(s), sector_gestion=g, sector_batch=None,
+                 tiene_datos=bool(s), sector_gestion=g, sector_batch=b,
                  seccion_clasica=s, descripcion=None)
-            for k, (c, n, i, g, s) in enumerate(_FALLBACK)]
+            for k, (c, n, i, g, b, s) in enumerate(_FALLBACK)]
     return pd.DataFrame(rows)
