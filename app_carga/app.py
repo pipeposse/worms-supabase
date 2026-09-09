@@ -711,6 +711,14 @@ if st.session_state.section is None:
             st.warning("La navegación nueva falló y se muestra la portada clásica: %s" % _e)
         if _nav_ok:
             st.stop()
+    # El toggle de la barra lateral no se ve acá (la portada corta antes): botón propio.
+    try:
+        import nav as _nav
+        _c_nav_1, _c_nav_2 = st.columns([3, 1.4])
+        with _c_nav_2:
+            _nav.sidebar_toggle(USR, _lab_conn)
+    except Exception:
+        pass
     _hoy_txt = date.today().strftime("%d/%m/%Y")
     st.markdown(f"""
     <div class="worms-hero">
