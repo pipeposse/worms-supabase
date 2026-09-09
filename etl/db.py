@@ -46,17 +46,63 @@ def conectar(id_usuario):
         raise RuntimeError("Sesión sin login. No se permite escribir.")
     conn = db_connect()
     conn.autocommit = False
+    _stmts = []
+    conn.cursor_factory = _cursor_grabador(_stmts)   # qué escribe esta transacción
     try:
         with conn.cursor() as cur:
             cur.execute("SET search_path TO produccion, public; SET TIME ZONE 'America/Argentina/Buenos_Aires'")
             cur.execute("SELECT set_config('app.user_id', %s, false)", (str(id_usuario),))
         yield conn, _Audit(conn, id_usuario)
         conn.commit()
+        _avisar_commit(_stmts)
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+# ---- Hooks de commit: la app registra cache_rev.on_commit para invalidar SOLO las
+# consultas cacheadas que dependen de las tablas escritas (ver app_carga/cache_rev.py).
+ON_COMMIT_HOOKS = []
+
+
+def _cursor_grabador(stmts):
+    """cursor_factory que anota cada statement ejecutado (execute/executemany;
+    execute_values también pasa por execute). No cambia el comportamiento."""
+    class _C(psycopg2.extensions.cursor):
+        def _texto(self, query):
+            if isinstance(query, str):
+                return query
+            if isinstance(query, bytes):
+                return query.decode("utf-8", "ignore")
+            try:
+                return query.as_string(self)      # psycopg2.sql.Composable
+            except Exception:
+                return "CALL opaco"               # que el hook lo trate como escritura global
+
+        def execute(self, query, vars=None):
+            try:
+                stmts.append(self._texto(query))
+            except Exception:
+                pass
+            return super().execute(query, vars)
+
+        def executemany(self, query, vars_list):
+            try:
+                stmts.append(self._texto(query))
+            except Exception:
+                pass
+            return super().executemany(query, vars_list)
+    return _C
+
+
+def _avisar_commit(stmts):
+    for h in list(ON_COMMIT_HOOKS):
+        try:
+            h(stmts)
+        except Exception:
+            pass
 
 
 def login(nombre, pin):

@@ -664,10 +664,52 @@ def _home_df(sql, params=None):
         return None
 
 
+# ---- Accesos de la portada (misma lista para la vista clásica y la navegación v2) ----
+_TILES_LANDING = [
+    ("👷", "Producción en planta", "Elegí una producción planificada por dirección y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
+    ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
+    ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
+    ("📦", "Stock", "Libro mayor de movimientos, stock estimado en tiempo real y conciliación. Todo descargable.", "STOCK", "land_stock", False),
+    ("📸", "Remitos", "Sacá o arrastrá la foto del remito: se leen los datos con IA, los revisás y quedan en la base junto al ticket de balanza.", "REMITOS", "land_remitos", False),
+    ("📈", "Estado de planta", "Tablero de reacciones, bandeja de laboratorio, trazabilidad de lote, mermas y alertas.", "ESTADO", "land_estado", False),
+]
+_TILES_LANDING.append(("🔧", "Repuestos", "Pañol de mantenimiento: ingresos y egresos rápidos, stock actual, mínimos y alertas de reposición.", "REPUESTOS", "land_repuestos", False))
+_TILES_LANDING.append(("📑", "ISCC", "Proyecto ISCC: genera la planilla mensual de camiones con kg prorrateados, remitos correlativos y patentes espaciadas.", "ISCC", "land_iscc", False))
+_TILES_LANDING.append(("🔬", "Análisis de reacciones", "Semana a semana: toneladas, desvíos vs tiempo estimado, laboratorio del producto final y eficiencia de reactores.", "ANALISIS", "land_analisis", False))
+_TILES_LANDING.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
+_TILES_LANDING.append(("🧪", "Fórmulas", "Fórmulas con nombre por proceso/MP/producto: creá, editá y elegí la default que usa Planificación.", "FORMULAS", "land_formulas", False))
+_TILES_LANDING.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
+_TILES_LANDING.append(("💰", "Cierres mensuales", "Rentabilidad: P&L mensual, dónde está el valor, márgenes por segmento, Q1 vs Q2, outliers e insights.", "CIERRES", "land_cierres", False))
+_TILES_LANDING.append(("🛂", "Dirección", "Brief semanal, desvíos de stock, control de gestión y aprobación de planificaciones fuera de norma.", "DIRECCION", "land_direccion", False))
+_TILES_LANDING.append(("🛠️", "Mejoras y problemas", "¿Algo de la app no anda o falta? Pedí la mejora, marcá qué tan importante es y te respondo a tu mail. (No es para tickets de balanza.)", "MEJORAS", "land_mejoras", False))
+_TILES_LANDING.append(("⚙️", "Admin", "Gestión de usuarios: alta, roles, sectores, reset PIN y accesos a la página.", "ADMIN", "land_admin", False))
+
 if st.session_state.section is None:
     if st.session_state.get("_sec_cookie"):
         _auth.set_section_cookie(None)
         st.session_state._sec_cookie = None
+    # ---- Navegación v2 (flag por usuario: dim_usuario.prefs.nav_v2) ----
+    # Raíz Administración / Producción → sectores. Con el flag apagado, esta portada
+    # es exactamente la de siempre. Ver docs/PLAN_NAVEGACION_V2.md.
+    try:
+        import nav as _nav
+        _nav_on = _nav.activo(USR, _lab_conn, locked_one=_LOCKED_ONE)
+    except Exception:
+        _nav_on = False
+    if _nav_on:
+        try:
+            _nav.render_landing({
+                "USR": USR, "conn_factory": _lab_conn, "puede_seccion": puede_seccion,
+                "secciones": [s for s, _ in SECCIONES_APP],
+                "tiles": [{"icono": i, "titulo": t, "desc": d, "sec": s}
+                          for (i, t, d, s, _k, _p) in _TILES_LANDING],
+            })
+            _nav_ok = True
+        except Exception as _e:
+            _nav_ok = False
+            st.warning("La navegación nueva falló y se muestra la portada clásica: %s" % _e)
+        if _nav_ok:
+            st.stop()
     _hoy_txt = date.today().strftime("%d/%m/%Y")
     st.markdown(f"""
     <div class="worms-hero">
@@ -810,25 +852,7 @@ if st.session_state.section is None:
 
     st.markdown('<div class="section-title">Accesos</div>', unsafe_allow_html=True)
 
-    tiles = [
-        ("👷", "Producción en planta", "Elegí una producción planificada por dirección y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
-        ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
-        ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
-        ("📦", "Stock", "Libro mayor de movimientos, stock estimado en tiempo real y conciliación. Todo descargable.", "STOCK", "land_stock", False),
-        ("📸", "Remitos", "Sacá o arrastrá la foto del remito: se leen los datos con IA, los revisás y quedan en la base junto al ticket de balanza.", "REMITOS", "land_remitos", False),
-        ("📈", "Estado de planta", "Tablero de reacciones, bandeja de laboratorio, trazabilidad de lote, mermas y alertas.", "ESTADO", "land_estado", False),
-    ]
-    tiles.append(("🔧", "Repuestos", "Pañol de mantenimiento: ingresos y egresos rápidos, stock actual, mínimos y alertas de reposición.", "REPUESTOS", "land_repuestos", False))
-    tiles.append(("📑", "ISCC", "Proyecto ISCC: genera la planilla mensual de camiones con kg prorrateados, remitos correlativos y patentes espaciadas.", "ISCC", "land_iscc", False))
-    tiles.append(("🔬", "Análisis de reacciones", "Semana a semana: toneladas, desvíos vs tiempo estimado, laboratorio del producto final y eficiencia de reactores.", "ANALISIS", "land_analisis", False))
-    tiles.append(("🗓️", "Centro de Planificación", "Dirección: planificá la reacción y generá el ID de producción que el operario ejecuta.", "PLANIFICACION", "land_plan", False))
-    tiles.append(("🧪", "Fórmulas", "Fórmulas con nombre por proceso/MP/producto: creá, editá y elegí la default que usa Planificación.", "FORMULAS", "land_formulas", False))
-    tiles.append(("🤖", "Consultas IA", "Preguntá en lenguaje natural sobre camiones y lab (solo lectura).", "CHAT", "land_chat", False))
-    tiles.append(("💰", "Cierres mensuales", "Rentabilidad: P&L mensual, dónde está el valor, márgenes por segmento, Q1 vs Q2, outliers e insights.", "CIERRES", "land_cierres", False))
-    tiles.append(("🛂", "Dirección", "Brief semanal, desvíos de stock, control de gestión y aprobación de planificaciones fuera de norma.", "DIRECCION", "land_direccion", False))
-    tiles.append(("🛠️", "Mejoras y problemas", "¿Algo de la app no anda o falta? Pedí la mejora, marcá qué tan importante es y te respondo a tu mail. (No es para tickets de balanza.)", "MEJORAS", "land_mejoras", False))
-    tiles.append(("⚙️", "Admin", "Gestión de usuarios: alta, roles, sectores, reset PIN y accesos a la página.", "ADMIN", "land_admin", False))
-    tiles = [t for t in tiles if puede_seccion(t[3])]
+    tiles = [t for t in _TILES_LANDING if puede_seccion(t[3])]
 
     for i in range(0, len(tiles), 3):
         cols = st.columns(3)
@@ -848,6 +872,11 @@ with st.sidebar:
         if st.button("← Cambiar de sección", use_container_width=True, key="sb_back"):
             st.session_state.section = None
             st.rerun()
+        try:
+            import nav as _nav
+            _nav.sidebar_toggle(USR, _lab_conn)
+        except Exception:
+            pass
     else:
         if st.session_state.section == "MEJORAS":
             if st.button("← Volver a mi sección", use_container_width=True, key="sb_mj_back"):
@@ -887,6 +916,14 @@ with _hcol1:
                  help="Volver a la pantalla principal"):
         st.session_state.section = None
         st.rerun()
+with _hcol2:
+    # Migas de la navegación v2 (sólo si el usuario la tiene activa y entró por un área)
+    try:
+        import nav as _nav
+        if _nav.activo(USR, _lab_conn, locked_one=_LOCKED_ONE) and _nav.get_nav()["area"]:
+            _nav.breadcrumb({"conn_factory": _lab_conn}, mostrar_raiz=True, volver_portada=True)
+    except Exception:
+        pass
 
 if st.session_state.get("show_chg_pin"):
     with st.expander("🔑 Cambiar mi PIN", expanded=True):
@@ -909,11 +946,35 @@ if st.session_state.get("show_chg_pin"):
                     st.error(str(e))
 
 
+# ---- Caché de consultas con invalidación POR TABLA (cache_rev.py) ----
+# La clave incluye la revisión de las tablas base que toca cada consulta; una
+# escritura (commit de conectar()) sube sólo esas revisiones. `cat.clear()` sigue
+# siendo global (compatibilidad con las ~170 llamadas existentes); la versión
+# fina es `cat.invalidar("fact_x", ...)`. Ver docs/PLAN_NAVEGACION_V2.md §4.
+import cache_rev as _cache_rev
+_cache_rev.configurar(_lab_conn)
+try:
+    from etl import db as _etl_db
+    if _cache_rev.on_commit not in _etl_db.ON_COMMIT_HOOKS:
+        _etl_db.ON_COMMIT_HOOKS.append(_cache_rev.on_commit)
+except Exception:
+    pass
+
+
 @st.cache_data(ttl=300, max_entries=400)
-def cat(query, params=None):
+def _cat_cached(query, params, _rev):
     # Pool compartido: evita un handshake SSL (~0,5 s) por CADA cache-miss.
     with _lab_conn() as conn:
         return pd.read_sql_query(query, conn, params=params)
+
+
+def cat(query, params=None):
+    return _cat_cached(query, params, _cache_rev.rev_key(query))
+
+
+cat.clear = _cache_rev.bump_global        # global, como siempre
+cat.invalidar = _cache_rev.bump_tablas    # fino: cat.invalidar("fact_batch_proceso")
+cat.estado = _cache_rev.estado            # diagnóstico
 
 
 # ---- Tickets de portería (NUMÉRICOS) → peso neto desde transacciones ----
