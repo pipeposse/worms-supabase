@@ -32,3 +32,5 @@ from .kpis import render_kpis_area  # noqa: F401
 from .sector import render_sector  # noqa: F401
 from .plan_semanal import render_plan  # noqa: F401
 from .desvios import render_desvios  # noqa: F401
+from .stock_cc import render_stock  # noqa: F401
+from .sector_simple import render_sector_simple  # noqa: F401

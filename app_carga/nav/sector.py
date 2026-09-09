@@ -36,8 +36,8 @@ _COMUNES = [
      "Fórmulas del sector: materia prima, insumos, tiempos y la default que usa Planificación.",
      "FORMULAS", {"__fx_sector__": True}),
     ("STOCK", "📦", "Stock",
-     "Movimientos, cuenta corriente por producto y stock físico.",
-     "STOCK", {}),
+     "Cuenta corriente por producto (MP · insumos · producto terminado) con saldo; el stock físico sigue en la sección clásica.",
+     None, {}),          # vista propia de nav (stock_cc.py) sobre v_cuenta_corriente_producto
     ("ACOPIO", "🛢️", "Acopio",
      "Tanques del sector: contenido, capacidad y última medición.",
      "TANQUES", {}),
@@ -57,8 +57,9 @@ _SEGUIMIENTO_POR_SECTOR = {
 
 
 def tiene_home(sec):
-    """Un sector tiene home propio si es unidad de gestión (KPIs y tarjetas con sentido)."""
-    return bool(sec) and bool(sec.get("sector_gestion"))
+    """Un sector tiene home propio si es unidad de gestión (KPIs y tarjetas) o si lleva
+    su stock en el ledger simple (home mínimo con carga de movimientos, Fase 5)."""
+    return bool(sec) and (bool(sec.get("sector_gestion")) or bool(sec.get("stock_simple")))
 
 
 def tarjetas(sec):
@@ -174,6 +175,9 @@ def render_sector(ctx, codigo):
     sec = sector_por_codigo(ctx["conn_factory"], codigo)
     if not tiene_home(sec):
         return False
+    if not sec.get("sector_gestion"):
+        from .sector_simple import render_sector_simple
+        return render_sector_simple(ctx, sec)
     from .portada import _hero, _grid, _pie_soporte   # mismo lenguaje visual que el área
     USR, puede = ctx["USR"], ctx["puede_seccion"]
     _hero(f"SECTOR {sec['nombre_ui'].upper()}", USR, icono=sec["icono"],

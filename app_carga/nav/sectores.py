@@ -6,7 +6,8 @@ import streamlit as st
 
 _SQL = """
     SELECT codigo, nombre_ui, icono, orden, activo, tiene_datos,
-           sector_gestion, sector_batch, seccion_clasica, descripcion
+           sector_gestion, sector_batch, seccion_clasica, descripcion,
+           stock_simple, patron_tanques
     FROM produccion.dim_sector_nav
     WHERE activo
     ORDER BY orden, codigo
@@ -14,6 +15,9 @@ _SQL = """
 
 # Respaldo si la tabla no existe en el entorno (dev local sin la migración):
 # la grilla del director, en su orden.
+_SIMPLES = {"SOLIDOS", "DF_SOLIDOS", "NFU", "COMPOST"}   # sin tanques: ledger propio (Fase 5)
+_PATRONES = {"REACTORES": "^(Reactores|Consumibles Reactores)", "BACHAS": "^Bachas",   # dim_tanque.sector ~ patrón
+             "PILETAS": "^Piletas", "EXPORTACION": "^Plataforma"}
 _FALLBACK = [  # (codigo, nombre_ui, icono, sector_gestion, sector_batch, seccion_clasica)
     ("REACTORES", "Reactor", "⚙️", "REACTORES", "REACTORES", "INICIAR"), ("BACHAS", "Bachas", "🛢️", "BACHAS", "BACHAS", "INICIAR"),
     ("PILETAS", "Piletas", "🌊", "PILETAS", "RECUPERACION", "RECUPERACION"), ("EXPORTACION", "Exportación", "🚢", "EXPORTACION", "EXPO", "STOCK"),
@@ -52,7 +56,7 @@ def _cargar(conn_factory) -> pd.DataFrame:
     except Exception:
         pass
     rows = [dict(codigo=c, nombre_ui=n, icono=i, orden=(k + 1) * 10, activo=True,
-                 tiene_datos=bool(s), sector_gestion=g, sector_batch=b,
-                 seccion_clasica=s, descripcion=None)
+                 tiene_datos=bool(s) or c in _SIMPLES, sector_gestion=g, sector_batch=b,
+                 seccion_clasica=s, descripcion=None, stock_simple=(c in _SIMPLES), patron_tanques=_PATRONES.get(c))
             for k, (c, n, i, g, b, s) in enumerate(_FALLBACK)]
     return pd.DataFrame(rows)

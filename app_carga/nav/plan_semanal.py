@@ -256,8 +256,10 @@ def render_plan(ctx, sec):
     lunes = _lunes(anio, semana)
     dias = [lunes + timedelta(days=i) for i in range(7)]
     d_sel = st.session_state.get("nav_plan_dia") or (hoy if lunes <= hoy <= dias[-1] else lunes)
-    idx = dias.index(d_sel) if d_sel in dias else 0
-    d_new = st.radio("Día", dias, index=idx, horizontal=True, key=f"nav_plan_dia_{anio}_{semana}",
+    wk = f"nav_plan_dia_{anio}_{semana}"
+    if wk not in st.session_state:          # preselección vía session_state, no vía index= (cambiar index cambia la identidad del widget)
+        st.session_state[wk] = d_sel if d_sel in dias else dias[0]
+    d_new = st.radio("Día", dias, horizontal=True, key=wk,
                      format_func=lambda d: f"{_DIAS[d.isoweekday()]} {d.day:02d}" + (" · hoy" if d == hoy else ""),
                      label_visibility="collapsed")
     st.session_state["nav_plan_dia"] = d_new

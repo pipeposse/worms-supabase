@@ -186,7 +186,7 @@ def _area_produccion(ctx):
         sec_cl = r.get("seccion_clasica")
         habil = (bool(sec_cl) and puede(sec_cl)) or tiene_home(r.to_dict())
         sin_datos = not bool(r.get("tiene_datos"))
-        if not sec_cl:
+        if not sec_cl and not habil:
             lbl, dis, tipo = "Próximamente", True, "secondary"
         elif not habil:
             lbl, dis, tipo = "Sin acceso", True, "secondary"
@@ -235,15 +235,18 @@ def render_landing(ctx):
         return
     if nav["sector"]:
         from .sector import render_sector
-        if nav["vista"] in ("PLAN", "DESVIOS"):
+        if nav["vista"] in ("PLAN", "DESVIOS", "STOCK"):
             sec = sector_por_codigo(ctx["conn_factory"], nav["sector"])
             if sec:
                 if nav["vista"] == "PLAN":
                     from .plan_semanal import render_plan
                     render_plan(ctx, sec)
-                else:
+                elif nav["vista"] == "DESVIOS":
                     from .desvios import render_desvios
                     render_desvios(ctx, sec)
+                else:
+                    from .stock_cc import render_stock
+                    render_stock(ctx, sec)
                 _pie_soporte(ctx)
                 return
         if render_sector(ctx, nav["sector"]):
