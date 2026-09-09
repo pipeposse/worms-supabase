@@ -32,6 +32,15 @@ except AttributeError:            # Streamlit viejo: decorador nulo, funciona ig
         return f if f else (lambda g: g)
 
 
+def _rerun_fragment():
+    """Redibuja sólo el fragment; si no estamos en un rerun de fragment (p. ej. AppTest o
+    Streamlit sin fragments), cae al rerun normal."""
+    try:
+        st.rerun(scope="fragment")
+    except Exception:
+        st.rerun()
+
+
 # ------------------------------------------------------------------ datos
 @st.cache_data(ttl=_TTL, show_spinner=False)
 def _leer_kpis(_cf):
@@ -190,7 +199,7 @@ def render_kpis_area(ctx):
                 try:
                     _marcar_presencia(conectar, USR, entrar=False)
                     _leer_kpis.clear()
-                    st.rerun(scope="fragment")
+                    _rerun_fragment()
                 except Exception as e:
                     st.error(f"No se pudo registrar la salida: {e}")
         else:
@@ -199,7 +208,7 @@ def render_kpis_area(ctx):
                 try:
                     _marcar_presencia(conectar, USR, entrar=True, sector=USR.get("sector"))
                     _leer_kpis.clear()
-                    st.rerun(scope="fragment")
+                    _rerun_fragment()
                 except Exception as e:
                     st.error(f"No se pudo registrar la entrada: {e}")
     puede = ctx["puede_seccion"]
@@ -216,7 +225,7 @@ def render_kpis_area(ctx):
     if b4.button("↻", key="nav_kpi_refresh", use_container_width=True, help="Recalcular ahora"):
         _leer_kpis.clear()
         _leer_capacidad.clear()
-        st.rerun(scope="fragment")
+        _rerun_fragment()
 
     # ---- Panel de Control: capacidad ocupada por producto (barra horizontal, como pidió Fernando) ----
     with st.expander("🎛️ Capacidad de acopio ocupada por producto", expanded=False):

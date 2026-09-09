@@ -235,11 +235,15 @@ def render_landing(ctx):
         return
     if nav["sector"]:
         from .sector import render_sector
-        if nav["vista"] == "PLAN":
+        if nav["vista"] in ("PLAN", "DESVIOS"):
             sec = sector_por_codigo(ctx["conn_factory"], nav["sector"])
             if sec:
-                from .plan_semanal import render_plan
-                render_plan(ctx, sec)
+                if nav["vista"] == "PLAN":
+                    from .plan_semanal import render_plan
+                    render_plan(ctx, sec)
+                else:
+                    from .desvios import render_desvios
+                    render_desvios(ctx, sec)
                 _pie_soporte(ctx)
                 return
         if render_sector(ctx, nav["sector"]):

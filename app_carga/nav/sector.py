@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 
 from . import state as _st
-from .kpis import _FRAGMENT, _TTL, _kpi, _n, _i, _presencia_abierta, _marcar_presencia, _leer_kpis
+from .kpis import _FRAGMENT, _TTL, _kpi, _n, _i, _presencia_abierta, _marcar_presencia, _leer_kpis, _rerun_fragment
 from .sectores import sector_por_codigo
 
 # ------------------------------------------------------------------ tarjetas por sector
@@ -30,8 +30,8 @@ _COMUNES = [
      "Orden del día: arrancar la producción y avanzarla etapa por etapa.",
      "INICIAR", {"iniciar_view": "👷 Iniciar producción"}),
     ("DESVIOS", "⚠️", "Desvíos",
-     "Real vs. planificado por reacción: tiempos, rendimiento y laboratorio del producto final.",
-     "ANALISIS", {}),
+     "Por OP y variable: lo formulado vs. lo que cargó el operario (MP, insumos, acidez, temperatura, tiempos).",
+     None, {}),          # vista propia de nav (desvios.py) sobre v_desvio_op
     ("FORMULACION", "⚗️", "Formulación",
      "Fórmulas del sector: materia prima, insumos, tiempos y la default que usa Planificación.",
      "FORMULAS", {"__fx_sector__": True}),
@@ -152,7 +152,7 @@ def _kpis_sector(ctx, sec):
                 try:
                     _marcar_presencia(conectar, USR, entrar=False)
                     _leer_kpi_sector.clear(); _leer_kpis.clear()
-                    st.rerun(scope="fragment")
+                    _rerun_fragment()
                 except Exception as e:
                     st.error(f"No se pudo registrar la salida: {e}")
         else:
@@ -161,12 +161,12 @@ def _kpis_sector(ctx, sec):
                 try:
                     _marcar_presencia(conectar, USR, entrar=True, sector=sec["codigo"])
                     _leer_kpi_sector.clear(); _leer_kpis.clear()
-                    st.rerun(scope="fragment")
+                    _rerun_fragment()
                 except Exception as e:
                     st.error(f"No se pudo registrar la entrada: {e}")
     if b2.button("↻", key="nav_sec_refresh", use_container_width=True, help="Recalcular ahora"):
         _leer_kpi_sector.clear()
-        st.rerun(scope="fragment")
+        _rerun_fragment()
 
 
 def render_sector(ctx, codigo):

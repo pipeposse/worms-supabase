@@ -31,3 +31,4 @@ from .sectores import sectores_nav  # noqa: F401
 from .kpis import render_kpis_area  # noqa: F401
 from .sector import render_sector  # noqa: F401
 from .plan_semanal import render_plan  # noqa: F401
+from .desvios import render_desvios  # noqa: F401

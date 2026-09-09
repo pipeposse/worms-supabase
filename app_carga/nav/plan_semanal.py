@@ -19,7 +19,7 @@ import pandas as pd
 import streamlit as st
 
 from . import state as _st
-from .kpis import _FRAGMENT, _TTL
+from .kpis import _FRAGMENT, _TTL, _rerun_fragment
 
 _DIAS = {1: "lun", 2: "mar", 3: "mié", 4: "jue", 5: "vie", 6: "sáb", 7: "dom"}
 _ESTADO_UI = {"NO_INICIADO": "⚪ No iniciado", "INICIADO": "🟢 Iniciado", "FINALIZADO": "✅ Finalizado"}
@@ -226,7 +226,7 @@ def _grilla(ctx, sec, anio, semana):
                                 st.warning("Se modificó el plan del día o de días pasados (" + ", ".join(avisos) +
                                            "). Dirección pide cargar la semana el día anterior; el cambio quedó auditado.")
                             st.success(f"{len(cambios)} OP actualizadas.")
-                            st.rerun(scope="fragment")
+                            _rerun_fragment()
                         except Exception as e:
                             st.error(f"No se pudo guardar: {e}")
 

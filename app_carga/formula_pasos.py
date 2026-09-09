@@ -33,7 +33,7 @@ ETAPAS = ["CALDERA", "CARGA_MP", "CARGA_INSUMO", "VALIDAR_TEMP", "INICIO_RX", "R
           "FLOCULADO", "EXTRACCION", "OTRO"]
 CAPTURAS = ["HORAS", "MEDICION", "CANTIDAD", "NINGUNA"]
 _CAPTURA_UI = {"HORAS": "⏱ hora inicio / fin", "MEDICION": "🌡 temp + acidez", "CANTIDAD": "⚖ cantidad cargada", "NINGUNA": "—"}
-_COLS = ["orden", "etapa", "descripcion", "codigo_insumo", "cant_por_tn", "unidad", "acidez_esp", "temp_esp",
+_COLS = ["orden", "etapa", "descripcion", "codigo_insumo", "cant_por_tn", "cant_fija", "unidad", "acidez_esp", "temp_esp",
          "tol_acidez", "tol_temp", "tol_cant_pct", "offset_min", "duracion_min", "captura"]
 
 
@@ -47,7 +47,7 @@ def _formulas(cat, sector=None):
     return df
 
 
-_NUM = ["cant_por_tn", "acidez_esp", "temp_esp", "tol_acidez", "tol_temp", "tol_cant_pct"]
+_NUM = ["cant_por_tn", "cant_fija", "acidez_esp", "temp_esp", "tol_acidez", "tol_temp", "tol_cant_pct"]
 _INT = ["orden", "offset_min", "duracion_min"]
 
 
@@ -154,8 +154,8 @@ def _validar(pasos):
             errs.append(f"Paso {p['orden']}: falta la etapa.")
         if p.get("captura") not in CAPTURAS:
             errs.append(f"Paso {p['orden']}: captura inválida.")
-        if p.get("etapa") in ("CARGA_MP", "CARGA_INSUMO") and not p.get("cant_por_tn"):
-            errs.append(f"Paso {p['orden']} ({p['etapa']}): falta la cantidad por TN.")
+        if p.get("etapa") in ("CARGA_MP", "CARGA_INSUMO") and not p.get("cant_por_tn") and not p.get("cant_fija"):
+            errs.append(f"Paso {p['orden']} ({p['etapa']}): falta la cantidad (por TN o fija por OP).")
         if p.get("captura") == "MEDICION" and p.get("temp_esp") in (None, "") and p.get("acidez_esp") in (None, ""):
             errs.append(f"Paso {p['orden']}: una medición necesita temperatura y/o acidez esperada.")
     return errs
@@ -172,11 +172,17 @@ def _vista_instructivo(pasos, f, key):
     base = hora.hour * 60 + hora.minute
     filas = []
     for _, p in pasos.iterrows():
-        cant = float(p["cant_por_tn"]) * tn if pd.notna(p["cant_por_tn"]) else None
+        if pd.notna(p.get("cant_fija")):
+            cant = float(p["cant_fija"])                       # fija por OP
+        elif pd.notna(p["cant_por_tn"]):
+            cant = float(p["cant_por_tn"]) * tn
+        else:
+            cant = None
         filas.append({
             "#": int(p["orden"]), "ETAPA": p["etapa"], "DESCRIPCIÓN": p["descripcion"] or "",
             "MP / INSUMO": p["codigo_insumo"] or "",
-            f"CANT. ({tn:g} TN)": (f"{cant:,.0f} {p['unidad'] or ''}".strip() if cant is not None else ""),
+            f"CANT. ({tn:g} TN)": (f"{cant:,.0f} {p['unidad'] or ''}".strip() + (" (fija)" if pd.notna(p.get("cant_fija")) else "")
+                                   if cant is not None else ""),
             "ACIDEZ": (f"{float(p['acidez_esp']):g} % ±{float(p['tol_acidez']):g}" if pd.notna(p["acidez_esp"]) else ""),
             "TEMP": (f"{float(p['temp_esp']):g} °C ±{float(p['tol_temp']):g}" if pd.notna(p["temp_esp"]) else ""),
             "HORA": _hhmm(base, p["offset_min"]),
@@ -210,6 +216,8 @@ def _editor(pasos, f, key, USR, cat, conectar):
             "descripcion": st.column_config.TextColumn("Descripción", width="large"),
             "codigo_insumo": st.column_config.TextColumn("MP / insumo"),
             "cant_por_tn": st.column_config.NumberColumn("Cant. por TN", min_value=0.0, format="%.3f"),
+            "cant_fija": st.column_config.NumberColumn("Cant. fija por OP", min_value=0.0, format="%.1f",
+                                                       help="Si se carga, manda sobre la cantidad por TN (ej. glicerina en ARE)."),
             "unidad": st.column_config.SelectboxColumn("Un.", options=["KG", "L"], width="small"),
             "acidez_esp": st.column_config.NumberColumn("Acidez %", min_value=0.0, max_value=100.0, format="%.1f"),
             "temp_esp": st.column_config.NumberColumn("Temp °C", min_value=0.0, max_value=300.0, format="%.0f"),

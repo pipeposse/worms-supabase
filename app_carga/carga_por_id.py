@@ -149,6 +149,12 @@ def render(USR, cat, conectar, etapas_de_proceso=None, params_proceso=None):
         unsafe_allow_html=True)
     st.markdown(_stepper(estado), unsafe_allow_html=True)
     _banner_corriente(b["corriente"])
+    # ---- Instructivo paso a paso de la fórmula (Fase 4b): corre en su propio fragment ----
+    try:
+        import op_instructivo as _opi
+        _opi.render(USR, cat, conectar, id_batch)
+    except Exception as _e:
+        st.caption(f"Instructivo no disponible: {_e}")
     if str(b.get("tipo_proceso") or "") == "PRODUCCION_ARE":
         try:
             from planificacion import render_checklist_limpieza
