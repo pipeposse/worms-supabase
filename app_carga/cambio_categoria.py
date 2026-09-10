@@ -39,6 +39,14 @@ MOTIVO_LBL = {"": "— sin motivo —", "RESULTADO_LAB": "🧪 Resultado de labo
               "ERROR_CARGA": "✏️ Error de carga anterior", "DECISION_DIRECCION": "🛂 Decisión de dirección",
               "OTRO": "📍 Otro"}
 _ORIG_AUTO = ("lab_sync", "sistema", "porteria_sync")
+MAX_ORIGENES = 5           # de cuántos tanques/orígenes distintos puede salir un cambio
+# Orígenes que NO son un tanque: los sobrenadantes (purgas de mangueras y de camiones
+# del primer muestreo, que se juntan en bachitas/tachos) no estaban contados en el
+# stock de ningún tanque, así que no generan SALIDA — sólo entran al destino.
+SIN_TANQUE = (("SOBRENADANTE", "🧴 Sobrenadantes / purgas (bachitas o tachos)"),
+              ("BACHA", "🛁 Bacha (sin tanque)"),
+              ("OTRO", "📍 Otro origen sin tanque"))
+SIN_TANQUE_LBL = dict(SIN_TANQUE)
 
 
 # ------------------------------------------------------------------ utilidades
@@ -127,11 +135,22 @@ def _historial(cat, n=200):
 # ------------------------------------------------------------------ escritura
 
 def _confirmar(conectar, USR, d):
-    """d: dict con todo lo validado en la UI. Una sola transacción."""
+    """d: dict con todo lo validado en la UI. Una sola transacción.
+
+    d["origenes"] es una lista de líneas: cada una es un tanque con sus kg/litros,
+    o un origen SIN tanque (sobrenadantes, bacha, otro). Los orígenes sin tanque no
+    descuentan stock de ningún lado — ese material nunca estuvo contado — así que
+    sólo generan la ENTRADA al destino.
+    """
     uid = int(USR.get("id_usuario") or 0)
     tk = d.get("ticket")
+    origenes = list(d.get("origenes") or [])
     with conectar(uid) as (conn, audit):
         with conn.cursor() as cur:
+            # dos confirmaciones simultáneas del mismo ticket no se pisan
+            if tk:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                            ("cambio_categoria:" + str(tk),))
             # 1) el ticket ya tenía movimientos automáticos → se reemplazan (evita doble conteo)
             viejos = []
             if tk:
@@ -147,28 +166,33 @@ def _confirmar(conectar, USR, d):
                             "WHERE observaciones LIKE %s OR id_mov_stock = ANY(%s)",
                             ("lab_sync ticket %" + str(tk), viejos or [0]))
 
+            _desc_o = " + ".join(o["nombre"] for o in origenes) or "sin origen"
             obs_mov = "Cambio de categoría %s→%s · %s → %s%s" % (
-                d["prod_o"], d["prod_d"], d["tq_o_nombre"], d["tq_d_nombre"],
+                d["prod_o"], d["prod_d"], _desc_o, d["tq_d_nombre"],
                 (" · ticket %s" % tk) if tk else "")
 
-            # 2) SALIDA del origen (producto origen)
-            cur.execute(
-                "INSERT INTO produccion.fact_movimiento_stock "
-                "(momento, tipo_movimiento, rol, sentido, id_producto, producto, fuente, id_tanque, tanque_label, "
-                " ticket_porteria, cantidad, unidad, kg, litros, id_usuario, origen, observaciones, "
-                " estado_mov, id_usuario_ejecuta, ejecutado_en) "
-                "VALUES (COALESCE(%s::timestamptz, now()),'SALIDA','MP',-1,%s,%s,'TANQUE',%s,%s,%s,%s,'KG',%s,%s,%s,'cambio_categoria',%s,"
-                " 'EJECUTADO',%s,now()) RETURNING id_mov_stock",
-                (d["momento"], d["pid_o"], d["prod_o"], d["tq_o"], d["tq_o_nombre"], tk,
-                 d["kg"], d["kg"], d["litros"], uid, obs_mov, uid))
-            id_sal = int(cur.fetchone()[0])
-            cur.execute(
-                "INSERT INTO produccion.fact_movimiento_tanque "
-                "(id_tanque, id_producto, tipo, litros, kg, ts, id_usuario, origen, observaciones, id_mov_stock) "
-                "VALUES (%s,%s,'OUT',%s,%s,COALESCE(%s::timestamptz, now()),%s,'CAMBIO_CATEGORIA',%s,%s)",
-                (d["tq_o"], d["pid_o"], d["litros"], d["kg"], d["momento"], uid, obs_mov, id_sal))
+            # 2) una SALIDA por cada tanque origen (los orígenes sin tanque no descuentan)
+            for o in origenes:
+                if o["tipo"] != "TANQUE":
+                    o["id_mov"] = None
+                    continue
+                cur.execute(
+                    "INSERT INTO produccion.fact_movimiento_stock "
+                    "(momento, tipo_movimiento, rol, sentido, id_producto, producto, fuente, id_tanque, tanque_label, "
+                    " ticket_porteria, cantidad, unidad, kg, litros, id_usuario, origen, observaciones, "
+                    " estado_mov, id_usuario_ejecuta, ejecutado_en) "
+                    "VALUES (COALESCE(%s::timestamptz, now()),'SALIDA','MP',-1,%s,%s,'TANQUE',%s,%s,%s,%s,'KG',%s,%s,%s,'cambio_categoria',%s,"
+                    " 'EJECUTADO',%s,now()) RETURNING id_mov_stock",
+                    (d["momento"], d["pid_o"], d["prod_o"], o["id_tanque"], o["nombre"], tk,
+                     o["kg"], o["kg"], o["litros"], uid, obs_mov, uid))
+                o["id_mov"] = int(cur.fetchone()[0])
+                cur.execute(
+                    "INSERT INTO produccion.fact_movimiento_tanque "
+                    "(id_tanque, id_producto, tipo, litros, kg, ts, id_usuario, origen, observaciones, id_mov_stock) "
+                    "VALUES (%s,%s,'OUT',%s,%s,COALESCE(%s::timestamptz, now()),%s,'CAMBIO_CATEGORIA',%s,%s)",
+                    (o["id_tanque"], d["pid_o"], o["litros"], o["kg"], d["momento"], uid, obs_mov, o["id_mov"]))
 
-            # 3) ENTRADA al destino (producto destino)
+            # 3) ENTRADA al destino por el total (producto destino)
             cur.execute(
                 "INSERT INTO produccion.fact_movimiento_stock "
                 "(momento, tipo_movimiento, rol, sentido, id_producto, producto, fuente, id_tanque, tanque_label, "
@@ -195,7 +219,10 @@ def _confirmar(conectar, USR, d):
                 cur.execute("UPDATE produccion.dim_tanque_producto SET es_principal=false "
                             "WHERE id_tanque=%s AND id_producto<>%s", (d["tq_d"], d["pid_d"]))
 
-            # 5) cabecera
+            # 5) cabecera. id_tanque_origen / id_mov_salida guardan el PRIMER tanque
+            #    origen (compatibilidad con lo ya registrado); el detalle completo va
+            #    en fact_cambio_categoria_origen.
+            _pri = next((o for o in origenes if o["tipo"] == "TANQUE"), None)
             cur.execute(
                 "INSERT INTO produccion.fact_cambio_categoria "
                 "(momento, id_producto_origen, id_producto_dest, id_tanque_origen, id_tanque_dest, "
@@ -203,13 +230,26 @@ def _confirmar(conectar, USR, d):
                 " desvio_pct, validado_ticket, relabel_destino, id_producto_dest_anterior, motivo, observaciones, "
                 " id_mov_salida, id_mov_entrada, movs_reemplazados, id_usuario) "
                 "VALUES (COALESCE(%s::timestamptz, now()),%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id_cambio",
-                (d["momento"], d["pid_o"], d["pid_d"], d["tq_o"], d["tq_d"],
+                (d["momento"], d["pid_o"], d["pid_d"],
+                 (_pri["id_tanque"] if _pri else None), d["tq_d"],
                  d["cantidad"], d["unidad"], d["kg"], d["litros"], d["dens"], tk, d.get("kg_ticket"),
                  d.get("desvio"), bool(d.get("validado")), bool(d.get("relabel")), d.get("pid_d_anterior"),
-                 (d.get("motivo") or None), (d.get("obs") or None), id_sal, id_ent, viejos, uid))
+                 (d.get("motivo") or None), (d.get("obs") or None),
+                 (_pri["id_mov"] if _pri else None), id_ent, viejos, uid))
             id_cambio = int(cur.fetchone()[0])
+
+            # 6) detalle de orígenes
+            for i, o in enumerate(origenes):
+                cur.execute(
+                    "INSERT INTO produccion.fact_cambio_categoria_origen "
+                    "(id_cambio, orden, id_tanque, origen_tipo, origen_label, kg, litros, id_mov_salida) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (id_cambio, i + 1, o.get("id_tanque"), o["tipo"], o["nombre"],
+                     o["kg"], o["litros"], o.get("id_mov")))
         audit.log("I", "fact_cambio_categoria", id_cambio,
-                  {"de": d["prod_o"], "a": d["prod_d"], "kg": d["kg"], "tanque_origen": d["tq_o"],
+                  {"de": d["prod_o"], "a": d["prod_d"], "kg": d["kg"],
+                   "origenes": [{"tipo": o["tipo"], "tanque": o.get("id_tanque"), "kg": o["kg"]}
+                                for o in origenes],
                    "tanque_destino": d["tq_d"], "ticket": tk, "relabel": bool(d.get("relabel")),
                    "movs_reemplazados": viejos})
     return id_cambio
@@ -218,9 +258,16 @@ def _confirmar(conectar, USR, d):
 def _anular(conectar, USR, row, motivo):
     uid = int(USR.get("id_usuario") or 0)
     idc = int(row["id_cambio"])
-    ids = [int(x) for x in (row.get("id_mov_salida"), row.get("id_mov_entrada")) if _f(x) is not None]
     with conectar(uid) as (conn, audit):
         with conn.cursor() as cur:
+            # todas las salidas (una por tanque origen) + la entrada
+            cur.execute("SELECT id_mov_salida FROM produccion.fact_cambio_categoria_origen "
+                        "WHERE id_cambio=%s AND id_mov_salida IS NOT NULL", (idc,))
+            ids = [int(r[0]) for r in cur.fetchall()]
+            for _k in ("id_mov_salida", "id_mov_entrada"):
+                _v = _f(row.get(_k))
+                if _v is not None and int(_v) not in ids:
+                    ids.append(int(_v))
             cur.execute("UPDATE produccion.fact_movimiento_stock SET anulado=true, "
                         "observaciones = COALESCE(observaciones,'') || ' | ANULADO cambio de categoría' "
                         "WHERE id_mov_stock = ANY(%s)", (ids or [0],))
@@ -266,6 +313,23 @@ def _label_tq(r):
     return "%s · %s · %s (%s L)" % (r["nombre"], r["sector"], _tn(r["kg_est"]), _n(r["litros_est"], 0))
 
 
+def _opciones_origen(tq, prod_o, mostrar_todos):
+    """Etiqueta → origen. Tanques rotulados con el producto origen y stock > 0;
+    con «mostrar todos» aparece cualquier tanque. Al final, los orígenes que NO
+    son un tanque (sobrenadantes, bacha, otro)."""
+    ops = {}
+    base = tq if mostrar_todos else tq[(tq["prod"] == prod_o) & (tq["kg_est"].astype(float) > 0)]
+    base = base.sort_values(["sector", "nombre"])
+    for _, r in base.iterrows():
+        lbl = "🛢 %s · %s · %s (%s L)" % (r["nombre"], r["sector"], _tn(r["kg_est"]),
+                                          _n(r["litros_est"], 0))
+        ops[lbl] = {"tipo": "TANQUE", "id_tanque": int(r["id_tanque"]),
+                    "nombre": str(r["nombre"]), "row": r}
+    for cod, lbl in SIN_TANQUE:
+        ops[lbl] = {"tipo": cod, "id_tanque": None, "nombre": lbl, "row": None}
+    return ops
+
+
 def _nuevo(USR, cat, conectar, tq, prods):
     st.markdown("#### 1 · Sentido del cambio")
     _opts = list(PARES.keys())
@@ -277,60 +341,15 @@ def _nuevo(USR, cat, conectar, tq, prods):
     sentido = sentido or _opts[0]
     if sentido != st.session_state.get("cc_sentido_last"):
         st.session_state["cc_sentido_last"] = sentido
-        for _k in ("cc_tq_o", "cc_tq_d"):
+        for _k in [k for k in list(st.session_state.keys()) if str(k).startswith("cc_o")]:
             st.session_state.pop(_k, None)
+        st.session_state.pop("cc_tq_d", None)
     prod_o, prod_d = PARES[sentido]
     po, pdst = prods[prod_o], prods[prod_d]
+    dens = po["dens"]
 
-    # ---------- tanques ----------
-    st.markdown("#### 2 · De qué tanque sale y a cuál entra")
-    cA, cB = st.columns(2)
-    orig = tq[(tq["prod"] == prod_o) & (tq["kg_est"].astype(float) > 0)].copy()
-    if orig.empty:
-        st.warning("No hay tanques con stock de %s." % prod_o)
-        return
-    with cA:
-        st.caption("**Origen** — tanques rotulados %s con stock" % prod_o)
-        id_o = st.selectbox("Tanque origen", orig["id_tanque"].tolist(),
-                            format_func=lambda i: _label_tq(orig[orig["id_tanque"] == i].iloc[0]),
-                            key="cc_tq_o", label_visibility="collapsed")
-        ro = orig[orig["id_tanque"] == id_o].iloc[0]
-        if int(ro["movs_post"] or 0) > 0:
-            st.caption("⚠️ medido %s L el %s · estimado c/movs %s L" % (
-                _n(ro["litros_actual"]), pd.to_datetime(ro["ultima_medicion"]).strftime("%d/%m %H:%M")
-                if pd.notna(ro["ultima_medicion"]) else "—", _n(ro["litros_est"])))
-    with cB:
-        todos = st.toggle("Mostrar todos los tanques", key="cc_todos",
-                          help="Por defecto se ofrecen los tanques rotulados %s y los vacíos que lo admiten. "
-                               "Activá esto para elegir cualquier otro (se re-rotula al confirmar)." % prod_d)
-        admite = tq["admite"].fillna("").str.split(",").apply(lambda l: prod_d in l)
-        vacio = tq["kg_est"].astype(float) < VACIO_KG
-        dest = tq[(tq["id_tanque"] != id_o) & (todos | (tq["prod"] == prod_d) | (admite & vacio))].copy()
-        # los del producto destino primero, después vacíos, después resto
-        dest["_rk"] = [0 if p == prod_d else (1 if v else 2) for p, v in zip(dest["prod"], vacio.loc[dest.index])]
-        dest = dest.sort_values(["_rk", "sector", "nombre"])
-        st.caption("**Destino** — rotulados %s o vacíos que lo admiten" % prod_d)
-        if dest.empty:
-            st.warning("No hay tanques destino candidatos. Activá «Mostrar todos los tanques».")
-            return
-        id_d = st.selectbox("Tanque destino", dest["id_tanque"].tolist(),
-                            format_func=lambda i: ("%s · %s" % (
-                                dest[dest["id_tanque"] == i].iloc[0]["prod"] or "sin producto",
-                                _label_tq(dest[dest["id_tanque"] == i].iloc[0]))),
-                            key="cc_tq_d", label_visibility="collapsed")
-        rd = dest[dest["id_tanque"] == id_d].iloc[0]
-    relabel = (rd["prod"] != prod_d)
-    kg_d_antes = float(rd["kg_est"] or 0)
-    if relabel:
-        if kg_d_antes >= VACIO_KG:
-            st.error("**%s** está rotulado **%s** y tiene %s. Al confirmar pasa a contarse TODO como **%s** "
-                     "(se mezcla). Si no es lo que querés, elegí otro tanque." % (
-                         rd["nombre"], rd["prod"] or "sin producto", _tn(kg_d_antes), prod_d))
-        else:
-            st.info("**%s** está vacío: al confirmar queda rotulado **%s**." % (rd["nombre"], prod_d))
-
-    # ---------- ticket ----------
-    st.markdown("#### 3 · Ticket de portería (validación del peso)")
+    # ---------- ticket (primero: su peso precarga la cantidad) ----------
+    st.markdown("#### 2 · Ticket de portería (validación del peso)")
     tks = _tickets(cat)
     _tk_opts = [None] + tks["transaccion"].tolist()
 
@@ -391,52 +410,123 @@ def _nuevo(USR, cat, conectar, tq, prods):
     else:
         usar_fecha_tk = False
 
-    # ---------- cantidad ----------
-    st.markdown("#### 4 · Cantidad")
-    c1, c2, c3 = st.columns([1, 1.4, 2])
-    unidad = c1.radio("Unidad", ["TN", "kL"], horizontal=True, key="cc_unidad")
-    dens = po["dens"]
+    # ---------- orígenes ----------
+    st.markdown("#### 3 · De dónde sale")
+    unidad = st.radio("Unidad", ["TN", "kL"], horizontal=True, key="cc_unidad")
 
     def _from_kg(k):
         return (k / 1000.0) if unidad == "TN" else (k / dens / 1000.0)
 
-    # ticket nuevo → precarga su peso; unidad nueva → convierte lo que había
+    def _a_kg_lts(v):
+        if unidad == "TN":
+            _k = float(v or 0.0) * 1000.0
+            return _k, (_k / dens if dens else 0.0)
+        _l = float(v or 0.0) * 1000.0
+        return _l * dens, _l
+
+    cA, cB = st.columns([1.4, 2.6])
+    n_or = int(cA.radio("¿De cuántos orígenes sale?", list(range(1, MAX_ORIGENES + 1)),
+                        horizontal=True, key="cc_norig",
+                        help="Un mismo cambio puede salir de varios tanques (ej. fondos de tres "
+                             "tanques que se pincharon) y también de un origen que no es tanque."))
+    todos_o = cB.toggle("Mostrar todos los tanques como origen", key="cc_todos_o",
+                        help="Por defecto se ofrecen sólo los tanques rotulados %s con stock. "
+                             "Activalo para elegir cualquier otro." % prod_o)
+    ops_o = _opciones_origen(tq, prod_o, todos_o)
+    keys_o = list(ops_o.keys())
+    if not keys_o:
+        st.warning("No hay orígenes disponibles.")
+        return
+
+    # el ticket precarga la cantidad en el PRIMER origen; cambiar de unidad convierte
     if tk != st.session_state.get("cc_tk_last"):
         st.session_state["cc_tk_last"] = tk
-        st.session_state.pop("cc_cant", None)
+        for _i in range(MAX_ORIGENES):
+            st.session_state.pop("cc_ov%d" % _i, None)
         if kg_ticket:
-            st.session_state["cc_cant_val"] = _from_kg(kg_ticket)
+            st.session_state["cc_ov0"] = _from_kg(kg_ticket)
     _u_prev = st.session_state.get("cc_unidad_last")
     if unidad != _u_prev:
-        if _u_prev is not None and _f(st.session_state.get("cc_cant_val")):
-            _v = float(st.session_state["cc_cant_val"])
-            _kgv = _v * 1000.0 if _u_prev == "TN" else _v * 1000.0 * dens
-            st.session_state["cc_cant_val"] = _from_kg(_kgv)
-            st.session_state.pop("cc_cant", None)
+        if _u_prev is not None:
+            for _i in range(MAX_ORIGENES):
+                _v = _f(st.session_state.get("cc_ov%d" % _i))
+                if _v:
+                    _kgv = _v * 1000.0 if _u_prev == "TN" else _v * 1000.0 * dens
+                    st.session_state["cc_ov%d" % _i] = _from_kg(_kgv)
         st.session_state["cc_unidad_last"] = unidad
-    _default = float(st.session_state.get("cc_cant_val") or 0.0)
-    cant = c2.number_input("Cantidad (%s)" % unidad, min_value=0.0, value=round(_default, 3), step=0.5,
-                           format="%.3f", key="cc_cant",
-                           help="Con ticket se precarga su peso. TN = kg/1000 · kL = m³ (litros/1000).")
-    st.session_state["cc_cant_val"] = float(cant or 0.0)
-    if c3.button("Usar TODO el stock del tanque origen (%s)" % _tn(ro["kg_est"]), key="cc_todo"):
-        st.session_state["cc_cant_val"] = _from_kg(float(ro["kg_est"] or 0.0))
-        st.session_state.pop("cc_cant", None)
-        st.rerun()
-    if unidad == "TN":
-        kg = cant * 1000.0
-        litros = kg / dens
-    else:
-        litros = cant * 1000.0
-        kg = litros * dens
-    kg_o_antes = float(ro["kg_est"] or 0)
+
+    origenes, filas_ui = [], []
+    for i in range(n_or):
+        k_sel = "cc_o%d" % i
+        _idx = keys_o.index(st.session_state[k_sel]) if st.session_state.get(k_sel) in keys_o else min(i, len(keys_o) - 1)
+        c1, c2, c3 = st.columns([3, 1.2, 1.3])
+        lbl = c1.selectbox("Origen %d" % (i + 1), keys_o, index=_idx, key=k_sel)
+        o = ops_o[lbl]
+        _val = float(_f(st.session_state.get("cc_ov%d" % i)) or 0.0)
+        cant_i = c2.number_input("Cantidad (%s)" % unidad, min_value=0.0, value=round(_val, 3),
+                                 step=0.5, format="%.3f", key="cc_oc%d_%s" % (i, unidad))
+        st.session_state["cc_ov%d" % i] = float(cant_i or 0.0)
+        kg_i, lts_i = _a_kg_lts(cant_i)
+        if o["tipo"] == "TANQUE":
+            _stk = float(o["row"]["kg_est"] or 0.0)
+            if c3.button("Usar todo (%s)" % _tn(_stk), key="cc_otodo%d" % i, use_container_width=True):
+                st.session_state["cc_ov%d" % i] = _from_kg(_stk)
+                st.session_state.pop("cc_oc%d_%s" % (i, unidad), None)
+                st.rerun()
+            _mp = int(_f(o["row"].get("movs_post")) or 0)
+            c1.caption("Stock %s · %s%s" % (_tn(_stk), o["row"]["prod"] or "sin rótulo",
+                                            (" · ⚠️ %d mov. después de la última medición" % _mp) if _mp else ""))
+        else:
+            c3.caption("—")
+            c1.caption("Sin tanque: no descuenta stock de ningún lado (este material no estaba contado).")
+        origenes.append({"tipo": o["tipo"], "id_tanque": o.get("id_tanque"),
+                         "nombre": o["nombre"], "kg": round(kg_i, 1), "litros": round(lts_i, 1),
+                         "row": o.get("row")})
+        filas_ui.append({"Origen": o["nombre"], "Tipo": o["tipo"],
+                         "TN": round(kg_i / 1000.0, 2), "Litros": round(lts_i, 0)})
+
+    kg = round(sum(o["kg"] for o in origenes), 1)
+    litros = round(sum(o["litros"] for o in origenes), 1)
+
+    # ---------- destino ----------
+    st.markdown("#### 4 · A qué tanque entra")
+    _ids_o = [o["id_tanque"] for o in origenes if o["id_tanque"] is not None]
+    todos = st.toggle("Mostrar todos los tanques como destino", key="cc_todos",
+                      help="Por defecto se ofrecen los tanques rotulados %s y los vacíos que lo admiten. "
+                           "Activá esto para elegir cualquier otro (se re-rotula al confirmar)." % prod_d)
+    admite = tq["admite"].fillna("").str.split(",").apply(lambda l: prod_d in l)
+    vacio = tq["kg_est"].astype(float) < VACIO_KG
+    dest = tq[(~tq["id_tanque"].isin(_ids_o)) & (todos | (tq["prod"] == prod_d) | (admite & vacio))].copy()
+    dest["_rk"] = [0 if p == prod_d else (1 if v else 2) for p, v in zip(dest["prod"], vacio.loc[dest.index])]
+    dest = dest.sort_values(["_rk", "sector", "nombre"])
+    if dest.empty:
+        st.warning("No hay tanques destino candidatos. Activá «Mostrar todos los tanques como destino».")
+        return
+    id_d = st.selectbox("Tanque destino", dest["id_tanque"].tolist(),
+                        format_func=lambda i: ("%s · %s" % (
+                            dest[dest["id_tanque"] == i].iloc[0]["prod"] or "sin producto",
+                            _label_tq(dest[dest["id_tanque"] == i].iloc[0]))),
+                        key="cc_tq_d", label_visibility="collapsed")
+    rd = dest[dest["id_tanque"] == id_d].iloc[0]
+    relabel = (rd["prod"] != prod_d)
+    kg_d_antes = float(rd["kg_est"] or 0)
+    if relabel:
+        if kg_d_antes >= VACIO_KG:
+            st.error("**%s** está rotulado **%s** y tiene %s. Al confirmar pasa a contarse TODO como **%s** "
+                     "(se mezcla). Si no es lo que querés, elegí otro tanque." % (
+                         rd["nombre"], rd["prod"] or "sin producto", _tn(kg_d_antes), prod_d))
+        else:
+            st.info("**%s** está vacío: al confirmar queda rotulado **%s**." % (rd["nombre"], prod_d))
+
+    # ---------- resumen y controles ----------
     cap_d = _f(rd["capacidad_litros"])
     lit_d_antes = float(rd["litros_est"] or 0)
-
+    if n_or > 1:
+        st.dataframe(pd.DataFrame(filas_ui), use_container_width=True, hide_index=True)
     m = st.columns(5)
-    m[0].metric("Kg a mover", _n(kg) + " kg", help="Densidad %s usada: %.3f" % (prod_o, dens))
+    m[0].metric("Total a mover", _n(kg) + " kg", help="Densidad %s usada: %.3f" % (prod_o, dens))
     m[1].metric("Litros", _n(litros) + " L")
-    m[2].metric("%s queda con" % ro["nombre"], _tn(kg_o_antes - kg), "-" + _tn(kg))
+    m[2].metric("Orígenes", "%d" % n_or, "%d con tanque" % len(_ids_o))
     m[3].metric("%s queda con" % rd["nombre"], _tn(kg_d_antes + kg), "+" + _tn(kg))
     desvio = None
     validado = False
@@ -450,10 +540,20 @@ def _nuevo(USR, cat, conectar, tq, prods):
 
     problemas, avisos = [], []
     if kg <= 0:
-        problemas.append("La cantidad tiene que ser mayor a 0.")
-    if kg > kg_o_antes * 1.02 + 1:
-        avisos.append("Sacás %s de un tanque que tiene %s estimados: quedaría en negativo hasta la próxima medición."
-                      % (_tn(kg), _tn(kg_o_antes)))
+        problemas.append("La cantidad total tiene que ser mayor a 0.")
+    if len(_ids_o) != len(set(_ids_o)):
+        problemas.append("Hay un tanque origen repetido. Elegí tanques distintos o bajá la cantidad de orígenes.")
+    _tipos_sin = [o["tipo"] for o in origenes if o["tipo"] != "TANQUE"]
+    if len(_tipos_sin) != len(set(_tipos_sin)):
+        problemas.append("Hay un origen sin tanque repetido. Juntá esa cantidad en una sola línea.")
+    for o in origenes:
+        if o["kg"] <= 0:
+            problemas.append("El origen «%s» está en 0: bajá la cantidad de orígenes o cargale kg." % o["nombre"])
+        elif o["tipo"] == "TANQUE":
+            _stk = float(o["row"]["kg_est"] or 0.0)
+            if o["kg"] > _stk * 1.02 + 1:
+                avisos.append("Sacás %s de **%s**, que tiene %s estimados: quedaría en negativo hasta la "
+                              "próxima medición." % (_tn(o["kg"]), o["nombre"], _tn(_stk)))
     if cap_d and (lit_d_antes + litros) > cap_d * 1.02:
         avisos.append("El destino supera su capacidad (%s L + %s L > %s L)." % (
             _n(lit_d_antes), _n(litros), _n(cap_d)))
@@ -464,12 +564,16 @@ def _nuevo(USR, cat, conectar, tq, prods):
             _tn(kg_d_antes), rd["prod"] or "otro producto", prod_d))
     if not tk:
         avisos.append("Sin ticket de portería: el cambio queda registrado como NO validado.")
+    if _tipos_sin:
+        avisos.append("Hay %d origen(es) sin tanque (%s): esa cantidad ENTRA al destino pero no se "
+                      "descuenta de ningún tanque, porque no estaba contada en el stock."
+                      % (len(_tipos_sin), ", ".join(SIN_TANQUE_LBL.get(t, t) for t in _tipos_sin)))
 
     # ---------- motivo ----------
     st.markdown("#### 5 · Motivo y confirmación")
     c1, c2 = st.columns([1, 2])
     motivo = c1.selectbox("Motivo", MOTIVOS, format_func=lambda k: MOTIVO_LBL.get(k, k), key="cc_motivo")
-    obs = c2.text_input("Observaciones", key="cc_obs", placeholder="ej. lab dio goma > 1% en BPN 5")
+    obs = c2.text_input("Observaciones", key="cc_obs", placeholder="ej. fondos de BPN 5, BPN 7 y BPN 9")
     for p in problemas:
         st.error(p)
     for a in avisos:
@@ -495,9 +599,11 @@ def _nuevo(USR, cat, conectar, tq, prods):
     if st.button("✅ Confirmar cambio %s → %s de %s" % (prod_o, prod_d, _tn(kg)), type="primary",
                  disabled=not ok, key="cc_confirmar", use_container_width=True):
         d = {"prod_o": prod_o, "prod_d": prod_d, "pid_o": po["id"], "pid_d": pdst["id"],
-             "tq_o": int(id_o), "tq_o_nombre": str(ro["nombre"]), "tq_d": int(id_d), "tq_d_nombre": str(rd["nombre"]),
-             "cantidad": float(cant), "unidad": "TN" if unidad == "TN" else "KL",
-             "kg": round(kg, 1), "litros": round(litros, 1), "dens": dens,
+             "origenes": [{k: v for k, v in o.items() if k != "row"} for o in origenes],
+             "tq_d": int(id_d), "tq_d_nombre": str(rd["nombre"]),
+             "cantidad": float(kg / 1000.0 if unidad == "TN" else litros / 1000.0),
+             "unidad": "TN" if unidad == "TN" else "KL",
+             "kg": kg, "litros": litros, "dens": dens,
              "ticket": tk, "kg_ticket": kg_ticket, "desvio": (round(desvio, 2) if desvio is not None else None),
              "validado": validado, "relabel": bool(relabel),
              "pid_d_anterior": (int(rd["id_producto_principal"]) if pd.notna(rd["id_producto_principal"]) else None),
@@ -507,14 +613,16 @@ def _nuevo(USR, cat, conectar, tq, prods):
         except Exception as e:
             st.error("No se pudo registrar el cambio: %s" % e)
             return
-        for k in ("cc_cant", "cc_cant_val", "cc_tk", "cc_tk_last", "cc_tk_manual", "cc_obs", "cc_forzar"):
+        for k in [x for x in list(st.session_state.keys())
+                  if str(x).startswith(("cc_ov", "cc_oc"))] + ["cc_tk", "cc_tk_last", "cc_tk_manual",
+                                                               "cc_obs", "cc_forzar"]:
             st.session_state.pop(k, None)
         try:
             cat.clear()
         except Exception:
             pass
-        st.success("Cambio #%d registrado: %s → %s, %s (%s L)%s." % (
-            idc, prod_o, prod_d, _tn(kg), _n(litros),
+        st.success("Cambio #%d registrado: %s → %s, %s (%s L) desde %d origen(es)%s." % (
+            idc, prod_o, prod_d, _tn(kg), _n(litros), n_or,
             (" · ticket %s %s" % (tk, "validado" if validado else "sin validar")) if tk else " · sin ticket"))
         st.rerun()
 
@@ -554,8 +662,9 @@ def _historial_ui(USR, cat, conectar):
                                    conf[conf["id_cambio"] == i].iloc[0]["prod_destino"],
                                    _tn(conf[conf["id_cambio"] == i].iloc[0]["kg"])), key="cc_anul_id")
             mot = st.text_input("Motivo de la anulación", key="cc_anul_mot")
-            st.caption("Se anulan los dos movimientos de stock, se restauran los automáticos que había reemplazado "
-                       "y se deshace el re-rotulado del tanque destino si todavía lo tiene.")
+            st.caption("Se anulan todos los movimientos de stock del cambio (una salida por cada tanque "
+                       "origen + la entrada al destino), se restauran los automáticos que había "
+                       "reemplazado y se deshace el re-rotulado del tanque destino si todavía lo tiene.")
             if st.button("Anular", key="cc_anul_btn", disabled=not mot.strip()):
                 try:
                     _anular(conectar, USR, conf[conf["id_cambio"] == idc].iloc[0], mot.strip())
@@ -572,7 +681,10 @@ def _historial_ui(USR, cat, conectar):
 def render(USR, cat, conectar, contexto="PLANIFICACION"):
     st.markdown("### 🔁 Cambio de categoría AFE-S ↔ AFE-SG")
     st.caption("Pasá toneladas o kilolitros de una categoría a la otra moviéndolas de tanque. "
-               "Si hay ticket de portería, su peso valida la cantidad; el stock se actualiza en el acto.")
+               "El peso puede salir de **varios tanques a la vez** (fondos, tanques pinchados) y "
+               "también de un origen que no es tanque (sobrenadantes y purgas juntadas en bachitas "
+               "o tachos). Si hay ticket de portería, su peso valida la cantidad; el stock se "
+               "actualiza en el acto.")
     # En Producción en planta (contexto PLANTA) lo usa el operario que hace el movimiento;
     # el acceso ya lo controla la sección. En Planificación queda para dirección.
     if contexto != "PLANTA" and USR.get("rol") not in ROLES_DIRECCION \

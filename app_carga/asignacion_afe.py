@@ -144,6 +144,10 @@ def _candidatos(cat, id_producto):
         "       COALESCE(s.litros_estimado, s.litros_actual, 0) AS lts_est, "
         "       COALESCE(s.kg_estimado, s.kg_actual, 0) AS kg_est, "
         "       GREATEST(COALESCE(t.capacidad_litros,0) - COALESCE(s.litros_estimado, s.litros_actual, 0), 0) AS disp_lts, "
+        "       s.ultima_medicion, COALESCE(s.movs_post_medicion,0) AS movs_post, "
+        "       COALESCE(s.litros_actual,0) AS lts_med, COALESCE(s.kg_actual,0) AS kg_med, "
+        "       (SELECT left(COALESCE(fs.observaciones,''),60) FROM produccion.fact_stock_tanque fs "
+        "         WHERE fs.id_tanque = t.id_tanque ORDER BY fs.medido_en DESC LIMIT 1) AS med_fuente, "
         "       COALESCE(pp.es_principal,false) AS es_principal, "
         "       COALESCE(h.n,0) AS hist_n, COALESCE(h.kg,0) AS hist_kg, "
         "       p.acidez_pct, p.agua_pct, p.sedimentos_pct, p.densidad_g_ml, "
@@ -285,6 +289,8 @@ def _rankear(df_cand, tk, litros, kg=None):
         out.append(dict(r, _p=p, _afin=afin, _nota=nota, _cap=cap_sc, _cons=cons,
                         _ok=ok, _bloqueo=motivo, _vacio=vacio, _deg=deg, _deg_nota=deg_nota,
                         _disp=disp, _kg_est=kg_est, _lts_est=lts_est,
+                        _ult_med=r.get("ultima_medicion"), _movs_post=r.get("movs_post"),
+                        _med_fuente=r.get("med_fuente"),
                         _cap_kg=disp * dens_tk))
     for r in out:
         r["_hist"] = (r["_p"] / p_max) if p_max > 0 else 0.0
@@ -341,7 +347,15 @@ def _sugerir(rank, kg, dens):
         out.append(dict(t, _kg=kgi, _orden=len(out) + 1, _falta=0.0))
     if not out:
         out = [dict(orden[0], _kg=0.0, _orden=1, _falta=0.0)]
-    out[0]["_falta"] = round(max(0.0, restante if len(out) else kg), 1)
+    _falta = round(max(0.0, restante if len(out) else kg), 1)
+    # SOL-0026: el tanque que aparece PRIMERO es el que recibe MÁS litros. El que
+    # queda con la fracción es el que después se completa con otro camión, y tiene
+    # que quedar segundo para que siga habiendo espacio libre donde asignarlo.
+    out.sort(key=lambda x: x["_kg"], reverse=True)
+    for _i, _x in enumerate(out):
+        _x["_orden"] = _i + 1
+        _x["_falta"] = 0.0
+    out[0]["_falta"] = _falta
     return out
 
 
@@ -419,6 +433,12 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
     with conectar(uid) as (conn, audit):
         with conn.cursor() as cur:
             cur.execute("SELECT set_config('app.param_origen','MEZCLA_INGRESO',true)")
+            # Un doble click (o dos reruns de Streamlit a la vez) abría dos
+            # transacciones que no se veían entre sí: cada una anulaba lo que había
+            # ANTES y las dos insertaban → el ticket entraba 2..6 veces y el stock
+            # del tanque quedaba multiplicado. El lock por ticket las serializa.
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                        ("asignacion_afe:" + str(tk),))
 
             # 1) anular movimientos automáticos previos del ticket + su espejo
             cur.execute(
@@ -746,7 +766,9 @@ def _pendientes(USR, cat, conectar, contexto):
                      index=(min(len(sug), 7) - 1 if sug else 0),
                      horizontal=True, key="asg_ntq_%s" % r["tk"],
                      help="Con poco espacio de acopio el camión se reparte completando "
-                          "tanques a tope (SOL-0009).")
+                          "tanques a tope (SOL-0009). El reparto por defecto sigue el ORDEN "
+                          "en que elegís los tanques: el tanque 1 se llena primero y el "
+                          "último queda con la fracción (SOL-0026).")
     lineas = []
     # hasta 4 columnas por fila: con 5-7 tanques una sola fila queda ilegible
     _pf = int(_n_tq) if int(_n_tq) <= 4 else 4
@@ -762,6 +784,11 @@ def _pendientes(USR, cat, conectar, contexto):
                               index=_keys.index(_key_de(_def["id_tanque"])),
                               key="asg_tq%d_%s" % (i, r["tk"]))
             _sel.append(_lbl[_k])
+    if int(_n_tq) >= 2:
+        st.caption("↕️ **El orden manda:** el tanque 1 se llena primero hasta su tope y el "
+                   "último se queda con la fracción. Poné primero el que recibió más litros, "
+                   "así el que queda a medias conserva espacio para el camión siguiente. "
+                   "Los litros de cada uno se pueden editar a mano.")
 
     # Estado de los tildes "está VACÍO" ANTES de calcular el reparto: si el operario
     # marcó vacío, el espacio libre real de ese tanque es su CAPACIDAD completa y el
@@ -782,13 +809,14 @@ def _pendientes(USR, cat, conectar, contexto):
     # el reparto de la sugerencia (considera calidad además de espacio).
     _defs_l = [litros_tk] * int(_n_tq)
     if int(_n_tq) == 1:
-        # Un solo tanque: por defecto se carga hasta el TOPE de su espacio efectivo.
-        # Si el ticket no entra entero, el control de abajo marca en rojo lo que falta
-        # y ahí se pasa a 2 tanques.
-        _defs_l = [round(min(litros_tk, _disp_eff[0]), 0)]
+        # Un solo tanque: se precarga el ticket COMPLETO. La capacidad de la ficha es
+        # nominal y en planta suele entrar algo más (SOL-0026), así que un exceso
+        # avisa pero no bloquea; si de verdad no entra, se pasa a 2 tanques.
+        _defs_l = [round(litros_tk, 0)]
         if _disp_eff[0] + 1 < litros_tk:
-            st.warning("El ticket trae %s L y en este tanque entran %s L: se precargó el "
-                       "tope. Los %s L restantes necesitan un segundo tanque."
+            st.warning("El ticket trae %s L y en la ficha de este tanque entran %s L "
+                       "(%s L de más). Si el camión entró completo, confirmá así; si no, "
+                       "pasá a 2 tanques."
                        % (_n(litros_tk, 0), _n(_disp_eff[0], 0),
                           _n(litros_tk - _disp_eff[0], 0)))
     if int(_n_tq) >= 2:
@@ -802,9 +830,11 @@ def _pendientes(USR, cat, conectar, contexto):
             _defs_l = [(_map.get(int(t["id_tanque"]), 0.0) / dens if dens > 0 else 0.0)
                        for t in _sel]
         else:
-            # regla operativa: se llenan A TOPE de menor a mayor espacio efectivo y
-            # el de más espacio absorbe el resto
-            _orden_i = sorted(range(int(_n_tq)), key=lambda i: _disp_eff[i])
+            # regla operativa (SOL-0026): se llenan EN EL ORDEN EN QUE SE ELIGEN.
+            # El tanque 1 se completa hasta su tope y el último absorbe el resto, así
+            # el operario decide cuál queda lleno y cuál queda con la fracción que
+            # después completa el camión siguiente.
+            _orden_i = list(range(int(_n_tq)))
             _defs_l = [0.0] * int(_n_tq)
             _resto = litros_tk
             for _j, _ii in enumerate(_orden_i):
@@ -840,7 +870,20 @@ def _pendientes(USR, cat, conectar, contexto):
                 st.caption("Marcado **VACÍO**: espacio libre = capacidad completa "
                            "(%s L) y el ponderado parte de 0 kg." % _n(_disp_eff[i], 0))
             else:
-                st.caption("Pondera sobre **%s kg previos** según el sistema." % _n(_kg_prev, 0))
+                # De dónde sale ese "previo": sin radar, el dato bueno suele ser el
+                # que dejó la asignación anterior. Se muestra siempre para que el
+                # operario pueda desconfiar con criterio (SOL-0026).
+                _fue_asig = "Asignación AFE" in str(_t.get("_med_fuente") or "")
+                try:
+                    _fmed = pd.to_datetime(_t.get("_ult_med")).strftime("%d/%m %H:%M")
+                except Exception:
+                    _fmed = "—"
+                _det = ("último ingreso cargado en la app" if _fue_asig
+                        else (str(_t.get("_med_fuente") or "medición").strip() or "medición"))
+                st.caption("Pondera sobre **%s kg previos** · %s del %s%s."
+                           % (_n(_kg_prev, 0), _det, _fmed,
+                              (" + %d mov. posteriores" % int(_t.get("_movs_post") or 0))
+                              if int(_f(_t.get("_movs_post")) or 0) > 0 else ""))
             _vac = False
             if _kg_prev > VACIO_KG:
                 _vac = st.checkbox("⚠️ El tanque está VACÍO en realidad",

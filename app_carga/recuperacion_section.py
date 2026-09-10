@@ -50,6 +50,12 @@ PREF_DESTINOS = (("Tanque 4", "Reactores (Acopio)"),
                  ("Tanque 5", "Reactores (Acopio)"),
                  ("Tanque materia prima 3", "Reactores (Proceso)"),
                  ("Tanque materia prima 4", "Reactores (Proceso)"))
+# Sectores donde puede terminar un camión de recuperación. Reactores es el destino
+# de siempre; plataforma (exportación incluida) se usa cuando no queda personal en
+# reactores o cuando el AG sale de buena calidad y se acopia para exportar.
+SECTORES_DESTINO = ("Reactores (Acopio)", "Reactores (Proceso)",
+                    "Plataforma central", "Plataforma 1 (BPV)", "Plataforma 2 (BPN)")
+SECTORES_REACTORES = ("Reactores (Acopio)", "Reactores (Proceso)")
 # orígenes de movimientos automáticos que la confirmación reemplaza
 _ORIG_AUTO = ("lab_sync", "sistema", "recuperacion_ag")
 
@@ -110,7 +116,13 @@ def _candidatos(cat):
 
 
 def _tanques_destino(cat):
-    """Tanques donde físicamente se descarga la recuperación (zona reactores)."""
+    """Tanques donde físicamente se descarga la recuperación.
+
+    Reactores es lo habitual, pero no siempre hay gente allá: los sábados después
+    de las 14, o cuando la calidad sale buena y se acopia para exportación, el
+    camión descarga en la plataforma y se usa el tanque que esté libre en ese
+    momento (SOL-0026). Por eso también se ofrecen los tanques de plataforma.
+    """
     return cat(
         "SELECT t.id_tanque, t.nombre, t.sector, "
         "       COALESCE(s.kg_estimado, s.kg_actual, 0) AS kg_actual, "
@@ -118,8 +130,9 @@ def _tanques_destino(cat):
         "FROM produccion.dim_tanque t "
         "LEFT JOIN produccion.vw_stock_tanque_actual s ON s.id_tanque = t.id_tanque "
         "WHERE COALESCE(t.activo,true) "
-        "  AND t.sector IN ('Reactores (Acopio)','Reactores (Proceso)') "
-        "ORDER BY t.sector, t.nombre")
+        "  AND COALESCE(t.condicion,'EN USO') <> 'FUERA DE USO' "
+        "  AND t.sector = ANY(%s) "
+        "ORDER BY t.sector, t.nombre", (list(SECTORES_DESTINO),))
 
 
 def _orden_destinos(tqs, kg):
@@ -131,10 +144,11 @@ def _orden_destinos(tqs, kg):
                 cap = _f(r.get("capacidad_litros")) or 0.0
                 libre = max(0.0, cap * DENS_DEFAULT - (_f(r.get("kg_actual")) or 0.0))
                 return (0, i) if libre >= float(kg or 0) else (1, i)
-        return (2, 99)
+        # después de los preferidos: primero el resto de reactores, después plataforma
+        return (2, 99) if str(r["sector"]).strip() in SECTORES_REACTORES else (3, 99)
     t = tqs.copy()
     t["_rk"] = t.apply(_rank, axis=1)
-    t = t.sort_values("_rk")
+    t = t.sort_values(["_rk", "sector", "nombre"])
     n_ok = int(t["_rk"].apply(lambda x: x[0] == 0).sum())
     return t.drop(columns=["_rk"]), n_ok
 
@@ -507,8 +521,11 @@ def _panel_bandeja(cat, conectar, USR, cand, j):
                                help="⭐ = destinos prioritarios CON capacidad para este camión, "
                                     "en el orden definido por dirección: Tanque 4 acopio → "
                                     "Tanque 5 acopio → MP 3 → MP 4. Viene preseleccionado el "
-                                    "primero. Si fue a plataforma, elegí Plataforma: no suma a "
-                                    "ningún tanque y se anula el crédito automático al Tanque 4.")
+                                    "primero. Abajo siguen el resto de reactores y los tanques "
+                                    "de plataforma / exportación, para los días en que no queda "
+                                    "personal en reactores o el AG se acopia para exportar. "
+                                    "«Plataforma (sin tanque)» es sólo para cuando no se sabe en "
+                                    "qué tanque quedó: no suma a ninguno.")
             sec_g = st.radio("Trabajado en", ["🏊 Piletas", "🛁 Bachas"], horizontal=True,
                              key="rec_sec_%s" % tk,
                              help="Sector de gestión al que suma este recuperado en 📈 Gestión "
