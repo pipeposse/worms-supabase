@@ -259,7 +259,9 @@ def _confirmar(conectar, USR, tk, dat, clasif, prod_row, destino_tipo, tanque, o
                     "SELECT COALESCE(s.kg_estimado, s.kg_actual, 0) "
                     "FROM produccion.vw_stock_tanque_actual s WHERE s.id_tanque=%s", (idt,))
                 _r = cur.fetchone()
-                kg_antes = float(_r[0]) if _r and _r[0] is not None else 0.0
+                # nunca negativo: un estimado negativo (salida contada dos veces) rompería
+                # el ponderado de parámetros. Ver [[stock-panel-fisico]].
+                kg_antes = max(float(_r[0]), 0.0) if _r and _r[0] is not None else 0.0
                 cur.execute(
                     "SELECT acidez_pct, agua_pct, densidad_g_ml, ppm_azufre, ppm_fosforo "
                     "FROM produccion.fact_param_tanque WHERE id_tanque=%s AND id_producto=%s",

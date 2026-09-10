@@ -3954,6 +3954,18 @@ if st.session_state.section != "CARGAS":
                                        "maestro." % (_pcod, _densp))
                         _last_lts = float(_row.get("litros_actual")) if pd.notna(_row.get("litros_actual")) else 0.0
                         _last_kg = float(_row.get("kg_actual")) if pd.notna(_row.get("kg_actual")) else 0.0
+                        # Un stock NEGATIVO no existe: aparece cuando el sistema descontó dos
+                        # veces una salida (p.ej. el despacho ya estaba en la medición física).
+                        # No se puede usar como valor inicial del campo (Streamlit lo rechaza
+                        # por debajo del mínimo): se arranca de 0 y se avisa.
+                        if _last_lts < 0 or _last_kg < 0:
+                            st.warning(
+                                "⚠️ El sistema tiene este tanque con un stock **negativo** "
+                                "(%s L · %s kg), que no puede ser real: en general es una salida "
+                                "descontada dos veces. Cargá la medición de ahora y queda "
+                                "corregido." % (f"{_last_lts:,.0f}", f"{_last_kg:,.0f}"))
+                            _last_lts = max(_last_lts, 0.0)
+                            _last_kg = max(_last_kg, 0.0)
                         if _last_lts > 0 or _last_kg > 0:
                             st.caption(f"📌 Predefinido con el **último valor cargado** del tanque "
                                        f"({_last_lts:,.0f} L · {_last_kg/1000:,.2f} TN). Si no cambió, guardá igual.")

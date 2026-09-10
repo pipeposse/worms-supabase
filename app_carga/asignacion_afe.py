@@ -479,12 +479,28 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
                 # el tanque toma los parámetros del ticket.
                 cur.execute(
                     "SELECT COALESCE(s.kg_estimado, s.kg_actual, 0), "
-                    "       COALESCE(s.litros_estimado, s.litros_actual, 0), s.capacidad_litros "
+                    "       COALESCE(s.litros_estimado, s.litros_actual, 0), s.capacidad_litros, "
+                    "       COALESCE(s.kg_actual,0), COALESCE(s.litros_actual,0) "
                     "FROM produccion.vw_stock_tanque_actual s WHERE s.id_tanque=%s", (idt,))
                 _r = cur.fetchone()
                 kg_antes = float(_r[0]) if _r and _r[0] is not None else 0.0
                 lts_antes = float(_r[1]) if _r and _r[1] is not None else 0.0
                 _cap = float(_r[2]) if _r and _r[2] is not None else 0.0
+                _kg_fis = float(_r[3]) if _r and _r[3] is not None else 0.0
+                _lts_fis = float(_r[4]) if _r and _r[4] is not None else 0.0
+                # El ESTIMADO puede quedar NEGATIVO cuando un movimiento posterior a la
+                # medición (típico: la salida de un despacho) ya estaba reflejado en esa
+                # medición física → doble conteo. Un stock negativo no existe: en ese caso
+                # se vuelve a la última medición física (la verdad), y si esa también es
+                # negativa se parte de 0. Nunca se escribe un snapshot negativo.
+                _base_ajustada = None
+                if kg_antes < 0 or lts_antes < 0:
+                    _base_ajustada = "estimado negativo (%.0f L) — se usó la última medición física" % lts_antes
+                    kg_antes = max(_kg_fis, 0.0)
+                    lts_antes = max(_lts_fis, 0.0)
+                if kg_antes < 0 or lts_antes < 0:
+                    kg_antes = max(kg_antes, 0.0)
+                    lts_antes = max(lts_antes, 0.0)
                 if ln.get("vacio_real"):
                     kg_antes = 0.0
                     lts_antes = 0.0
@@ -543,8 +559,9 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
                     " id_usuario, observaciones) "
                     "VALUES (%s,%s,now(),%s,%s,%s,%s,%s)",
                     (idt, int(cab["id_producto"]), _lts_nuevo, _kg_nuevo, _pct_nuevo, uid,
-                     "Asignación AFE ticket %s: +%.0f L / +%.0f kg (previo %.0f L)"
-                     % (tk, lts, kg, lts_antes)))
+                     "Asignación AFE ticket %s: +%.0f L / +%.0f kg (previo %.0f L)%s"
+                     % (tk, lts, kg, lts_antes,
+                        (" · " + _base_ajustada) if _base_ajustada else "")))
 
                 # 5) parámetros del tanque (ponderado)
                 extra = json.dumps({"mezcla_ticket": tk, "mezcla_kg": kg,
