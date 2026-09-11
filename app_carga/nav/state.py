@@ -11,6 +11,8 @@ AREAS = {
 }
 
 PREF_KEY = "nav_v2"          # dim_usuario.prefs ->> 'nav_v2'  (true/false)
+# Vistas que son del ÁREA, no de un sector: valen sin sector (?area=PRODUCCION&vista=HOY).
+VISTAS_AREA = ("HOY", "SECTORES", "LABCONC", "PANEL")
 _SS_KEY = "nav"              # st.session_state["nav"] = {"area":..., "sector":..., "vista":...}
 _QP_KEYS = ("area", "sector", "vista")
 
@@ -90,7 +92,7 @@ def set_nav(area=None, sector=None, vista=None, rerun=True):
         area = None
     if area is None:
         sector = None
-    if sector is None:
+    if sector is None and vista not in VISTAS_AREA:
         vista = None
     nav = {"area": area, "sector": sector, "vista": vista}
     st.session_state[_SS_KEY] = nav

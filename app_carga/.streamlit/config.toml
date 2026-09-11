@@ -6,3 +6,16 @@ maxUploadSize = 50
 
 [browser]
 gatherUsageStats = false
+
+# Tema fijo. Sin esto Streamlit sigue la preferencia del sistema operativo: en una
+# tablet en modo oscuro pintaba los widgets oscuros debajo de un CSS que asume
+# fondo claro, y quedaba texto claro sobre fondo claro. Los valores son los mismos
+# tokens del CSS (inject_global_css) para que los widgets nativos —inputs, selects,
+# tabs, dataframes— salgan de fábrica con la paleta y no haya que pelearlos por CSS.
+[theme]
+base = "light"
+primaryColor = "#1d4ed8"
+backgroundColor = "#fbfbf9"
+secondaryBackgroundColor = "#f4f3f0"
+textColor = "#16181d"
+font = "sans serif"

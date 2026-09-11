@@ -4,7 +4,8 @@ Misma lógica automática que "Nueva carga / reactores":
   - Q AG objetivo = capacidad del reactor × densidad de la MP (se recalcula al cambiar reactor/MP).
   - temp / tiempo / acidez objetivo vienen de dic_proceso_parametros.
   - PRODUCCION_ARE: glicerina por muestra de laboratorio (define % glicerol y la glicerina total),
-    catalizador NAOH/POTASIO excluyente (NAOH genera glicerina recuperada), fuel/soda/potasio por TN.
+    catalizador hidróxido de potasio (KOH) — la soda cáustica salió de la formulación
+    en SOL-0029 — y fuel/KOH por TN (o fijos por reactor).
   - Fuente de la MP con `fuente_mp_combinada`: tanques filtrados por producto + parámetros de lab ponderados.
 Genera el ID de producción PLANIFICADO + un ticket de movimiento por cada MP/insumo.
 

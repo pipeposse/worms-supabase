@@ -593,7 +593,7 @@ def dispersion(puntos, w=ANCHO, h=225, x_titulo="", y_titulo="", x_max=None, cer
 # 13 · acumulado diario por mes con proyección (el gráfico de tendencia)
 # ===========================================================================
 def acumulado_proy(meses, w=ANCHO, h=250, dias_mes=31, etiqueta=None,
-                   y_titulo="TN acumuladas"):
+                   y_titulo="TN acumuladas", dias_corridos=None):
     """meses: [{'mes','dias':[(dia,tn)],'ult'}] cronológico; el último se proyecta.
 
     Una línea por mes sobre el eje "día del mes"; la punteada naranja extiende el
@@ -610,7 +610,8 @@ def acumulado_proy(meses, w=ANCHO, h=250, dias_mes=31, etiqueta=None,
         series.append((etiqueta(m["mes"]) if etiqueta else m["mes"], ser,
                        m.get("ult") or (ser[-1][0] if ser else 0)))
     _mes_ult, ult_serie, ult_dia = series[-1]
-    ritmo = (ult_serie[-1][1] / ult_dia) if ult_serie and ult_dia else 0
+    base_dias = dias_corridos or ult_dia
+    ritmo = (ult_serie[-1][1] / base_dias) if ult_serie and base_dias else 0
     proy = ritmo * dias_mes
     lo, hi, ticks = _ticks(max([s[-1][1] for _, s, _ in series if s] + [proy]) * 1.1)
     o, x0, x1, Y = _marco(w, h, lo, hi, ticks, "día del mes", y_titulo, ml=52, mr=110, mb=46)
@@ -649,3 +650,35 @@ def acumulado_proy(meses, w=ANCHO, h=250, dias_mes=31, etiqueta=None,
                  f'font-weight="800" fill="{PROY}">{_fmt_eje(proy, hi)}</text>')
     return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img">'
             + "".join(o) + "</svg>"), proy
+
+
+# ===========================================================================
+# bullet de meta normalizado: la marca | es SIEMPRE la meta (100%)
+# ===========================================================================
+def bullet_meta(pct, proy_pct=None, col="#2a78d6", w=190, h=17):
+    """Cumplimiento contra la meta. La marca | está SIEMPRE en el mismo lugar
+    (= la meta, 100%), así todas las filas se comparan de un vistazo. Barra del
+    color del estado; ◆ = proyección. El track llega a 125%: lo que se pasa se
+    recorta y se señala con »."""
+    if pct is None:
+        return ""
+    TOPE = 125.0
+
+    def X(p):
+        return max(min(p, TOPE), 0.0) / TOPE * (w - 6) + 1
+
+    x_meta = X(100)
+    o = [f'<rect x="1" y="{h/2-4:.1f}" width="{w-6:.1f}" height="8" rx="4" fill="#eceae4"/>',
+         f'<rect x="1" y="{h/2-4:.1f}" width="{max(X(pct)-1,2):.1f}" height="8" rx="4" '
+         f'fill="{col}"/>']
+    if pct > TOPE:
+        o.append(f'<text x="{w-3:.1f}" y="{h/2+3.4:.1f}" text-anchor="end" font-size="9.5" '
+                 f'font-weight="800" fill="#fff">»</text>')
+    if proy_pct is not None and abs(proy_pct - pct) > 1:
+        xp = X(proy_pct)
+        o.append(f'<path d="M {xp:.1f} {h/2-7:.1f} l 4.5 7 l -4.5 7 l -4.5 -7 z" '
+                 f'fill="{PROY}" stroke="#fff" stroke-width="1"/>')
+    o.append(f'<rect x="{x_meta-1.2:.1f}" y="0.5" width="2.4" height="{h-1}" rx="1" '
+             f'fill="{INK}"/>')
+    return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img">'
+            + "".join(o) + "</svg>")

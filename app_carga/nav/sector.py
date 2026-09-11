@@ -130,8 +130,8 @@ def _kpis_sector(ctx, sec):
               + f" · {_i(k.get('eventos_hoy'))} eventos hoy",
               "ok" if pa else "")
     pers = _i(k.get("personal_presente"))
-    c4 = _kpi("Personal en planta", str(pers),
-              "marcaron presencia en este sector" if pers else "nadie marcó presencia en este sector", "ok" if pers else "")
+    c4 = _kpi("Personas trabajando", str(pers),
+              "registraron trabajo en este sector" if pers else "nadie registró trabajo acá todavía", "ok" if pers else "")
     if k.get("tn_objetivo") and float(k["tn_objetivo"]) > 0:
         pct = float(k.get("pct_cumplimiento") or 0)
         c5 = _kpi("Cumplimiento de la planificación",

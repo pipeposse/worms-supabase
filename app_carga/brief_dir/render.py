@@ -15,15 +15,18 @@ En pantalla angosta pasa a una columna, las tablas se vuelven fichas y los
 gráficos se deslizan en horizontal manteniendo tamaño de lectura.
 """
 import calendar
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .viz import (figura, leyenda, barras_apiladas, barras_stock, acumulado_proy,
-                 barras_mes_proy, cascada, dispersion, microbarra,
+                 barras_mes_proy, cascada, dispersion, microbarra, bullet_meta,
                  CAT_COLOR, CAT_DESC, ORDEN_CAT, LIBRE,
                  GOOD, WARN, SERIOUS, CRIT, INK, INK2, MUTED, GRID, AZUL, PROY, _n, _e)
 
 MES_ABR = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
            "07": "jul", "08": "ago", "09": "sep", "10": "oct", "11": "nov", "12": "dic"}
+MES_NOM = {"01": "enero", "02": "febrero", "03": "marzo", "04": "abril", "05": "mayo",
+           "06": "junio", "07": "julio", "08": "agosto", "09": "septiembre", "10": "octubre",
+           "11": "noviembre", "12": "diciembre"}
 C_EXPO, C_DESG, C_ARE = "#2a78d6", "#1baf7a", "#eb6834"
 DESDE = "2026-08-03"   # arranque del registro de despachos: antes de esto no se compara
 
@@ -83,7 +86,9 @@ def titular(nivel, texto):
             f'<div>{texto}</div></div>')
 
 
-def tabla(cols, filas, aligns=None):
+def tabla(cols, filas, aligns=None, total=None, fuente=None):
+    """total: fila de cierre (misma cantidad de celdas) que SUMA lo mostrado.
+    fuente: de dónde sale cada columna, impreso chico bajo la tabla."""
     a = aligns or ["l"] + ["r"] * (len(cols) - 1)
     m = {"l": "tl", "r": "tr", "c": "tc"}
     th = "".join(f'<th class="{m[a[i]]}">{c}</th>' for i, c in enumerate(cols))
@@ -92,8 +97,13 @@ def tabla(cols, filas, aligns=None):
         tds = "".join(f'<td class="{m[a[i]]}" data-l="{_e(cols[i])}">{c}</td>'
                       for i, c in enumerate(f))
         tb.append(f"<tr>{tds}</tr>")
+    if total:
+        tds = "".join(f'<td class="{m[a[i]]}" data-l="{_e(cols[i])}">{c}</td>'
+                      for i, c in enumerate(total))
+        tb.append(f'<tr class="tr-total">{tds}</tr>')
+    pie = f'<div class="tw-src">{fuente}</div>' if fuente else ""
     return (f'<div class="tw"><table><thead><tr>{th}</tr></thead>'
-            f'<tbody>{"".join(tb)}</tbody></table></div>')
+            f'<tbody>{"".join(tb)}</tbody></table></div>{pie}')
 
 
 def punto(c):
@@ -206,6 +216,35 @@ def render(D):
     antic_prom = sum(d["antic"] for d in de) / max(len(de), 1)
     exc_total = sum(d["exc"] for d in de)
 
+    # exportado REAL de una semana: tickets de báscula de sus despachos (no toda
+    # salida de báscula es exportación: hay ventas directas y movimientos internos)
+    def _exp_rng(ini, fin_):
+        xs = [x for x in de if ini <= str(x["fecha"])[:10] <= fin_
+              and x.get("estado") != "BORRADOR"]
+        tn = sum((x["tn_ticket"] if x.get("tn_ticket") is not None else x.get("tn_plan"))
+                 or 0 for x in xs)
+        return round(tn, 1), int(sum(x.get("tk") or 0 for x in xs)), len(xs)
+
+    def _fin_de(s0):
+        return (datetime.strptime(s0, "%Y-%m-%d") + timedelta(days=6)).date().isoformat()
+
+    exp_tn, exp_cam, exp_nd = _exp_rng(sem, sem_fin)
+    exp_prev = _exp_rng(prev, _fin_de(prev))[0] if prev and prev >= DESDE else None
+    _exp_hist = [_exp_rng(s0, _fin_de(s0))[0] for s0 in ult4 if s0 >= DESDE]
+    exp_p4 = sum(_exp_hist) / len(_exp_hist) if _exp_hist else None
+    otras_tn = round(max((s_now.get("tn") or 0) - exp_tn, 0), 1)
+    otras_cam = max(int(s_now.get("tk") or 0) - exp_cam, 0)
+
+    # ¿cuánto del desvío de AFE-S es medición? — stock medido sin rótulo de producto
+    # (tanques cuyo último rótulo fue AFE-S) por corte semanal + frescura de lecturas
+    _mr = {str(r["corte"])[:10]: r for r in D.get("med_rotulo") or []}
+    _mf = (D.get("med_frescura") or [{}])[0] if D.get("med_frescura") else {}
+    _sr_f = _mr.get((datetime.strptime(sem, "%Y-%m-%d") + timedelta(days=7))
+                    .date().isoformat())
+    _sr_i = _mr.get(sem)
+    _dsr = (round((_sr_f["sr_tn"] or 0) - (_sr_i["sr_tn"] or 0), 1)
+            if _sr_f and _sr_i else None)
+
     ins_sem = [r for r in D["insumos"] if r["semana"] == sem]
     ins_pot = next((r for r in ins_sem if r["insumo"] == "POTASIO"), {})
     ins_fuel = next((r for r in ins_sem if r["insumo"] == "FUEL_OIL"), {})
@@ -223,80 +262,155 @@ def render(D):
     mes_act = sem[:7]
     _dias_m = dias_mes(mes_act + "-01")
 
+    _dias_corr = (min(int(sem_fin[8:10]), _dias_m) if str(sem_fin)[:7] == mes_act
+                  else _dias_m)
     _dm = [x for x in de if str(x["fecha"])[:7] == mes_act and x.get("estado") != "BORRADOR"]
     _dm_tn = sum((x.get("tn_ticket") if x.get("tn_ticket") is not None else x.get("tn_plan"))
                  or 0 for x in _dm)
-    _dm_ult = max((int(str(x["fecha"])[8:10]) for x in _dm), default=0)
-    _dm_proy = _dm_tn / _dm_ult * _dias_m if _dm_ult else None
+    _dm_proy = _dm_tn / _dias_corr * _dias_m if _dias_corr and _dm else None
     _dm_fs_n = sum(1 for x in _dm if x.get("fs"))
     _dm_fs_pct = _dm_fs_n / len(_dm) * 100 if _dm else None
 
     def _mes_tipo(tipo):
         serie = (D.get("produccion_dia_tipo") or {}).get(tipo, [])
         m = next((x for x in serie if x["mes"] == mes_act), None)
-        if not m or not m.get("ult"):
+        if not m or not _dias_corr:
             return None, None
         tot = sum(v for _, v in m["dias"])
-        return round(tot, 1), tot / m["ult"] * _dias_m
+        return round(tot, 1), tot / _dias_corr * _dias_m
 
     _mg_dg_tn, _mg_dg_proy = _mes_tipo("DESGOMADO_ACUOSO")
     _mg_are_tn, _mg_are_proy = _mes_tipo("PRODUCCION_ARE")
 
+    # % A/B del desgomado del mes: por batch (grano día, cortado en sem_fin);
+    # si no hay batches en el mes cae a la vista mensual
+    _lb_dg = [r for r in D.get("lab_batches", [])
+              if r["tipo"] == "DESGOMADO_ACUOSO" and str(r["fecha"])[:7] == mes_act]
     _dc_m = next((x for x in D.get("desgomado_cat", []) if x["mes"] == mes_act), None)
     _mg_ab_pct = None
-    if _dc_m:
+    if _lb_dg:
+        _t_ = sum(r.get("tn") or 0 for r in _lb_dg)
+        _ab_ = sum(r.get("tn") or 0 for r in _lb_dg if r.get("categoria") in ("A", "B"))
+        _mg_ab_pct = _ab_ / _t_ * 100 if _t_ else None
+    elif _dc_m:
         _t_ = sum(v or 0 for v in _dc_m["cats"].values())
         _ab_ = sum(v or 0 for k, v in _dc_m["cats"].items() if k in ("A", "B"))
         _mg_ab_pct = _ab_ / _t_ * 100 if _t_ else None
 
     _mg_ac = [r["acidez"] for r in D.get("lab_batches", [])
               if r["tipo"] == "PRODUCCION_ARE" and str(r["fecha"])[:7] == mes_act
-              and r.get("acidez") is not None]
+              and isinstance(r.get("acidez"), (int, float))]
     _mg_ac_prom = sum(_mg_ac) / len(_mg_ac) if _mg_ac else None
 
-    def _estado(ok, casi):
+    def _sem_meta(ok, casi):
         if ok:
-            return punto(GOOD) + '<b style="color:%s">en meta</b>' % GOOD
+            return GOOD, "en meta"
         if casi:
-            return punto(WARN) + '<b style="color:%s">al límite</b>' % WARN
-        return punto(CRIT) + '<b style="color:%s">no llega</b>' % CRIT
+            return WARN, "al límite"
+        return CRIT, "no llega"
 
-    def _est_mas(valor, objetivo):          # más es mejor (proyección vs meta)
-        if valor is None or not objetivo:
-            return '<span class="mut">s/d</span>'
-        r = valor / objetivo
-        return _estado(r >= 1, r >= 0.9)
+    def _eval_mas(proy_v, objetivo):
+        if proy_v is None or not objetivo:
+            return MUTED, "s/d"
+        r = proy_v / objetivo
+        return _sem_meta(r >= 1, r >= 0.9)
 
-    def _est_menos(valor, tope, tol=1.2):   # menos es mejor (real vs tope)
-        if valor is None or tope is None:
+    def _eval_menos(real_v, tope, tol=1.2):
+        if real_v is None or tope is None:
+            return MUTED, "s/d"
+        return _sem_meta(real_v <= tope, real_v <= tope * tol)
+
+    def _est_txt(col, label):
+        if label == "s/d":
             return '<span class="mut">s/d</span>'
-        return _estado(valor <= tope, valor <= tope * tol)
+        return punto(col) + f'<b style="color:{col}">{label}</b>'
+
+    _m_desp = _eval_mas(_dm_proy, meta.get("despachos_tn"))
+    _m_fs = _eval_menos(_dm_fs_pct, meta.get("fuera_spec_max_pct"), 1.5)
+    _m_dg = _eval_mas(_mg_dg_proy, meta.get("desgomado_tn"))
+    _m_ab = ((MUTED, "s/d") if _mg_ab_pct is None or meta.get("desgomado_ab_pct") is None
+             else _sem_meta(_mg_ab_pct >= meta["desgomado_ab_pct"],
+                            _mg_ab_pct >= meta["desgomado_ab_pct"] * 0.75))
+    _m_are = _eval_mas(_mg_are_proy, meta.get("are_tn"))
+    _m_ac = _eval_menos(_mg_ac_prom, meta.get("are_acidez_max"))
+
+    def _pctm(v, m):
+        return v / m * 100 if (v is not None and m) else None
+
+    def _fila_meta(nombre, objetivo_txt, real_txt, proy_txt, pct_barra, pct_proy,
+                   etiqueta, est):
+        col, _ = est
+        barra = ""
+        if pct_barra is not None:
+            barra = (f'<div class="blt">{bullet_meta(pct_barra, pct_proy, col=col)}'
+                     f'<b style="color:{col}">{etiqueta}</b></div>')
+        return [f"<b>{nombre}</b>", objetivo_txt, real_txt, proy_txt, barra, _est_txt(*est)]
+
+    _p_desp_r = _pctm(_dm_tn, meta.get("despachos_tn"))
+    _p_desp_y = _pctm(_dm_proy, meta.get("despachos_tn"))
+    _p_fs = _pctm(_dm_fs_pct, meta.get("fuera_spec_max_pct"))
+    _p_dg_r = _pctm(_mg_dg_tn, meta.get("desgomado_tn"))
+    _p_dg_y = _pctm(_mg_dg_proy, meta.get("desgomado_tn"))
+    _p_ab = _pctm(_mg_ab_pct, meta.get("desgomado_ab_pct"))
+    _p_are_r = _pctm(_mg_are_tn, meta.get("are_tn"))
+    _p_are_y = _pctm(_mg_are_proy, meta.get("are_tn"))
+    _p_ac = _pctm(_mg_ac_prom, meta.get("are_acidez_max"))
 
     fil_meta = [
-        ["<b>Despachos</b>", f'{_n(meta.get("despachos_tn"),0)} TN',
-         f'{_n(_dm_tn,0)} TN · {len(_dm)} despachos', f'{_n(_dm_proy,0)} TN',
-         _est_mas(_dm_proy, meta.get("despachos_tn"))],
-        ["<b>Despachos fuera de espec</b>", f'≤ {_n(meta.get("fuera_spec_max_pct"),0)}%',
-         f'{_dm_fs_n} de {len(_dm)} ({_n(_dm_fs_pct,0)}%)', "—",
-         _est_menos(_dm_fs_pct, meta.get("fuera_spec_max_pct"), 1.5)],
-        ["<b>Desgomado acuoso</b>", f'{_n(meta.get("desgomado_tn"),0)} TN',
-         f'{_n(_mg_dg_tn,0)} TN', f'{_n(_mg_dg_proy,0)} TN',
-         _est_mas(_mg_dg_proy, meta.get("desgomado_tn"))],
-        ["<b>Desgomado en categoría A/B</b>", f'≥ {_n(meta.get("desgomado_ab_pct"),0)}%',
-         f'{_n(_mg_ab_pct,0)}%', "—",
-         (_estado((_mg_ab_pct or 0) >= (meta.get("desgomado_ab_pct") or 0),
-                  (_mg_ab_pct or 0) >= (meta.get("desgomado_ab_pct") or 0) * 0.75)
-          if _mg_ab_pct is not None and meta.get("desgomado_ab_pct") is not None
-          else '<span class="mut">s/d</span>')],
-        ["<b>Producción de ARE</b>", f'{_n(meta.get("are_tn"),0)} TN',
-         f'{_n(_mg_are_tn,0)} TN', f'{_n(_mg_are_proy,0)} TN',
-         _est_mas(_mg_are_proy, meta.get("are_tn"))],
-        ["<b>ARE-B · acidez final</b>", f'≤ {_n(meta.get("are_acidez_max"),1)}%',
-         f'prom. {_n(_mg_ac_prom,2)}%', "—",
-         _est_menos(_mg_ac_prom, meta.get("are_acidez_max"))],
+        _fila_meta("Despachos", f'{_n(meta.get("despachos_tn"),0)} TN',
+                   f'{_n(_dm_tn,0)} TN · {len(_dm)} despachos', f'{_n(_dm_proy,0)} TN',
+                   _p_desp_r, _p_desp_y,
+                   f'proy. {_n(_p_desp_y,0)}%' if _p_desp_y is not None else "s/d", _m_desp),
+        _fila_meta("Despachos fuera de espec", f'≤ {_n(meta.get("fuera_spec_max_pct"),0)}%',
+                   f'{_dm_fs_n} de {len(_dm)} ({_n(_dm_fs_pct,0)}%)', "—",
+                   _p_fs, None,
+                   f'{_n(_p_fs/100,1)}× el tope' if _p_fs is not None else "s/d", _m_fs),
+        _fila_meta("Desgomado acuoso", f'{_n(meta.get("desgomado_tn"),0)} TN',
+                   f'{_n(_mg_dg_tn,0)} TN', f'{_n(_mg_dg_proy,0)} TN',
+                   _p_dg_r, _p_dg_y,
+                   f'proy. {_n(_p_dg_y,0)}%' if _p_dg_y is not None else "s/d", _m_dg),
+        _fila_meta("Desgomado en categoría A/B", f'≥ {_n(meta.get("desgomado_ab_pct"),0)}%',
+                   f'{_n(_mg_ab_pct,0)}%', "—",
+                   _p_ab, None,
+                   f'{_n(_p_ab,0)}% de la meta' if _p_ab is not None else "s/d", _m_ab),
+        _fila_meta("Producción de ARE", f'{_n(meta.get("are_tn"),0)} TN',
+                   f'{_n(_mg_are_tn,0)} TN', f'{_n(_mg_are_proy,0)} TN',
+                   _p_are_r, _p_are_y,
+                   f'proy. {_n(_p_are_y,0)}%' if _p_are_y is not None else "s/d", _m_are),
+        _fila_meta("ARE-B · acidez final", f'≤ {_n(meta.get("are_acidez_max"),1)}%',
+                   f'prom. {_n(_mg_ac_prom,2)}%', "—",
+                   _p_ac, None,
+                   f'{_n(_p_ac,0)}% del tope' if _p_ac is not None else "s/d", _m_ac),
     ]
-    t_metas = tabla(["Meta del mes", "Objetivo", "Real a la fecha", "Proyección", "Estado"],
-                    fil_meta, aligns=["l", "r", "r", "r", "l"])
+    t_metas = tabla(["Meta del mes", "Objetivo", "Real a la fecha", "Proyección",
+                     "Cumplimiento · la marca | es la meta", "Estado"], fil_meta,
+                    aligns=["l", "r", "r", "r", "c", "l"],
+                    fuente="Objetivos: meta_mensual (dirección) · Real: mismas fuentes de las "
+                           "páginas 2, 5, 6 y 7 de este informe, al día de emisión")
+
+    def meta_chip(texto, col):
+        return (f'<div class="mchip" style="border-left-color:{col}">'
+                f'<span class="mchip-t">META DEL MES</span><div>{texto}</div></div>')
+
+    _peor = lambda *ests: sorted(ests, key=lambda e: [CRIT, WARN, MUTED, GOOD].index(e[0]))[0]
+    chip_prod = meta_chip(
+        f'Desgomado <b>{_n(meta.get("desgomado_tn"),0)} TN</b> — lleva {_n(_mg_dg_tn,0)}, '
+        f'proyecta <b>{_n(_mg_dg_proy,0)}</b> ({_est_txt(*_m_dg)}) &nbsp;·&nbsp; '
+        f'ARE <b>{_n(meta.get("are_tn"),0)} TN</b> — lleva {_n(_mg_are_tn,0)}, '
+        f'proyecta <b>{_n(_mg_are_proy,0)}</b> ({_est_txt(*_m_are)})',
+        _peor(_m_dg, _m_are)[0])
+    chip_desp = meta_chip(
+        f'Despachar <b>{_n(meta.get("despachos_tn"),0)} TN</b> — lleva {_n(_dm_tn,0)}, '
+        f'proyecta <b>{_n(_dm_proy,0)}</b> ({_est_txt(*_m_desp)}) &nbsp;·&nbsp; '
+        f'fuera de espec <b>≤ {_n(meta.get("fuera_spec_max_pct"),0)}%</b> — '
+        f'va {_n(_dm_fs_pct,0)}% ({_est_txt(*_m_fs)})',
+        _peor(_m_desp, _m_fs)[0])
+    chip_react = meta_chip(
+        f'Desgomado en categoría A/B <b>≥ {_n(meta.get("desgomado_ab_pct"),0)}%</b> — '
+        f'{fmes(mes_act)} va en <b>{_n(_mg_ab_pct,0)}%</b> ({_est_txt(*_m_ab)}) '
+        f'&nbsp;·&nbsp; acidez del ARE-B <b>≤ {_n(meta.get("are_acidez_max"),1)}%</b> — '
+        f'prom. <b>{_n(_mg_ac_prom,2)}%</b> ({_est_txt(*_m_ac)})',
+        _peor(_m_ab, _m_ac)[0])
 
     _dc0 = D.get("desgomado_cat", [])
     _desg_b_jul = sum(v for k, v in (_dc0[-2]["cats"] if len(_dc0) > 1 else {}).items()
@@ -315,17 +429,38 @@ def render(D):
     _fs_s_max = max(_fs_s) if _fs_s else None
     _fs_p_max = max(_fs_p) if _fs_p else None
 
+    _a_tank = afe_s["A"]["tn"]
+    _a_in_sem = c_now.get("A", 0) or 0
     tits = [
-        titular("ok",
-                f"<b>El “faltante” de AFE-S era falta de registro.</b> Con los despachos cargados "
-                f"desde el {fdate(DESDE)}, el desvío real es <b>{_n(b_now.get('desvio'),0)} TN "
-                f"({_n(desv_pct,0)}% del stock)</b>, no las ~900 TN/semana que aparecían antes."),
-        titular("critico",
-                f"<b>Sin AFE-S de categoría A</b> ({sin_a} semanas sin ingreso, 0 TN en tanque): "
-                f"la mezcla de exportación va al límite — margen promedio <b>{_n(mg_prom,1)}%</b>. "
-                f"Tres palancas: comprar A/B, volver el desgomado a lo de julio "
-                f"(<b>{_n(_desg_b_jul,0)} TN de categoría B</b>; en agosto lleva "
-                f"{_n(_desg_ab_ult,0)}) o renegociar la especificación con el cliente."),
+        (titular("ok",
+                 f"<b>El balance del AFE-S cierra.</b> Con los despachos cargados desde el "
+                 f"{fdate(DESDE)}, el desvío de la semana es <b>{_n(b_now.get('desvio'),0)} TN "
+                 f"({_n(desv_pct,0)}% del stock medido)</b> — diferencia de medición, no faltante.")
+         if desv_pct < 25 else
+         titular("grave",
+                 f"<b>El balance del AFE-S volvió a abrirse</b>: desvío de "
+                 f"<b>{_n(b_now.get('desvio'),0)} TN ({_n(desv_pct,0)}% del medido)</b> esta "
+                 f"semana — entraron {_n(b_now.get('ing'),0)} TN, salieron "
+                 f"{_n(b_now.get('desp'),0)} y el tanque subió menos de lo que el libro espera. "
+                 + ((f"El grueso es medición, no faltante: <b>{_n(_sr_f['sr_tn'],0)} TN "
+                     f"medidas sin rótulo de producto</b>; con rótulo el desvío queda en "
+                     f"{_n(round(b_now.get('desvio',0)+_dsr,0),0)} TN (pág. 2).")
+                    if (_dsr is not None and _sr_f and b_now.get("desvio") is not None
+                        and abs(b_now.get("desvio", 0) + _dsr) < abs(b_now.get("desvio", 0)) * 0.5)
+                    else "Revisar mediciones atrasadas y movimientos sin ejecutar antes de "
+                         "hablar de faltante."))),
+        (titular("critico",
+                 f"<b>Sin AFE-S de categoría A</b> ({sin_a} semanas sin ingreso, "
+                 f"{_n(_a_tank,0)} TN en tanque): la mezcla va al límite — margen promedio "
+                 f"<b>{_n(mg_prom,1)}%</b>. Tres palancas: comprar A/B, volver el desgomado a lo "
+                 f"de julio (<b>{_n(_desg_b_jul,0)} TN de categoría B</b>; en agosto lleva "
+                 f"{_n(_desg_ab_ult,0)}) o renegociar la especificación con el cliente.")
+         if sin_a >= 1 or _a_tank < 20 else
+         titular("ok",
+                 f"<b>Volvió la categoría A.</b> Ingresaron <b>{_n(_a_in_sem,0)} TN de A</b> esta "
+                 f"semana y hay <b>{_n(_a_tank,0)} TN en tanque</b> (A+B libres: "
+                 f"{_n(ab_libre,0)} TN). Las mezclas ya salen con azufre en 37–42 ppm — cuidar "
+                 f"ese stock para las próximas expo y no quemarlo en mezclas al límite.")),
         titular("grave",
                 f"<b>{_fs_n} despachos fuera de especificación</b> desde el {fdate(DESDE)}: "
                 f"{_fs_s_n} por azufre (hasta <b>{_n(_fs_s_max,1)} ppm</b> contra ≤50) y "
@@ -333,7 +468,7 @@ def render(D):
                 f"El detalle, en la página 6."),
         titular("grave",
                 f"<b>El registro de tiempos de producción no acompaña la operación en vivo</b>: "
-                f"en 4 semanas, {et_clicks} etapas avanzadas en menos de 5 minutos y {et_inval} "
+                f"en 4 semanas, {int(et_clicks)} etapas avanzadas en menos de 5 minutos y {int(et_inval)} "
                 f"con duración negativa — se completan al cierre, no cuando ocurren. Hay que "
                 f"seguir en vivo la interacción con la herramienta (la decantación primero); "
                 f"hasta entonces el cronograma real no se puede exigir."),
@@ -344,13 +479,15 @@ def render(D):
         kpi("AFE-S ingresado", _n(afe_in, 1), " TN",
             f"{_n(pct_ab_in,0)}% en categorías A+B", microbarra(c_now),
             delta(afe_in, afe_in_prev), delta(afe_in, afe_in_p4)),
-        kpi("Exportado", _n(s_now.get("tn"), 1), " TN",
-            f"{s_now.get('tk','—')} camiones · {b_now.get('nd',0)} despachos", "",
-            delta(s_now.get("tn"), s_prev.get("tn")), delta(s_now.get("tn"), prom(sal, "tn"))),
-        kpi("Desgomado acuoso", f"{desg.get('n',0) or 0} reacc. · {_n(desg.get('tn'),0)}", " TN",
+        kpi("Exportado en despachos", _n(exp_tn, 1), " TN",
+            f"{exp_cam} camiones · {exp_nd} despachos"
+            + (f" · y otras salidas por <b>{_n(otras_tn,1)} TN</b> ({otras_cam} camiones)"
+               if otras_tn >= 1 else ""), "",
+            delta(exp_tn, exp_prev), delta(exp_tn, exp_p4)),
+        kpi("Desgomado acuoso", f"{int(desg.get('n') or 0)} reacc. · {_n(desg.get('tn') or 0,0)}", " TN",
             f"utilización {_n(desg.get('uti'),0)}%", "",
             delta(desg.get("tn"), desg_p.get("tn"))),
-        kpi("Producción de ARE", f"{are.get('n',0) or 0} reacc. · {_n(are.get('tn'),0)}", " TN",
+        kpi("Producción de ARE", f"{int(are.get('n') or 0)} reacc. · {_n(are.get('tn') or 0,0)}", " TN",
             f"utilización {_n(are.get('uti'),0)}%", "",
             delta(are.get("tn"), are_p.get("tn"))),
         kpi("Desvío del AFE-S", _n(b_now.get("desvio"), 1), " TN",
@@ -390,14 +527,12 @@ def render(D):
                  ("Despachado", -b_now.get("desp", 0), "resta"),
                  ("Stock único", b_now.get("esp", 0), "total"),
                  ("Medido en tanque", b_now.get("med", 0), "medido")],
-                y_titulo="TN de AFE-S", h=255),
+                y_titulo="TN de AFE-S", h=248),
         subtitulo=(f"Lo que el libro dice que debería haber (<b>{_n(b_now.get('esp'),0)} TN</b>) "
                    f"contra lo que midieron los radares (<b>{_n(b_now.get('med'),0)} TN</b>): "
-                   f"desvío de <b>{_n(b_now.get('desvio'),0)} TN</b>. Antes del {fdate(DESDE)} los "
-                   "despachos no se registraban y este balance no podía cerrarse; el histórico "
-                   "anterior no es comparable."),
-        nota="La salida sale de las líneas de despacho. El desvío residual junta mermas de tanque, "
-             "diferencias de balanza y consumos sin movimiento registrado.")
+                   f"desvío de <b>{_n(b_now.get('desvio'),0)} TN</b>."),
+        nota=f"La salida sale de las líneas de despacho. Antes del {fdate(DESDE)} los despachos "
+             "no se registraban: el histórico previo no compara.")
 
     fil_bal = []
     for s in reversed(sem_ago):
@@ -409,9 +544,77 @@ def render(D):
                         f'{_n(r["desp"],1)} <span class="mut">({r["nd"]})</span>',
                         _n(r["esp"], 1), _n(r["med"], 1),
                         f'<span style="color:{col};font-weight:700">{_n(r["desvio"],1)}</span>'])
+    _tb_tot = [f"<b>Total {len(fil_bal)} semanas</b>", "—",
+               _n(sum(bal[s]["ing"] or 0 for s in sem_ago), 1),
+               _n(sum(bal[s]["prod"] or 0 for s in sem_ago), 1),
+               _n(sum(bal[s]["cons"] or 0 for s in sem_ago), 1),
+               f'{_n(sum(bal[s]["desp"] or 0 for s in sem_ago),1)} '
+               f'<span class="mut">({sum(int(bal[s]["nd"] or 0) for s in sem_ago)})</span>',
+               "—", "—", _n(sum(bal[s]["desvio"] or 0 for s in sem_ago), 1)]
     t_bal = tabla(["Semana", "AFE-S inicial", "Ingresado", "Producido (desgomado)",
                    "Consumido", "Despachado (n despachos)", "Stock único", "Medido en tanque",
-                   "Desvío TN"], fil_bal)
+                   "Desvío TN"], fil_bal, total=_tb_tot,
+                  fuente="Ingresado: tickets de portería (AFE-S) · Producido y consumido: batches "
+                         "· Despachado: líneas de despacho · Medido: radares y aforo")
+
+    # la caja que responde si el desvío es faltante o medición (rótulo + frescura)
+    caja_med = ""
+    if _dsr is not None and b_now.get("desvio") is not None:
+        _crudo = b_now["desvio"]
+        _ajust = round(_crudo + _dsr, 1)
+        _expl = ((abs(_crudo) - abs(_ajust)) / abs(_crudo) * 100) if _crudo else 0.0
+        _ac_crudo = round(sum(bal[s]["desvio"] or 0 for s in sem_ago), 1)
+        _sr_0 = _mr.get(sem_ago[0]) if sem_ago else None
+        _ac_aj = (round(_ac_crudo + (_sr_f["sr_tn"] or 0) - (_sr_0["sr_tn"] or 0), 1)
+                  if _sr_0 else None)
+        _pct_med = abs(_crudo) / (b_now.get("med") or 1) * 100
+        if _pct_med < 10:
+            _tit = (f"esta semana el desvío es chico ({_n(_pct_med,0)}% de lo medido): "
+                    "dentro del error normal de medición")
+        elif _expl >= 50:
+            _tit = ("la mayor parte no es material perdido, es material medido al que le "
+                    "falta el nombre")
+        elif _expl >= 15:
+            _tit = "una parte es material medido al que le falta el nombre"
+        else:
+            _tit = ("esta semana la medición no lo explica: hay que buscar movimientos "
+                    "sin registrar")
+
+        def _sg(v):
+            return ("+" if v > 0 else "−" if v < 0 else "") + _n(abs(v), 0)
+
+        _col_aj = GOOD if abs(_ajust) <= 60 else (WARN if abs(_ajust) <= 150 else CRIT)
+        caja_med = (
+            f'<div class="box"><b>¿Falta material o falla la medición? — {_tit}.</b><br>'
+            f'El balance compara dos fotos: el <b>libro</b> (lo que había + lo que entró − '
+            f'lo que salió) y el <b>tanque</b> (lo que midió el radar al cierre). Cada '
+            f'lectura del radar guarda dos datos: <b>cuántas TN hay</b> y <b>de qué producto '
+            f'son</b>. Cuando una lectura se graba sin el nombre del producto, esas TN '
+            f'quedan medidas pero el balance no sabe que son AFE-S — y las muestra como '
+            f'faltante aunque estén en el patio. La cuenta de esta semana:'
+            f'<div class="cta">'
+            f'<div><span>Desvío que muestra el balance (tanque − libro)</span>'
+            f'<b>{_sg(_crudo)} TN</b></div>'
+            + (f'<div><span>AFE-S medido pero grabado sin nombre: hoy '
+               f'{_n(_sr_f["sr_tn"],0)} TN en {int(_sr_f["sr_tq"] or 0)} tanques '
+               f'(en la semana {"sumó" if _dsr >= 0 else "devolvió"})</span>'
+               f'<b>{_sg(_dsr)} TN</b></div>'
+               if (_sr_f["sr_tn"] or 0) >= 1 or abs(_dsr) >= 1 else
+               '<div><span>AFE-S medido pero grabado sin nombre — corregido: toda '
+               'lectura hereda ahora el rótulo de su tanque</span><b>0 TN</b></div>')
+            + f''
+            f'<div class="cta-t"><span>Desvío real de material</span>'
+            f'<b style="color:{_col_aj}">{_sg(_ajust)} TN</b></div></div>'
+            f'Lo que queda es calendario: la última lectura de cada tanque fue, en promedio, '
+            f'<b>{_n(_mf.get("h_pond"),0)} horas antes del corte</b> — lo que entra después '
+            f'de esa lectura recién aparece medido la semana siguiente. Por eso el desvío '
+            f'<b>alterna de signo</b> semana a semana (acumulado desde el {fdate(DESDE)}: '
+            f'{_sg(_ac_crudo)} TN'
+            + (f'; reponiendo los nombres, {_sg(_ac_aj)} TN'
+               if _ac_aj is not None and abs(_ac_aj - _ac_crudo) >= 1 else "")
+            + ') en vez de crecer como crecería una pérdida real. <b>Acción:</b> que cada '
+              'lectura del radar arrastre el producto que tiene el tanque, y una lectura '
+              'con nombre al cierre del domingo.</div>')
 
     _dp = sorted(D["desvio_producto"], key=lambda x: -abs(x["desvio"] or 0))[:10]
     fil_dp = []
@@ -425,8 +628,22 @@ def render(D):
                        _n(r["e_in"], 1), _n(r["e_out"], 1), _n(r.get("intr"), 1),
                        f'<b>{_n(r["unico"],1)}</b>', _n(r["medido"], 1),
                        f'<span style="color:{col};font-weight:700">{_n(r["desvio"],1)}</span>'])
+    _dp_tot = [f"<b>Total mostrado ({len(_dp)})</b>",
+               _n(sum(r["ini"] or 0 for r in _dp), 1),
+               _n(sum(r["prod"] or 0 for r in _dp), 1),
+               _n(sum(r["e_in"] or 0 for r in _dp), 1),
+               _n(sum(r["e_out"] or 0 for r in _dp), 1),
+               _n(sum(r.get("intr") or 0 for r in _dp), 1),
+               f'<b>{_n(sum(r["unico"] or 0 for r in _dp),1)}</b>',
+               _n(sum(r["medido"] or 0 for r in _dp), 1),
+               _n(sum(r["desvio"] or 0 for r in _dp), 1)]
     t_dp = tabla(["Producto", "Inicial", "Producido", "Ingresos", "Salidas",
-                  "Consumo producción", "Stock único", "Medición", "Desvío TN"], fil_dp)
+                  "Uso interno (neto)°", "Stock único", "Medición", "Desvío TN"], fil_dp,
+                 total=_dp_tot,
+                 fuente="Movimientos ejecutados + líneas de despacho (AFE-S y AG-E) + salidas "
+                        "de báscula del AFE (ventas directas y movimientos internos) · "
+                        "° derivado para que cada fila cierre: inicial + producido + ingresos "
+                        "− salidas − uso interno = stock único")
 
     # ======================= P3 · ingresos y definiciones =======================
     _mb = sorted(cat_mes)
@@ -454,8 +671,12 @@ def render(D):
                         _n(sum(p4) / t4 * 100, 1) + "%",
                         _n(afe_s[b]["tn"], 1) if b in "ABCD" else "—",
                         _n(r.get("s"), 0), _n(r.get("p"), 0)])
+    _tc_tot = ["<b>Total</b>", _n(afe_in, 1), "100%", "100%",
+               _n(sum(afe_s[b]["tn"] for b in "ABCD"), 1), "—", "—"]
     t_cat = tabla(["Categoría", "TN semana", "% semana", "% prom. 4 sem.", "TN en tanque",
-                   "S ppm", "P ppm"], fil_cat)
+                   "S ppm", "P ppm"], fil_cat, total=_tc_tot,
+                  fuente="Tickets de portería de AFE-S con su último análisis de laboratorio · "
+                         "tanque: medición física por categoría")
 
     t_defcat = tabla(
         ["Categoría", "Azufre", "Fósforo", "Qué significa"],
@@ -508,9 +729,16 @@ def render(D):
                        pr(dec_ac_p, reales[2], fmt=fh),
                        f'{fh(ciclo_p)} → <b style="color:{col_t}">{fh(ciclo_r)}</b>',
                        pr(b["tn_form"], b["tn_real"], 1, 1.1, 1.3), conf])
+    _bt_tot = ([f"<b>Total {len(bt)} reacciones</b>", "—", "—", "—", "—", "—", "—",
+                f'{_n(sum(b["tn_form"] or 0 for b in bt),1)} → '
+                f'<b>{_n(sum(b["tn_real"] or 0 for b in bt),1)}</b>', "—"]
+               if 2 < len(bt) <= 8 else None)
     t_bt = tabla(["Reacción", "Inicio", "Espera (carga plan)", "Reacción", "Reposo",
                   "Decant. + acopio", "Ciclo (suma)", "TN form. → real", "Tiempos OK"],
-                 fil_bt, aligns=["l", "l", "r", "r", "r", "r", "r", "r", "c"])
+                 fil_bt, aligns=["l", "l", "r", "r", "r", "r", "r", "r", "c"], total=_bt_tot,
+                 fuente=(None if len(bt) > 6 else
+                         "Marcas de estado de cada batch contra su cronograma cargado; TN de "
+                         "tickets o kg del batch"))
 
     _INS_NOM = {"FUEL_OIL": "FUEL OIL", "soda_kg": "SODA", "POTASIO": "POTASIO"}
     fil_ins = []
@@ -526,7 +754,9 @@ def render(D):
                         _n(r["teorico"], 0), _e(r["unidad"]),
                         _n(r["real"], 0), pct])
     t_ins = tabla(["Insumo", "Según fórmula", "Unidad", "Descontado del tanque",
-                   "Real / teórico"], fil_ins)
+                   "Real / teórico"], fil_ins,
+                  fuente="Fórmula: dic_consumo_proceso × TN procesadas · Descontado: movimientos "
+                         "de insumo ejecutados en la semana (sin total: unidades distintas)")
 
     _gli_kg = sum((r["real"] or 0) for r in ins_sem
                   if str(r["insumo"]).startswith("GLICERINA"))
@@ -545,16 +775,22 @@ def render(D):
             continue
         pok = r["ok"] / r["n"] * 100 if r["n"] else 0
         col = GOOD if pok >= 80 else (WARN if pok >= 60 else CRIT)
-        fil_reg.append([f'<b>{_ET_NOM[k]}</b>', str(r["n"]),
-                        (f'<span style="color:{WARN};font-weight:700">{r["clicks"]}</span>'
+        fil_reg.append([f'<b>{_ET_NOM[k]}</b>', str(int(r["n"])),
+                        (f'<span style="color:{WARN};font-weight:700">{int(r["clicks"])}</span>'
                          if r["clicks"] else "0"),
-                        (f'<span style="color:{CRIT};font-weight:700">{r["negativos"]}</span>'
+                        (f'<span style="color:{CRIT};font-weight:700">{int(r["negativos"])}</span>'
                          if r["negativos"] else "0"),
-                        f'<span style="color:{col};font-weight:700">{r["ok"]} ({_n(pok,0)}%)</span>',
+                        f'<span style="color:{col};font-weight:700">{int(r["ok"])} ({_n(pok,0)}%)</span>',
                         f'{fh(r["h_prog"])} → <b>{fh(r["h_ok"])}</b>'])
+    _rg_n = sum(int(r["n"]) for r in _ec.values()) or 1
+    _rg_ok = sum(int(r["ok"]) for r in _ec.values())
+    _rg_tot = ["<b>Total</b>", str(_rg_n),
+               str(sum(int(r["clicks"]) for r in _ec.values())),
+               str(sum(int(r["negativos"]) for r in _ec.values())),
+               f'<b>{_rg_ok} ({_n(_rg_ok/_rg_n*100,0)}%)</b>', "—"]
     t_reg = tabla(["Etapa", "Registradas (4 sem.)", "Avanzadas de un click",
                    "Duración negativa", "Confiables", "Prog. → real (confiables)"], fil_reg,
-                  aligns=["l", "c", "c", "c", "c", "r"])
+                  aligns=["l", "c", "c", "c", "c", "r"], total=_rg_tot)
 
     # lab final por reacción (mes del informe)
     _mes_ini = sem[:7] + "-01"
@@ -577,8 +813,11 @@ def render(D):
 
     def _delta_tab(tipo, mp_key, con_cat):
         px = _mp_px.get(mp_key, {})
+        _todas = [x for x in _lb if x["tipo"] == tipo]
+        _cap = max(4, 9 - len(bt))
+        _rows = _todas[-_cap:]
         filas = []
-        for r in [x for x in _lb if x["tipo"] == tipo][-14:]:
+        for r in _rows:
             fila = [f'<b>{_e(r["ident"])}</b>',
                     f'{fdate(r["fecha"])} · {_n(r.get("tn"),1)} TN',
                     _dcell(r.get("acidez_ini"), r.get("acidez"), 2),
@@ -590,8 +829,24 @@ def render(D):
             filas.append(fila)
         cols = (["Reacción", "Fecha · TN", "Acidez % · ini → fin", "Azufre ppm · ini° → fin",
                  "Fósforo ppm · ini° → fin"] + (["Categoría"] if con_cat else []))
+        tot = None
+        if len(_rows) > 1:
+            _lbl = (f"Total {len(_rows)} reacciones" if len(_rows) == len(_todas)
+                    else f"Últimas {len(_rows)} de {len(_todas)} · total mostrado")
+            tot = ([f"<b>{_lbl}</b>",
+                    f'<b>{_n(sum(x.get("tn") or 0 for x in _rows),1)} TN</b>', "—", "—", "—"]
+                   + (["—"] if con_cat else []))
         return tabla(cols, filas,
-                     aligns=["l", "l", "r", "r", "r"] + (["c"] if con_cat else []))
+                     aligns=["l", "l", "r", "r", "r"] + (["c"] if con_cat else []),
+                     total=tot,
+                     fuente=(None if con_cat else
+                             "Inicial: acidez cargada al armar el batch; S y P (°): promedio "
+                             "ponderado del MP de portería (45 días) · Final: lab del batch"))
+
+    _dg_D = [r for r in _lb if r["tipo"] == "DESGOMADO_ACUOSO"
+             and r.get("categoria") == "D" and str(r["fecha"])[:7] == mes_act]
+    _dg_D_s = sum(1 for r in _dg_D if (r.get("s") or 0) > 50)
+    _dg_D_p = sum(1 for r in _dg_D if (r.get("p") or 0) > 150 and (r.get("s") or 0) <= 50)
 
     t_lab_desg = _delta_tab("DESGOMADO_ACUOSO", "AFE-SG", True)
     t_lab_are = _delta_tab("PRODUCCION_ARE", "AG", False)
@@ -619,9 +874,20 @@ def render(D):
                        _par(d.get("azufre"), d.get("lim_s"), 1),
                        _par(d.get("fosforo"), d.get("lim_p"), 1),
                        f'<span style="color:{mcol};font-weight:700">{_n(d["mg"],1)}%</span>'])
+    _de_plan = sum(d.get("tn_plan") or 0 for d in de)
+    _de_tkt = sum(d.get("tn_ticket") or 0 for d in de)
+    _de_ntkt = sum(1 for d in de if d.get("tn_ticket") is not None)
+    _de_tot = [f"<b>Total {len(de)} despachos</b>", "—",
+               f'{_n(_de_plan,1)} → <b>{_n(_de_tkt,1)}</b>'
+               + (f' <span class="mut">({_de_ntkt} c/ticket)</span>'
+                  if _de_ntkt < len(de) else ""),
+               "—", "—", "—", "—", "—", "—"]
     t_de = tabla(["Fecha", "Despacho", "TN plan → ticket", "Ocup.", "Tq.",
                   "Acidez %", "Azufre ppm", "Fósforo ppm", "Margen"], fil_de,
-                 aligns=["l", "l", "r", "r", "c", "r", "r", "r", "r"])
+                 aligns=["l", "l", "r", "r", "c", "r", "r", "r", "r"], total=_de_tot,
+                 fuente="Plan: líneas de carga · Ticket: báscula de salida · Parámetros: mezcla "
+                        "ponderada por litros del lab de cada tanque · Margen: contra el límite "
+                        "del contrato")
 
     # fuera de especificación: qué parámetro se pasó y por cuánto
     fil_fs = []
@@ -637,7 +903,9 @@ def render(D):
                                f'<span style="color:{CRIT};font-weight:700">'
                                f'+{_n(v-lim,dec)} ({_n((v-lim)/lim*100,1)}%)</span>'])
     t_fs = tabla(["Fecha", "Despacho", "Parámetro", "Medido", "Límite", "Exceso"],
-                 fil_fs, aligns=["l", "l", "l", "r", "r", "r"])
+                 fil_fs, aligns=["l", "l", "l", "r", "r", "r"],
+                 fuente="Mismos despachos de la tabla de arriba: sólo los que superan el límite "
+                        "de su contrato")
 
     fig_disp = figura(
         "Cuantos más tanques entran en la mezcla, menos margen queda",
@@ -660,12 +928,12 @@ def render(D):
         labels = [fmes(m) for m in _pmk]
         tns = [v.get("tn", 0) or 0 for v in vals]
         ult = vals[-1] if vals else {}
-        proy = (ult.get("tn", 0) / (ult.get("ult") or 1) * dias_mes(_pmk[-1])) if ult else None
+        proy = (ult.get("tn", 0) / (_dias_corr or 1) * dias_mes(_pmk[-1])) if ult else None
         return figura(titulo,
                       barras_mes_proy(labels, tns, proy, y_titulo="TN producidas",
                                       color=color, w=330, h=185),
                       subtitulo=(f"{fmes(_pmk[-1])} proyecta <b>{_n(proy,0)} TN</b> al ritmo "
-                                 f"de sus primeros {ult.get('ult','—')} días."), ancho_min=330)
+                                 f"del mes corrido (día {_dias_corr})."), ancho_min=330)
 
     fig_desg_proy = _mini_proy("DESGOMADO_ACUOSO", C_DESG, "Desgomado acuoso, por mes")
     fig_are_proy = _mini_proy("PRODUCCION_ARE", C_ARE, "Producción de ARE, por mes")
@@ -708,8 +976,17 @@ def render(D):
         fil_tr.append([f"del {fdate(s)}",
                        f"{_n(hd,0)} h · {_n(dg.get('tn'),0)} TN",
                        f"{_n(ha,0)} h · {_n(ar.get('tn'),0)} TN", pd_])
+    _tr_hd = sum(_hs_dg)
+    _tr_ha = sum((_rh[s].get("PRODUCCION_ARE") or {}).get("horas") or 0 for s in _rh)
+    _tr_td = sum((_rh[s].get("DESGOMADO_ACUOSO") or {}).get("tn") or 0 for s in _rh)
+    _tr_ta = sum((_rh[s].get("PRODUCCION_ARE") or {}).get("tn") or 0 for s in _rh)
+    _tr_tot = ["<b>Total</b>", f"{_n(_tr_hd,0)} h · {_n(_tr_td,0)} TN",
+               f"{_n(_tr_ha,0)} h · {_n(_tr_ta,0)} TN",
+               f"{_n(_tr_hd/(_tr_hd+_tr_ha)*100,0)}%" if (_tr_hd + _tr_ha) else "—"]
     t_tradeoff = tabla(["Semana", "Desgomado (hace AFE-S)", "ARE (hace ARE-B)",
-                        "% horas a desgomado"], fil_tr)
+                        "% horas a desgomado"], fil_tr, total=_tr_tot,
+                       fuente="Horas de ciclo (o programadas si el ciclo no cerró) y TN reales "
+                              "por batch, agrupadas por semana")
 
     _pt = D.get("produccion_dia_tipo", {})
 
@@ -717,9 +994,10 @@ def render(D):
         serie = _pt.get(tipo, [])
         if not serie:
             return ""
-        g, proy = acumulado_proy(serie, w=352, h=190,
+        g, proy = acumulado_proy(serie, w=352, h=144,
                                  dias_mes=dias_mes(serie[-1]["mes"]), etiqueta=fmes,
-                                 y_titulo=f"TN de {prod} acumuladas")
+                                 y_titulo=f"TN de {prod} acumuladas",
+                                 dias_corridos=_dias_corr)
         ant = serie[-2]["tn"] if len(serie) > 1 else None
         return figura(titulo, g,
                       subtitulo=(f"Proyecta <b>{_n(proy,0)} TN</b> de {prod}"
@@ -732,7 +1010,8 @@ def render(D):
 
     _lq = D["liquidos"]
     _g_lq, _lq_proy = acumulado_proy(_lq, dias_mes=dias_mes(_lq[-1]["mes"]), etiqueta=fmes,
-                                     y_titulo="TN recibidas acumuladas", h=192)
+                                     y_titulo="TN recibidas acumuladas", h=120,
+                                     dias_corridos=_dias_corr)
     fig_liq_acum = figura(
         "Disposición final de líquidos acumulada, día a día",
         _g_lq,
@@ -742,6 +1021,7 @@ def render(D):
                    "riesgo de capacidad en piletas."))
 
     _ag_e_desp = D.get("ag_e_despachado", 52.9)
+    _saf = {r["cod"]: r for r in D.get("sal_afe", []) if r.get("cod")}
     _gli_cons = sum((r.get("intr") or 0) for r in D["desvio_producto"]
                     if str(r["cod"]).startswith("GLICERINA"))
     _fuel_kl = next((r["real"] for r in ins_sem if r["insumo"] == "FUEL_OIL"), None)
@@ -752,18 +1032,105 @@ def render(D):
           f"líneas de despacho de exportación ({_n(b_now.get('desp'),0)} TN)", "—"],
          ["<b>AG-C</b>", "camiones de portería", "—",
           "MP de la producción de ARE (se convierte en ARE-B)"],
-         ["<b>AG-E</b>", "se forma al armar el despacho (mezcla AFE-S + ARE-B); esa entrada hoy "
-          "no se registra", f"líneas de despacho ({_n(_ag_e_desp,1)} TN)", "—"],
+         ["<b>AG-E</b>", "se arma en el despacho (AFE-S + ARE-B); esa entrada no se registra",
+          f"líneas de despacho ({_n(_ag_e_desp,1)} TN)", "—"],
          ["<b>ARE-B</b>", "producido por los reactores (PRODUCCION_ARE) a partir de AG-C",
           "venta directa por portería + el armado del AG-E de los despachos", "—"],
-         ["<b>AFE-SG</b>", "camiones de portería", "—",
-          "MP del desgomado acuoso (se convierte en AFE-S de mejor categoría; el desgomado "
-          "también puede recategorizar AFE-S C/D)"],
+         ["<b>AFE-SG</b>", "camiones de portería",
+          ("báscula: venta directa / mov. interno "
+           f"({_n(_saf.get('AFE-SG', {}).get('tn'), 1)} TN esta semana)"
+           if _saf.get("AFE-SG") else "—"),
+          "MP del desgomado (sale AFE-S; también recategoriza AFE-S C/D)"],
          ["<b>GLICERINA B y C</b>", "compra (B · pura) y recuperación interna (C)", "—",
           f"insumo de la producción de ARE ({_n(_gli_cons,1)} TN esta semana)"],
          ["<b>FUEL OIL</b>", "compra", "—",
           f"caldera de los reactores ({_n(_fuel_kl,0)} L esta semana)"]],
-        aligns=["l", "l", "l", "l"])
+        aligns=["l", "l", "l", "l"],
+        fuente="Números de la semana informada; el circuito completo se controla en la tabla de "
+               "consistencia de abajo")
+
+    # ---- control de consistencia de datos (chequeos cruzados de la semana) ----
+    def _chk(nombre, cruce, resultado, estado):
+        col, txt = {"ok": (GOOD, "✓ consistente"), "warn": (WARN, "△ revisar"),
+                    "err": (CRIT, "✗ inconsistente")}[estado]
+        return [f"<b>{nombre}</b>", cruce, resultado,
+                f'<b style="color:{col}">{txt}</b>']
+
+    fil_cons = []
+    _ing_cat, _ing_bal = afe_in, b_now.get("ing")
+    if _ing_bal:
+        _d_ing = abs(_ing_cat - _ing_bal) / _ing_bal * 100
+        fil_cons.append(_chk("Ingresos de AFE-S", "portería vs balance semanal",
+                             f"{_n(_ing_cat,1)} vs {_n(_ing_bal,1)} TN ({_n(_d_ing,1)}%)",
+                             "ok" if _d_ing < 2 else ("warn" if _d_ing < 8 else "err")))
+    _gaps = [abs(x["tn_ticket"] - x["tn_plan"]) / x["tn_plan"] * 100
+             for x in de if x.get("tn_ticket") and x.get("tn_plan")]
+    if _gaps:
+        _gp = sum(_gaps) / len(_gaps)
+        fil_cons.append(_chk("Despachado: plan vs báscula",
+                             "líneas de carga vs báscula",
+                             f"diferencia promedio {_n(_gp,1)}% ({len(_gaps)} despachos)",
+                             "ok" if _gp < 5 else ("warn" if _gp < 10 else "err")))
+    if s_now.get("tn"):
+        _sal_afe_tn = s_now.get("tn_afe") or 0
+        _quien = (" (AFE sin despacho: venta o mov. interno)"
+                  if otras_tn >= 1 and abs(otras_tn - _sal_afe_tn) < 1.5 else "")
+        fil_cons.append(_chk("Salidas de báscula vs despachos",
+                             "báscula vs tickets de despacho",
+                             f"{_n(s_now.get('tn'),1)} = {_n(exp_tn,1)} despachos + "
+                             f"{_n(otras_tn,1)} otras{_quien}",
+                             "ok" if otras_tn < 1 else "warn"))
+    if _sr_f is not None:
+        _srv = _sr_f["sr_tn"] or 0
+        fil_cons.append(_chk("Rótulo de producto en la medición",
+                             "lecturas del radar con producto asignado",
+                             f"{_n(_srv,0)} TN sin rótulo (últ. AFE-S) · lecturas del corte "
+                             f"con {_n(_mf.get('h_pond'),0)} h prom. de atraso",
+                             "ok" if _srv < 20 else ("warn" if _srv < 100 else "err")))
+    _sl = c_now.get("SIN LAB", 0) or 0
+    _pct_sl = _sl / (afe_in or 1) * 100
+    fil_cons.append(_chk("Cobertura de laboratorio · ingresos",
+                         "tickets de la semana con análisis",
+                         f"{_n(100-_pct_sl,0)}% con lab ({_n(_sl,1)} TN sin analizar)",
+                         "ok" if _pct_sl < 10 else ("warn" if _pct_sl < 25 else "err")))
+    _lb_mes = [r for r in D.get("lab_batches", []) if str(r["fecha"])[:7] == mes_act]
+    _lb_con = sum(1 for r in _lb_mes if r.get("s") is not None)
+    if _lb_mes:
+        _pct_lb = _lb_con / len(_lb_mes) * 100
+        fil_cons.append(_chk("Cobertura de laboratorio · reacciones",
+                             "batches del mes con lab final",
+                             f"{_lb_con} de {len(_lb_mes)} ({_n(_pct_lb,0)}%)",
+                             "ok" if _pct_lb >= 90 else ("warn" if _pct_lb >= 70 else "err")))
+    _ec_tot = sum(r["n"] for r in _ec.values()) or 1
+    _ec_ok = sum(r["ok"] for r in _ec.values())
+    _pct_reg = _ec_ok / _ec_tot * 100
+    fil_cons.append(_chk("Registro de tiempos", "etapas con duración creíble",
+                         f"{int(_ec_ok)} de {int(_ec_tot)} ({_n(_pct_reg,0)}%)",
+                         "ok" if _pct_reg >= 85 else ("warn" if _pct_reg >= 60 else "err")))
+    _desp_tot_sem = (b_now.get("desp") or 0) + (_ag_e_desp or 0)
+    if _desp_tot_sem:
+        _pct_age = (_ag_e_desp or 0) / _desp_tot_sem * 100
+        _esp_age = (1 - parte_afe) * 100
+        fil_cons.append(_chk("Mezcla del despacho", "parte de AG-E vs declarada",
+                             f"{_n(_pct_age,1)}% de AG-E (declarado ≈ {_n(_esp_age,1)}%)",
+                             "ok" if abs(_pct_age - _esp_age) < 3
+                             else ("warn" if abs(_pct_age - _esp_age) < 8 else "err")))
+    _dp_cierra = sum(1 for r in D["desvio_producto"]
+                     if abs((r["ini"] or 0) + (r["prod"] or 0) + (r["e_in"] or 0)
+                            - (r["e_out"] or 0) - (r.get("intr") or 0)
+                            - (r["unico"] or 0)) < 0.15)
+    fil_cons.append(_chk("Stock único: cierre por fila",
+                         "la identidad de cada fila de la tabla",
+                         f'{_dp_cierra} de {len(D["desvio_producto"])} productos cierran exacto',
+                         "ok" if _dp_cierra == len(D["desvio_producto"]) else "err"))
+    fil_cons.append(_chk("Stock único vs medición · AFE-S", "libro cerrado vs radares",
+                         f"desvío {_n(b_now.get('desvio'),0)} TN ({_n(desv_pct,0)}% del medido)",
+                         "ok" if desv_pct < 10 else ("warn" if desv_pct < 25 else "err")))
+    fil_cons.append(_chk("Circuitos sin salida", "stock sin egreso registrado",
+                         "BORRA-B, EMULSION y BORRA-ANIMAL siguen sin circuito de salida",
+                         "warn"))
+    t_consis = tabla(["Chequeo", "Qué se cruza", "Resultado", "Estado"], fil_cons,
+                     aligns=["l", "l", "l", "l"])
 
     # ======================= CSS =======================
     css = """
@@ -778,16 +1145,30 @@ svg{max-width:100%;height:auto;display:block}
 .hd{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2.5px solid #0b0b0b;
  padding-bottom:6px;margin-bottom:10px;gap:10px}
 .hd h1{font-size:17px;margin:0;letter-spacing:-.3px}
+.hd h1::before{content:"";display:inline-block;width:10px;height:10px;background:#0b0b0b;
+ border-radius:2.5px;margin-right:7px}
 .hd .sub{font-size:9px;color:#52514e;margin-top:2px}
 .hd .rt{text-align:right;font-size:8.5px;color:#898781}
-.hd .rt b{display:block;font-size:10.5px;color:#0b0b0b;white-space:nowrap}
+.hd .rt b{display:inline-block;font-size:9px;color:#fff;background:#0b0b0b;
+ padding:2px 9px;border-radius:4px;white-space:nowrap;letter-spacing:.3px;margin-bottom:2px}
 h2{font-size:11.5px;margin:11px 0 4px;padding-bottom:3px;border-bottom:1px solid #e1e0d9;
  letter-spacing:-.2px}
-h2 .n{color:#898781;font-weight:400;margin-right:5px}
+h2 .n{display:inline-block;background:#0b0b0b;color:#fff;font-weight:700;font-size:8.5px;
+ min-width:15px;text-align:center;border-radius:4px;padding:1.5px 4px;margin-right:6px;
+ vertical-align:1px}
 h3{font-size:9.3px;margin:8px 0 3px;color:#52514e;text-transform:uppercase;letter-spacing:.5px;
  font-weight:700}
 p.lead{font-size:8.6px;color:#52514e;margin:2px 0 5px}
 .mut{color:#898781}
+.mchip{display:flex;align-items:center;gap:9px;border:1px solid #e1e0d9;border-left:4px solid;
+ border-radius:4px;padding:5px 9px;margin:3px 0 7px;font-size:8.8px;background:#fcfcfb;
+ color:#3a3935}
+.mchip-t{flex:0 0 auto;font-size:7.3px;font-weight:800;letter-spacing:.6px;color:#898781}
+.blt{display:flex;align-items:center;gap:7px;justify-content:flex-start}
+.blt b{font-size:8.6px;white-space:nowrap}
+.tw tbody tr:nth-child(even){background:#fafaf7}
+.tr-total td{border-top:1.6px solid #b9b7ae;background:#f2f2ec !important;font-weight:700}
+.tw-src{font-size:7.3px;color:#a09e97;text-align:right;margin:1.5px 1px 0}
 .tit{display:flex;gap:8px;align-items:flex-start;padding:4.5px 2px;border-bottom:1px solid #f0efec;
  font-size:9.3px;line-height:1.45;color:#3a3935}
 .tit:last-of-type{border-bottom:none}
@@ -810,9 +1191,16 @@ td{padding:2.8px 5px;border-bottom:1px solid #ececE6}
 tr:last-child td{border-bottom:none}
 .tl{text-align:left}.tr{text-align:right;font-variant-numeric:tabular-nums}.tc{text-align:center}
 .dot{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:4px}
-.box{border:1px solid #e1e0d9;border-radius:4px;padding:6px 9px;background:#fcfcfb;font-size:8.4px;
+.box{border:1px solid #e1e0d9;border-left:3px solid #52514e;border-radius:4px;
+ padding:6px 9px;background:#fcfcfb;font-size:8.4px;
  color:#52514e;margin:5px 0}
 .box b{color:#0b0b0b}
+.cta{margin:5px 0 5px;max-width:440px}
+.cta div{display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+ padding:2.5px 0;border-bottom:1px dotted #d9d8d2}
+.cta div b{font-variant-numeric:tabular-nums;white-space:nowrap;font-size:9.4px}
+.cta .cta-t{border-bottom:none;border-top:1.4px solid #b9b7ae;font-weight:700;
+ padding-top:3.5px}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:11px}
 .foot{position:absolute;bottom:0;left:0;right:0;font-size:7.5px;color:#898781;
  border-top:1px solid #e1e0d9;padding-top:3px;display:flex;justify-content:space-between;gap:8px}
@@ -902,7 +1290,8 @@ tr:last-child td{border-bottom:none}
 
     def foot(p, t):
         return (f'<div class="foot"><span>Portería, laboratorio, radares de tanque, despachos y '
-                f'batches (Supabase). Semana ISO cerrada, de lunes a domingo.</span>'
+                f'batches (Supabase). Semana cerrada, del lunes {fdate(sem)} al ' 
+                f'{"sábado" if datetime.strptime(str(sem_fin), "%Y-%m-%d").weekday() == 5 else "domingo"} {fdate(sem_fin)}.</span>'
                 f'<span>{t} · pág. {p}/8</span></div>')
 
     H = []
@@ -912,10 +1301,14 @@ tr:last-child td{border-bottom:none}
 {''.join(tits)}
 <h2><span class="n">2</span>Indicadores</h2>
 <div class="grid">{''.join(kpis)}</div>
-<h2><span class="n">3</span>Metas del mes ({fmes(mes_act)}) contra lo real</h2>
-<p class="lead">Las fija dirección por mes — cantidad y calidad — y se editan en la app
-(Dirección → Brief semanal → 🎯 Metas del mes). "Real a la fecha" corta en la emisión de este
-informe; la proyección extiende el ritmo diario a los {_dias_m} días del mes.
+<h2><span class="n">3</span>Metas de {MES_NOM[mes_act[5:7]]}: cómo venimos</h2>
+<p class="lead">Las fija dirección y se editan en la app (Dirección → Brief semanal → 🎯 Metas
+del mes). La proyección extiende el ritmo del mes corrido (día {_dias_corr}) a los {_dias_m} días.
+<b>En la barra, la marca | es siempre la meta</b>: llegar a la marca es cumplirla. En despachos
+y producción la barra es lo real y el <b>◆</b> la proyección — el mes se cumple si el ◆ alcanza
+la marca. En las metas de tope (fuera de espec, acidez), <b>pasar la marca es incumplir</b>.
+El color dice el estado: <b style="color:{GOOD}">verde</b> cumple ·
+<b style="color:{WARN}">ámbar</b> al límite · <b style="color:{CRIT}">rojo</b> no llega.
 {('<b>' + _e(meta.get("nota")) + '.</b>') if meta.get("nota") else ''}</p>
 {t_metas}
 {foot(1, "Tablero")}</div>""")
@@ -925,10 +1318,8 @@ informe; la proyección extiende el ritmo diario a los {_dias_m} días del mes.
 <h2><span class="n">4</span>El balance del AFE-S: libro contra tanque</h2>
 {fig_cascada}
 <h3>El AFE-S semana a semana, desde el inicio del registro · todo en TN de AFE-S</h3>
-<p class="lead">Cada fila repite la cuenta del gráfico para una semana: inicial + ingresado +
-producido − consumido − despachado = <b>stock único</b>, que se compara contra lo medido en
-tanque. El desvío es la diferencia entre esos dos últimos.</p>
 {t_bal}
+{caja_med}
 {fig_stock}
 {foot(2, "Desvío del AFE-S")}</div>""")
 
@@ -975,51 +1366,47 @@ controlarlos igual que al potasio.</div>
     # ---------------- 5 · PRODUCCIÓN Y DESPACHOS ----------------
     H.append(f"""<div class="page">{head("Producción")}
 <h2><span class="n">8</span>Cronograma reacción por reacción · semana {iso}</h2>
-<p class="lead">Cada fila es una reacción real de la semana; en cada etapa se lee
-<b>programado → real</b>, en horas y minutos (verde: cerca del plan; ámbar: hasta el doble; rojo:
-más). <b>La cuenta cierra por fila</b>: reacción + reposo + decantación = <b>ciclo</b>. La
-<b>carga</b> del plan corre antes de arrancar, dentro de la espera; la decantación del plan
-incluye el <b>acopio final</b> (el reloj real no los separa).</p>
+{chip_prod}
+<p class="lead">Cada etapa se lee <b>programado → real</b> en horas y minutos (verde: cerca del
+plan · ámbar: hasta el doble · rojo: más). <b>La cuenta cierra por fila</b>: reacción + reposo +
+decantación = ciclo; la carga corre dentro de la espera y la decantación incluye el acopio.</p>
 {t_bt}
 <div class="box"><b>Lectura.</b> De {len(bt)} reacciones, {len(bt_conf)} tienen tiempos confiables.
 El patrón real no está en la reacción — que anda cerca de lo programado — sino en el
 <b>reposo</b>: 15 a 95 horas contra 4h30–12h programadas. El reactor queda ocupado como pulmón
 porque el acopio de destino no desagota. Es un problema de logística de tanques, no de proceso.</div>
 <h2><span class="n">9</span>Registro de tiempos: dónde se cuenta mal</h2>
-<p class="lead">Las {sum(r["n"] for r in _ec.values())} etapas de las últimas 4 semanas, separadas
-por cómo se cargaron. <b>De un click</b>: la etapa se avanzó en menos de 5 minutos — el tiempo no
-es real. <b>Duración negativa</b>: el fin quedó cargado antes del inicio — el batch se completó
-al cierre, de memoria.</p>
+<p class="lead">Las {int(sum(r["n"] for r in _ec.values()))} etapas de las últimas 4 semanas.
+<b>De un click</b>: avanzada en menos de 5 minutos — el tiempo no es real. <b>Duración
+negativa</b>: el fin quedó antes del inicio — se completó al cierre, de memoria.</p>
 {t_reg}
-<div class="box"><b>Dónde estamos contando mal.</b> El problema vive en la <b>decantación</b>:
-sólo {_ec.get("DECANTACION",{}).get("ok","—")} de {_ec.get("DECANTACION",{}).get("n","—")} confiables — se
-completa al cerrar el batch, no cuando ocurre. La <b>reacción</b> se avanza de un click en
-{_ec.get("REACCION",{}).get("clicks","—")} de {_ec.get("REACCION",{}).get("n","—")}. El <b>reposo</b> sí se
-registra bien ({_ec.get("REPOSANDO",{}).get("ok","—")} de {_ec.get("REPOSANDO",{}).get("n","—")}): sus
-{_n(_ec.get("REPOSANDO",{}).get("h_ok"),0)} horas contra {_n(_ec.get("REPOSANDO",{}).get("h_prog"),0)}
-programadas son reales, no un vicio de carga. Pasa parejo en los dos reactores: es el hábito de
-carga, no un equipo. Pedir que la decantación se marque al ocurrir; mientras tanto, los tiempos
-de esa etapa no sirven para medir.</div>
+<div class="box"><b>Dónde estamos contando mal.</b> En la <b>decantación</b>: sólo
+{int(_ec.get("DECANTACION",{}).get("ok",0))} de {int(_ec.get("DECANTACION",{}).get("n",0))} confiables — se completa
+al cerrar el batch, no cuando ocurre. La <b>reacción</b> se avanza de un click en
+{int(_ec.get("REACCION",{}).get("clicks",0))} de {int(_ec.get("REACCION",{}).get("n",0))}. El <b>reposo</b> sí se
+registra ({int(_ec.get("REPOSANDO",{}).get("ok",0))} de {int(_ec.get("REPOSANDO",{}).get("n",0))}): sus
+{_n(_ec.get("REPOSANDO",{}).get("h_ok"),0)} h contra {_n(_ec.get("REPOSANDO",{}).get("h_prog"),0)} son reales.
+Pasa igual en ambos reactores — es hábito de carga: marcar la decantación al ocurrir.</div>
 <h2><span class="n">10</span>Del MP al producto: cómo cambia cada parámetro, por reacción</h2>
-<p class="lead">Inicial → final con el cambio nominal y en %. La <b>acidez inicial</b> es la
-cargada al armar cada batch (dato propio de la reacción). El <b>azufre y el fósforo iniciales
-aún no se miden por batch</b>: el valor con <b>°</b> es el promedio ponderado del MP que entró
-por portería en los últimos 45 días. El final es el análisis de laboratorio del batch.</p>
+<p class="lead">Inicial → final con el cambio nominal y en %. La <b>acidez inicial</b> se carga
+al armar cada batch; el <b>azufre y fósforo iniciales no se miden por batch</b> — el valor con
+<b>°</b> es el promedio ponderado del MP entrado por portería en 45 días. El final es el lab del
+batch.</p>
 <h3>Desgomado acuoso — AFE (SG) → AFE-S</h3>
 {t_lab_desg}
 <h3>Producción de ARE — AG → ARE-B</h3>
 {t_lab_are}
-<div class="box"><b>Lectura.</b> El desgomado hace su trabajo con el <b>fósforo</b>
-({_n(_px_sg.get("p"),0)}° → 130–250) pero <b>no baja el azufre</b>: el AFE (SG) ya entra con
-S ≈ {_n(_px_sg.get("s"),0)}° y sale 51–60 — por eso todo agosto salió categoría D. La categoría
-del desgomado la define el azufre del MP que se compra, no el proceso. En ARE, la reacción
-cumple: la acidez cae de 54–61 a 6–10 (−85%). Para tener el inicial real por batch, falta
-cargar el análisis del tanque de MP al armar el batch.</div>
+<div class="box"><b>Lectura.</b> La categoría del desgomado la define el <b>MP que se compra</b>,
+no el proceso: de las {len(_dg_D)} reacciones del mes que salieron D, {_dg_D_s} cayeron por
+<b>azufre</b> (el desgomado no lo baja) y {_dg_D_p} sólo por <b>fósforo</b> (gomas que el lavado
+no llegó a sacar). En ARE la reacción cumple: la acidez cae ≈ −85%. Para tener el inicial real
+por batch, falta cargar el análisis del tanque de MP al armar el batch.</div>
 {foot(5, "Producción")}</div>""")
 
     # ---------------- 6 · DESPACHOS ----------------
     H.append(f"""<div class="page">{head("Despachos")}
 <h2><span class="n">11</span>Resumen por despacho</h2>
+{chip_desp}
 <p class="lead">Cada despacho de exportación es una mezcla de varios tanques (AFE-S + AG-E).
 <b>TN plan → ticket</b>: lo pedido en las líneas de carga contra lo pesado en báscula al salir.
 <b>Ocupación</b>: cuánto del volumen contratado se llenó — abajo de 98% se paga flete por espacio
@@ -1030,13 +1417,13 @@ límite, tomando el peor de azufre y fósforo — negativo es fuera de especific
 {t_de}
 <h3>Fuera de especificación: cuáles y por qué</h3>
 {t_fs}
-{fig_disp}
+{fig_disp if len(de) <= 14 else ""}
 <div class="box"><b>Las cuatro conclusiones.</b>
 <b>1 · La logística no es el problema:</b> {ocup_ok} de {len(de)} despachos salieron con el
 contenedor lleno al 98% o más, y lo pesado en báscula acompaña lo planificado.
 <b>2 · La calidad sí:</b> el margen promedio es {_n(mg_prom,1)}% y {mg_neg} de {len(de)} despachos
-salieron por debajo de cero — casi siempre por <b>azufre</b>. No es un error de armado: sin AFE-S
-de categoría A en tanque, la mezcla parte del límite.
+salieron por debajo de cero — casi siempre por <b>azufre</b>. La mezcla vale lo que el AFE-S del
+que parte: con A/B en tanque el margen aparece; sin A/B, se sale al límite.
 <b>3 · Menos tanques, más margen:</b> con hasta 6 tanques el margen promedia {_n(mg_pocos,1)}%;
 con 7 o más, {_n(mg_muchos,1)}%. Armar el despacho con pocos tanques bien elegidos es la única
 palanca gratis que hay hoy.
@@ -1048,6 +1435,7 @@ tanque tenía medidos: el plan se armó sobre stock que no estaba.</div>
     # ---------------- 7 · REACTORES: TRADE-OFF ----------------
     H.append(f"""<div class="page">{head("Reactores")}
 <h2><span class="n">12</span>Reactores: cómo se repartieron las horas</h2>
+{chip_react}
 <p class="lead">Cada hora de reactor va a desgomado o a ARE. El reparto de las últimas
 {len(fil_tr)} semanas fue del {_n(min(_pc_dg) if _pc_dg else 0,0)}% al
 {_n(max(_pc_dg) if _pc_dg else 0,0)}% de las horas a desgomado — no hay un criterio estable.</p>
@@ -1080,10 +1468,11 @@ expo — es la decisión de dirección pendiente.</div>
 {fig_liq_acum}
 <h3>Apéndice · Por dónde entra y sale cada producto</h3>
 {t_traza}
-<p class="nota"><b>Nota metodológica.</b> Ingresos y salidas: tickets de portería; la categoría, del
-último análisis de laboratorio del ticket. Stock: medición física (radares WeDo y aforo). Los
-balances de AFE-S y AG-E usan las líneas de despacho como salida. Tiempos: batches cerrados.
-Insumos: dic_consumo_proceso contra movimientos ejecutados. Nada se carga a mano.</p>
+<h3>Control de consistencia de los datos de esta semana</h3>
+{t_consis}
+<p class="nota"><b>Nota metodológica.</b> Ingresos y salidas: tickets de portería (categoría por
+lab del ticket) · Stock: radares y aforo · Balances de AFE-S y AG-E: líneas de despacho como
+salida · Tiempos: batches cerrados · Insumos: fórmula vs movimientos. Nada se carga a mano.</p>
 {foot(8, "Tendencias")}</div>""")
 
     js = ("(function(){var f=document.querySelector('.pbar i'),"
@@ -1098,3 +1487,12 @@ Insumos: dic_consumo_proceso contra movimientos ejecutados. Nada se carga a mano
             f'<style>{css}</style></head><body>'
             f'<div class="pbar"><i></i><b>leído 0%</b></div>'
             f'{"".join(H)}<script>{js}</script></body></html>')
+
+
+if __name__ == "__main__":
+    import json
+    D = json.load(open("datos.json"))
+    html = render(D)
+    out = f"brief_worms_{D['semana_iso']}.html"
+    open(out, "w", encoding="utf-8").write(html)
+    print(out, len(html), "bytes")

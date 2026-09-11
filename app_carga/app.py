@@ -89,110 +89,275 @@ def _lab_conn():
 st.set_page_config(page_title="WORMS Carga", layout="wide", page_icon="🏭")
 
 
-# ===== Design system global (look premium) — login, landing y secciones =====
+# ===== Sistema de diseño — panel de instrumentos ============================
+# Criterio (el mismo del rediseño de la vista semanal, ver memoria del proyecto):
+#   · el número manda; el cromo no compite con el dato
+#   · el color SÓLO significa estado — verde/ámbar/rojo. El azul es acción, no decoración
+#   · la jerarquía la hacen el tamaño, el peso y el aire; no la sombra
+#   · todo lo que es igual se ve igual, y lo que no, se distingue de un vistazo
+# Reemplaza al template SaaS violeta: hero degradado, hover-lift en todo y cinco
+# profundidades de sombra hacían que todo pesara lo mismo y que el rojo de un
+# desvío real no se destacara sobre el violeta decorativo.
 def inject_global_css():
     st.markdown("""
     <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&family=Barlow+Condensed:wght@600;700&display=swap');
+
+      /* ---------------------------------------------------------- tokens ---- */
       :root{
-        --bg:#f5f6fb; --surface:#ffffff; --ink:#0f172a; --muted:#64748b; --line:#e6e8f0;
-        --brand:#4f46e5; --brand2:#7c3aed; --grad:linear-gradient(135deg,#4f46e5 0%,#7c3aed 60%,#9333ea 100%);
-        --ok:#059669; --warn:#d97706; --bad:#dc2626;
+        /* superficies: papel, no blanco de quirófano */
+        --paper:#fbfbf9; --surface:#ffffff; --surface-2:#f4f3f0; --surface-3:#edebe6;
+        /* tinta */
+        --ink:#16181d; --ink-2:#3f434d; --muted:#6b7280; --faint:#9aa0aa;
+        /* líneas */
+        --line:#e4e2dd; --line-2:#d2cfc8; --line-3:#b9b5ac;
+        /* acción (y nada más) */
+        --accent:#1d4ed8; --accent-ink:#1e40af; --accent-soft:#eef3ff;
+        /* estado */
+        --ok:#067647;  --ok-bg:#ecfdf3;  --ok-line:#abefc6;
+        --warn:#b54708; --warn-bg:#fffaeb; --warn-line:#fedf89;
+        --bad:#b42318; --bad-bg:#fef3f2; --bad-line:#fecdca;
+        /* forma */
+        --r:8px; --r-sm:6px; --r-lg:10px;
+        --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+        /* tipografía */
+        --ui:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+        --num:'Barlow Condensed','IBM Plex Sans',sans-serif;
+        --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,monospace;
       }
+
+      /* ------------------------------------------------------------ base ---- */
       html, body, [class*="css"], .stMarkdown, p, span, label, input, button, textarea, select{
-        font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+        font-family:var(--ui);
       }
-      [data-testid="stAppViewContainer"]{
-        background:radial-gradient(1200px 600px at 12% -8%, #eef1ff 0%, transparent 55%), var(--bg);
-      }
-      .block-container{max-width:1200px; padding-top:1.6rem;}
-      h1,h2,h3,h4{font-family:'Plus Jakarta Sans','Inter',sans-serif; letter-spacing:-.01em; color:var(--ink);}
-      h1{font-size:1.7rem;} h2{font-size:1.3rem;} h3{font-size:1.12rem;}
-      a{color:var(--brand);}
-      .stButton>button, .stDownloadButton>button{
-        border-radius:12px; font-weight:600; border:1px solid var(--line);
-        transition:transform .12s ease, box-shadow .12s ease, border-color .12s; padding:.5rem 1rem;
+      /* dígitos de ancho fijo: las columnas de números dejan de bailar al refrescar */
+      body, .stMarkdown, [data-testid="stMetric"], [data-testid="stDataFrame"],
+      .kpi, .pill, table, td, th{font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1;}
+      [data-testid="stAppViewContainer"]{background:var(--paper);}
+      .block-container{max-width:1180px; padding-top:1.1rem; padding-bottom:3rem;}
+      h1,h2,h3,h4{font-family:var(--ui); color:var(--ink); letter-spacing:-.015em; font-weight:700;}
+      h1{font-size:1.5rem; line-height:1.2;} h2{font-size:1.18rem;} h3{font-size:1.02rem;}
+      p, li, label{color:var(--ink-2);}
+      a{color:var(--accent); text-underline-offset:2px;}
+      code, .stCode, pre{font-family:var(--mono); font-size:.86em;}
+      hr{border:0; border-top:1px solid var(--line); margin:var(--s5) 0;}
+
+      /* --------------------------------------------------------- botones ---- */
+      /* uno solo manda por pantalla: el primario es el único con relleno */
+      .stButton>button, .stDownloadButton>button, [data-testid="stFormSubmitButton"]>button{
+        border-radius:var(--r-sm); font-weight:600; font-size:.9rem;
+        border:1px solid var(--line-2); background:var(--surface); color:var(--ink);
+        padding:.46rem .9rem; min-height:40px; box-shadow:none;
+        transition:background .12s ease, border-color .12s ease, color .12s ease;
       }
       .stButton>button:hover, .stDownloadButton>button:hover{
-        transform:translateY(-1px); box-shadow:0 6px 16px -8px rgba(79,70,229,.45); border-color:#c7cbf5;
+        background:var(--surface-2); border-color:var(--line-3); color:var(--ink); transform:none;
       }
-      .stButton>button[kind="primary"], [data-testid="stBaseButton-primary"]{
-        background:var(--grad); border:0; color:#fff; box-shadow:0 8px 20px -10px rgba(124,58,237,.7);
+      .stButton>button:focus-visible, .stDownloadButton>button:focus-visible{
+        outline:2px solid var(--accent); outline-offset:2px;
       }
-      .stButton>button[kind="primary"]:hover{filter:brightness(1.05); transform:translateY(-1px);}
-      .stTabs [data-baseweb="tab-list"]{gap:4px; border-bottom:1px solid var(--line);}
-      .stTabs [data-baseweb="tab"]{border-radius:10px 10px 0 0; padding:8px 14px; font-weight:600; color:var(--muted);}
-      .stTabs [aria-selected="true"]{color:var(--brand); background:rgba(79,70,229,.07);}
-      [data-testid="stMetric"]{
-        background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:14px 16px;
-        box-shadow:0 1px 2px rgba(16,24,40,.05);
+      .stButton>button[kind="primary"], [data-testid="stBaseButton-primary"],
+      [data-testid="stFormSubmitButton"]>button[kind="primary"]{
+        background:var(--accent); border:1px solid var(--accent); color:#fff; box-shadow:none;
       }
-      [data-testid="stMetricValue"]{font-size:1.55rem; font-weight:800; font-family:'Plus Jakarta Sans';}
-      [data-testid="stMetricLabel"]{opacity:.85; font-weight:600;}
+      .stButton>button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover{
+        background:var(--accent-ink); border-color:var(--accent-ink); transform:none;
+      }
+      .stButton>button:disabled{opacity:.45; background:var(--surface-2);}
+
+      /* ------------------------------------------------------- contenedor --- */
+      /* la tarjeta delimita, no flota. Sin sombra y sin salto al pasar el mouse */
       [data-testid="stVerticalBlockBorderWrapper"]{
-        border-radius:16px !important; border-color:var(--line) !important; background:var(--surface);
-        box-shadow:0 1px 3px rgba(16,24,40,.05); transition:box-shadow .15s, transform .15s, border-color .15s;
+        border-radius:var(--r) !important; border:1px solid var(--line) !important;
+        background:var(--surface); box-shadow:none !important; transition:border-color .12s ease;
       }
       [data-testid="stVerticalBlockBorderWrapper"]:hover{
-        box-shadow:0 14px 30px -18px rgba(79,70,229,.45); border-color:#cdd2f3 !important; transform:translateY(-2px);
+        border-color:var(--line-2) !important; box-shadow:none !important; transform:none;
       }
-      [data-baseweb="input"], [data-baseweb="select"]>div, [data-baseweb="textarea"]{border-radius:11px !important;}
-      div[data-testid="stExpander"] details{border-radius:13px; border:1px solid var(--line); overflow:hidden;}
-      section[data-testid="stSidebar"]{
-        background:linear-gradient(180deg,#ffffff 0%,#f3f3fb 100%); border-right:1px solid var(--line);
+      div[data-testid="stExpander"] details{
+        border-radius:var(--r); border:1px solid var(--line); background:var(--surface); overflow:hidden;
       }
+      div[data-testid="stExpander"] summary{font-weight:600; color:var(--ink-2);}
+
+      /* ----------------------------------------------------------- campos --- */
+      [data-baseweb="input"], [data-baseweb="select"]>div, [data-baseweb="textarea"]{
+        border-radius:var(--r-sm) !important; border-color:var(--line-2) !important;
+      }
+      [data-baseweb="input"]:focus-within, [data-baseweb="select"]>div:focus-within{
+        border-color:var(--accent) !important; box-shadow:0 0 0 3px var(--accent-soft) !important;
+      }
+      [data-testid="stWidgetLabel"] p{font-size:.82rem; font-weight:600; color:var(--muted);}
+
+      /* ------------------------------------------------------------ tabs ---- */
+      .stTabs [data-baseweb="tab-list"]{gap:2px; border-bottom:1px solid var(--line);}
+      .stTabs [data-baseweb="tab"]{
+        border-radius:0; padding:8px 14px; font-weight:600; font-size:.9rem; color:var(--muted);
+        border-bottom:2px solid transparent; margin-bottom:-1px;
+      }
+      .stTabs [aria-selected="true"]{color:var(--ink); background:transparent; border-bottom-color:var(--accent);}
+      .stTabs [data-baseweb="tab-highlight"]{display:none;}
+
+      /* ----------------------------------------------------------- métrica -- */
+      [data-testid="stMetric"]{
+        background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
+        padding:12px 14px; box-shadow:none;
+      }
+      [data-testid="stMetricValue"]{font-family:var(--num); font-size:2rem; font-weight:700; line-height:1;}
+      [data-testid="stMetricLabel"] p{
+        font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.07em; color:var(--muted);
+      }
+
+      /* ------------------------------------------------------------ tabla --- */
+      [data-testid="stDataFrame"]{border:1px solid var(--line); border-radius:var(--r); overflow:hidden;}
+      [data-testid="stDataFrame"] [role="columnheader"]{
+        font-size:.72rem !important; font-weight:700 !important; text-transform:uppercase;
+        letter-spacing:.05em; color:var(--muted) !important; background:var(--surface-2) !important;
+      }
+
+      /* ------------------------------------------------------------ hero ---- */
+      /* era un bloque degradado de 130px que no decía nada. Ahora es una faja:
+         el título, quién sos y la fecha, con una regla de acento a la izquierda */
       .worms-hero{
-        position:relative; overflow:hidden; border-radius:22px; padding:28px 32px; color:#fff;
-        background:var(--grad); box-shadow:0 18px 40px -18px rgba(124,58,237,.65); margin-bottom:6px;
+        position:relative; background:transparent; color:var(--ink); box-shadow:none;
+        border:0; border-left:3px solid var(--accent); border-radius:0;
+        padding:2px 0 2px 14px; margin:0 0 var(--s4);
       }
-      .worms-hero h1{color:#fff; margin:0 0 6px; font-size:2rem; line-height:1.1;}
-      .worms-hero p{margin:0; opacity:.94; font-size:.98rem;}
-      .worms-hero .glow{position:absolute; right:-50px; top:-60px; width:230px; height:230px;
-        background:radial-gradient(circle, rgba(255,255,255,.28), transparent 70%); pointer-events:none;}
-      .worms-hero .chip{display:inline-block; margin-top:12px; background:rgba(255,255,255,.18);
-        border:1px solid rgba(255,255,255,.35); padding:5px 12px; border-radius:999px; font-size:.8rem; font-weight:600;}
-      .kpi-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(178px,1fr)); gap:14px; margin:16px 0 6px;}
-      .kpi{background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:15px 18px;
-        box-shadow:0 1px 2px rgba(16,24,40,.05);}
-      .kpi.brand{background:linear-gradient(135deg,#eef2ff,#faf5ff); border-color:#e0e7ff;}
-      .kpi .l{font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:700;}
-      .kpi .v{font-size:1.95rem; font-weight:800; color:var(--ink); font-family:'Plus Jakarta Sans'; line-height:1.1; margin-top:5px;}
+      .worms-hero .glow{display:none;}
+      .worms-hero h1{
+        color:var(--ink); margin:0; font-size:1.45rem; font-weight:700; letter-spacing:-.02em; line-height:1.2;
+      }
+      .worms-hero p{margin:3px 0 0; color:var(--muted); font-size:.9rem; opacity:1; max-width:74ch;}
+      .worms-hero .chip{
+        display:inline-block; margin-top:9px; background:var(--surface); color:var(--muted);
+        border:1px solid var(--line); padding:3px 9px; border-radius:var(--r-sm);
+        font-size:.74rem; font-weight:600;
+      }
+
+      /* ------------------------------------------------------------- kpi ---- */
+      .kpi-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr));
+                gap:var(--s3); margin:var(--s4) 0 var(--s2);}
+      .kpi{background:var(--surface); border:1px solid var(--line); border-radius:var(--r);
+           padding:12px 14px; box-shadow:none; position:relative; overflow:hidden;}
+      .kpi.brand{background:var(--surface); border-color:var(--line-2);}
+      .kpi .l{font-size:.68rem; text-transform:uppercase; letter-spacing:.07em;
+              color:var(--muted); font-weight:700; line-height:1.3;}
+      .kpi .v{font-family:var(--num); font-size:2.3rem; font-weight:700; color:var(--ink);
+              line-height:1; margin-top:6px; letter-spacing:.005em;}
       .kpi .v.ok{color:var(--ok);} .kpi .v.warn{color:var(--warn);} .kpi .v.bad{color:var(--bad);}
-      .kpi .s{font-size:.8rem; color:var(--muted); margin-top:3px;}
-      .section-title{font-family:'Plus Jakarta Sans'; font-weight:800; font-size:1.05rem; color:var(--ink); margin:20px 0 8px;}
-      .pill{display:inline-block; padding:3px 10px; border-radius:999px; font-size:.72rem; font-weight:700;}
-      .pill.ok{background:#d1fae5; color:#065f46;} .pill.warn{background:#fef3c7; color:#92400e;}
-      .pill.info{background:#e0e7ff; color:#3730a3;} .pill.bad{background:#fee2e2; color:#991b1b;}
-      .tile-h{font-family:'Plus Jakarta Sans'; font-weight:800; font-size:1.15rem; color:var(--ink); margin:0 0 6px; line-height:1.25;}
-      .tile-d{color:var(--muted); font-size:.86rem; line-height:1.45; margin:0 0 12px;}
-      @media (min-width:741px){ .tile-h{min-height:2.9em;} .tile-d{min-height:4.4em;} }
-      /* ---- ocultar chrome de Streamlit (look de app propia) ---- */
-      #MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"],
-      [data-testid="stStatusWidget"]{display:none !important;}
-      header[data-testid="stHeader"]{background:transparent; box-shadow:none;}
-      /* ---- pantalla de login ---- */
-      .login-brand{text-align:center; margin:5vh 0 14px;}
-      .login-brand .logo{font-size:3rem; line-height:1;}
-      .login-brand h1{font-size:2.1rem; margin:10px 0 2px;
-        background:var(--grad); -webkit-background-clip:text; background-clip:text; color:transparent;}
-      .login-brand p{color:var(--muted); margin:0; font-weight:600;}
-      .login-title{font-family:'Plus Jakarta Sans'; font-weight:800; font-size:1.15rem; margin-bottom:2px;}
-      /* ---- tactil ---- */
-      .stButton>button{min-height:46px;}
-      /* ---- movil ---- */
-      @media (max-width:740px){
-        .block-container{padding:.9rem .9rem 4rem;}
-        h1{font-size:1.35rem;} h2{font-size:1.15rem;}
-        .worms-hero{padding:20px 18px; border-radius:16px;}
-        .worms-hero h1{font-size:1.4rem;}
-        .kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px;}
-        .kpi{padding:12px 14px;} .kpi .v{font-size:1.5rem;}
-        input, select, textarea{font-size:16px !important;}
-        [data-testid="stMetricValue"]{font-size:1.25rem;}
+      .kpi .s{font-size:.76rem; color:var(--muted); margin-top:5px; line-height:1.35;}
+      /* barra de estado al costado: se lee el semáforo sin leer el número */
+      .kpi:has(.v.ok){box-shadow:inset 3px 0 0 var(--ok);}
+      .kpi:has(.v.warn){box-shadow:inset 3px 0 0 var(--warn); background:var(--warn-bg); border-color:var(--warn-line);}
+      .kpi:has(.v.bad){box-shadow:inset 3px 0 0 var(--bad); background:var(--bad-bg); border-color:var(--bad-line);}
+
+      /* -------------------------------------------------------- secciones --- */
+      /* el título de sección trae su propia línea: separa sin necesidad de cajas */
+      .section-title{
+        display:flex; align-items:center; gap:var(--s3);
+        font-family:var(--ui); font-weight:700; font-size:.74rem; text-transform:uppercase;
+        letter-spacing:.09em; color:var(--muted); margin:var(--s5) 0 var(--s3); white-space:nowrap;
       }
+      .section-title::after{content:""; flex:1; height:1px; background:var(--line); min-width:12px;}
+
+      /* ------------------------------------------- la pantalla está trabajando */
+      /* Dirección, 11/09/2026: "hay que confirmar muchas veces cada operación y después
+         aparecen cargadas varias veces". Un click dispara un rerun de toda la app (segundos,
+         porque además se vacía la caché entera); el botón no cambia de aspecto y el único
+         indicador que traía Streamlit estaba oculto acá abajo, así que la persona no tiene
+         forma de saber que algo pasó y vuelve a apretar. Cada apretada entra como una carga.
+         Mientras el script corre: los botones no aceptan clicks y se ve que está trabajando. */
+      [data-test-script-state="running"] .stButton>button,
+      [data-test-script-state="running"] .stDownloadButton>button,
+      [data-test-script-state="running"] [data-testid="stFormSubmitButton"]>button,
+      [data-test-script-state="rerunRequested"] .stButton>button,
+      [data-test-script-state="rerunRequested"] .stDownloadButton>button,
+      [data-test-script-state="rerunRequested"] [data-testid="stFormSubmitButton"]>button{
+        pointer-events:none; opacity:.5; cursor:progress; filter:saturate(.5);
+      }
+      /* y el cursor de toda la página lo dice también */
+      [data-test-script-state="running"], [data-test-script-state="rerunRequested"]{cursor:progress;}
+
+      /* ------------------------------------------------- franja de pendientes */
+      /* lo que hay que hacer hoy va arriba de todo y se distingue del resto:
+         regla de color a la izquierda según lo más urgente que haya */
+      .franja{display:flex; align-items:center; gap:var(--s3); padding:10px 14px;
+              border:1px solid var(--line); border-left:3px solid var(--line-3);
+              border-radius:var(--r); background:var(--surface); margin-bottom:var(--s4);}
+      .franja.bad{border-left-color:var(--bad); background:var(--bad-bg); border-color:var(--bad-line);}
+      .franja.warn{border-left-color:var(--warn); background:var(--warn-bg); border-color:var(--warn-line);}
+      .franja .t{font-weight:700; font-size:.95rem; color:var(--ink); line-height:1.25;}
+      .franja .d{font-size:.84rem; color:var(--muted); margin-top:2px;}
+      .franja .d b{color:var(--ink); font-weight:700;}
+
+      /* ------------------------------------------------------------ varios -- */
+      .mono{font-family:var(--mono); font-size:.86em; color:var(--ink-2);}
+      .hint{font-size:.8rem; color:var(--faint); line-height:1.45;}
+
+      /* ----------------------------------------------------------- pills ---- */
+      .pill{display:inline-block; padding:2px 8px; border-radius:var(--r-sm);
+            font-size:.72rem; font-weight:700; border:1px solid transparent;}
+      .pill.ok{background:var(--ok-bg); color:var(--ok); border-color:var(--ok-line);}
+      .pill.warn{background:var(--warn-bg); color:var(--warn); border-color:var(--warn-line);}
+      .pill.bad{background:var(--bad-bg); color:var(--bad); border-color:var(--bad-line);}
+      .pill.info{background:var(--surface-2); color:var(--ink-2); border-color:var(--line-2);}
+
+      /* --------------------------------------------------- tiles de portada -- */
+      .tile-h{font-weight:700; font-size:1rem; color:var(--ink); margin:0 0 var(--s1); line-height:1.3;}
+      .tile-d{color:var(--muted); font-size:.83rem; line-height:1.45; margin:0 0 var(--s3);}
+      @media (min-width:741px){ .tile-h{min-height:2.6em;} .tile-d{min-height:3.7em;} }
+
+      /* --------------------------------------------------------- avisos ----- */
+      [data-testid="stAlert"]{border-radius:var(--r); border:1px solid var(--line-2);}
+
+      /* --------------------------------------------------------- sidebar ---- */
+      section[data-testid="stSidebar"]{background:var(--surface-2); border-right:1px solid var(--line);}
+      section[data-testid="stSidebar"] .stButton>button{background:var(--surface);}
+
+      /* ------------------------------------------- cromo de Streamlit fuera -- */
+      #MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"]{display:none !important;}
+      /* stStatusWidget NO se oculta: es el aviso de que la app está trabajando y esconderlo
+         fue parte de por qué la gente apretaba Guardar varias veces. Se le da el aspecto del
+         sistema y se muestra sólo mientras corre. */
+      [data-testid="stStatusWidget"]{
+        background:var(--surface) !important; border:1px solid var(--line-2); border-radius:var(--r-sm);
+        box-shadow:none !important; font-family:var(--ui); font-size:.8rem; color:var(--ink-2);
+      }
+      [data-testid="stStatusWidget"] *{color:var(--ink-2) !important;}
+      header[data-testid="stHeader"]{background:transparent; box-shadow:none; height:0;}
+
+      /* ----------------------------------------------------------- login ---- */
+      .login-brand{text-align:center; margin:8vh 0 var(--s5);}
+      .login-brand .logo{font-size:2.2rem; line-height:1;}
+      .login-brand h1{
+        font-size:1.6rem; margin:var(--s3) 0 var(--s1); color:var(--ink);
+        background:none; -webkit-background-clip:border-box; background-clip:border-box;
+        letter-spacing:-.02em;
+      }
+      .login-brand p{color:var(--muted); margin:0; font-weight:500; font-size:.9rem;}
+      .login-title{font-weight:700; font-size:1rem; color:var(--ink); margin-bottom:var(--s1);}
+
+      /* ------------------------------------------------------------ móvil --- */
+      @media (max-width:740px){
+        .block-container{padding:.8rem .8rem 4rem;}
+        h1{font-size:1.25rem;} h2{font-size:1.05rem;}
+        .worms-hero{padding-left:10px; margin-bottom:var(--s3);}
+        .worms-hero h1{font-size:1.15rem;}
+        .worms-hero p{font-size:.84rem;}
+        .kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--s2);}
+        .kpi{padding:10px 12px;} .kpi .v{font-size:1.85rem;}
+        .section-title{margin:var(--s4) 0 var(--s2);}
+        input, select, textarea{font-size:16px !important;}
+        [data-testid="stMetricValue"]{font-size:1.6rem;}
+        .stButton>button{min-height:44px;}
+      }
+
+      /* ------------------------------------------------------- movimiento --- */
+      @media (prefers-reduced-motion:reduce){*{transition:none !important; animation:none !important;}}
     </style>
     """, unsafe_allow_html=True)
+
 
 # Vigía de recarga: cuando Streamlit Cloud redeploya, los chunks JS cambian de hash y una
 # pestaña que quedó abierta pide archivos que ya no existen ("Failed to fetch dynamically
@@ -301,7 +466,7 @@ USR = st.session_state.user
 
 # ---- Permisos por usuario sobre las secciones de la página ----
 SECCIONES_APP = [
-    ("INICIAR", "👷 Producción en planta"),
+    ("INICIAR", "👷 Producción Sector"),
     ("RECUPERACION", "♻️ Recuperación AG"),
     ("LAB", "🧪 Laboratorio"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"), ("REPUESTOS", "🔧 Repuestos"), ("ISCC", "📑 ISCC"), ("REMITOS", "📸 Remitos"),
     ("ESTADO", "📈 Estado de planta"), ("ANALISIS", "🔬 Análisis de reacciones"),
@@ -666,7 +831,7 @@ def _home_df(sql, params=None):
 
 # ---- Accesos de la portada (misma lista para la vista clásica y la navegación v2) ----
 _TILES_LANDING = [
-    ("👷", "Producción en planta", "Elegí una producción planificada por dirección y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
+    ("👷", "Producción Sector", "Elegí una producción planificada para tu sector y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
     ("🧪", "Laboratorio", "Resultados de laboratorio: filtros, estadísticas y descarga CSV.", "LAB", "land_lab", False),
     ("🛢️", "Tanques", "Stock por tanque: contenido, capacidad y última medición cargada.", "TANQUES", "land_tanques", False),
     ("📦", "Stock", "Libro mayor de movimientos, stock estimado en tiempo real y conciliación. Todo descargable.", "STOCK", "land_stock", False),
@@ -931,6 +1096,18 @@ with _hcol2:
         import nav as _nav
         if _nav.activo(USR, _lab_conn, locked_one=_LOCKED_ONE) and _nav.get_nav()["area"]:
             _nav.breadcrumb({"conn_factory": _lab_conn}, mostrar_raiz=True, volver_portada=True)
+    except Exception:
+        pass
+
+# ---- Bandeja HOY para los usuarios anclados a UNA sección ----
+# Son los que entran todos los días (Maximiliano, Leandro, Laboratorio) y los únicos que
+# nunca ven la navegación v2: activo() devuelve False con locked_one. Para el resto la
+# bandeja es la portada del área, así que acá sería ruido repetido.
+if _LOCKED_ONE:
+    try:
+        import nav as _nav
+        _nav.banner_hoy({"USR": USR, "conn_factory": _lab_conn, "conectar": conectar,
+                         "puede_seccion": puede_seccion})
     except Exception:
         pass
 
@@ -1958,12 +2135,8 @@ def _porteria_entrada_diaria(cat):
                     kd3.metric("Evaluados (evaluables)", f"{n_eval}/{base_evbl}")
                     kd4.metric("% evaluado", f"{(n_eval/base_evbl*100):.0f}%" if base_evbl else "—")
 
-                    # Linea por hora (cantidad por franja horaria)
-                    st.markdown("**Llegadas por hora**")
-                    hr = df_d.copy()
-                    hr["hh"] = hr["hora_e"].astype(str).str.slice(0,2)
-                    by_hr = hr.groupby("hh").size().reset_index(name="camiones").sort_values("hh")
-                    st.bar_chart(by_hr, x="hh", y="camiones", use_container_width=True)
+                    # El gráfico por hora lo pidió sacar dirección: el listado de abajo ya
+                    # está ordenado por hora y es lo que la gente mira. (Sistema WORMS.xlsx)
 
                     # Tabla "permeable": cada camion con su estado evaluado
                     st.markdown("**Detalle de llegadas**")
@@ -4789,7 +4962,7 @@ if st.session_state.section != "CARGAS":
                 from carga_por_id import render as _render_iniciar
                 _render_iniciar(USR, cat, conectar, etapas_de_proceso, params_proceso)
             except Exception as _e:
-                st.error(f"No se pudo cargar Producción en planta: {_e}")
+                st.error(f"No se pudo cargar Producción Sector: {_e}")
         elif _ip_view.startswith("🧪"):
             st.markdown("#### 🧪 Evaluaciones de laboratorio (consulta)")
             _lc1, _lc2 = st.columns([2, 1])
@@ -4965,18 +5138,18 @@ if st.session_state.section != "CARGAS":
                         _css = """<style>
                         .tkwrap{display:flex;flex-wrap:wrap;gap:14px;margin:6px 0 18px}
                         .tkc{width:128px}
-                        .tkbody{position:relative;height:118px;border:2px solid #cbd5e1;border-radius:9px 9px 16px 16px;
-                          overflow:hidden;background:repeating-linear-gradient(0deg,#f8fafc,#f8fafc 9px,#eef2f7 9px,#eef2f7 18px)}
+                        .tkbody{position:relative;height:118px;border:2px solid #d2cfc8;border-radius:9px 9px 16px 16px;
+                          overflow:hidden;background:repeating-linear-gradient(0deg,#fbfbf9,#fbfbf9 9px,#f1efea 9px,#f1efea 18px)}
                         .tkfill{position:absolute;left:0;right:0;bottom:0;transition:height .3s;
                           box-shadow:inset 0 3px 6px rgba(255,255,255,.4)}
                         .tkpct{position:absolute;top:5px;left:0;right:0;text-align:center;font-size:.82rem;font-weight:800;
-                          color:#0f172a;text-shadow:0 1px 2px #fff}
+                          color:#16181d;text-shadow:0 1px 2px #fff}
                         .tkn{font-weight:700;font-size:.84rem;margin-top:5px;line-height:1.1}
-                        .tks{font-size:.72rem;color:#475569;display:flex;align-items:center;gap:5px}
+                        .tks{font-size:.72rem;color:#6b7280;display:flex;align-items:center;gap:5px}
                         .tkdot{width:9px;height:9px;border-radius:50%;display:inline-block;flex:none}
-                        .tkv{font-size:.7rem;color:#64748b;margin-top:1px}
-                        .tkp{font-size:.66rem;color:#334155;margin-top:3px;background:#f1f5f9;border-radius:6px;padding:2px 5px}
-                        .sech{font-weight:800;font-size:1rem;margin:14px 0 2px;padding:4px 10px;border-left:5px solid #4f46e5;background:#eef1fe;border-radius:0 8px 8px 0}
+                        .tkv{font-size:.7rem;color:#9aa0aa;margin-top:1px}
+                        .tkp{font-size:.66rem;color:#3f434d;margin-top:3px;background:#f4f3f0;border-radius:6px;padding:2px 5px}
+                        .sech{font-weight:700;margin:18px 0 6px;padding:2px 0 2px 10px;border-left:3px solid #1d4ed8;background:transparent;border-radius:0;text-transform:uppercase;letter-spacing:.06em;font-size:.78rem;color:#6b7280}
                         </style>"""
                         def _fnum(v, suf="", dec=1):
                             return "—" if _pd.isna(v) else (f"{v:,.{dec}f}{suf}")
@@ -5004,7 +5177,7 @@ if st.session_state.section != "CARGAS":
                                     f'<div class="tks"><span class="tkdot" style="background:{col}"></span>{_html.escape(str(prod))}</div>'
                                     f'<div class="tkv">{r["Stock L"]/1000:,.1f} / {r["Capacidad L"]/1000:,.0f} kL · libre {libre:.0f}%</div>'
                                     f'<div class="tkv">🕒 {_html.escape(str(r["Medicion"])) if _pd.notna(r["Medicion"]) else "sin medición"}'
-                                    + (f' · <span style="color:#0891b2">🛰️ WeDo</span>' if str(r.get("Fuente"))=="WeDo" else (f' · <span style="color:#7c3aed">✋ Manual</span>' if str(r.get("Fuente"))=="Manual" else "")) + '</div>'
+                                    + (f' · <span style="color:#0e7490">🛰️ WeDo</span>' if str(r.get("Fuente"))=="WeDo" else (f' · <span style="color:#6b7280">✋ Manual</span>' if str(r.get("Fuente"))=="Manual" else "")) + '</div>'
                                     f'{params}</div>')
                             html_out += '</div>'
                         st.markdown(html_out, unsafe_allow_html=True)
@@ -5253,8 +5426,7 @@ with tab_objs[0]:
                     st.code(
                         "Q_glicerina (kg) = Q_AG × (acidez/100) × (PMg / (PMa × 2)) × (1 / (glicerol/100)) × factor_exceso\n"
                         f"                 = Q_AG × (acidez/100) × ({PMg}/({PMa}×2)) × (1/(glicerol/100)) × {FE}\n\n"
-                        f"NaOH (kg)        = (Q_AG / 1000) × {fila_bien['consumo_naoh_kg_x_tn']} kg/TN\n"
-                        f"Potasio (kg)     = (Q_AG / 1000) × {fila_bien['consumo_potasio_kg_x_tn']} kg/TN\n"
+                        f"KOH (kg)         = (Q_AG / 1000) × {fila_bien['consumo_potasio_kg_x_tn']} kg/TN\n"
                         f"Fuel (kg)        = (Q_AG / 1000) × {fila_bien['consumo_fuel_kg_x_tn']} kg/TN",
                         language="text"
                     )
@@ -5295,13 +5467,14 @@ with tab_objs[0]:
                 st.markdown("**Inputs operativos**")
                 cF1, cF2 = st.columns(2)
                 temp_ini_v       = cF1.number_input("Temperatura inicial (C)", 0.0, 300.0, step=1.0, value=0.0, key="b_tini_are")
-                catalizador_tipo = cF2.radio(
-                    "Catalizador a usar",
-                    options=["NAOH","POTASIO"],
-                    index=1,  # default Potasio (KOH)
-                    format_func=lambda x: "🧪 Soda cáustica (NaOH)" if x=="NAOH" else "🧪 Potasio (KOH)",
-                    horizontal=True, key="b_catalizador",
-                )
+                # SOL-0029: la reacción de ARE ya no lleva soda cáustica. El catalizador
+                # es hidróxido de potasio (KOH) y no hay alternativa que elegir.
+                catalizador_tipo = "POTASIO"
+                cF2.text_input("Catalizador", value="🧪 Hidróxido de potasio (KOH)",
+                               disabled=True, key="b_catalizador_disp",
+                               help="La formulación de ARE no lleva soda cáustica: fue reemplazada "
+                                    "por el catalizador hidróxido de potasio. Las reacciones viejas "
+                                    "que se hicieron con soda se siguen viendo como estaban.")
                 # q_ag_kg_ref se calculará después del bloque MP (necesita el producto inicial elegido).
                 q_ag_kg_ref = 0
                 st.caption("ℹ️ Acidez/% agua/azufre/sedimentos/fósforo/densidad vienen del laboratorio de los tickets de MP (abajo). Q AG = capacidad reactor × densidad del MP seleccionado.")
@@ -5618,26 +5791,19 @@ with tab_objs[0]:
                 est_glice_kg = est_glicerol_puro_kg / (glicerol_v/100)
                 mas_por_impureza = est_glice_kg - est_glicerol_puro_kg
                 tn = float(q_ag_kg_ref) / 1000.0
-                rate_naoh    = float(fila_bien["consumo_naoh_kg_x_tn"]    or 0)
                 rate_potasio = float(fila_bien["consumo_potasio_kg_x_tn"] or 0)
                 rate_fuel    = float(fila_bien["consumo_fuel_kg_x_tn"]    or 0)
-                est_naoh_kg    = (tn * rate_naoh)    if catalizador_tipo == "NAOH"    else 0.0
-                est_potasio_kg = (tn * rate_potasio) if catalizador_tipo == "POTASIO" else 0.0
+                est_naoh_kg    = 0.0     # SOL-0029: la formulación de ARE ya no lleva soda
+                est_potasio_kg = tn * rate_potasio
                 est_fuel_kg    = tn * rate_fuel
                 est_are_kg     = float(q_ag_kg_ref)
                 st.markdown("**🧮 Insumos estimados a cargar** (usan la acidez del laboratorio)")
-                cE1, cE2, cE3, cE4 = st.columns(4)
+                cE1, cE2, cE3 = st.columns(3)
                 cE1.metric("Glicerina a cargar", f"{est_glice_kg:,.0f} kg",
                            f"+{mas_por_impureza:,.0f} kg por pureza {glicerol_v:.0f}%")
-                if catalizador_tipo == "NAOH":
-                    cE2.metric("NaOH (catalizador)", f"{est_naoh_kg:,.1f} kg",
-                               f"alternativa: {tn*rate_potasio:.2f} kg potasio")
-                    cE3.metric("Potasio", "—", "no aplica")
-                else:
-                    cE2.metric("NaOH", "—", "no aplica")
-                    cE3.metric("Potasio (catalizador)", f"{est_potasio_kg:,.2f} kg",
-                               f"alternativa: {tn*rate_naoh:.1f} kg NaOH")
-                cE4.metric("Fuel", f"{est_fuel_kg:,.0f} kg")
+                cE2.metric("KOH (catalizador)", f"{est_potasio_kg:,.2f} kg",
+                           f"{rate_potasio:g} kg/TN × {tn:,.1f} TN")
+                cE3.metric("Fuel", f"{est_fuel_kg:,.0f} kg")
                 with st.expander("💡 Detalle del cálculo (glicerol y catalizador)", expanded=False):
                     st.caption(
                         f"💡 Glicerol **puro** necesario = **{est_glicerol_puro_kg:,.0f} kg**. "
@@ -5645,9 +5811,9 @@ with tab_objs[0]:
                         f"**{est_glice_kg:,.0f} kg** de glicerina ({mas_por_impureza:,.0f} kg extra por la impureza)."
                     )
                     st.caption(
-                        f"🧪 Catalizador elegido: **{('NaOH' if catalizador_tipo=='NAOH' else 'Potasio (KOH)')}**. "
-                        f"Si cambiaras al otro: {('NaOH' if catalizador_tipo=='POTASIO' else 'Potasio')} → "
-                        f"{(tn*rate_naoh) if catalizador_tipo=='POTASIO' else (tn*rate_potasio):,.2f} kg."
+                        f"🧪 Catalizador: **hidróxido de potasio (KOH)** → **{est_potasio_kg:,.2f} kg** "
+                        f"({rate_potasio:g} kg por TN de AG). La formulación ya no lleva soda cáustica; "
+                        f"con KOH tampoco se genera glicerina recuperada."
                     )
                 st.markdown("**🎯 Producto final esperado**")
                 st.metric("ARE estimado", f"{est_are_kg:,.0f} kg", f"~{est_are_kg/1000:.1f} TN")
@@ -5729,27 +5895,10 @@ with tab_objs[0]:
             elif est_glicerol_puro_kg:
                 st.caption(f"💡 Para esta corrida se necesitan **{est_glicerol_puro_kg:,.0f} kg de glicerol puro** según la fórmula.")
 
-        # Bloque NaOH (catalizador en PRODUCCION_ARE) — se carga en L o kg; se guardan SIEMPRE ambos.
+        # La soda cáustica salió de la formulación de ARE (SOL-0029): el catalizador es
+        # KOH y se carga junto al resto de los insumos. Las columnas naoh_* siguen
+        # existiendo y se guardan en 0 para no romper la lectura de reacciones viejas.
         naoh_lts_v = naoh_kg_v = None
-        if tipo_proceso_sel == "PRODUCCION_ARE" and catalizador_tipo == "NAOH":
-            _d_soda = densidad_insumo("soda_kg", 1.33)
-            st.markdown("**NaOH (catalizador)** — cargá en litros **o** kg; guardamos los dos")
-            cN1, cN2 = st.columns([1, 2])
-            _modo_naoh = cN1.radio("Unidad de carga", ["Litros", "Kg"], horizontal=True, key="b_naoh_modo")
-            if _modo_naoh == "Litros":
-                _def_l = round(float(est_naoh_kg / _d_soda), 1) if (est_naoh_kg and _d_soda) else 0.0
-                naoh_lts_v = cN2.number_input("NaOH (L) *", min_value=0.0, max_value=100000.0, step=1.0,
-                                              value=_def_l, key="b_naoh_l")
-                naoh_kg_v = round((naoh_lts_v or 0.0) * _d_soda, 2)
-                cN2.caption(f"⚖️ = **{naoh_kg_v:,.1f} kg** (densidad {_d_soda:g} kg/L)" +
-                            (f" · estimado {est_naoh_kg:,.1f} kg" if est_naoh_kg else ""))
-            else:
-                _def_k = round(float(est_naoh_kg), 1) if est_naoh_kg else 0.0
-                naoh_kg_v = cN2.number_input("NaOH (kg) *", min_value=0.0, max_value=100000.0, step=1.0,
-                                             value=_def_k, key="b_naoh_k")
-                naoh_lts_v = round((naoh_kg_v or 0.0) / _d_soda, 2) if _d_soda else None
-                cN2.caption(f"⚖️ = **{naoh_lts_v:,.1f} L** (densidad {_d_soda:g} kg/L)" +
-                            (f" · estimado {est_naoh_kg:,.1f} kg" if est_naoh_kg else ""))
 
         # Bloque AGUA + fuel estimado + ticket (solo DESGOMADO_ACUOSO).
         # Agua de proceso = 5% sobre los kg iniciales de AFE-SG (auto, no input manual).
@@ -5795,9 +5944,8 @@ with tab_objs[0]:
         if tipo_proceso_sel == "PRODUCCION_ARE":
             # En REACTORES el combustible es siempre FUEL OIL.
             tipicos.append(("FUEL_OIL", float(est_fuel_kg or 0.0), "kg"))
-            if catalizador_tipo == "POTASIO":
-                tipicos.append(("POTASIO", float(est_potasio_kg or 0.0), "kg"))
-            # NaOH (soda) se carga aparte en su bloque dedicado (L/kg) → no se duplica acá.
+            # El catalizador de ARE es siempre KOH (SOL-0029).
+            tipicos.append(("POTASIO", float(est_potasio_kg or 0.0), "kg"))
         elif tipo_proceso_sel == "DESGOMADO_ACUOSO":
             # Fuel oil es ESTIMADO automático (no se carga a mano) → se guarda solo bajo la key FUEL_OIL.
             if est_fuel_kg:
@@ -5894,21 +6042,13 @@ with tab_objs[0]:
                 st.warning("⚠️ " + txt + " · **fuera** del estándar (falta para llegar al estimado).")
 
         # Plan vs real agrupado como info agregada (colapsado, por si lo quieren ver).
-        if tipo_proceso_sel in ("PRODUCCION_ARE", "DESGOMADO_ACUOSO") and (insumos_dict or naoh_kg_v):
+        if tipo_proceso_sel in ("PRODUCCION_ARE", "DESGOMADO_ACUOSO") and insumos_dict:
             with st.expander("📊 Plan vs real (insumos) — info agregada", expanded=False):
                 if tipo_proceso_sel == "PRODUCCION_ARE":
                     real_fuel    = float(insumos_dict.get("FUEL_OIL", 0.0) or 0)
-                    real_naoh    = float(naoh_kg_v or 0)   # del bloque NaOH dedicado (kg)
                     real_potasio = float(insumos_dict.get("POTASIO", 0.0) or 0)
                     _alarma_consumo("Fuel Oil", real_fuel, est_fuel_kg, unidad="kg")
-                    if catalizador_tipo == "NAOH":
-                        _alarma_consumo("NaOH", real_naoh, est_naoh_kg, unidad="kg")
-                        if real_potasio > 0:
-                            st.warning(f"⚠️ Cargaste {real_potasio:.2f} kg de Potasio pero el catalizador elegido era NaOH.")
-                    elif catalizador_tipo == "POTASIO":
-                        _alarma_consumo("Potasio", real_potasio, est_potasio_kg, unidad="kg")
-                        if real_naoh > 0:
-                            st.warning(f"⚠️ Cargaste {real_naoh:.2f} kg de NaOH pero el catalizador elegido era Potasio.")
+                    _alarma_consumo("KOH", real_potasio, est_potasio_kg, unidad="kg")
                 elif tipo_proceso_sel == "DESGOMADO_ACUOSO":
                     real_fuel = float(insumos_dict.get("FUEL_OIL", 0.0) or 0)
                     # est_fuel_kg para DESGOMADO se computó en L (8.7 L/TN)
@@ -6155,8 +6295,18 @@ with tab_objs[0]:
                 errs.append("Definí la corriente (Vegetal/Animal).")
             if st.session_state.get("mp_corr_conflict"):
                 errs.append("La materia prima de portería y de tanque tienen distinta corriente: usá una sola corriente.")
-            if tipo_proceso_sel == "PRODUCCION_ARE" and catalizador_tipo == "NAOH" and not (naoh_kg_v and naoh_kg_v > 0):
-                errs.append("Cargá el NaOH (litros o kg).")
+            if tipo_proceso_sel == "PRODUCCION_ARE" and not float(insumos_dict.get("POTASIO", 0) or 0) > 0:
+                errs.append("Cargá el catalizador (KOH) en kg.")
+            # La OP hereda el ticket de balanza de su MP (lo eligió el operario en la
+            # fuente; hasta ahora sólo se guardaba en la rama de desgomado).
+            if not ticket_porteria_v:
+                _tks = []
+                for _f in mp_fuentes.values():
+                    for _p in (_f if isinstance(_f, list) else [_f]):
+                        if isinstance(_p, dict) and _p.get("ticket"):
+                            _tks.append(str(_p["ticket"]))
+                ticket_porteria_v = "; ".join(dict.fromkeys(_tks)) or None
+
             if errs:
                 for e in errs: st.error(e)
             else:
@@ -6265,6 +6415,22 @@ with tab_objs[0]:
                                  (float(naoh_kg_v) if naoh_kg_v else None))
                             )
                             id_b = cur.fetchone()[0]
+                            # --- Fórmula de la OP: sin esto no hay instructivo ni desvíos ---
+                            # Sólo si el match es único; si hay ambigüedad queda NULL y la
+                            # bandeja HOY la marca como "sin fórmula asignada".
+                            try:
+                                cur.execute("SAVEPOINT sp_formula")
+                                cur.execute(
+                                    "UPDATE fact_batch_proceso b SET id_formula = c.id_formula "
+                                    "FROM (SELECT f.id_formula, count(*) OVER () AS n FROM dic_formula f "
+                                    "      WHERE f.activo AND f.sector = %s AND f.tipo_proceso = %s "
+                                    "        AND (%s::text IS NULL OR f.codigo_mp IS NULL OR f.codigo_mp IN ('*', %s)) "
+                                    "        AND (%s::text IS NULL OR f.codigo_pf IS NULL OR f.codigo_pf IN ('*', %s))) c "
+                                    "WHERE b.id_batch = %s AND b.id_formula IS NULL AND c.n = 1",
+                                    (sector, tipo_proceso_sel, p_ini, p_ini, p_buscado, p_buscado, id_b))
+                                cur.execute("RELEASE SAVEPOINT sp_formula")
+                            except Exception:
+                                cur.execute("ROLLBACK TO SAVEPOINT sp_formula")
                             # MP -> fact_batch_insumo (idempotente): genera el ticket de lab de la MP y,
                             # si la fuente es un tanque, descuenta stock. Aislado en savepoint para que
                             # cualquier error NO afecte el guardado del batch.
@@ -6464,11 +6630,11 @@ with tab_objs[0]:
                 labels = []
                 for j, c in enumerate(etapas_codigos):
                     if j < idx_actual:
-                        _bg = "#10b981"; _tc = "#475569"
+                        _bg = "#067647"; _tc = "#6b7280"
                     elif j == idx_actual:
-                        _bg = "#4f46e5"; _tc = "#4f46e5"
+                        _bg = "#1d4ed8"; _tc = "#1d4ed8"
                     else:
-                        _bg = "#e2e8f0"; _tc = "#94a3b8"
+                        _bg = "#e4e2dd"; _tc = "#9aa0aa"
                     segs.append(f'<div style="flex:1;height:6px;background:{_bg};border-radius:3px;margin-right:2px"></div>')
                     _wt = "700" if j == idx_actual else "500"
                     labels.append(f'<div style="flex:1;font-size:10px;color:{_tc};margin-right:2px;text-align:center;font-weight:{_wt}">{_STAGE_LBL.get(c,c)[:8]}</div>')

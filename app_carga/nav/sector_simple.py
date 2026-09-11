@@ -111,8 +111,8 @@ def _panel(ctx, sec):
               (f"{len(saldos)} productos · mayor: {top['producto']} {_n(top['saldo_kg'])} kg" if top is not None
                else "sin movimientos cargados todavía"), "ok" if total > 0 else "")
     c2 = _kpi("Movimientos hoy", str(_i(act.get("eventos_hoy"))), "cargados en este sector", "ok" if _i(act.get("eventos_hoy")) else "")
-    c3 = _kpi("Personal en planta", str(_i(act.get("personal_presente"))),
-              "marcaron presencia en este sector" if _i(act.get("personal_presente")) else "nadie marcó presencia acá", "")
+    c3 = _kpi("Personas trabajando", str(_i(act.get("personal_presente"))),
+              "registraron trabajo en este sector" if _i(act.get("personal_presente")) else "nadie registró trabajo acá todavía", "")
     ult = saldos["ultimo_mov"].max() if not saldos.empty else None
     c4 = _kpi("Último movimiento", (pd.to_datetime(ult).strftime("%d/%m") if ult is not None and not pd.isna(ult) else "—"),
               "fecha del último ingreso / egreso / ajuste", "")

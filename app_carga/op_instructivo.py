@@ -128,7 +128,45 @@ def _estado_icono(p, actual):
 
 # ------------------------------------------------------------------ bloque
 @_FRAGMENT
+
+def _origen_mp(cat, id_batch):
+    """Cadena de trazabilidad de la MP: ticket de balanza directo, o los camiones
+    que llenaron el tanque del que se sacó (origen probable, no lote identificado)."""
+    try:
+        df = cat("SELECT producto, kg, fuente, tanque, ticket_directo, tickets, origen, "
+                 "       n_tickets, entrada_mas_vieja, entrada_mas_nueva "
+                 "FROM produccion.v_op_origen_mp WHERE id_batch = %s ORDER BY id_batch_insumo",
+                 (int(id_batch),))
+    except Exception:
+        return
+    if df is None or df.empty:
+        return
+    sin = df[df["origen"].isin(["TANQUE_SIN_TRAZA", "SIN_ORIGEN"])]
+    cab = "🚛 Origen de la materia prima"
+    if len(sin):
+        cab += f" · {len(sin)} sin trazar"
+    with st.expander(cab, expanded=False):
+        for _, r in df.iterrows():
+            kg = _n(r["kg"])
+            if r["origen"] == "TICKET":
+                st.markdown(f"**{r['producto']}** · {kg} kg — ticket de balanza **{r['ticket_directo']}**")
+            elif r["origen"] == "TANQUE_TRAZADO":
+                n = int(r["n_tickets"]) if pd.notna(r["n_tickets"]) else 0
+                st.markdown(f"**{r['producto']}** · {kg} kg — de **{r['tanque']}**, cargado por "
+                            f"{n} camión(es): {r['tickets']}")
+            else:
+                st.markdown(f"**{r['producto']}** · {kg} kg — de **{r['tanque'] or 'origen no registrado'}**, "
+                            "sin entradas registradas")
+        if len(sin):
+            st.caption("Los tanques de proceso se llenan por trasvase interno desde acopio y ese movimiento "
+                       "no se registra: por eso la cadena se corta ahí. Para cerrarla habría que anotar el "
+                       "trasvase, no el consumo.")
+        st.caption("Cuando la MP sale de un tanque, los camiones son los que lo cargaron antes de este consumo: "
+                   "es el origen probable del contenido, no un lote identificado.")
+
+
 def render(USR, cat, conectar, id_batch):
+    _origen_mp(cat, id_batch)
     _congelar(conectar, cat, USR, id_batch)
     df = _pasos(cat, id_batch)
     if df.empty:

@@ -26,13 +26,13 @@ _PROD_FIJAS = [
     ("🗓️", "Centro de Planificación", "Planificá la producción de la semana y generá las órdenes que ejecuta cada sector.", "PLANIFICACION"),
     ("📊", "Reportes", "Análisis de reacciones, brief semanal y desvíos.", "ANALISIS"),
 ]
-_PANEL_CONTROL = ("🎛️", "Panel de Control", "Capacidad total ocupada de la planta, reacciones en curso y alertas.", "ESTADO")
+_PANEL_CONTROL = ("🎛️", "Panel de Control", "Cuánto lugar queda por producto y dónde se está por acabar.", "ESTADO")
 
 
 # ------------------------------------------------------------------ helpers de UI
 def _hero(titulo, USR, sub=None, icono="🏭"):
     hoy = date.today().strftime("%d/%m/%Y")
-    sub = sub or f"Hola <b>{USR['nombre_full']}</b> — todo el proceso de la planta en un solo lugar."
+    sub = sub or f"{USR['nombre_full']} · todo el proceso de la planta en un solo lugar."
     st.markdown(
         f"""<div class="worms-hero"><div class="glow"></div>
         <h1>{icono} {titulo}</h1><p>{sub}</p>
@@ -157,9 +157,32 @@ def _area_admin(ctx):
     _pie_soporte(ctx)
 
 
+def _franja_hoy(ctx):
+    """Barra de entrada a la bandeja HOY: lo pendiente antes que el mapa de la planta."""
+    try:
+        from .hoy import _leer, visibles, contar
+        v = visibles(_leer(ctx["conn_factory"]), ctx["puede_seccion"])
+        u, h, r = contar(v)
+    except Exception:
+        return
+    if not (u or h or r):
+        return
+    detalle = " · ".join(x for x in ((f"<b>{u}</b> para ahora" if u else ""),
+                                     (f"{h} para hoy" if h else ""),
+                                     (f"{r} para revisar" if r else "")) if x)
+    cls = "bad" if u else ("warn" if h else "")
+    c1, c2 = st.columns([4, 1.2], vertical_alignment="center")
+    c1.markdown(f'<div class="franja {cls}"><div><div class="t">Trabajo pendiente</div>'
+                f'<div class="d">{detalle}</div></div></div>', unsafe_allow_html=True)
+    c2.button("Ver la bandeja →", key="nav_franja_hoy", use_container_width=True,
+              type=("primary" if u else "secondary"),
+              on_click=lambda: _st.set_nav("PRODUCCION", None, "HOY", rerun=False))
+
+
 def _area_produccion(ctx):
     USR, puede = ctx["USR"], ctx["puede_seccion"]
     _hero("ÁREA PRODUCCIÓN", USR, icono="🏭")
+    _franja_hoy(ctx)
 
     # --- Indicadores del área (Fase 1): acopio · descargas · personal · sectores · tickets ---
     try:
@@ -173,12 +196,14 @@ def _area_produccion(ctx):
              for (i, t, d, s) in _PROD_FIJAS if puede(s)]
     i, t, d, s = _PANEL_CONTROL
     if puede(s):
-        fijas.append(dict(icono=i, titulo=t, desc=d, key=f"nav_prod_{s}", on_click=_ir(ctx, "PRODUCCION", None, s)))
+        fijas.append(dict(icono=i, titulo=t, desc=d, key=f"nav_prod_{s}",
+                          on_click=lambda: _st.set_nav("PRODUCCION", None, "PANEL", rerun=False)))
     if fijas:
+        st.markdown('<div class="section-title">Planificar y analizar</div>', unsafe_allow_html=True)
         _grid(fijas, por_fila=3)
 
     # --- Grilla de sectores (14) ---
-    st.markdown('<div class="section-title">Sectores</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Sectores de planta</div>', unsafe_allow_html=True)
     df = sectores_nav(ctx["conn_factory"])
     items = []
     from .sector import tiene_home
@@ -233,6 +258,18 @@ def render_landing(ctx):
     if nav["area"] == "ADMIN":
         _area_admin(ctx)
         return
+    if nav["vista"] == "HOY":
+        from .hoy import render_hoy
+        render_hoy(ctx)
+        return
+    if nav["vista"] == "LABCONC":
+        from .lab_conciliar import render_lab_conciliar
+        render_lab_conciliar(ctx)
+        return
+    if nav["vista"] == "PANEL":
+        from .panel import render_panel
+        render_panel(ctx)
+        return
     if nav["sector"]:
         from .sector import render_sector
         if nav["vista"] in ("PLAN", "DESVIOS", "STOCK"):
@@ -252,6 +289,16 @@ def render_landing(ctx):
         if render_sector(ctx, nav["sector"]):
             return
         _st.set_nav("PRODUCCION", rerun=False)   # sector sin home: se muestra el área
+    # Portada del área: primero lo que falta hacer; el mapa de sectores queda a un clic
+    # (y es la portada directa cuando no hay nada pendiente, para no mostrar una lista vacía).
+    if nav["vista"] != "SECTORES":
+        try:
+            from .hoy import hay_pendientes, render_hoy
+            if hay_pendientes(ctx):
+                render_hoy(ctx)
+                return
+        except Exception:
+            pass
     _area_produccion(ctx)
 
 

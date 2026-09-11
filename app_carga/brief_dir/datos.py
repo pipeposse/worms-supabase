@@ -139,6 +139,11 @@ def cargar(cat, semana):
         "WHERE mes >= %s ORDER BY mes_txt, dia", (mes0,))
     D["liquidos"] = []
     if liq is not None and not liq.empty:
+        # foto al cierre: si el brief se regenera días después, los datos diarios
+        # posteriores al fin de la semana informada no entran
+        liq = liq[(liq["mes_txt"] < fin[:7])
+                  | ((liq["mes_txt"] == fin[:7]) & (liq["dia"] <= int(fin[8:10])))]
+    if liq is not None and not liq.empty:
         for m, g in liq.groupby("mes_txt", sort=True):
             dias = [[int(r.dia), float(r.tn)] for r in g.itertuples()]
             D["liquidos"].append({"mes": m, "tn": round(sum(d[1] for d in dias), 1),
@@ -216,6 +221,9 @@ def cargar(cat, semana):
         "JOIN produccion.fact_despacho d USING (id_despacho) "
         "WHERE e.fecha_despacho >= (%s::date - 38) "
         "ORDER BY e.fecha_despacho", (sem,)))
+    # foto al cierre: despachos posteriores a la semana informada no entran acá
+    # (los futuros salen de "despachos", que alimenta compromisos y proyecciones)
+    D["despacho_ef"] = [r for r in D["despacho_ef"] if str(r["fecha"])[:10] <= fin]
 
     # lab por batch: inicial (acidez cargada al armar el batch) y final (análisis del batch)
     D["lab_batches"] = _recs(cat(
@@ -231,6 +239,7 @@ def cargar(cat, semana):
         "LEFT JOIN produccion.v_reaccion_lab_final l ON l.id_batch = p.id_batch "
         "WHERE p.fecha >= (%s::date - 45) AND p.real_kg IS NOT NULL "
         "ORDER BY p.fecha, p.ident", (sem,)))
+    D["lab_batches"] = [r for r in D["lab_batches"] if str(r["fecha"])[:10] <= fin]
 
     # calidad del MP que entra por portería (proxy del inicial de S y P: aún no se mide
     # por batch; ponderado por kg, últimos 45 días)
@@ -320,6 +329,9 @@ def cargar(cat, semana):
         "  AND real_kg IS NOT NULL GROUP BY 1,2,3 ORDER BY 1,2,3", (sem,))
     D["produccion_dia_tipo"] = {}
     if _pdia is not None and not _pdia.empty:
+        _pdia = _pdia[(_pdia["mes_txt"] < fin[:7])
+                      | ((_pdia["mes_txt"] == fin[:7]) & (_pdia["dia"] <= int(fin[8:10])))]
+    if _pdia is not None and not _pdia.empty:
         for (t, m), g in _pdia.groupby(["tipo", "mes_txt"], sort=True):
             dias = [[int(r.dia), float(r.tn)] for r in g.itertuples()]
             D["produccion_dia_tipo"].setdefault(t, []).append(
@@ -378,6 +390,58 @@ def cargar(cat, semana):
         "FROM b GROUP BY 1 HAVING sum(tn) > 100 ORDER BY 2 DESC LIMIT 8",
         (desde9, sem, sem, sem, sem)))
 
+    # salidas de báscula de la familia AFE en la semana, por producto: ventas
+    # directas o movimientos internos hacia afuera del predio. La vista del stock
+    # las clasifica como "interno" pero no las descuenta del proyectado, así que
+    # acá se registran como salida para que la fila cierre con la física.
+    D["sal_afe"] = _recs(cat(
+        "SELECT produccion.fn_cod_producto_porteria(producto) AS cod, "
+        "  round(sum(tn)::numeric,1) AS tn, count(*) AS camiones "
+        "FROM produccion.v_brief_porteria "
+        "WHERE flujo = 'SALIDA' AND familia = 'AFE' AND fecha BETWEEN %s AND %s "
+        "GROUP BY 1", (sem, fin)))
+
+    # ¿cuánto del desvío de AFE-S es medición y no faltante? Serie por corte semanal
+    # del stock medido SIN rótulo de producto en tanques cuyo último rótulo fue AFE-S
+    # (el radar midió, nadie asignó el producto: el balance no lo cuenta como AFE-S).
+    D["med_rotulo"] = _recs(cat(
+        "WITH cortes AS (SELECT generate_series(%s::date - 21, %s::date + 7, "
+        "                interval '7 days')::timestamp AS t), "
+        "snap AS (SELECT c.t, s.id_tanque, s.kg, s.id_producto "
+        "  FROM cortes c CROSS JOIN LATERAL ("
+        "    SELECT DISTINCT ON (fs.id_tanque) fs.id_tanque, fs.kg, fs.id_producto "
+        "    FROM produccion.fact_stock_tanque fs "
+        "    WHERE fs.medido_en < c.t AND coalesce(fs.kg,0) >= 0 "
+        "    ORDER BY fs.id_tanque, fs.medido_en DESC, fs.id_stock DESC) s), "
+        "cls AS (SELECT sp.t, sp.id_tanque, sp.kg FROM snap sp "
+        "  WHERE sp.id_producto IS NULL AND sp.kg > 500 AND "
+        "    (SELECT upper(btrim(dp.codigo_producto)) "
+        "     FROM produccion.fact_stock_tanque f2 "
+        "     JOIN produccion.dim_producto dp ON dp.id_producto = f2.id_producto "
+        "     WHERE f2.id_tanque = sp.id_tanque AND f2.medido_en < sp.t "
+        "     ORDER BY f2.medido_en DESC, f2.id_stock DESC LIMIT 1) = 'AFE-S') "
+        "SELECT c.t::date::text AS corte, "
+        "  round(coalesce(sum(g.kg)/1000.0, 0), 1) AS sr_tn, count(g.id_tanque) AS sr_tq "
+        "FROM cortes c LEFT JOIN cls g ON g.t = c.t "
+        "GROUP BY 1 ORDER BY 1", (sem, sem)))
+
+    # frescura de las lecturas usadas en el corte de ESTA semana (tanques rotulados AFE-S)
+    D["med_frescura"] = _recs(cat(
+        "WITH corte AS (SELECT (%s::date + 7)::timestamp AS t), "
+        "afes AS (SELECT s.* FROM corte c CROSS JOIN LATERAL ("
+        "    SELECT DISTINCT ON (fs.id_tanque) fs.id_tanque, fs.kg, fs.id_producto, "
+        "           fs.medido_en "
+        "    FROM produccion.fact_stock_tanque fs "
+        "    WHERE fs.medido_en < c.t AND coalesce(fs.kg,0) >= 0 "
+        "    ORDER BY fs.id_tanque, fs.medido_en DESC, fs.id_stock DESC) s "
+        "  JOIN produccion.dim_producto dp ON dp.id_producto = s.id_producto "
+        "  WHERE upper(btrim(dp.codigo_producto)) = 'AFE-S') "
+        "SELECT round((sum(a.kg * extract(epoch FROM c.t - a.medido_en)/3600.0) "
+        "        / nullif(sum(a.kg),0))::numeric, 0) AS h_pond, "
+        "  round(max(extract(epoch FROM c.t - a.medido_en)/3600.0)::numeric, 0) AS h_max, "
+        "  count(*) AS n_tq, round((sum(a.kg)/1000.0)::numeric, 1) AS tn "
+        "FROM afes a, corte c", (sem,)))
+
     # la fila AFE-S del stock único se corrige con el balance (despachos como salida)
     _b = next((r for r in D.get("balance_afe", []) if r["semana"] == sem), None)
     if _b:
@@ -388,19 +452,41 @@ def cargar(cat, semana):
                           "medido": _b["med"], "desvio": _b["desvio"], "fix": True})
     for r in D.get("desvio_producto", []):
         # AG-E: la salida real son sus líneas de despacho (la mezcla que lo produce
-        # no se registra como entrada; el único negativo queda explicado en el texto)
+        # no se registra como entrada; el único negativo queda explicado en el texto).
+        # Con la salida corregida se recalculan único y desvío para que la fila cierre.
         if r.get("cod") == "AG-E":
-            r.update({"e_out": D.get("ag_e_despachado", 0.0), "intr": 0.0, "fixd": True})
-        # glicerinas: el consumo de los reactores no viene expuesto en la columna
-        # interno de la vista; se deriva del propio balance de la fila
-        if str(r.get("cod", "")).startswith("GLICERINA") and not r.get("intr"):
             try:
-                _d = round(float(r["ini"] or 0) + float(r["prod"] or 0) + float(r["e_in"] or 0)
-                           - float(r["e_out"] or 0) - float(r["unico"] or 0), 1)
-                if abs(_d) > 0.5:
-                    r["intr"] = _d
+                _u = round(float(r["ini"] or 0) + float(r["prod"] or 0)
+                           + float(r["e_in"] or 0) - float(D.get("ag_e_despachado", 0.0)), 1)
+                r.update({"e_out": D.get("ag_e_despachado", 0.0), "unico": _u,
+                          "desvio": round(float(r["medido"] or 0) - _u, 1), "fixd": True})
+            except Exception:
+                r.update({"e_out": D.get("ag_e_despachado", 0.0), "fixd": True})
+    # AFE que salió por báscula (venta directa / mov. interno): se suma a salidas
+    # y se descuenta del único. AFE-S no: su fila ya viene armada del balance.
+    _sal_afe = {r["cod"]: r for r in D.get("sal_afe", []) if r.get("cod")}
+    for r in D.get("desvio_producto", []):
+        _s = _sal_afe.get(r.get("cod"))
+        if _s and r.get("cod") != "AFE-S" and not r.get("fix"):
+            try:
+                _u = round(float(r["unico"] or 0) - float(_s["tn"] or 0), 1)
+                r.update({"e_out": round(float(r["e_out"] or 0) + float(_s["tn"] or 0), 1),
+                          "unico": _u, "desvio": round(float(r["medido"] or 0) - _u, 1),
+                          "fixs": True})
             except Exception:
                 pass
+    # TRAZABILIDAD: la columna interno de la vista no es la que usa stock_proy
+    # (mezcla movimientos planificados y ejecutados según el producto). Para que
+    # CADA fila cierre exacto — inicial + producido + ingresos − salidas − uso
+    # interno = stock único — el uso interno se deriva como residual de la propia
+    # fila. En AFE-S coincide con el consumo de reactores del balance.
+    for r in D.get("desvio_producto", []):
+        try:
+            _d = round(float(r["ini"] or 0) + float(r["prod"] or 0) + float(r["e_in"] or 0)
+                       - float(r["e_out"] or 0) - float(r["unico"] or 0), 1)
+            r["intr"] = _d if abs(_d) >= 0.15 else 0.0
+        except Exception:
+            pass
 
     # normaliza tipos (Decimal -> float) para que el renderizador no se entere
     def _f(v):

@@ -95,9 +95,26 @@ def _reposo_eta(cat, b):
         return None
 
 
+MODO_LBL = {"CONICO60": "Cónico 60", "TANQUE3": "Tanque 3 (acopio)", "REACTOR": "el mismo reactor"}
+
+
+def _modo_vigente(b):
+    """(modo, es_plan). El modo CONFIRMADO manda; si todavía no se confirmó, vale el
+    que dejó el plan. Antes la vista de planta ignoraba el plan y decía que
+    Planificación no había decidido nada, aunque el plan ya dijera dónde (SOL-0026)."""
+    _m = b.get("desg_reposo_modo")
+    if _m and not (isinstance(_m, float) and pd.isna(_m)):
+        return str(_m), False
+    _p = b.get("reposo_plan_modo")
+    if _p and not (isinstance(_p, float) and pd.isna(_p)):
+        return str(_p), True
+    return None, False
+
+
 def _recipiente_nombre(cat, b):
-    """Recipiente donde se hace la decantación (Cónico 60, Tanque 3 o el reactor)."""
-    modo = b.get("desg_reposo_modo")
+    """Recipiente donde se hace la decantación (Cónico 60, Tanque 3 o el reactor).
+    Si el reposo todavía no se confirmó, se muestra el del plan."""
+    modo, _ = _modo_vigente(b)
     if modo == "CONICO60":
         return "Cónico 60"
     if modo == "TANQUE3":
@@ -121,7 +138,12 @@ def _cabecera(cat, b):
     eta = _reposo_eta(cat, b)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Estado", b["estado"])
-    c2.metric("Recipiente", _recipiente_nombre(cat, b))
+    _mv, _es_plan = _modo_vigente(b)
+    c2.metric("Recipiente", _recipiente_nombre(cat, b),
+              ("del plan · falta confirmar" if _es_plan else None), delta_color="off",
+              help=("El plan de Centro de Planificación lo puso acá. Queda por confirmar el "
+                    "arranque del reposo, que es lo que larga el conteo de horas."
+                    if _es_plan else None))
     if eta is not None:
         _now = pd.Timestamp.now(tz=getattr(eta, "tz", None))
         _rest = (eta - _now).total_seconds() / 3600.0
@@ -191,19 +213,24 @@ def planificacion(USR, cat, conectar):
     # ---- 1) Decisión de reposo (si todavía no se decidió) ----
     st.markdown("##### 1 · Reposo")
     if not b["desg_reposo_modo"]:
-        st.info(f"Elegí dónde reposa **{reposo_hs:.0f} h**. La decantación se hará en ese mismo recipiente.")
         _plan = str(b.get("reposo_plan_modo") or "")
-        _lbl_plan = {"CONICO60": "Cónico 60", "TANQUE3": "Tanque 3 (acopio)",
-                     "REACTOR": "el mismo reactor"}
+        _lbl_plan = dict(MODO_LBL)
         if _plan:
-            st.caption("🛌 Dirección lo planificó reposando en **%s**. Podés cambiarlo si hizo falta."
-                       % _lbl_plan.get(_plan, _plan))
+            st.info("🛌 El plan ya definió que reposa en **%s** durante **%.0f h**. Confirmá el "
+                    "arranque —eso larga el conteo— o cambiá el recipiente si en planta se hizo "
+                    "distinto. La decantación se hace en el mismo recipiente."
+                    % (_lbl_plan.get(_plan, _plan), reposo_hs))
+        else:
+            st.info(f"Elegí dónde reposa **{reposo_hs:.0f} h**. La decantación se hará en ese mismo recipiente.")
         _ops_rep = {"🛢️ Transferir a Cónico 60": ("CONICO60", CONICO60_ID),
                     "🛢️ Transferir a Tanque 3 (acopio)": ("TANQUE3", TANQUE3_ID),
                     "⚗️ Queda en el reactor": ("REACTOR", None)}
         _ixp = {"CONICO60": 0, "TANQUE3": 1, "REACTOR": 2}.get(_plan, 0)
-        modo = st.radio("¿Dónde reposa?", list(_ops_rep.keys()), index=_ixp, key="desg_modo")
-        if st.button("💾 Confirmar reposo (arranca el conteo de 12 h)", type="primary", key="desg_modo_ok"):
+        modo = st.radio("¿Dónde reposa?", list(_ops_rep.keys()), index=_ixp, key="desg_modo",
+                        help="Viene marcado lo que dice el plan." if _plan else None)
+        _btn = ("💾 Confirmar arranque del reposo (%.0f h)" % reposo_hs) if _plan else \
+               ("💾 Confirmar reposo (arranca el conteo de %.0f h)" % reposo_hs)
+        if st.button(_btn, type="primary", key="desg_modo_ok"):
             _modo_cod, _idt_rep = _ops_rep[modo]
             try:
                 with conectar(uid) as (conn, audit):
@@ -218,7 +245,8 @@ def planificacion(USR, cat, conectar):
                              int(b["id_batch"])))
                     audit.log("U", "fact_batch_proceso", int(b["id_batch"]),
                               {"desg_reposo_modo": _modo_cod, "id_tanque_reposo": _idt_rep})
-                st.success("Reposo confirmado. Cuando pasen las 12 h, producción arranca la decantación.")
+                st.success("Reposo confirmado en %s. Cuando pasen las %.0f h, producción arranca "
+                           "la decantación." % (_lbl_plan.get(_modo_cod, _modo_cod), reposo_hs))
                 cat.clear(); st.rerun()
             except Exception as e:
                 st.exception(e)
@@ -317,8 +345,14 @@ def produccion(USR, cat, conectar, id_batch=None):
     # -------- REPOSO: esperar decisión + fin de reposo, luego arrancar decantación --------
     if b["estado"] == "REPOSO":
         if not b["desg_reposo_modo"]:
-            st.info("⏳ Esperando que **Centro de Planificación** decida el reposo "
-                    "(Cónico 60 o queda en el reactor).")
+            _mv, _ = _modo_vigente(b)
+            if _mv:
+                st.info("🛌 Según el plan, este desgomado reposa en **%s**. Falta que "
+                        "**Centro de Planificación** confirme el arranque del reposo: ese "
+                        "click es el que larga el conteo de horas." % MODO_LBL.get(_mv, _mv))
+            else:
+                st.info("⏳ Esperando que **Centro de Planificación** defina el reposo "
+                        "(Cónico 60, Tanque 3 o queda en el reactor).")
             return
         eta = _reposo_eta(cat, b)
         _txt = _recipiente_nombre(cat, b)

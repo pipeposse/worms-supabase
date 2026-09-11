@@ -3,7 +3,7 @@
 
     1. Acopio disponible en tanques, sólidos y piletas
     2. Descargas pendientes / en proceso (no sólo los líquidos)
-    3. Personal en planta
+    3. Personal en planta → "Personas trabajando" (v_personal_activo: trabajo registrado)
     4. Sectores activos
     5. Tickets pendientes de análisis
 
@@ -164,13 +164,16 @@ def render_kpis_area(ctx):
               "warn" if (cam > 0 or afe > 0) else "")
 
     # 3. personal en planta
+    # Mide trabajo REGISTRADO, no presencia física: sale de v_personal_activo, que
+    # deriva de lo que la gente ya carga (estados, instructivo, insumos, tanques,
+    # stock, recuperación, portería) más la marca manual. Antes salía de
+    # fact_presencia, que tenía 3 marcas en toda la historia y obligaba a mostrar
+    # logins como sustituto — un número que no significaba nada.
     pres, logins = _i(k.get("personal_presente")), _i(k.get("personal_logins_10h"))
-    if pres > 0:
-        c3 = _kpi("Personal en planta", str(pres), "marcaron “Estoy en planta” · "
-                  f"{logins} con sesión en las últimas 10 h", "ok")
-    else:
-        c3 = _kpi("Personal en planta", f"{logins}<span style='font-size:1rem;font-weight:700;'> *</span>",
-                  "* sesiones abiertas en las últimas 10 h — nadie marcó presencia todavía", "")
+    c3 = _kpi("Personas trabajando", str(pres),
+              (f"registraron trabajo en las últimas horas · {logins} con sesión abierta" if pres
+               else "nadie registró trabajo todavía hoy"),
+              "ok" if pres else "")
 
     # 4. sectores activos
     sa, sd, stot = _i(k.get("sectores_activos")), _i(k.get("sectores_con_datos")), _i(k.get("sectores_total"))

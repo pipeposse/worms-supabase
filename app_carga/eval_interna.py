@@ -157,9 +157,15 @@ def render(USR, cat, conectar, etapas_de_proceso, params_proceso):
                 if v > 0:
                     med[p["codigo"]] = float(v)
         obs_m = st.text_input("Observación de la muestra", max_chars=200, key="m_obs")
+        _huella = (int(r2["id_batch"]), etapa_m, tuple(sorted(med.items())), (obs_m or "").strip())
         if st.button("🧪 Guardar muestra", type="primary", use_container_width=True, key="m_save"):
             if not med:
                 st.error("Ingresá al menos una medición.")
+            elif st.session_state.get("m_ultima") == _huella:
+                # Mismo batch, misma etapa y los mismos valores que la última que entró:
+                # es el segundo click, no una medición nueva.
+                st.info("Esa medición ya se guardó recién. Si querés cargar otra, "
+                        "cambiá los valores.")
             else:
                 try:
                     with conectar(USR["id_usuario"]) as (conn, audit):
@@ -176,6 +182,12 @@ def render(USR, cat, conectar, etapas_de_proceso, params_proceso):
                                             (int(id_m), int(id_prog_sel)))
                         audit.insert("fact_evaluacion_interna", id_m, med)
                     st.session_state["m_flash"] = {"id": int(id_m), "batch": int(r2["id_batch"])}
+                    st.session_state["m_ultima"] = _huella
+                    # Vaciar los campos: si quedan escritos, el próximo click vuelve a
+                    # mandar la misma medición y entra como si fuera otra.
+                    for _k in [k for k in list(st.session_state.keys()) if k.startswith("m_par_")]:
+                        st.session_state.pop(_k, None)
+                    st.session_state.pop("m_obs", None)
                     cat.clear()
                     st.rerun()
                 except Exception as e:

@@ -348,6 +348,9 @@ def produccion(USR, cat, conectar, id_batch=None):
     if not _medido:
         st.info("Medí el tanque destino y marcá la casilla: sin medición post-acopio no se puede verificar el rendimiento "
                 "real (si se despacha antes de medir, el ingreso queda tapado).")
+    st.caption("⚠️ Confirmar la decantación NO carga los kilos obtenidos. Después de esto entrá a "
+               "**🏭 Producción → 🏁 Acopio final** y cargá cuánto salió: sin ese dato la orden queda "
+               "cerrada sin rendimiento y aparece en la bandeja HOY hasta que se complete.")
     if st.button("🚚 Confirmar y generar movimientos de stock", type="primary", use_container_width=True,
                  key="dec_confirm", disabled=not _medido):
         try:
@@ -369,6 +372,8 @@ def produccion(USR, cat, conectar, id_batch=None):
                                 "WHERE id_batch=%s", (uid, int(b["id_batch"])))
                 audit.log("U", "fact_batch_proceso", int(b["id_batch"]), {"estado": "FINALIZADO"})
             st.success("Decantación confirmada. Movimientos generados y producción FINALIZADA.")
+            st.warning("Falta el paso final: cargá los kilos obtenidos en **🏭 Producción → 🏁 Acopio final**. "
+                       "Hasta entonces esta orden no tiene rendimiento calculable.")
             st.balloons(); cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)

@@ -34,3 +34,6 @@ from .plan_semanal import render_plan  # noqa: F401
 from .desvios import render_desvios  # noqa: F401
 from .stock_cc import render_stock  # noqa: F401
 from .sector_simple import render_sector_simple  # noqa: F401
+from .hoy import render_hoy, banner as banner_hoy  # noqa: F401
+from .lab_conciliar import render_lab_conciliar  # noqa: F401
+from .panel import render_panel  # noqa: F401

@@ -14,6 +14,7 @@ Réplica corregida de la planilla "FORMULACION EXPO.xlsx":
 
 render(USR, cat, conectar)
 """
+import hashlib as _hashlib
 import io
 import json
 import threading as _threading
@@ -1174,8 +1175,9 @@ def _panel_specs(res: pd.DataFrame, spec: dict):
 def _estructura(res, prod_cod, prods=None):
     """Controla que la carga respete la formulación: materias primas + AFE que las diluye.
 
-    Devuelve (ok, mensajes). ok=False sólo cuando faltan las MP o falta el diluyente, que son
-    los dos casos en los que lo cargado no es el producto que se despacha.
+    Devuelve (ok, mensajes). ok=False sólo cuando faltan las MP, o cuando falta el diluyente
+    y las MP cargadas NO son todas ARE: esos son los casos en los que lo cargado no es el
+    producto que se despacha. Un despacho 100% ARE no lleva dilución y es válido (SOL-0027).
     """
     fam = _familia(prod_cod, prods)
     if len(fam) == 1 or res.empty or "Rol" not in res.columns:
@@ -1206,11 +1208,25 @@ def _estructura(res, prod_cod, prods=None):
         ok = False
         msgs.append(("error", "La carga **no tiene materias primas**. Un despacho formulado "
                               "lleva MP (AFE-M, AG-A/B/C, AFE-AL, AFE-G o ARE) más el AFE-S "
-                              "que las diluye: así como está, es 100%% AFE sin formular."))
+                              "que las diluye: así como está, es 100% AFE sin formular."))
     if d.empty:
-        ok = False
-        msgs.append(("error", "La carga es 100%% materias primas sin diluir. Agregá los tanques "
-                              "de AFE (en general AFE-S) que bajan la acidez y el azufre."))
+        # SOL-0027: un despacho 100% ARE es legítimo. El ARE sale de reactores ya
+        # terminado y en especificación, así que no necesita AFE que lo diluya; la
+        # regla de "MP + diluyente" está pensada para las MP crudas (AG, borra,
+        # AFE-M…), que solas sí están fuera de spec. El control de spec de más abajo
+        # sigue corriendo igual, así que si el ARE no cierra, se ve.
+        _cods_b = set(str(x).strip().upper() for x in b["Producto"].dropna())
+        if _cods_b and all(c.startswith("ARE") for c in _cods_b):
+            msgs.append(("info", "Carga **100%% ARE** (%s), sin dilución. El ARE ya sale de "
+                                 "reactores en especificación, así que se despacha tal cual. "
+                                 "El cumplimiento de spec se controla igual, acá abajo."
+                         % ", ".join(sorted(_cods_b))))
+        else:
+            ok = False
+            msgs.append(("error", "La carga es 100% materias primas sin diluir. Agregá los tanques "
+                                  "de AFE (en general AFE-S) que bajan la acidez y el azufre. "
+                                  "(Un despacho 100% ARE sí se puede hacer sin diluir; el resto "
+                                  "de las MP no.)"))
     else:
         _cods = set(str(x).strip().upper() for x in d["Producto"].dropna())
         _raros = sorted(_cods - set(_dils_de(fam)))
@@ -1324,6 +1340,8 @@ REGLAS = (
          porque="Las MP son lo más barato de la carga y solas están fuera de spec; el "
                 "AFE-S es lo más caro y es el que las lleva a especificación. El AFE-SG "
                 "tiene goma y arruina la carga.",
+         excepcion="Un despacho 100% ARE va SIN diluir: el ARE sale de reactores ya "
+                   "terminado y en especificación. El resto de las MP no pueden ir solas.",
          valor=lambda: "excluidos: %s" % ", ".join(EXCLUIDOS_DESPACHO),
          donde="FORMULADOS / MP_DESPACHO / EXCLUIDOS_DESPACHO · _estructura()"),
     dict(id="R2", grupo="Qué se mezcla", titulo="Mínimo de materias primas por contenedor",
@@ -4638,9 +4656,9 @@ def _armar(USR, cat, conectar):
         for a in avisos:
             st.warning(a)
     if not ok_est:
-        st.error("La carga **no respeta la formulación** de un despacho de %s: siempre son "
-                 "materias primas (AFE-M, AG-A/B/C, AFE-AL, AFE-G o ARE) más el AFE-S que "
-                 "las diluye." % prod_lbl)
+        st.error("La carga **no respeta la formulación** de un despacho de %s: son materias "
+                 "primas (AFE-M, AG-A/B/C, AFE-AL, AFE-G o ARE) más el AFE-S que las diluye. "
+                 "La única carga que va sin diluir es la de **100%% ARE**." % prod_lbl)
     if not ok_spec:
         st.error("La mezcla se pasa de la especificación en **más del %.0f%%** de tolerancia. "
                  "Se puede guardar y confirmar igual, pero pide un **motivo obligatorio** y el "
@@ -4669,8 +4687,9 @@ def _armar(USR, cat, conectar):
             _d["motivo"] = (_motivo_desv or "").strip() or None
     if estado != "BORRADOR" and not ok_est:
         g2.button("💾 Guardar", disabled=True, use_container_width=True,
-                  help="No respeta la formulación (componente base + AFE): corregí la mezcla "
-                       "o guardá como BORRADOR.")
+                  help="No respeta la formulación (materias primas + AFE que las diluye): "
+                       "corregí la mezcla o guardá como BORRADOR. Un despacho 100% ARE va "
+                       "sin diluir y no queda bloqueado.")
     elif estado != "BORRADOR" and not ok_spec and not (_motivo_desv or "").strip():
         g2.button("💾 Guardar", disabled=True, use_container_width=True,
                   help="Fuera de spec por encima de la tolerancia: escribí el motivo y se "
@@ -5465,6 +5484,27 @@ def _tk_candidatos(cat, clases, d1, d2, txt, familia):
     return cat(q, tuple(par))
 
 
+def _tk_firma(id_despacho, rol, ids):
+    """Identidad del conjunto de tickets que se está mostrando.
+
+    st.data_editor guarda los tildes como un delta POR POSICIÓN de fila, atado a su
+    key. Si la key es fija y la lista de candidatos cambia (otro despacho, otro rango
+    de fechas, una búsqueda, o tickets que se fueron porque se asignaron), ese delta
+    se vuelve a aplicar sobre filas distintas: los tildes se pierden o —peor— caen
+    sobre el ticket equivocado. Atando la key al contenido, cualquier cambio del
+    conjunto arranca con la grilla limpia (SOL-0028)."""
+    h = _hashlib.md5((",".join(str(int(i)) for i in ids)).encode("utf-8")).hexdigest()[:10]
+    return "dsp_tk_ed_%s_%s_%s" % (rol, int(id_despacho), h)
+
+
+def _tk_purgar(actual, rol):
+    """Saca del estado los editores de tickets que ya no se están mostrando, para que
+    no quede basura de conjuntos viejos."""
+    for k in [k for k in list(st.session_state.keys())
+              if str(k).startswith("dsp_tk_ed_%s_" % rol) and k != actual]:
+        st.session_state.pop(k, None)
+
+
 def _tk_panel(USR, cat, conectar, cab, rol):
     spec = _ROLES_TK[rol]
     st.markdown(f"##### {spec['titulo']}")
@@ -5496,9 +5536,13 @@ def _tk_panel(USR, cat, conectar, cab, rol):
         st.dataframe(_v[_cols], hide_index=True, use_container_width=True)
 
         c1, c2 = st.columns([2, 1])
-        _q = c1.multiselect("Quitar tickets", _a["id_dt"].tolist(),
-                            format_func=lambda i: f"#{int(_a[_a['id_dt'] == i]['ticket'].iloc[0])}",
-                            key=f"dsp_tk_del_{rol}")
+        def _lbl_dt(i):
+            _m = _a[_a["id_dt"] == i]
+            return ("#%d" % int(_m["ticket"].iloc[0])) if not _m.empty else str(i)
+        # la key lleva el despacho: si no, los id_dt elegidos en otro despacho quedaban
+        # pegados en el estado y el selector mostraba tickets que no eran de acá.
+        _q = c1.multiselect("Quitar tickets", _a["id_dt"].tolist(), format_func=_lbl_dt,
+                            key=f"dsp_tk_del_{rol}_{int(cab['id_despacho'])}")
         if _q and c2.button("🗑️ Quitar", key=f"dsp_tk_delb_{rol}", use_container_width=True):
             try:
                 with conectar(USR["id_usuario"]) as (conn, _x):
@@ -5517,8 +5561,11 @@ def _tk_panel(USR, cat, conectar, cab, rol):
         _f = cab.get("fecha_despacho")
         _f = pd.to_datetime(_f).date() if pd.notna(_f) else _dt.date.today()
         f1, f2, f3, f4 = st.columns([1, 1, 1, 1.6])
-        d1 = f1.date_input("Desde", _f - _dt.timedelta(days=7), key=f"dsp_tk_d1_{rol}")
-        d2 = f2.date_input("Hasta", _f + _dt.timedelta(days=7), key=f"dsp_tk_d2_{rol}")
+        # el rango arranca alrededor de la fecha DE ESTE despacho: con una key fija se
+        # arrastraba el rango del despacho anterior y los tickets no aparecían (SOL-0028)
+        _kd = f"{rol}_{int(cab['id_despacho'])}"
+        d1 = f1.date_input("Desde", _f - _dt.timedelta(days=7), key=f"dsp_tk_d1_{_kd}")
+        d2 = f2.date_input("Hasta", _f + _dt.timedelta(days=7), key=f"dsp_tk_d2_{_kd}")
         fam = f3.selectbox("Familia", ["Todas", "AG", "AFE"], key=f"dsp_tk_fam_{rol}")
         txt = f4.text_input("Buscar (producto, destino, área, patente, obs., ticket)",
                             key=f"dsp_tk_txt_{rol}")
@@ -5540,8 +5587,10 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                "Sin pesada", "Obs. portería", "Contenedor", "Precinto"] if rol == "SALIDA" else
               ["Asignar", "Ticket", "Fecha", "Hora", "Producto", "Procedencia", "Área", "Patente",
                "kg", "Sin pesada", "Obs. portería", "Contenedor", "Precinto"])
+        _k_ed = _tk_firma(cab["id_despacho"], rol, cnd["id_transaccion"].tolist())
+        _tk_purgar(_k_ed, rol)
         ed = st.data_editor(
-            _pre[_c], hide_index=True, use_container_width=True, key=f"dsp_tk_ed_{rol}",
+            _pre[_c], hide_index=True, use_container_width=True, key=_k_ed,
             disabled=[c for c in _c if c not in ("Asignar", "Contenedor", "Precinto")],
             column_config={
                 "Asignar": st.column_config.CheckboxColumn("✔", width="small"),
@@ -5552,8 +5601,13 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                 "Precinto": st.column_config.TextColumn("Precinto", width="small"),
             })
         _sel = ed[ed["Asignar"] == True]  # noqa: E712
+        _sel = _sel[_sel.index.isin(cnd.index)]      # nunca tildes de un conjunto viejo
         st.caption(f"{len(cnd)} tickets libres en el rango · {len(_sel)} seleccionados "
                    f"({_sel['kg'].sum():,.0f} kg)".replace(",", "."))
+        if len(_sel):
+            # el operario tiene que VER que el tilde quedó registrado antes de confirmar
+            st.success("Tildados: " + ", ".join(
+                "#%d" % int(t) for t in _sel["Ticket"].dropna().tolist()))
         if len(_sel) and st.button(f"✅ Asignar {len(_sel)} ticket(s)", key=f"dsp_tk_add_{rol}",
                                    type="primary"):
             _idx = _sel.index.tolist()
@@ -5589,7 +5643,15 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                             _nok += 1
                         if rol == "SALIDA":
                             _desvio_balanza(cur, int(cab["id_despacho"]), USR.get("nombre"))
-                cat.clear(); st.success(f"{_nok} ticket(s) asignados."); _rerun_frag()
+                st.session_state.pop(_k_ed, None)   # la grilla arranca limpia
+                cat.clear()
+                if _nok == len(filas):
+                    st.success(f"{_nok} ticket(s) asignados.")
+                else:
+                    st.warning(f"{_nok} de {len(filas)} ticket(s) asignados. "
+                               f"{len(filas) - _nok} ya estaban asignados a otro despacho: "
+                               "buscalos por número para ver dónde están.")
+                _rerun_frag()
             except Exception as e:
                 st.error(f"No se pudieron asignar: {e}")
 
