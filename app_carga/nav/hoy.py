@@ -46,7 +46,13 @@ _ACCION = {
     "TANQUES_LLENOS": "Ver tanques",
     "MOV_DUPLICADO":  "Ver el tanque",
 }
-_BANDAS = [(1, "🔴", "AHORA", "bad"), (2, "🟡", "HOY", "warn"), (3, "⚪", "PARA REVISAR", "")]
+# El punto de la banda se dibuja con CSS, no con emoji: ⚪ sale como una bola con
+# degradado según la fuente del sistema y ensucia justo donde el color significa algo.
+_BANDAS = [(1, "var(--bad)", "AHORA", "bad"), (2, "var(--warn)", "HOY", "warn"),
+           (3, "var(--line-3)", "PARA REVISAR", "")]
+# Ojo: lleva un 50% adentro, así que se arma con .format() y no con %s.
+_PUNTO = ("<span style='display:inline-block;width:8px;height:8px;border-radius:50%;"
+          "background:{};flex:none'></span>")
 
 # Vista de Seguimiento por sector (igual que plan_semanal: las etiquetas de INICIAR mandan).
 _SEGUIMIENTO = {
@@ -144,29 +150,44 @@ def _ir(fila):
 
 
 # ------------------------------------------------------------------ pantalla
-def _fila(ctx, r, compacta=False):
+_SEP = ("<div style='height:1px;background:var(--line);"
+        "margin:2px 0 2px;opacity:.9'></div>")
+
+
+def _fila(ctx, r, compacta=False, sep=False):
+    """Una línea de la bandeja. NO es una tarjeta: la tarjeta es la banda entera.
+
+    Siete filas, cada una en su caja con su propio aire, daban tres pantallas de
+    rectángulos iguales y un hueco enorme entre el texto y el botón. Una bandeja se
+    lee como una lista: renglones al hilo, separados por una línea fina, con la
+    acción al costado. El ✓ es terciario (sin caja) para que no compita con la
+    acción, que es lo único que tiene que resaltar.
+    """
     USR, conectar = ctx["USR"], ctx.get("conectar")
     key = f"{r['tipo']}_{r['ref']}".replace(":", "_").replace(".", "_")
-    with st.container(border=True):
-        c1, c2, c3 = st.columns([5, 1.5, 0.6] if not compacta else [5, 1.7, 0.01],
-                                vertical_alignment="center")
-        with c1:
-            st.markdown(
-                f"<div style='font-weight:700;font-size:0.97rem;line-height:1.3'>{r['titulo']}</div>"
-                f"<div style='opacity:.72;font-size:0.86rem;margin-top:2px'>{r['detalle'] or ''}</div>",
-                unsafe_allow_html=True)
-        if c2.button(_ACCION.get(r["tipo"], "Abrir") + " →", key=f"nav_hoy_go_{key}",
-                     use_container_width=True, type=("primary" if r["prioridad"] == 1 else "secondary")):
-            _ir(r)
-        if not compacta and r["tipo"] in MARCABLES and conectar is not None:
-            if c3.button("✓", key=f"nav_hoy_ok_{key}", use_container_width=True,
-                         help="Ya lo miré: sacarlo de la bandeja. Si el estado cambia, vuelve a aparecer."):
-                try:
-                    _marcar(conectar, USR, r["tipo"], r["ref"], r.get("marca"))
-                    invalidar()
-                    _rerun_fragment()
-                except Exception as e:
-                    st.error(f"No se pudo marcar: {e}")
+    if sep:
+        st.markdown(_SEP, unsafe_allow_html=True)
+    marcable = (not compacta) and r["tipo"] in MARCABLES and conectar is not None
+    c1, c2, c3 = st.columns([7, 2.1, 0.5] if not compacta else [7, 2.3, 0.01],
+                            vertical_alignment="center")
+    with c1:
+        st.markdown(
+            f"<div style='font-weight:700;font-size:0.94rem;line-height:1.3'>{r['titulo']}</div>"
+            f"<div style='color:var(--muted);font-size:0.84rem;margin-top:1px;"
+            f"line-height:1.35'>{r['detalle'] or ''}</div>",
+            unsafe_allow_html=True)
+    if c2.button(_ACCION.get(r["tipo"], "Abrir") + " →", key=f"nav_hoy_go_{key}",
+                 use_container_width=True, type=("primary" if r["prioridad"] == 1 else "secondary")):
+        _ir(r)
+    if marcable:
+        if c3.button("✓", key=f"nav_hoy_ok_{key}", type="tertiary",
+                     help="Ya lo miré: sacarlo de la bandeja. Si el estado cambia, vuelve a aparecer."):
+            try:
+                _marcar(conectar, USR, r["tipo"], r["ref"], r.get("marca"))
+                invalidar()
+                _rerun_fragment()
+            except Exception as e:
+                st.error(f"No se pudo marcar: {e}")
 
 
 @_FRAGMENT
@@ -188,14 +209,16 @@ def _cola(ctx, sector=None):
         st.caption("La bandeja muestra sólo lo que podés resolver con tus accesos.")
         return
 
-    for pri, icono, titulo, _cls in _BANDAS:
+    for pri, color, titulo, _cls in _BANDAS:
         grupo = v[v["prioridad"] == pri]
         if grupo.empty:
             continue
-        st.markdown(f"<div class='section-title' style='margin:14px 0 6px'>{icono} {titulo} · {len(grupo)}</div>",
-                    unsafe_allow_html=True)
-        for _, r in grupo.iterrows():
-            _fila(ctx, r)
+        st.markdown(f"<div class='section-title' style='margin:18px 0 6px'>{_PUNTO.format(color)}"
+                    f"{titulo} · {len(grupo)}</div>", unsafe_allow_html=True)
+        # Una sola tarjeta por banda, con las filas al hilo adentro.
+        with st.container(border=True):
+            for _i, (_, r) in enumerate(grupo.iterrows()):
+                _fila(ctx, r, sep=(_i > 0))
 
 
 def render_hoy(ctx):

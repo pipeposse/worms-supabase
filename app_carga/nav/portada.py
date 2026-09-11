@@ -40,7 +40,12 @@ def _hero(titulo, USR, sub=None, icono="🏭"):
         unsafe_allow_html=True)
 
 
-def _tile(col, icono, titulo, desc, key, on_click, disabled=False, label="Entrar", tipo="primary", atenuado=False):
+def _tile(col, icono, titulo, desc, key, on_click, disabled=False, label="Entrar",
+          tipo="secondary", atenuado=False):
+    """Una tarjeta de la grilla. El botón es SECUNDARIO por defecto a propósito:
+    con 14 sectores en pantalla, 14 botones azules llenos no dejan una acción
+    principal, dejan una pared. El azul se reserva para la acción que sí manda
+    (la raíz, guardar, entrar a la bandeja cuando hay algo urgente)."""
     with col:
         with st.container(border=True):
             op = ' style="opacity:.55"' if atenuado else ""
@@ -137,10 +142,12 @@ def _raiz(ctx):
     items = []
     if adm:
         items.append(dict(icono="👷", titulo="ADMINISTRACIÓN", desc="Cierres mensuales, dirección, ISCC, consultas IA y administración de usuarios.",
-                          key="nav_area_admin", on_click=lambda: _st.set_nav("ADMIN", rerun=False)))
+                          key="nav_area_admin", tipo="primary",
+                          on_click=lambda: _st.set_nav("ADMIN", rerun=False)))
     if prod:
         items.append(dict(icono="🧪", titulo="PRODUCCIÓN", desc="Sectores de planta, planificación, reportes y panel de control.",
-                          key="nav_area_prod", on_click=lambda: _st.set_nav("PRODUCCION", rerun=False)))
+                          key="nav_area_prod", tipo="primary",
+                          on_click=lambda: _st.set_nav("PRODUCCION", rerun=False)))
     if not items:
         st.info("No tenés secciones habilitadas. Pedile al administrador que te dé acceso.")
         return
@@ -216,7 +223,7 @@ def _area_produccion(ctx):
         elif not habil:
             lbl, dis, tipo = "Sin acceso", True, "secondary"
         else:
-            lbl, dis, tipo = "Entrar", False, "primary"
+            lbl, dis, tipo = "Entrar", False, "secondary"
         items.append(dict(icono=r["icono"], titulo=r["nombre_ui"], desc=r.get("descripcion") or "",
                           key=f"nav_sec_{r['codigo']}", disabled=dis, label=lbl, tipo=tipo,
                           atenuado=sin_datos or dis,

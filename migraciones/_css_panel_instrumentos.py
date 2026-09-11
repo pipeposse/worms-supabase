@@ -32,7 +32,11 @@ def inject_global_css():
         /* líneas */
         --line:#e4e2dd; --line-2:#d2cfc8; --line-3:#b9b5ac;
         /* acción (y nada más) */
-        --accent:#1d4ed8; --accent-ink:#1e40af; --accent-soft:#eef3ff;
+        /* Azul de acción. #1d4ed8 (saturación 76%) es correcto en un botón chico, pero
+           en losas grandes —14 tarjetas de sector, una al lado de la otra— vibra y cansa.
+           Este baja la saturación a 62% y oscurece un punto: mismo azul, sin el neón.
+           Contraste 7,8:1 con texto blanco encima y 7,5:1 como link sobre el papel (AAA). */
+        --accent:#274da5; --accent-ink:#1e3d85; --accent-soft:#eef1f9;
         /* estado */
         --ok:#067647;  --ok-bg:#ecfdf3;  --ok-line:#abefc6;
         --warn:#b54708; --warn-bg:#fffaeb; --warn-line:#fedf89;
@@ -62,6 +66,18 @@ def inject_global_css():
       code, .stCode, pre{font-family:var(--mono); font-size:.86em;}
       hr{border:0; border-top:1px solid var(--line); margin:var(--s5) 0;}
 
+      /* Ritmo vertical. Streamlit deja 1rem entre CADA elemento: pensado para una
+         landing, no para una app de datos. Una lista de siete renglones se estiraba a
+         tres pantallas y todo quedaba flotando en blanco. 0,7rem sigue siendo aire
+         suficiente y deja ver la lista como lista. */
+      [data-testid="stVerticalBlock"]{gap:.7rem;}
+      [data-testid="stHorizontalBlock"]{gap:.7rem;}
+      /* El terciario es texto sin caja: sirve para la acción de al lado (marcar visto)
+         sin competir con la que manda. */
+      .stButton>button[kind="tertiary"]{
+        border:0; background:transparent; color:var(--muted); min-height:32px; padding:.2rem .5rem;
+      }
+      .stButton>button[kind="tertiary"]:hover{background:var(--surface-2); color:var(--ink);}
       /* --------------------------------------------------------- botones ---- */
       /* uno solo manda por pantalla: el primario es el único con relleno */
       .stButton>button, .stDownloadButton>button, [data-testid="stFormSubmitButton"]>button{
@@ -70,8 +86,12 @@ def inject_global_css():
         padding:.46rem .9rem; min-height:40px; box-shadow:none;
         transition:background .12s ease, border-color .12s ease, color .12s ease;
       }
+      /* El secundario no es "el botón apagado": al pasar por encima toma el tono del
+         acento. Así una grilla de 14 tarjetas se lee tranquila y aun así cada una se
+         siente clickeable, sin que ninguna se pelee con la acción principal. */
       .stButton>button:hover, .stDownloadButton>button:hover{
-        background:var(--surface-2); border-color:var(--line-3); color:var(--ink); transform:none;
+        background:var(--accent-soft); border-color:var(--accent); color:var(--accent-ink);
+        transform:none;
       }
       .stButton>button:focus-visible, .stDownloadButton>button:focus-visible{
         outline:2px solid var(--accent); outline-offset:2px;
