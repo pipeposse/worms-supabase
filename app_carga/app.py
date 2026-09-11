@@ -177,10 +177,17 @@ def inject_global_css():
       .stButton>button:disabled{opacity:.45; background:var(--surface-2);}
 
       /* ------------------------------------------------------- contenedor --- */
-      /* la tarjeta delimita, no flota. Sin sombra y sin salto al pasar el mouse */
+      /* La tarjeta delimita, no flota: sin sombra y sin salto al pasar el mouse.
+         CUIDADO: Streamlit pone este testid en TODOS los bloques verticales, no
+         sólo en los st.container(border=True). Si acá se declara `border:` o
+         `background:`, se dibuja una caja alrededor de CADA columna y CADA bloque
+         anidado y la pantalla queda llena de rectángulos dentro de rectángulos
+         (pasó el 11/09/2026 en la bandeja HOY: caja del título adentro de la caja
+         de la fila, más una caja vacía donde no había botón). Acá sólo se
+         re-colorea el borde que Streamlit ya haya dibujado. */
       [data-testid="stVerticalBlockBorderWrapper"]{
-        border-radius:var(--r) !important; border:1px solid var(--line) !important;
-        background:var(--surface); box-shadow:none !important; transition:border-color .12s ease;
+        border-radius:var(--r) !important; border-color:var(--line) !important;
+        box-shadow:none !important; transition:border-color .12s ease;
       }
       [data-testid="stVerticalBlockBorderWrapper"]:hover{
         border-color:var(--line-2) !important; box-shadow:none !important; transform:none;

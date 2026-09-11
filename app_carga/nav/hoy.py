@@ -148,7 +148,8 @@ def _fila(ctx, r, compacta=False):
     USR, conectar = ctx["USR"], ctx.get("conectar")
     key = f"{r['tipo']}_{r['ref']}".replace(":", "_").replace(".", "_")
     with st.container(border=True):
-        c1, c2, c3 = st.columns([5, 1.5, 0.6] if not compacta else [5, 1.7, 0.01])
+        c1, c2, c3 = st.columns([5, 1.5, 0.6] if not compacta else [5, 1.7, 0.01],
+                                vertical_alignment="center")
         with c1:
             st.markdown(
                 f"<div style='font-weight:700;font-size:0.97rem;line-height:1.3'>{r['titulo']}</div>"
