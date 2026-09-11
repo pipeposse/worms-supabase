@@ -5480,20 +5480,33 @@ def _tk_candidatos(cat, clases, d1, d2, txt, familia):
         q += ("AND (p.producto ILIKE %s OR p.destino ILIKE %s OR p.area ILIKE %s "
               "OR p.patente ILIKE %s OR p.observaciones ILIKE %s OR p.ticket::text LIKE %s) ")
         par += ["%" + txt + "%"] * 5 + ["%" + txt + "%"]
-    q += "ORDER BY p.fecha DESC, p.ticket DESC LIMIT 400"
+    # Se toman los 400 más recientes, pero se DEVUELVEN de más viejo a más nuevo.
+    # Con orden descendente, cada ticket que entraba en portería se metía arriba y
+    # corría una posición TODAS las filas de abajo — y st.data_editor guarda los
+    # tildes por posición de fila (SOL-0028). Ascendente, lo nuevo se agrega al final.
+    q = ("SELECT * FROM (" + q + "ORDER BY p.fecha DESC, p.ticket DESC LIMIT 400) z "
+         "ORDER BY z.fecha, z.ticket")
     return cat(q, tuple(par))
 
 
-def _tk_firma(id_despacho, rol, ids):
-    """Identidad del conjunto de tickets que se está mostrando.
+def _tk_firma(id_despacho, rol, filtros):
+    """Identidad de la GRILLA (despacho + filtros), no del conjunto de filas.
 
-    st.data_editor guarda los tildes como un delta POR POSICIÓN de fila, atado a su
-    key. Si la key es fija y la lista de candidatos cambia (otro despacho, otro rango
-    de fechas, una búsqueda, o tickets que se fueron porque se asignaron), ese delta
-    se vuelve a aplicar sobre filas distintas: los tildes se pierden o —peor— caen
-    sobre el ticket equivocado. Atando la key al contenido, cualquier cambio del
-    conjunto arranca con la grilla limpia (SOL-0028)."""
-    h = _hashlib.md5((",".join(str(int(i)) for i in ids)).encode("utf-8")).hexdigest()[:10]
+    st.data_editor guarda los tildes por posición de fila, atados a su key. Eso deja
+    dos formas de romperlo y hay que cuidar las dos:
+
+    * Si la key NO cambia cuando cambia lo que se muestra (otro despacho, otro rango
+      de fechas, otra búsqueda), el delta viejo cae sobre filas distintas → tildes
+      perdidos o sobre el ticket equivocado. Por eso la key lleva despacho + filtros.
+    * Si la key cambia DEMASIADO —atada al conjunto de tickets— cada ticket nuevo que
+      entra en portería la rota y borra los tildes que el operario acababa de hacer.
+      En expo entran camiones cada pocos minutos, así que eso pasaba todo el tiempo:
+      la grilla mostraba los tildes viejos del navegador y el contador decía
+      "0 seleccionados". Por eso el conjunto de filas NO entra en la key.
+
+    Lo que hace robusto el resto es leer la selección por NÚMERO DE TICKET y no por
+    posición (ver `_tk_panel`), más el orden ascendente de `_tk_candidatos`."""
+    h = _hashlib.md5(("|".join(str(x) for x in filtros)).encode("utf-8")).hexdigest()[:10]
     return "dsp_tk_ed_%s_%s_%s" % (rol, int(id_despacho), h)
 
 
@@ -5587,7 +5600,7 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                "Sin pesada", "Obs. portería", "Contenedor", "Precinto"] if rol == "SALIDA" else
               ["Asignar", "Ticket", "Fecha", "Hora", "Producto", "Procedencia", "Área", "Patente",
                "kg", "Sin pesada", "Obs. portería", "Contenedor", "Precinto"])
-        _k_ed = _tk_firma(cab["id_despacho"], rol, cnd["id_transaccion"].tolist())
+        _k_ed = _tk_firma(cab["id_despacho"], rol, (d1, d2, fam, txt.strip()))
         _tk_purgar(_k_ed, rol)
         ed = st.data_editor(
             _pre[_c], hide_index=True, use_container_width=True, key=_k_ed,
@@ -5600,30 +5613,43 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                 "Contenedor": st.column_config.TextColumn("Contenedor", width="small"),
                 "Precinto": st.column_config.TextColumn("Precinto", width="small"),
             })
+        # La selección se identifica por NÚMERO DE TICKET. Por posición de fila se
+        # rompía en cuanto el operario ordenaba la grilla por una columna (el orden
+        # visual no es el de los datos) o entraba un ticket nuevo (SOL-0028).
         _sel = ed[ed["Asignar"] == True]  # noqa: E712
-        _sel = _sel[_sel.index.isin(cnd.index)]      # nunca tildes de un conjunto viejo
-        st.caption(f"{len(cnd)} tickets libres en el rango · {len(_sel)} seleccionados "
-                   f"({_sel['kg'].sum():,.0f} kg)".replace(",", "."))
-        if len(_sel):
+        _by_tk = {int(r["ticket"]): i for i, r in cnd.iterrows() if pd.notna(r["ticket"])}
+        _pick, _perdidos = [], []
+        for _i, _r in _sel.iterrows():
+            _t = _r.get("Ticket")
+            if pd.isna(_t) or int(_t) not in _by_tk:
+                _perdidos.append(_t)
+                continue
+            _pick.append((_by_tk[int(_t)],
+                          str(_r.get("Contenedor") or "").strip() or None,
+                          str(_r.get("Precinto") or "").strip() or None))
+        _kg_sel = float(cnd.loc[[i for i, _, _ in _pick], "kg"].fillna(0).sum()) if _pick else 0.0
+        st.caption(f"{len(cnd)} tickets libres en el rango · {len(_pick)} seleccionados "
+                   f"({_kg_sel:,.0f} kg)".replace(",", "."))
+        if _pick:
             # el operario tiene que VER que el tilde quedó registrado antes de confirmar
             st.success("Tildados: " + ", ".join(
-                "#%d" % int(t) for t in _sel["Ticket"].dropna().tolist()))
-        if len(_sel) and st.button(f"✅ Asignar {len(_sel)} ticket(s)", key=f"dsp_tk_add_{rol}",
-                                   type="primary"):
-            _idx = _sel.index.tolist()
+                "#%d" % int(cnd.loc[i, "ticket"]) for i, _, _ in _pick))
+        if _perdidos:
+            st.warning("Estos tickets ya no están libres (los tomó otro despacho mientras "
+                       "armabas): " + ", ".join(str(t) for t in _perdidos) +
+                       ". Destildalos o buscalos por número para ver dónde quedaron.")
+        if _pick and st.button(f"✅ Asignar {len(_pick)} ticket(s)", key=f"dsp_tk_add_{rol}",
+                               type="primary"):
             filas = []
-            for i in _idx:
+            for i, _cont, _prec in _pick:
                 o = cnd.loc[i]
-                s = ed.loc[i]
                 filas.append((int(cab["id_despacho"]), rol, int(o["id_transaccion"]),
                               int(o["ticket"]) if pd.notna(o["ticket"]) else None,
                               int(o["empresa"]) if pd.notna(o["empresa"]) else None,
                               o["fecha"], o["producto"],
                               o["destino"] if rol == "SALIDA" else o["area"],
                               o["patente"], float(o["kg"]) if pd.notna(o["kg"]) else None,
-                              bool(o["sin_pesada"]),
-                              (str(s.get("Contenedor") or "").strip() or None),
-                              (str(s.get("Precinto") or "").strip() or None),
+                              bool(o["sin_pesada"]), _cont, _prec,
                               USR.get("nombre")))
             try:
                 _uid = int(USR.get("id_usuario") or 0)
