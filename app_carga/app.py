@@ -99,7 +99,16 @@ st.set_page_config(page_title="WORMS Carga", layout="wide", page_icon="🏭")
 # profundidades de sombra hacían que todo pesara lo mismo y que el rojo de un
 # desvío real no se destacara sobre el violeta decorativo.
 def inject_global_css():
-    st.markdown("""
+    # OJO: este bloque NO se manda con st.markdown.
+    # st.markdown corre el parser de Markdown incluso con unsafe_allow_html=True, y
+    # Markdown corta un bloque HTML en la PRIMERA LÍNEA EN BLANCO. Con líneas en
+    # blanco entre secciones, el <style> se cerraba en la primera y todo el resto del
+    # CSS salía impreso como texto arriba de la página; de paso Markdown se comía los
+    # asteriscos de a pares (`[class*="css"]` quedaba `[class="css"]`, `*{...}` quedaba
+    # `{{...}}`). Pasó en producción el 11/09/2026.
+    # st.html (Streamlit ≥1.33) inserta HTML sin pasar por Markdown. Igual se quitan
+    # las líneas en blanco antes de emitir, para que el fallback también sea seguro.
+    _css = """
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <style>
@@ -356,7 +365,12 @@ def inject_global_css():
       /* ------------------------------------------------------- movimiento --- */
       @media (prefers-reduced-motion:reduce){*{transition:none !important; animation:none !important;}}
     </style>
-    """, unsafe_allow_html=True)
+    """
+    _css = "\n".join(_l for _l in _css.split("\n") if _l.strip())
+    try:
+        st.html(_css)
+    except Exception:
+        st.markdown(_css, unsafe_allow_html=True)
 
 
 # Vigía de recarga: cuando Streamlit Cloud redeploya, los chunks JS cambian de hash y una
