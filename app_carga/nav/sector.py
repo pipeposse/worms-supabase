@@ -56,10 +56,18 @@ _SEGUIMIENTO_POR_SECTOR = {
 }
 
 
+# Sectores con pantalla propia (módulo, función) acotada a lo suyo: no abren una
+# sección clásica entera. DF_LIQUIDOS (14/09): sólo efluentes líquidos.
+_HOMES_PROPIOS = {
+    "DF_LIQUIDOS": ("sector_efluentes", "render_sector_efluentes"),
+}
+
+
 def tiene_home(sec):
-    """Un sector tiene home propio si es unidad de gestión (KPIs y tarjetas) o si lleva
-    su stock en el ledger simple (home mínimo con carga de movimientos, Fase 5)."""
-    return bool(sec) and (bool(sec.get("sector_gestion")) or bool(sec.get("stock_simple")))
+    """Un sector tiene home propio si es unidad de gestión (KPIs y tarjetas), si lleva
+    su stock en el ledger simple (home mínimo, Fase 5) o si tiene pantalla propia."""
+    return bool(sec) and (bool(sec.get("sector_gestion")) or bool(sec.get("stock_simple"))
+                          or sec.get("codigo") in _HOMES_PROPIOS)
 
 
 def tarjetas(sec):
@@ -175,6 +183,10 @@ def render_sector(ctx, codigo):
     sec = sector_por_codigo(ctx["conn_factory"], codigo)
     if not tiene_home(sec):
         return False
+    if sec["codigo"] in _HOMES_PROPIOS:
+        import importlib
+        mod, fn = _HOMES_PROPIOS[sec["codigo"]]
+        return getattr(importlib.import_module(f"{__package__}.{mod}"), fn)(ctx, sec)
     if not sec.get("sector_gestion"):
         from .sector_simple import render_sector_simple
         return render_sector_simple(ctx, sec)

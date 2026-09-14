@@ -42,7 +42,7 @@ _SIMPLES = {"SOLIDOS", "DF_SOLIDOS", "NFU", "COMPOST",              # sin tanque
 _PATRONES = {"REACTORES": "^(Reactores|Consumibles Reactores)", "BACHAS": "^Bachas",   # dim_tanque.sector ~ patrón
              "PILETAS": "^Piletas", "EXPORTACION": "^Plataforma"}
 _FALLBACK = [  # (codigo, nombre_ui, icono, sector_gestion, sector_batch, seccion_clasica) — orden área → sector
-    ("DF_LIQUIDOS", "Disp. Final Líquidos", "💧", None, None, "LAB"),
+    ("DF_LIQUIDOS", "Disp. Final Líquidos", "💧", None, None, None),   # home propio: sector_efluentes.py
     ("DF_SOLIDOS", "Disp. Final Sólidos", "🗑️", None, None, None),
     ("PILETAS", "Piletas", "🌊", "PILETAS", "RECUPERACION", "RECUPERACION"), ("SECADO", "Secado", "🌬️", None, None, None),
     ("BACHAS", "Bachas", "🛢️", "BACHAS", "BACHAS", "INICIAR"), ("REACTORES", "Reactor", "⚙️", "REACTORES", "REACTORES", "INICIAR"),
@@ -90,7 +90,7 @@ def _cargar(conn_factory) -> pd.DataFrame:
         _a = _AREA_DE.get(c)
         _an, _ai, _ao = _ar.get(_a, (None, None, 999))
         rows.append(dict(codigo=c, nombre_ui=n, icono=i, orden=(k + 1) * 10, activo=True,
-                         tiene_datos=bool(s) or c in _SIMPLES, sector_gestion=g, sector_batch=b,
+                         tiene_datos=bool(s) or c in _SIMPLES or c == "DF_LIQUIDOS", sector_gestion=g, sector_batch=b,
                          seccion_clasica=s, descripcion=None, stock_simple=(c in _SIMPLES),
                          patron_tanques=_PATRONES.get(c),
                          area=_a, area_nombre=_an, area_icono=_ai, area_orden=_ao))
