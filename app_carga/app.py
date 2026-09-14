@@ -296,6 +296,13 @@ def inject_global_css():
         letter-spacing:.09em; color:var(--muted); margin:var(--s5) 0 var(--s3); white-space:nowrap;
       }
       .section-title::after{content:""; flex:1; height:1px; background:var(--line); min-width:12px;}
+      /* título de ÁREA dentro de una sección (portada: Recepción → Tratamiento → …):
+         un escalón por debajo del section-title, en tinta y sin mayúsculas */
+      .area-title{
+        font-family:var(--ui); font-weight:700; font-size:.98rem; color:var(--ink);
+        margin:var(--s4) 0 var(--s2); padding-left:var(--s2);
+        border-left:3px solid var(--accent, #0e5f66);
+      }
 
       /* ------------------------------------------- la pantalla está trabajando */
       /* Dirección, 11/09/2026: "hay que confirmar muchas veces cada operación y después

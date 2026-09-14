@@ -13,7 +13,7 @@ from datetime import date
 import streamlit as st
 
 from . import state as _st
-from .sectores import sectores_nav, sector_por_codigo
+from .sectores import sectores_nav, sector_por_codigo, areas_nav
 
 # Secciones clásicas que viven en ADMINISTRACIÓN (Fernando: "se incluyeron las
 # secciones adm y cierres mensuales"). Todo lo demás es PRODUCCIÓN.
@@ -209,12 +209,13 @@ def _area_produccion(ctx):
         st.markdown('<div class="section-title">Planificar y analizar</div>', unsafe_allow_html=True)
         _grid(fijas, por_fila=3)
 
-    # --- Grilla de sectores (14) ---
+    # --- Sectores de planta, agrupados por ÁREA en el orden de dirección ---
+    # Recepción (líquidos / sólidos) → Tratamiento (líquidos / sólidos) → Exportación → Soporte.
     st.markdown('<div class="section-title">Sectores de planta</div>', unsafe_allow_html=True)
     df = sectores_nav(ctx["conn_factory"])
-    items = []
     from .sector import tiene_home
-    for _, r in df.iterrows():
+
+    def _item(r):
         sec_cl = r.get("seccion_clasica")
         habil = (bool(sec_cl) and puede(sec_cl)) or tiene_home(r.to_dict())
         sin_datos = not bool(r.get("tiene_datos"))
@@ -224,11 +225,25 @@ def _area_produccion(ctx):
             lbl, dis, tipo = "Sin acceso", True, "secondary"
         else:
             lbl, dis, tipo = "Entrar", False, "secondary"
-        items.append(dict(icono=r["icono"], titulo=r["nombre_ui"], desc=r.get("descripcion") or "",
-                          key=f"nav_sec_{r['codigo']}", disabled=dis, label=lbl, tipo=tipo,
-                          atenuado=sin_datos or dis,
-                          on_click=(_ir_sector(ctx, r.to_dict()) if habil else None)))
-    _grid(items, por_fila=3)
+        return dict(icono=r["icono"], titulo=r["nombre_ui"], desc=r.get("descripcion") or "",
+                    key=f"nav_sec_{r['codigo']}", disabled=dis, label=lbl, tipo=tipo,
+                    atenuado=sin_datos or dis,
+                    on_click=(_ir_sector(ctx, r.to_dict()) if habil else None))
+
+    _tiene_area = "area" in df.columns and df["area"].notna().any()
+    if _tiene_area:
+        for a_cod, a_nom, a_ic in areas_nav(ctx["conn_factory"]):
+            sub = df[df["area"] == a_cod].sort_values("orden")
+            if sub.empty:
+                continue
+            st.markdown(f'<div class="area-title">{a_ic} {a_nom}</div>', unsafe_allow_html=True)
+            _grid([_item(r) for _, r in sub.iterrows()], por_fila=3)
+        resto_sin_area = df[df["area"].isna()]
+        if not resto_sin_area.empty:
+            st.markdown('<div class="area-title">Sin área asignada</div>', unsafe_allow_html=True)
+            _grid([_item(r) for _, r in resto_sin_area.iterrows()], por_fila=3)
+    else:
+        _grid([_item(r) for _, r in df.iterrows()], por_fila=3)
 
     # --- Todo lo que hoy existe y todavía no tiene tarjeta propia: no se pierde nada ---
     cubiertas = set(df["seccion_clasica"].dropna().tolist()) | {s for (_, _, _, s) in _PROD_FIJAS} | {_PANEL_CONTROL[3]}
