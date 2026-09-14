@@ -68,8 +68,8 @@ def _leer_capacidad(_cf):
     try:
         with _cf() as conn:
             return pd.read_sql_query(
-                "SELECT producto, tanques, cap_kl, act_kl, libre_kl, pct_ocupado, incluye_piletas "
-                "FROM produccion.v_capacidad_ocupada_producto ORDER BY cap_kl DESC", conn)
+                "SELECT producto, tanques, cap_kl, act_kl, libre_kl, pct_ocupado, incluye_piletas, cap_tn, act_tn, libre_tn "
+                "FROM produccion.v_capacidad_ocupada_producto ORDER BY cap_tn DESC", conn)
     except Exception:
         return None
 
@@ -139,16 +139,17 @@ def render_kpis_area(ctx):
         return
 
     # 1. acopio disponible
-    tq_libre, tq_cap = float(k.get("tanques_libre_kl") or 0), float(k.get("tanques_cap_kl") or 0)
-    pi_libre, pi_cap = float(k.get("piletas_libre_kl") or 0), float(k.get("piletas_cap_kl") or 0)
+    # todo en toneladas (litros × densidad del producto del tanque), pedido de dirección
+    tq_libre, tq_cap = float(k.get("tanques_libre_tn") or 0), float(k.get("tanques_cap_tn") or 0)
+    pi_libre, pi_cap = float(k.get("piletas_libre_tn") or 0), float(k.get("piletas_cap_kl") or 0)
     pct_ocup = (100.0 * (1 - (tq_libre + pi_libre) / (tq_cap + pi_cap))) if (tq_cap + pi_cap) > 0 else None
     solidos = ("sólidos: sin dato" if _i(k.get("solidos_n")) == 0
                else f"sólidos: {_n(k.get('solidos_tn'), 1)} TN")
     acopio_cls = "bad" if (pct_ocup or 0) >= 90 else ("warn" if (pct_ocup or 0) >= 75 else "")
     c1 = _kpi("Acopio disponible",
-              f"{_n(tq_libre + pi_libre)}<span style='font-size:1rem;font-weight:700;'> kL</span>",
-              f"tanques {_n(tq_libre)} kL ({_i(k.get('tanques_con_espacio'))} de {_i(k.get('tanques_n'))} con lugar) · "
-              f"piletas {_n(pi_libre)} kL · {solidos}"
+              f"{_n(tq_libre + pi_libre)}<span style='font-size:1rem;font-weight:700;'> TN</span>",
+              f"tanques {_n(tq_libre)} TN ({_i(k.get('tanques_con_espacio'))} de {_i(k.get('tanques_n'))} con lugar) · "
+              f"piletas {_n(pi_libre)} TN · {solidos}"
               + (f" · <b>{pct_ocup:.0f}% ocupado</b>" if pct_ocup is not None else ""),
               acopio_cls)
 
@@ -242,10 +243,10 @@ def _render_capacidad(cf):
     if df is None or df.empty:
         st.caption("Sin datos de tanques.")
         return
-    tot_cap, tot_act = float(df["cap_kl"].sum()), float(df["act_kl"].sum())
+    tot_cap, tot_act = float(df["cap_tn"].sum()), float(df["act_tn"].sum())
     pct_tot = 100.0 * tot_act / tot_cap if tot_cap else 0.0
-    st.markdown(f"**Planta: {pct_tot:.0f}% ocupado** · {_n(tot_act)} de {_n(tot_cap)} kL · "
-                f"{_n(tot_cap - tot_act)} kL libres")
+    st.markdown(f"**Planta: {pct_tot:.0f}% ocupado** · {_n(tot_act)} de {_n(tot_cap)} TN · "
+                f"{_n(tot_cap - tot_act)} TN libres")
     filas = []
     for _, r in df.iterrows():
         pct = float(r["pct_ocupado"] or 0)
@@ -258,7 +259,7 @@ def _render_capacidad(cf):
             f'<div style="background:#eef0f4;border-radius:6px;height:14px;position:relative;overflow:hidden;">'
             f'<div style="width:{min(pct,100):.0f}%;background:{color};height:100%;border-radius:6px;"></div>'
             f'<div style="position:absolute;left:90%;top:-2px;bottom:-2px;width:2px;background:#0f172a;opacity:.35;"></div></div>'
-            f'<div style="text-align:right;color:#475569;">{pct:.0f}% · {_n(r["libre_kl"])} kL libres · {int(r["tanques"])} tq</div>'
+            f'<div style="text-align:right;color:#475569;">{pct:.0f}% · {_n(r["libre_tn"])} TN libres · {int(r["tanques"])} tq</div>'
             f'</div>')
     st.markdown("".join(filas), unsafe_allow_html=True)
     st.caption("Barra = % ocupado del acopio de ese producto (todos sus tanques y piletas). Marca = 90%. "

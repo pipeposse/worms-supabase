@@ -1,4 +1,4 @@
-"""Despachos (Centro de Planificación) — carga de un despacho de exportación con su formulación.
+"""Órdenes de venta (Centro de Planificación) — carga de una orden de venta de exportación con su formulación.
 
 Réplica corregida de la planilla "FORMULACION EXPO.xlsx":
   - Cabecera: destino, cliente, producto, tipo de carga, Nº de contenedores × litros por contenedor
@@ -106,7 +106,7 @@ def _dils_de(fam):
 
 
 def _familia(prod_cod, prods=None):
-    """Productos que puede tomar un despacho de prod_cod.
+    """Productos que puede tomar una orden de venta de prod_cod.
 
     Para un FORMULADO (el AG-E de venta) devuelve las MATERIAS PRIMAS presentes en
     dim_producto (AFE-M, AG-A/B/C, AFE-AL, AFE-G y todos los ARE) + los diluyentes
@@ -138,7 +138,7 @@ def _familia(prod_cod, prods=None):
 
 
 def _es_base(prod, prod_cod):
-    """True si el producto del tanque es componente BASE del despacho: para un
+    """True si el producto del tanque es componente BASE dla orden de venta: para un
     formulado (AG-E de venta), cualquier MATERIA PRIMA; para el resto, el mismo producto."""
     if str(prod_cod or "").strip().upper() in FORMULADOS:
         return _es_mp_despacho(prod)
@@ -199,9 +199,9 @@ def _tanques(cat):
 
 
 def _comprometidos(cat):
-    """Litros comprometidos por tanque y despacho (CONFIRMADOS con tickets pendientes).
+    """Litros comprometidos por tanque y orden de venta (CONFIRMADOS con tickets pendientes).
 
-    Regla conservadora: un despacho CONFIRMADO compromete el 100% de sus líneas
+    Regla conservadora: una orden de venta CONFIRMADO compromete el 100% de sus líneas
     hasta que TODOS sus contenedores pesaron en portería (portería no informa de
     qué tanque cargó cada camión, así que no se puede liberar de a partes).
     Al completarse, se libera todo: el stock medido ya refleja la salida."""
@@ -289,7 +289,7 @@ BANDA_DESC = {"A": "excelente", "B": "bueno", "C": "justo", "D": "fuera de spec"
 
 
 def _banda_tk(r, spec):
-    """Banda A/B/C/D del tanque contra la spec del despacho ('—' si no tiene lab)."""
+    """Banda A/B/C/D del tanque contra la spec dla orden de venta ('—' si no tiene lab)."""
     peor, alguno = 0.0, False
     for c, k in (("acidez", "acidez"), ("agua_sedimento", "ays"),
                  ("azufre", "azufre"), ("fosforo", "fosforo")):
@@ -580,7 +580,7 @@ def _selector_componente(ss, tp, fam, spec, tks, conectar, USR, inc_vacios,
         _pool = tp.copy()
     if _fuera:
         st.info("🔒 **%d tanque(s) con stock medido no están disponibles:** %s. Si esos "
-                "despachos ya salieron, vinculá sus tickets en *Tickets de portería*; si no "
+                "órdenes de venta ya salieron, vinculá sus tickets en *Tickets de portería*; si no "
                 "van a salir, anulalos. Para usarlos igual, tildá *Permitir tanques vacíos o "
                 "con fondo* más arriba." % (len(_fuera), " · ".join(_fuera)))
     if _pool.empty:
@@ -693,7 +693,7 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
             _fon = float(_r0.get("reserva_fondo") or 0)
             _mot = []
             if _cmp0 > 0:
-                _mot.append("%s L comprometidos en despachos confirmados"
+                _mot.append("%s L comprometidos en órdenes de venta confirmadas"
                             % "{:,.0f}".format(_cmp0))
             if _fon > 0:
                 _mot.append("%s L de fondo de tanque" % "{:,.0f}".format(_fon))
@@ -705,7 +705,7 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
         _pool = tp.copy()
     if _fuera:
         st.info("🔒 **%d tanque(s) con stock medido no están disponibles:** %s. "
-                "Si esos despachos ya salieron, vinculá sus tickets en *Tickets de portería* "
+                "Si esos órdenes de venta ya salieron, vinculá sus tickets en *Tickets de portería* "
                 "y el stock se libera solo; si no van a salir, anulalos. Para usarlos igual, "
                 "tildá *Permitir tanques vacíos o con fondo* más arriba."
                 % (len(_fuera), " · ".join(_fuera)))
@@ -810,7 +810,7 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
             else "**N° de tanque** (1, 2, 3… como están en planta)")
     st.caption("**%d tanque(s) visibles · %d tildado(s)** — ordenados por **sector** (los de "
                "carga primero) y %s. **Disp. (L)** ya tiene descontado el fondo de tanque y "
-               "lo **comprometido** en despachos confirmados. Al tildar un tanque entra con "
+               "lo **comprometido** en órdenes de venta confirmadas. Al tildar un tanque entra con "
                "TODO lo disponible; escribí los litros para usar menos. La sugerencia y las "
                "propuestas se ven acá tildadas."
                % (len(_df), int(_df["Usar"].sum()), _otx))
@@ -829,7 +829,7 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
                                                     step=500.0, format="%.0f"),
             "Grupo": st.column_config.TextColumn("Producto · banda", width="medium"),
             "Cal.": st.column_config.TextColumn("Cal.", width="small",
-                                                help="Banda contra la spec del despacho."),
+                                                help="Banda contra la spec dla orden de venta."),
             "Disp. (L)": st.column_config.NumberColumn(format="%.0f",
                                                        help="Utilizable ahora: medido − fondo "
                                                             "de tanque − comprometido."),
@@ -838,7 +838,7 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
                                                            "orden va de menor a mayor)."),
             "Sector": st.column_config.TextColumn("Sector", width="small"),
             "Compr. (L)": st.column_config.NumberColumn(format="%.0f",
-                                                        help="Ya designado en despachos "
+                                                        help="Ya designado en órdenes de venta "
                                                              "confirmados sin terminar de pesar."),
             "Medido (L)": st.column_config.NumberColumn(format="%.0f",
                                                         help="Última medición física del tanque."),
@@ -1177,7 +1177,7 @@ def _estructura(res, prod_cod, prods=None):
 
     Devuelve (ok, mensajes). ok=False sólo cuando faltan las MP, o cuando falta el diluyente
     y las MP cargadas NO son todas ARE: esos son los casos en los que lo cargado no es el
-    producto que se despacha. Un despacho 100% ARE no lleva dilución y es válido (SOL-0027).
+    producto que se despacha. Una orden de venta 100% ARE no lleva dilución y es válido (SOL-0027).
     """
     fam = _familia(prod_cod, prods)
     if len(fam) == 1 or res.empty or "Rol" not in res.columns:
@@ -1191,7 +1191,7 @@ def _estructura(res, prod_cod, prods=None):
     _mpx = ", ".join(sorted(set(str(x) for x in b["Producto"].dropna()))) or "—"
     c1.metric("Materias primas · %d tanque(s)" % len(b), "{:,.0f} L".format(l_b),
               "%.2f %% del total" % (100.0 * l_b / tot), delta_color="off",
-              help="Las MP del despacho (AFE-M, AG-A/B/C, AFE-AL, AFE-G y los ARE): son lo "
+              help="Las MP dla orden de venta (AFE-M, AG-A/B/C, AFE-AL, AFE-G y los ARE): son lo "
                    "más barato y aportan la acidez y el azufre altos. En esta carga: %s. "
                    "El AG-E ya no entra en la mezcla." % _mpx)
     c2.metric("AFE (diluyente) · %d tanque(s)" % len(d), "{:,.0f} L".format(l_d),
@@ -1206,7 +1206,7 @@ def _estructura(res, prod_cod, prods=None):
     ok = True
     if b.empty:
         ok = False
-        msgs.append(("error", "La carga **no tiene materias primas**. Un despacho formulado "
+        msgs.append(("error", "La carga **no tiene materias primas**. Una orden de venta formulado "
                               "lleva MP (AFE-M, AG-A/B/C, AFE-AL, AFE-G o ARE) más el AFE-S "
                               "que las diluye: así como está, es 100% AFE sin formular."))
     if d.empty:
@@ -1225,7 +1225,7 @@ def _estructura(res, prod_cod, prods=None):
             ok = False
             msgs.append(("error", "La carga es 100% materias primas sin diluir. Agregá los tanques "
                                   "de AFE (en general AFE-S) que bajan la acidez y el azufre. "
-                                  "(Un despacho 100% ARE sí se puede hacer sin diluir; el resto "
+                                  "(Una orden de venta 100% ARE sí se puede hacer sin diluir; el resto "
                                   "de las MP no.)"))
     else:
         _cods = set(str(x).strip().upper() for x in d["Producto"].dropna())
@@ -1264,7 +1264,7 @@ def _r_fmt(v, d=0):
 
 def _chk_min_mp(c):
     if not c.get("formulado"):
-        return ("na", "Sólo aplica a los despachos formulados (AG-E).")
+        return ("na", "Sólo aplica a las órdenes de venta formulados (AG-E).")
     piso = MIN_BASE_POR_CONT * float(c["n_cont"])
     real = float(c["mp_l"])
     if real + 0.5 >= piso:
@@ -1334,13 +1334,13 @@ def _chk_stock(c):
 
 REGLAS = (
     dict(id="R1", grupo="Qué se mezcla", titulo="La formulación es MP + AFE",
-         regla="Un despacho de AG-E se arma con MATERIAS PRIMAS (%s y cualquier ARE) "
+         regla="Una orden de venta de AG-E se arma con MATERIAS PRIMAS (%s y cualquier ARE) "
                "diluidas con AFE — casi siempre AFE-S. El AG-E crudo y el AFE-SG NO entran."
                % ", ".join(MP_DESPACHO),
          porque="Las MP son lo más barato de la carga y solas están fuera de spec; el "
                 "AFE-S es lo más caro y es el que las lleva a especificación. El AFE-SG "
                 "tiene goma y arruina la carga.",
-         excepcion="Un despacho 100% ARE va SIN diluir: el ARE sale de reactores ya "
+         excepcion="Una orden de venta 100% ARE va SIN diluir: el ARE sale de reactores ya "
                    "terminado y en especificación. El resto de las MP no pueden ir solas.",
          valor=lambda: "excluidos: %s" % ", ".join(EXCLUIDOS_DESPACHO),
          donde="FORMULADOS / MP_DESPACHO / EXCLUIDOS_DESPACHO · _estructura()"),
@@ -1348,7 +1348,7 @@ REGLAS = (
          regla="Al menos %s L de MP por contenedor. Con N contenedores, la mezcla lleva "
                "como mínimo N × %s L." % (_r_fmt(MIN_BASE_POR_CONT), _r_fmt(MIN_BASE_POR_CONT)),
          porque="Regla de dirección heredada del AG-E, hoy aplicada al total de MP: sin un "
-                "piso de MP el despacho se convierte en AFE-S puro, que es lo caro y lo "
+                "piso de MP la orden de venta se convierte en AFE-S puro, que es lo caro y lo "
                 "que escasea.",
          excepcion="Si con el piso completo la spec NO cierra y con menos MP sí, gana la "
                    "spec: la sugerencia baja la MP y lo avisa para validarlo con dirección.",
@@ -1409,7 +1409,7 @@ REGLAS = (
          valor=lambda: "_AIRE_SPEC = %.1f%%" % (_AIRE_SPEC * 100),
          donde="_cumple() dentro de _sugerir()"),
     dict(id="R10", grupo="Bandas de calidad", titulo="A / B / C / D",
-         regla="La banda de un tanque es su PEOR parámetro relativo a la spec del despacho: "
+         regla="La banda de un tanque es su PEOR parámetro relativo a la spec dla orden de venta: "
                "A ≤ 0,80 · B ≤ 0,90 · C ≤ 1,00 · D > 1,00. Sin análisis: '—'.",
          porque="Mismo idioma y mismos umbrales que el Balance, para que un tanque sea 'B' "
                 "en toda la plataforma y no una cosa distinta en cada pantalla.",
@@ -1440,7 +1440,7 @@ REGLAS = (
          regla="🗺️ *Comparar de dónde sacar el AFE-S* prueba cada sector solo, después los "
                "pares y después todo el parque, y muestra sólo las variantes que CIERRAN "
                "volumen y spec, ordenadas de menos a más sectores.",
-         porque="Cada sector extra que toca un despacho es mover camiones entre plataformas "
+         porque="Cada sector extra que toca una orden de venta es mover camiones entre plataformas "
                 "y eso se paga todos los días. En el banco el motor tocaba 3 a 5 sectores "
                 "de AFE-S en cargas que cerraban con uno o dos.",
          excepcion="Concentrar el AFE-S suele hacer entrar MENOS materia prima (queda menos "
@@ -1454,7 +1454,7 @@ REGLAS = (
          regla="Los diluyentes se recorren de PEOR a mejor calidad y a cada tanque C/D se "
                "le toma, por bisección, el máximo de litros que deja el resto todavía "
                "cerrable con los buenos que quedan libres.",
-         porque="El AFE-S A y B escasea y hay que reservarlo para los próximos despachos; "
+         porque="El AFE-S A y B escasea y hay que reservarlo para los próximos órdenes de venta; "
                 "el C y D hay que colocarlo. Cargando primero los mejores hasta que la "
                 "spec cerraba, los C y D no entraban nunca.",
          valor=lambda: "bisección de 22 pasos por tanque",
@@ -1467,7 +1467,7 @@ REGLAS = (
          valor=lambda: "SECTORES_PRIORIDAD = %s" % ", ".join(SECTORES_PRIORIDAD),
          donde="_sugerir() FASE 1"),
     dict(id="R16", grupo="Stock", titulo="Lo comprometido no está disponible",
-         regla="Un despacho CONFIRMADO compromete el 100% de sus líneas hasta que TODOS sus "
+         regla="Una orden de venta CONFIRMADO compromete el 100% de sus líneas hasta que TODOS sus "
                "contenedores pesaron en portería. Ese stock se descuenta del disponible.",
          porque="Portería no informa de qué tanque cargó cada camión, así que no se puede "
                 "liberar de a partes sin arriesgar vender dos veces el mismo producto.",
@@ -1496,9 +1496,9 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     Dos palancas compiten por el MISMO margen de spec y no se pueden maximizar a la vez:
 
     * los litros de MATERIAS PRIMAS (AFE-M, AG-A/B/C, AFE-AL, AFE-G y los ARE),
-      que son lo más barato del despacho, y
+      que son lo más barato dla orden de venta, y
     * la cantidad de AFE-S C+D que se logra colocar (el AFE-S A+B escasea y hay que
-      reservarlo para los próximos despachos).
+      reservarlo para los próximos órdenes de venta).
 
     Con maximizar=True se busca por bisección el máximo de base que la spec tolera; con
     l_base se fija a mano. Fijado el base, el resto se completa gastando el AFE-S de PEOR
@@ -1618,7 +1618,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
         if b.empty:
             return (pd.DataFrame(),
                     "No hay ningún tanque con materias primas (%s). Sin MP no hay "
-                    "formulación: el despacho no puede ser 100%% AFE."
+                    "formulación: la orden de venta no puede ser 100%% AFE."
                     % ", ".join(_mps_de(fam)))
         b["_d"] = b["litros_actual"].fillna(0)
         b = b.sort_values("_d", ascending=False)
@@ -1919,7 +1919,7 @@ def _elegir_sectores(tks, prod_cod, litros_obj, spec, prods=None, l_base=None,
                      maximizar=False, tol=0.0, lb_min=0.0, max_sectores=2):
     """Busca el MÍNIMO de sectores de AFE-S con el que la carga todavía cierra.
 
-    Cada sector extra que toca un despacho es mover camiones entre plataformas, y eso
+    Cada sector extra que toca una orden de venta es mover camiones entre plataformas, y eso
     cuesta plata todos los días. El motor no lo miraba: ordenaba por sector pero armaba
     con lo que fuera, y en el banco terminaba tocando 4 de 5 sectores en cargas que
     cerraban perfecto con uno o dos.
@@ -2093,7 +2093,7 @@ def _stats_sug(sug, tks, spec, fam, tol):
 
 
 def _propuestas(tks, prod_cod, litros_obj, spec, prods, tol, lb_min=0.0):
-    """Tres variantes del MISMO despacho, para elegir — no para acatar.
+    """Tres variantes del MISMO orden de venta, para elegir — no para acatar.
 
     A) máximo componente base con el margen elegido (el base es lo más barato);
     B) mitad de ese base: el margen liberado se gasta en colocar AFE-S C+D;
@@ -2259,7 +2259,7 @@ _VERIF_INV = {v: k for k, v in _VERIF_MAPA.items()}
 
 
 def _plan_contenedores(lineas, n_cont, base_cod):
-    """Reparte las líneas del despacho en contenedores.
+    """Reparte las líneas dla orden de venta en contenedores.
 
     Las MATERIAS PRIMAS van en partes iguales en TODOS los contenedores: la calidad
     queda homogénea y se respeta el mínimo por contenedor. Los diluyentes (AFE) se
@@ -2438,12 +2438,12 @@ def _params_por_contenedor(plan, lin, spec, id_despacho):
 
 
 def verificacion_planta(USR, cat, conectar):
-    """Vista para Producción en planta: dirección arma la formulación del despacho y acá
+    """Vista para Producción en planta: dirección arma la formulación dla orden de venta y acá
     los operarios confirman, tanque por tanque, si la carga salió DE VERDAD de esos
     tanques. Queda registrado con usuario y fecha, y dirección lo ve en Control y
     confirmación. Un "no se usó" es una alerta directa de que la formulación en papel
     y la operación real se separaron."""
-    st.markdown("#### 🚢 Verificación de despachos — ¿se usaron estos tanques?")
+    st.markdown("#### 🚢 Verificación de órdenes de venta — ¿se usaron estos tanques?")
     st.caption("Confirmá tanque por tanque si la carga salió de donde dice la formulación. "
                "Todo queda con tu usuario y fecha, y lo ve dirección.")
     df = cat("SELECT id_despacho, titulo, producto_codigo, fecha_despacho, estado, tn_total, "
@@ -2452,12 +2452,12 @@ def verificacion_planta(USR, cat, conectar):
              "AND fecha_despacho >= current_date - 21 "
              "ORDER BY fecha_despacho DESC, id_despacho DESC")
     if df is None or df.empty:
-        st.info("No hay despachos confirmados en los últimos 21 días.")
+        st.info("No hay órdenes de venta confirmadas en los últimos 21 días.")
         return
     _lbl = {int(r["id_despacho"]): "#%d · %s · %s · %s · %.1f TN"
             % (int(r["id_despacho"]), r["titulo"], r["producto_codigo"],
                r["fecha_despacho"], float(r["tn_total"] or 0)) for _, r in df.iterrows()}
-    sel = st.selectbox("Despacho", df["id_despacho"].tolist(),
+    sel = st.selectbox("Orden de venta", df["id_despacho"].tolist(),
                        format_func=lambda i: _lbl.get(int(i), str(i)), key="vfp_desp")
     if sel is None:
         return
@@ -2471,7 +2471,7 @@ def verificacion_planta(USR, cat, conectar):
               "LEFT JOIN produccion.dim_tanque t ON t.id_tanque = l.id_tanque "
               "WHERE l.id_despacho = %s ORDER BY l.orden", (int(sel),))
     if lin is None or lin.empty:
-        st.info("Este despacho no tiene líneas cargadas.")
+        st.info("Esta orden de venta no tiene líneas cargadas.")
         return
     lin = lin.copy()
     lin["litros"] = pd.to_numeric(lin["litros"], errors="coerce")
@@ -2823,7 +2823,7 @@ def _excel(cab, res, spec):
         tot[c] = v
     d = pd.concat([d, pd.DataFrame([tot])], ignore_index=True)
     enc = pd.DataFrame([
-        ["DESPACHO", cab["titulo"]], ["DESTINO", cab["destino"]], ["CLIENTE", cab["cliente"]],
+        ["ORDEN DE VENTA", cab["titulo"]], ["DESTINO", cab["destino"]], ["CLIENTE", cab["cliente"]],
         ["PRODUCTO", cab["producto_codigo"]], ["TIPO DE CARGA", cab["tipo_carga"]],
         ["FECHA", str(cab["fecha"] or "")], ["SEMANA", cab["semana"]],
         ["Nº CONTENEDORES", cab["n_cont"]], ["LITROS POR CONTENEDOR", cab["l_cont"]],
@@ -2833,8 +2833,8 @@ def _excel(cab, res, spec):
         ["SPEC Azufre ppm (máx)", spec["azufre"]], ["SPEC Fósforo ppm (máx)", spec["fosforo"]],
     ], columns=["Campo", "Valor"])
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        enc.to_excel(w, sheet_name="Despacho", index=False, startrow=0)
-        d.to_excel(w, sheet_name="Despacho", index=False, startrow=len(enc) + 3)
+        enc.to_excel(w, sheet_name="Orden de venta", index=False, startrow=0)
+        d.to_excel(w, sheet_name="Orden de venta", index=False, startrow=len(enc) + 3)
     return buf.getvalue()
 
 
@@ -2871,7 +2871,7 @@ def render(USR, cat, conectar):
         "<div style='background:linear-gradient(90deg,#0f766e,#0ea5e9);border-radius:14px;"
         "padding:16px 20px;margin:0 0 12px'>"
         "<div style='color:#fff;font-size:1.4rem;font-weight:900'>🚢 Exportación</div>"
-        "<div style='color:#e0f2fe;font-size:.88rem;margin-top:3px'>Armá la formulación de un despacho "
+        "<div style='color:#e0f2fe;font-size:.88rem;margin-top:3px'>Armá la formulación de una orden de venta "
         "combinando tanques: los litros, la densidad y el laboratorio salen del sistema y se controla "
         "la especificación antes de confirmar.</div></div>", unsafe_allow_html=True)
 
@@ -2881,7 +2881,7 @@ def render(USR, cat, conectar):
 
     ss = st.session_state
     _opts = ["🧪 Armar / editar orden de venta", "📝 Borradores", "🔬 Control y confirmación",
-             "🎟️ Tickets de portería", "📋 Despachos cargados", "📊 Análisis",
+             "🎟️ Tickets de portería", "📋 Órdenes de venta cargadas", "📊 Análisis",
              "⬇️ Semanal (Excel/PNG)", "🔎 Baja de stock", "📏 Reglas"]
     # "Modificar en el armador" pide cambiar de vista: va vía dsp_tab_next porque el estado de
     # un widget ya instanciado no se puede pisar dentro del mismo run.
@@ -2985,7 +2985,7 @@ def _reglas_semaforo(res, spec, n_cont, desvios=None, formulado=True, compacto=T
             % (_n["ok"], _n["warn"], _n["bad"]))
     with st.expander(_tit, expanded=bool(_n["bad"])):
         st.caption("Las reglas completas, con el porqué de cada una y la constante que usa "
-                   "el código, están en la vista **📏 Reglas** de Despachos.")
+                   "el código, están en la vista **📏 Reglas** de Órdenes de venta.")
         for r, e, d in chk:
             st.markdown("%s **%s · %s** — %s" % (_REG_ICO.get(e, "⚪"), r["id"],
                                                  r["titulo"], d))
@@ -2996,7 +2996,7 @@ def _reglas_semaforo(res, spec, n_cont, desvios=None, formulado=True, compacto=T
 
 def _reglas_md():
     """Las reglas como markdown, para bajarlas e imprimirlas."""
-    out = ["# Reglas de la formulación de despachos",
+    out = ["# Reglas de la formulación de órdenes de venta",
            "", "Generado por la app desde el código: los valores son las constantes que el "
            "motor usa de verdad.", ""]
     for g in REGLAS_GRUPOS:
@@ -3089,8 +3089,8 @@ def _reglas(USR, cat, conectar):
 
 def _monitor_baja(USR, cat, conectar):
     """¿El producto despachado se dio de baja del stock de verdad?"""
-    st.markdown("#### 🔎 Baja de stock por despacho")
-    st.caption("Cada despacho se controla con **cuatro evidencias independientes**: lo "
+    st.markdown("#### 🔎 Baja de stock por orden de venta")
+    st.caption("Cada orden de venta se controla con **cuatro evidencias independientes**: lo "
                "planificado, el asiento en el ledger de stock, los kg pesados en portería "
                "y la caída medida en el tanque. Si las cuatro coinciden, el producto salió "
                "y está descontado. Si no, acá se ve exactamente qué falta.")
@@ -3120,7 +3120,7 @@ def _monitor_baja(USR, cat, conectar):
             "  AND d.fecha_despacho >= current_date - %s "
             "ORDER BY d.fecha_despacho DESC, d.id_despacho DESC", (int(_dias),))
     if d is None or d.empty:
-        st.info("No hay despachos confirmados en ese período.")
+        st.info("No hay órdenes de venta confirmadas en ese período.")
         return
     d = d.copy()
     for c in ("l_plan", "n_lin", "n_verif", "n_tk", "kg_tk", "n_mov", "n_ejec", "kg_mov",
@@ -3186,7 +3186,7 @@ def _monitor_baja(USR, cat, conectar):
             _sem = "🔴 Sin evidencia de salida"
         _filas.append({
             "Estado del ciclo": _sem,
-            "Despacho": "#%d · %s" % (_idd, str(r["titulo"] or "—")),
+            "Orden de venta": "#%d · %s" % (_idd, str(r["titulo"] or "—")),
             "Fecha": str(r["fecha_despacho"]),
             "Plan (L)": float(r["l_plan"]),
             "Ledger": ("%d mov · %s" % (int(r["n_mov"]),
@@ -3205,11 +3205,11 @@ def _monitor_baja(USR, cat, conectar):
     _df = pd.DataFrame(_filas)
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Despachos en el período", int(len(_df)))
+    k1.metric("Órdenes de venta en el período", int(len(_df)))
     k2.metric("🟢 Baja cerrada", int((_df["Estado del ciclo"] == "🟢 Baja cerrada").sum()))
     _pend = _df[_df["Estado del ciclo"] == "🟡 Salió, falta cerrar"]
     k3.metric("🟡 Salieron sin cerrar", int(len(_pend)),
-              help="Pesaron todos los contenedores pero el despacho sigue CONFIRMADO: el "
+              help="Pesaron todos los contenedores pero la orden de venta sigue CONFIRMADO: el "
                    "asiento de stock quedó como PLANIFICADO en vez de EJECUTADO.")
     k4.metric("🔴 Sin evidencia", int((_df["Estado del ciclo"]
                                        == "🔴 Sin evidencia de salida").sum()))
@@ -3234,14 +3234,14 @@ def _monitor_baja(USR, cat, conectar):
                  })
     st.caption("**Ledger** = asiento en el stock (se genera solo al confirmar). "
                "**Portería** = camiones pesados en balanza. **Medición** = prueba física: "
-               "cuántos tanques del despacho tienen medición antes y después sin recarga en "
+               "cuántos tanques dla orden de venta tienen medición antes y después sin recarga en "
                "el medio. Comparar *Caída medida* contra *Plan de esos*, no contra el plan total.")
 
     if not _pend.empty:
-        st.warning("🟡 **%d despacho(s) ya pesaron todos sus contenedores pero siguen "
+        st.warning("🟡 **%d orden de venta(s) ya pesaron todos sus contenedores pero siguen "
                    "CONFIRMADO**: %s. Su baja de stock quedó como *planificada* y nunca se "
                    "marca como ejecutada."
-                   % (len(_pend), ", ".join(_pend["Despacho"].tolist())))
+                   % (len(_pend), ", ".join(_pend["Orden de venta"].tolist())))
         if st.button("✅ Cerrar los que ya pesaron todo (pasar a DESPACHADO)",
                      key="mb_cerrar", type="primary"):
             _ids = [int(x) for x in _pend["_id"].tolist()]
@@ -3256,7 +3256,7 @@ def _monitor_baja(USR, cat, conectar):
                                       {"estado": "DESPACHADO", "motivo": "tickets completos",
                                        "desde": "monitor de baja"})
                 cat.clear()
-                st.success("%d despacho(s) cerrados: sus movimientos de stock pasan a "
+                st.success("%d orden de venta(s) cerrados: sus movimientos de stock pasan a "
                            "EJECUTADO." % len(_ids))
                 _rerun_frag()
             except Exception as e:
@@ -3264,12 +3264,12 @@ def _monitor_baja(USR, cat, conectar):
 
     st.divider()
     st.markdown("##### 🔬 Detalle tanque por tanque")
-    _lbl = {int(r["_id"]): r["Despacho"] for _, r in _df.iterrows()}
-    _sel = st.selectbox("Despacho", list(_lbl.keys()),
+    _lbl = {int(r["_id"]): r["Orden de venta"] for _, r in _df.iterrows()}
+    _sel = st.selectbox("Orden de venta", list(_lbl.keys()),
                         format_func=lambda i: _lbl.get(int(i), str(i)), key="mb_sel")
     _m = med[med["id_despacho"] == int(_sel)].copy()
     if _m.empty:
-        st.info("Sin líneas para ese despacho.")
+        st.info("Sin líneas para esa orden de venta.")
         return
     _m["Δ medido (L)"] = _m.apply(lambda r: (r["caida"] if r["_estado_med"] == "medido"
                                              else None), axis=1)
@@ -3302,16 +3302,16 @@ def _monitor_baja(USR, cat, conectar):
             st.error("⚠️ La medición sólo respalda el **%.0f%%** de lo planificado para esos "
                      "tanques (%s L medidos contra %s L de plan). O el producto no salió de "
                      "esos tanques, o entró producto nuevo entre las dos mediciones, o el "
-                     "despacho se cargó de tanques distintos a los de la formulación — "
+                     "orden de venta se cargó de tanques distintos a los de la formulación — "
                      "cruzalo con la verificación de planta."
                      % (_pc, "{:,.0f}".format(float(_cob["Δ medido (L)"].sum())),
                         "{:,.0f}".format(float(_cob["Plan (L)"].sum()))))
         elif _pc > 130:
             st.warning("La caída medida (%.0f%% del plan) es bastante mayor que lo "
                        "planificado: probablemente esos tanques alimentaron algo más además "
-                       "de este despacho." % _pc)
+                       "de esta orden de venta." % _pc)
     st.caption("**recargado (no concluyente)**: entre las dos mediciones el tanque recibió "
-               "producto, así que la caída no se puede atribuir al despacho. "
+               "producto, así que la caída no se puede atribuir a la orden de venta. "
                "**sin medición posterior**: nadie midió el tanque después — es el agujero "
                "más común y el motivo por el que el stock queda inflado. Ojo: una recarga "
                "PARCIAL (el tanque bajó 20.000 y le cargaron 19.000) se ve como una caída "
@@ -3327,7 +3327,7 @@ def _analisis(USR, cat):
     los camiones que pasaron por balanza). La diferencia entre ambas también es un dato: si lo
     pesado se aleja de lo formulado, hay tickets sin asignar o densidad mal cargada.
     """
-    st.markdown("#### 📊 Análisis de despachos por semana")
+    st.markdown("#### 📊 Análisis de órdenes de venta por semana")
     f1, f2, f3 = st.columns([1, 1.4, 1.6])
     _sem = int(f1.number_input("Semanas hacia atrás", min_value=4, max_value=52, value=12,
                                step=1, key="dsa_sem"))
@@ -3351,10 +3351,10 @@ def _analisis(USR, cat):
             "       COALESCE(SUM(ABS(t.kg)) FILTER (WHERE NOT COALESCE(t.sin_pesada,false)),0) AS kg_pesados "
             "FROM produccion.fact_despacho_ticket t WHERE t.rol='SALIDA' GROUP BY 1")
     except Exception as e:
-        st.error("No se pudieron leer los despachos: %s" % e)
+        st.error("No se pudieron leer las órdenes de venta: %s" % e)
         return
     if d is None or d.empty:
-        st.info("No hay despachos en el rango elegido.")
+        st.info("No hay órdenes de venta en el rango elegido.")
         return
     d = d.copy()
     for c in ("litros_total", "kg_total", "tn_total", "n_contenedores",
@@ -3365,7 +3365,7 @@ def _analisis(USR, cat):
     if _selp:
         d = d[d["producto_codigo"].astype(str).isin(_selp)]
     if d.empty:
-        st.info("Sin despachos con esos filtros.")
+        st.info("Sin órdenes de venta con esos filtros.")
         return
     if cam is None:
         cam = pd.DataFrame(columns=["id_despacho", "camiones", "sin_pesada", "kg_pesados"])
@@ -3377,7 +3377,7 @@ def _analisis(USR, cat):
 
     # ---- KPIs del período
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Despachos", int(len(d)))
+    k1.metric("Órdenes de venta", int(len(d)))
     k2.metric("TN formuladas", "{:,.1f}".format(float(d["tn_total"].sum())))
     k3.metric("Contenedores", int(d["n_contenedores"].fillna(0).sum()))
     k4.metric("Camiones pesados", int(d["camiones"].sum()))
@@ -3388,13 +3388,13 @@ def _analisis(USR, cat):
         _dif = 100.0 * (_kgp - _kgf) / _kgf
         if abs(_dif) > 3:
             st.warning("⚖️ Lo pesado en balanza difiere **%+.1f%%** de lo formulado en el período: "
-                       "puede haber tickets de salida sin asignar a su despacho, o densidades "
+                       "puede haber tickets de salida sin asignar a su orden de venta, o densidades "
                        "desactualizadas en la formulación." % _dif)
 
     # ---- resumen semanal (parámetros ponderados por kg formulado)
     def _agg(g):
         kg = g["kg_total"].fillna(0)
-        out = {"Despachos": int(len(g)),
+        out = {"Órdenes de venta": int(len(g)),
                "Contenedores": int(g["n_contenedores"].fillna(0).sum()),
                "TN formuladas": round(float(g["tn_total"].sum()), 1),
                "Camiones": int(g["camiones"].sum()),
@@ -3497,7 +3497,7 @@ def _analisis(USR, cat):
         p1, p2, p3, p4 = st.columns(4)
         p1.metric("Salió por portería", "{:,.1f} TN".format(_tn_prt),
                   help="Todos los tickets de SALIDA del período, asignados o no.")
-        p2.metric("Asignado a despachos", "{:,.1f} TN".format(_tn_asig))
+        p2.metric("Asignado a órdenes de venta", "{:,.1f} TN".format(_tn_asig))
         p3.metric("Sin asignar", "%d tickets" % len(_huer),
                   delta=(None if _huer.empty else "-{:,.1f} TN".format(float(_huer["kg"].sum()) / 1000.0)),
                   delta_color="inverse")
@@ -3505,9 +3505,9 @@ def _analisis(USR, cat):
 
         if not _huer.empty:
             st.error("🕳️ **%d camión(es) salieron por portería y no están asignados a ningún "
-                     "despacho** (%s TN se escapan del control). Asignalos en 🎟️ *Tickets de "
+                     "orden de venta** (%s TN se escapan del control). Asignalos en 🎟️ *Tickets de "
                      "portería* — hasta que no se asignen, no descuentan stock ni suman al "
-                     "análisis por despacho."
+                     "análisis por orden de venta."
                      % (len(_huer), "{:,.1f}".format(float(_huer["kg"].sum()) / 1000.0)))
             with st.expander("Ver los tickets sin asignar", expanded=False):
                 _hv = _huer.rename(columns={"ticket": "Ticket", "fecha": "Fecha",
@@ -3523,7 +3523,7 @@ def _analisis(USR, cat):
                                    file_name="salidas_sin_asignar.csv", mime="text/csv",
                                    key="dsa_dl_huer")
         else:
-            st.success("✔ Todos los camiones de salida del período están asignados a un despacho.")
+            st.success("✔ Todos los camiones de salida del período están asignados a una orden de venta.")
 
         # comparativa semanal: formulado vs asignado vs total portería
         _wf = d.groupby("Semana")["tn_total"].sum()
@@ -3554,7 +3554,7 @@ def _analisis(USR, cat):
         st.info("No hay tickets de salida por portería en el rango elegido.")
 
     # ---- detalle
-    with st.expander("📋 Detalle de despachos del período", expanded=False):
+    with st.expander("📋 Detalle de órdenes de venta del período", expanded=False):
         _v = d.rename(columns={"titulo": "Título", "cliente": "Cliente", "destino": "Destino",
                                "producto_codigo": "Producto", "estado": "Estado",
                                "fecha_despacho": "Fecha", "n_contenedores": "Cont.",
@@ -3624,7 +3624,7 @@ def _armar(USR, cat, conectar):
             ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
             _borr_restaurar(cat, USR)
             _rerun_frag()
-        _rr2.caption("Cada cambio del despacho se guarda solo como borrador. Si algo se ve "
+        _rr2.caption("Cada cambio dla orden de venta se guarda solo como borrador. Si algo se ve "
                      "vacío o distinto a lo que cargaste, este botón lo trae de vuelta.")
     tks = _tanques(cat)
     if tks.empty:
@@ -3681,7 +3681,7 @@ def _armar(USR, cat, conectar):
 
     if ss.get("dsp_edit_id"):
         _ci, _cx = st.columns([4, 1])
-        _ci.info("✏️ Estás **editando el despacho #%d**: al guardar se pisa el existente y sus "
+        _ci.info("✏️ Estás **editando la orden de venta #%d**: al guardar se pisa el existente y sus "
                  "líneas se reemplazan por lo que quede acá." % int(ss["dsp_edit_id"]))
         if _cx.button("✖ Cancelar edición", key="dsp_edit_cancel", use_container_width=True):
             ss["dsp_edit_id"] = None
@@ -3692,7 +3692,7 @@ def _armar(USR, cat, conectar):
     hoy = _dt.date.today()
     c1, c2, c3 = st.columns([2, 1.4, 1])
     titulo = c1.text_input("Título / referencia", value=ss.get("dsp_titulo", ""),
-                           placeholder="DESPACHO FLEX 07/07", key="dsp_titulo")
+                           placeholder="ORDEN DE VENTA FLEX 07/07", key="dsp_titulo")
     destino = c2.text_input("Destino", value=ss.get("dsp_destino", ""),
                             placeholder="Rotterdam", key="dsp_destino")
     cliente = c3.text_input("Cliente", value=ss.get("dsp_cliente", ""), key="dsp_cliente")
@@ -3710,7 +3710,7 @@ def _armar(USR, cat, conectar):
                             help="Rótulo oficial. Define el filtro de tanques en la sugerencia.")
     prod_cod = _pcod.get(prod_lbl, prod_lbl)
     tipo = c2.selectbox("Tipo de carga", TIPOS_CARGA, key="dsp_tipo")
-    fecha = c3.date_input("Fecha de despacho", value=ss.get("dsp_fecha", hoy), key="dsp_fecha")
+    fecha = c3.date_input("Fecha de orden de venta", value=ss.get("dsp_fecha", hoy), key="dsp_fecha")
     semana = int(pd.Timestamp(fecha).isocalendar().week)
     c4.metric("Semana ISO", f"S{semana}")
 
@@ -3755,7 +3755,7 @@ def _armar(USR, cat, conectar):
     st.markdown(f"#### 2 · Tanques para formular **{prod_lbl}**" if _extra
                 else f"#### 2 · Tanques con **{prod_lbl}**")
     if _extra:
-        st.caption("Un despacho de **%s** es una formulación de **MATERIAS PRIMAS**: %s — "
+        st.caption("Una orden de venta de **%s** es una formulación de **MATERIAS PRIMAS**: %s — "
                    "el **AG-E ya no entra en la mezcla**. El volumen lo completa el **AFE-S**, "
                    "que diluye las MP hasta la especificación y es **lo más caro** de la carga: "
                    "por eso el motor mete el máximo de MP que la spec tolera y recién después "
@@ -3793,7 +3793,7 @@ def _armar(USR, cat, conectar):
         "🔓 Permitir tanques vacíos o con fondo (<%s L) — el stock a veces está desactualizado"
         % f"{MIN_L_DESPACHO:,.0f}", key="dsp_incv",
         help="Los habilita en el selector aunque figuren sin stock útil. Si les cargás litros, "
-             "queda CONSTANCIA en la línea del despacho de que el stock del sistema no alcanzaba "
+             "queda CONSTANCIA en la línea dla orden de venta de que el stock del sistema no alcanzaba "
              "(medido vs cargado), para poder auditar después.")
     if not _fondo.empty:
         st.caption("🛢️ **%s por fondo de tanque (<%s L):** "
@@ -3820,7 +3820,7 @@ def _armar(USR, cat, conectar):
                          format="%.0f", help="En base plana el 10% de la capacidad queda siempre "
                                              "en el tanque como fondo; los cónicos se usan al 100%."),
                      "Comprometido (L)": st.column_config.NumberColumn(
-                         format="%.0f", help="Designado en despachos CONFIRMADOS que todavía no "
+                         format="%.0f", help="Designado en órdenes de venta CONFIRMADOS que todavía no "
                                              "terminaron de pesar en portería. Ya está descontado "
                                              "del Útil; se libera al completarse los tickets."),
                      "Útil (L)": st.column_config.NumberColumn(format="%.0f"),
@@ -3834,10 +3834,10 @@ def _armar(USR, cat, conectar):
     if not _cmp_fam.empty:
         _tot_c = float(_cmp_fam["litros_comp"].sum())
         _n_d = int(_cmp_fam["id_despacho"].nunique())
-        st.info("🔒 **%s L comprometidos** en %d despacho(s) confirmado(s) sin terminar de "
+        st.info("🔒 **%s L comprometidos** en %d orden de venta(s) confirmado(s) sin terminar de "
                 "despachar: ya están descontados de la disponibilidad de arriba, así el "
-                "despacho nuevo se arma con lo que realmente va a quedar. El descuento se "
-                "libera cuando el despacho termina de pesar TODOS sus contenedores."
+                "orden de venta nueva se arma con lo que realmente va a quedar. El descuento se "
+                "libera cuando la orden de venta termina de pesar TODOS sus contenedores."
                 % ("{:,.0f}".format(_tot_c), _n_d))
         try:
             _hoyz = _dt.date.today()
@@ -3855,10 +3855,10 @@ def _armar(USR, cat, conectar):
                                        int(r["n_tickets"]), int(r["n_cont"]))
                                     for _, r in
                                     _viej.drop_duplicates("id_despacho").iterrows()))
-        with st.expander("Ver el detalle de lo comprometido por despacho"):
+        with st.expander("Ver el detalle de lo comprometido por orden de venta"):
             _nomt = {int(r["id_tanque"]): str(r["nombre"]) for _, r in tks.iterrows()}
             _dd = _cmp_fam.copy()
-            _dd["Despacho"] = _dd.apply(
+            _dd["Orden de venta"] = _dd.apply(
                 lambda r: "#%d · %s · %s" % (int(r["id_despacho"]),
                                              str(r.get("titulo") or "—"),
                                              str(r.get("fecha") or "—")), axis=1)
@@ -3866,15 +3866,15 @@ def _armar(USR, cat, conectar):
             _dd["Avance tickets"] = _dd.apply(
                 lambda r: "%d/%d" % (int(r["n_tickets"]), int(r["n_cont"])), axis=1)
             _dd = _dd.rename(columns={"litros_comp": "Comprometido (L)"})
-            st.dataframe(_dd[["Despacho", "Tanque", "Comprometido (L)", "Avance tickets"]]
-                         .sort_values(["Despacho", "Comprometido (L)"],
+            st.dataframe(_dd[["Orden de venta", "Tanque", "Comprometido (L)", "Avance tickets"]]
+                         .sort_values(["Orden de venta", "Comprometido (L)"],
                                       ascending=[True, False]),
                          hide_index=True, use_container_width=True,
                          column_config={"Comprometido (L)":
                                         st.column_config.NumberColumn(format="%.0f")})
-            st.caption("Un despacho confirmado compromete el 100% de sus líneas hasta pesar "
+            st.caption("Una orden de venta confirmada compromete el 100% de sus líneas hasta pesar "
                        "todos sus contenedores en portería (no se sabe de qué tanque cargó "
-                       "cada camión). Si un despacho confirmado no va a salir, anulalo o "
+                       "cada camión). Si una orden de venta confirmada no va a salir, anulalo o "
                        "editalo para liberar el stock.")
 
     with st.expander("⚡ Actualizar el stock de un tanque acá mismo (sin ir a Tanques)"):
@@ -3902,7 +3902,7 @@ def _armar(USR, cat, conectar):
                                     " observaciones) VALUES (%s,%s,now(),%s,%s,%s,%s)",
                                     (int(_ru["id_tanque"]), _pidu, float(_lu),
                                      round(float(_lu) * _du, 1), int(USR["id_usuario"]),
-                                     "Actualizado desde Despachos (armado de carga)"))
+                                     "Actualizado desde Órdenes de venta (armado de carga)"))
                     audit.log("I", "fact_stock_tanque", int(_ru["id_tanque"]),
                               {"litros": float(_lu), "desde": "despachos"})
                 cat.clear()
@@ -3988,7 +3988,7 @@ def _armar(USR, cat, conectar):
         st.error("🧪 **Faltan análisis de laboratorio.** Estos tanques no tienen todos los parámetros "
                  "cargados, así que no se pueden verificar contra la especificación:\n\n- "
                  + "\n- ".join(_det)
-                 + "\n\nPedile al laboratorio que los cargue antes de armar el despacho. Si igual los usás, "
+                 + "\n\nPedile al laboratorio que los cargue antes de armar la orden de venta. Si igual los usás, "
                  "el promedio ponderado ignora esa masa y puede quedar **optimista**.")
 
     try:
@@ -4021,7 +4021,7 @@ def _armar(USR, cat, conectar):
     if len(_fam) > 1:
         with st.expander("📖 Cómo arma la mezcla el botón *Sugerir* (formulación con materias primas)", expanded=False):
             st.markdown(
-                "**La formulación cambió: el AG-E ya no entra.** El despacho se arma con "
+                "**La formulación cambió: el AG-E ya no entra.** La orden de venta se arma con "
                 "**materias primas** (%(mp)s) diluidas con **AFE-S**, que sigue siendo la "
                 "mayoría del volumen y es **lo más caro de todo**.\n\n"
                 "**Objetivo:** cumplir la spec gastando lo más barato (las MP) y cuidando lo que "
@@ -4034,7 +4034,7 @@ def _armar(USR, cat, conectar):
                 "de PEOR a mejor y a cada tanque C/D le toma el **máximo de litros que deja el "
                 "resto todavía cerrable** con los buenos que quedan libres (bisección por tanque). "
                 "Sólo se agregan tanques buenos para tapar lo que falta: el AFE-S A+B se reserva "
-                "para los próximos despachos.\n"
+                "para los próximos órdenes de venta.\n"
                 "3. **Restricciones:** promedios ponderados por **kg** (no por litros); tanques con menos de "
                 "%(m)s L no entran (fondo de tanque); en base plana sólo se usa el 90%% de la capacidad "
                 "(cónicos al 100%%); mismo total que el objetivo (contenedores × litros); mínimo de "
@@ -4132,10 +4132,10 @@ def _armar(USR, cat, conectar):
                        ("%s L fuera del filtro" % "{:,.0f}".format(_dtot - _dsel))
                        if _secs_dil else None,
                        help="Suma de los tanques diluyentes usables (≥%s L) de los "
-                            "sectores elegidos. Comparalo con el objetivo del despacho."
+                            "sectores elegidos. Comparalo con el objetivo dla orden de venta."
                             % "{:,.0f}".format(MIN_L_DESPACHO))
             if _secs_dil and _dsel < float(lit_obj) * 0.5:
-                st.warning("📍 En %s hay **%s L** de %s usable y el despacho pide %s L. "
+                st.warning("📍 En %s hay **%s L** de %s usable y la orden de venta pide %s L. "
                            "La sugerencia va a tener que meter mucha materia prima o no "
                            "va a cerrar: sumá otro sector si hace falta."
                            % (" + ".join(_secs_dil), "{:,.0f}".format(_dsel),
@@ -4319,7 +4319,7 @@ def _armar(USR, cat, conectar):
     if _formulado:
         with st.expander("🎛️ Propuestas para elegir (3 variantes de la misma carga)",
                          expanded=False):
-            st.caption("Tres formas de armar el mismo despacho con números comparables: "
+            st.caption("Tres formas de armar el misma orden de venta con números comparables: "
                        "A maximiza las materias primas, B resigna MP para colocar el máximo "
                        "de AFE-S C+D, C cumple la spec sin tolerancia. Elegís una y se carga "
                        "en la formulación — la decisión es de quien despacha, no del algoritmo.")
@@ -4443,7 +4443,7 @@ def _armar(USR, cat, conectar):
                                                    help="Disponible AHORA del tanque elegido (ya "
                                                         "descontado fondo y comprometidos)."),
             "Calidad": st.column_config.TextColumn("Calidad (último lab)", disabled=True,
-                                                   help="Semáforo contra la spec del despacho."),
+                                                   help="Semáforo contra la spec dla orden de venta."),
         }
         if pisar:
             _cfg.update({
@@ -4579,7 +4579,7 @@ def _armar(USR, cat, conectar):
                  + ". Se puede guardar y confirmar igual, pero el desvío queda **registrado con "
                    "usuario y fecha** y visible para dirección en 🔬 Control y confirmación.")
         try:
-            st.toast("🚨 Despacho con desvío de especificación", icon="🚨")
+            st.toast("🚨 Orden de venta con desvío de especificación", icon="🚨")
         except Exception:
             pass
     # Semáforo de las reglas contra ESTA carga. Las reglas completas, con el porqué y la
@@ -4647,7 +4647,7 @@ def _armar(USR, cat, conectar):
         if _fuera:
             avisos.append("La mezcla combina productos distintos: " + ", ".join(map(str, _multi)) + ".")
         else:
-            st.caption("ℹ️ El despacho combina " + ", ".join(map(str, _multi)) +
+            st.caption("ℹ️ La orden de venta combina " + ", ".join(map(str, _multi)) +
                        ", que es como se arma el " + str(prod_lbl) +
                        ". Los promedios de arriba ya son los del producto final cargado.")
     for _lvl, _m in _msg_est:
@@ -4656,7 +4656,7 @@ def _armar(USR, cat, conectar):
         for a in avisos:
             st.warning(a)
     if not ok_est:
-        st.error("La carga **no respeta la formulación** de un despacho de %s: son materias "
+        st.error("La carga **no respeta la formulación** de una orden de venta de %s: son materias "
                  "primas (AFE-M, AG-A/B/C, AFE-AL, AFE-G o ARE) más el AFE-S que las diluye. "
                  "La única carga que va sin diluir es la de **100%% ARE**." % prod_lbl)
     if not ok_spec:
@@ -4671,7 +4671,7 @@ def _armar(USR, cat, conectar):
     _borr_guardar(conectar, USR, ed)   # segundo autosave: captura estado/observaciones
     estado = g1.selectbox("Estado", ESTADOS, index=0, key="dsp_estado")
     obs = g3.text_input("Observaciones", key="dsp_obs")
-    cab = {"titulo": (titulo or f"DESPACHO {tipo} {fecha:%d/%m}"), "destino": destino or None,
+    cab = {"titulo": (titulo or f"ORDEN DE VENTA {tipo} {fecha:%d/%m}"), "destino": destino or None,
            "cliente": cliente or None, "producto_codigo": prod_cod, "tipo_carga": tipo,
            "fecha": fecha, "semana": semana, "anio": int(pd.Timestamp(fecha).isocalendar().year),
            "n_cont": int(n_cont), "l_cont": float(l_cont), "sp_ac": sp_ac, "sp_ays": sp_ays,
@@ -4688,7 +4688,7 @@ def _armar(USR, cat, conectar):
     if estado != "BORRADOR" and not ok_est:
         g2.button("💾 Guardar", disabled=True, use_container_width=True,
                   help="No respeta la formulación (materias primas + AFE que las diluye): "
-                       "corregí la mezcla o guardá como BORRADOR. Un despacho 100% ARE va "
+                       "corregí la mezcla o guardá como BORRADOR. Una orden de venta 100% ARE va "
                        "sin diluir y no queda bloqueado.")
     elif estado != "BORRADOR" and not ok_spec and not (_motivo_desv or "").strip():
         g2.button("💾 Guardar", disabled=True, use_container_width=True,
@@ -4703,12 +4703,12 @@ def _armar(USR, cat, conectar):
             ss["dsp_edit_id"] = None
             st.balloons()
             if _era_edicion:
-                st.success("🎈 Despacho **#%d actualizado**: %s · %s · %s L en %d tanque(s), "
+                st.success("🎈 Orden de venta **#%d actualizado**: %s · %s · %s L en %d tanque(s), "
                            "estado %s." % (_id, cab["titulo"], cab["producto_codigo"],
                                            f"{tot_l:,.0f}", len(res), cab["estado"]))
             else:
-                st.success("🎈 **Despacho nuevo #%d creado**: %s · %s · %s L en %d tanque(s), "
-                           "estado %s. Lo ves en 📋 Despachos cargados y se confirma en "
+                st.success("🎈 **Orden de venta nueva #%d creado**: %s · %s · %s L en %d tanque(s), "
+                           "estado %s. Lo ves en 📋 Órdenes de venta cargadas y se confirma en "
                            "🔬 Control y confirmación." % (_id, cab["titulo"], cab["producto_codigo"],
                                                           f"{tot_l:,.0f}", len(res), cab["estado"]))
         except Exception as e:
@@ -4727,7 +4727,7 @@ def _listado(USR, cat, conectar):
              "creado_en, fuera_spec, aprob_direccion, aprob_por, aprob_en, aprob_nota "
              "FROM produccion.v_despacho_resumen")
     if df is None or df.empty:
-        st.info("Todavía no hay despachos cargados.")
+        st.info("Todavía no hay órdenes de venta cargadas.")
         return
     df = df.copy()
 
@@ -4778,7 +4778,7 @@ def _listado(USR, cat, conectar):
     df["_real_tn"] = (df["kg_tk"] / 1000.0).round(2)
     df.loc[df["n_tk"] == 0, "_real_tn"] = None
 
-    _t = df.rename(columns={"id_despacho": "ID", "titulo": "Despacho", "destino": "Destino",
+    _t = df.rename(columns={"id_despacho": "ID", "titulo": "Orden de venta", "destino": "Destino",
                             "cliente": "Cliente",
                             "producto": "Producto", "tipo_carga": "Carga", "fecha_despacho": "Fecha",
                             "semana_iso": "Sem", "n_contenedores": "Cont.",
@@ -4788,7 +4788,7 @@ def _listado(USR, cat, conectar):
                             "n_lineas": "Tanques", "acidez_pond": "Acidez %",
                             "fosforo_pond": "Fósforo ppm", "azufre_pond": "Azufre ppm",
                             "_pes": "Pesadas", "_real_tn": "Real (TN)", "_dif_tn": "Δ real−plan"})
-    st.dataframe(_t[["ID", "Despacho", "Fecha", "Sem", "Cliente", "Destino", "Producto", "Carga",
+    st.dataframe(_t[["ID", "Orden de venta", "Fecha", "Sem", "Cliente", "Destino", "Producto", "Carga",
                      "Cont.", "Objetivo (L)", "Plan (L)", "Plan (TN)", "% del objetivo",
                      "Pesadas", "Real (TN)", "Δ real−plan", "Acidez %",
                      "Fósforo ppm", "Azufre ppm", "Spec", "Dirección", "Estado", "Tanques"]],
@@ -4809,7 +4809,7 @@ def _listado(USR, cat, conectar):
                                                 "falta cargar; más = se cargó de más."),
                      "Pesadas": st.column_config.TextColumn(
                          "🎫 Pesadas", help="Tickets de pesada de salida (portería) asignados al "
-                                            "despacho. — = todavía sin tickets."),
+                                            "orden de venta. — = todavía sin tickets."),
                      "Real (TN)": st.column_config.NumberColumn(
                          format="%.2f", help="Toneladas REALES: la suma de los tickets de balanza "
                                              "de portería. Vacío = todavía no pesó ningún camión."),
@@ -4821,14 +4821,14 @@ def _listado(USR, cat, conectar):
                          "Spec", help="✅ los cuatro parámetros ponderados entran en la "
                                       "especificación · ❌ alguno la excede · — sin lab."),
                      "Dirección": st.column_config.TextColumn(
-                         "Dirección", help="Los despachos fuera de spec necesitan el OK del "
+                         "Dirección", help="Las órdenes de venta fuera de spec necesitan el OK del "
                                            "director. Se aprueba en Dirección → Desvíos.")})
     st.caption("**Plan** = lo que armó dirección en el armador (litros × densidad de cada tanque). "
                "**Real** = lo que pesó la balanza de portería. Mientras falten camiones por pesar, "
                "el Real y el Δ quedan incompletos a propósito.")
     _pend_ap = df[df["_fuera"] & (_ap == "")]
     if not _pend_ap.empty:
-        st.warning("🛂 **%d despacho(s) fuera de especificación esperando la aprobación de "
+        st.warning("🛂 **%d orden de venta(s) fuera de especificación esperando la aprobación de "
                    "dirección:** %s. Se aprueban en **Dirección → Desvíos**."
                    % (len(_pend_ap), ", ".join("#%d %s" % (int(r["id_despacho"]), r["titulo"] or "")
                                                for _, r in _pend_ap.iterrows())))
@@ -4842,11 +4842,11 @@ def _listado(USR, cat, conectar):
                    + ", ".join("#%d %s" % (int(r["id_despacho"]), r["titulo"] or "")
                                for _, r in _dup.iterrows())
                    + ". Para borrar uno: elegilo abajo en *Ver detalle*, tildá **Habilitar "
-                     "borrado** y tocá 🗑️ Borrar despacho. Para corregirlo: ✏️ Modificar en el armador.")
+                     "borrado** y tocá 🗑️ Borrar orden de venta. Para corregirlo: ✏️ Modificar en el armador.")
 
     _sin_tk = df[(df["estado"].isin(["CONFIRMADO", "DESPACHADO"])) & (df["n_tk"] == 0)]
     if not _sin_tk.empty:
-        st.warning("🎫 %d despacho(s) confirmados/despachados **sin tickets de pesada** asignados: %s. "
+        st.warning("🎫 %d orden(es) de venta confirmadas o cargadas **sin tickets de pesada** asignados: %s. "
                    "Se asignan en la vista 🎟️ Tickets de portería."
                    % (len(_sin_tk), ", ".join("#%d" % int(x) for x in _sin_tk["id_despacho"])))
 
@@ -4877,7 +4877,7 @@ def _listado(USR, cat, conectar):
               "excede_stock FROM produccion.v_despacho_linea WHERE id_despacho=%s ORDER BY orden",
               (int(sel),))
     if det is None or det.empty:
-        st.info("Ese despacho no tiene líneas cargadas.")
+        st.info("Ese orden de venta no tiene líneas cargadas.")
     else:
         _d = det.rename(columns={"orden": "#", "tanque_nombre": "Tanque", "tanque_sector": "Sector",
                                  "producto": "Producto", "litros": "Litros", "densidad": "Densidad",
@@ -4891,7 +4891,7 @@ def _listado(USR, cat, conectar):
         st.caption("*Disp. hoy* es el stock actual del tanque, no el del momento de la carga.")
 
     if st.button("✏️ Modificar en el armador", key="dsp_ed_open",
-                 help="Precarga cabecera y líneas en la vista de armado; al guardar se pisa este despacho."):
+                 help="Precarga cabecera y líneas en la vista de armado; al guardar se pisa esta orden de venta."):
         _editar_despacho(cat, st.session_state, int(sel))
         _rerun_frag()
 
@@ -5014,18 +5014,18 @@ def _listado(USR, cat, conectar):
                            f"por {float(_tn):,.1f} t descontados de los tanques.")
             elif _nuevo in ("CONFIRMADO", "DESPACHADO"):
                 st.warning("Estado actualizado, pero no se generaron movimientos de stock "
-                           "(revisá que el despacho tenga líneas con tanque y litros).")
+                           "(revisá que la orden de venta tenga líneas con tanque y litros).")
             else:
-                st.success("Estado actualizado. Se revirtieron los movimientos de stock del despacho.")
+                st.success("Estado actualizado. Se revirtieron los movimientos de stock dla orden de venta.")
             _rerun_frag()
         except Exception as e:
             st.error(f"No se pudo actualizar: {e}")
-    if c3.checkbox("Habilitar borrado", key="dsp_del_ok") and c3.button("🗑️ Borrar despacho"):
+    if c3.checkbox("Habilitar borrado", key="dsp_del_ok") and c3.button("🗑️ Borrar orden de venta"):
         try:
             with conectar(USR["id_usuario"]) as (conn, _a):
                 with conn.cursor() as cur:
                     cur.execute("DELETE FROM produccion.fact_despacho WHERE id_despacho=%s", (int(sel),))
-            cat.clear(); st.success("Despacho borrado."); _rerun_frag()
+            cat.clear(); st.success("Orden de venta borrado."); _rerun_frag()
         except Exception as e:
             st.error(f"No se pudo borrar: {e}")
 
@@ -5146,13 +5146,13 @@ def _borradores(USR, cat, conectar):
 
 
 def _editar_despacho(cat, ss, id_despacho):
-    """Precarga un despacho guardado en el armador (cabecera + líneas) para modificarlo."""
+    """Precarga una orden de venta guardado en el armador (cabecera + líneas) para modificarlo."""
     cab = cat("SELECT titulo, destino, cliente, producto_codigo, tipo_carga, fecha_despacho, "
               "n_contenedores, litros_por_contenedor, spec_acidez_max, spec_ays_max, "
               "spec_azufre_max, spec_fosforo_max, estado, observaciones "
               "FROM produccion.fact_despacho WHERE id_despacho=%s", (int(id_despacho),))
     if cab is None or cab.empty:
-        st.error("No encontré el despacho #%d." % int(id_despacho))
+        st.error("No encontré la orden de venta #%d." % int(id_despacho))
         return
     r = cab.iloc[0]
     lin = cat("SELECT id_tanque, litros, acidez, fosforo, azufre, agua_sedimento, lab_origen "
@@ -5187,24 +5187,24 @@ def _editar_despacho(cat, ss, id_despacho):
 # ------------------------------------------------------------------ control y confirmación
 
 def _control(USR, cat, conectar):
-    """Repaso de los despachos pre-cargados: refrescar laboratorio, verificar spec, confirmar."""
+    """Repaso de las órdenes de venta pre-cargados: refrescar laboratorio, verificar spec, confirmar."""
     ss = st.session_state
     st.markdown("#### 🔬 Control y confirmación")
     st.caption("Los **borradores se guardan aunque no cumplan** la especificación (el laboratorio "
                "de los tanques suele estar desactualizado al armarlos). Acá se actualizan los "
                "parámetros con el último análisis, se controla la spec y, cuando cumple, se "
-               "confirma: el despacho queda **iniciado**.")
+               "confirma: la orden de venta queda **iniciado**.")
 
     df = cat("SELECT id_despacho, titulo, destino, producto, fecha_despacho, estado, litros_total, "
              "tn_total FROM produccion.v_despacho_resumen WHERE estado IN ('BORRADOR','CONFIRMADO') "
              "ORDER BY (estado='BORRADOR') DESC, fecha_despacho DESC NULLS LAST, id_despacho DESC")
     if df is None or df.empty:
-        st.info("No hay despachos en borrador ni confirmados para controlar.")
+        st.info("No hay órdenes de venta en borrador ni confirmados para controlar.")
         return
     _lbl = {int(r["id_despacho"]): ("#%d · %s · %s · %s" % (int(r["id_despacho"]),
              r["titulo"] or "s/título", r["estado"], r["fecha_despacho"] or "s/fecha"))
             for _, r in df.iterrows()}
-    sel = st.selectbox("Despacho a controlar", df["id_despacho"].tolist(),
+    sel = st.selectbox("Orden de venta a controlar", df["id_despacho"].tolist(),
                        format_func=lambda i: _lbl.get(int(i), str(i)), key="dsp_ctl_sel")
     if sel is None:
         return
@@ -5227,7 +5227,7 @@ def _control(USR, cat, conectar):
               "LEFT JOIN produccion.vw_tanque_panel t ON t.id_tanque = l.id_tanque "
               "WHERE l.id_despacho=%s ORDER BY l.orden", (int(sel),))
     if lin is None or lin.empty:
-        st.info("Este despacho no tiene líneas cargadas. Editalo en el armador.")
+        st.info("Esta orden de venta no tiene líneas cargadas. Editalo en el armador.")
         return
     lin = lin.copy()
     for _c in ("litros", "densidad", "acidez", "fosforo", "azufre", "agua_sedimento",
@@ -5264,7 +5264,7 @@ def _control(USR, cat, conectar):
     _nch = int(_chg.sum())
     if _nch:
         st.warning("🔄 %d línea(s) tienen el laboratorio del tanque distinto al guardado en el "
-                   "despacho. Actualizá antes de confirmar." % _nch)
+                   "orden de venta. Actualizá antes de confirmar." % _nch)
 
     # ---- cumplimiento: guardado y como quedaría con el lab de hoy ----
     def _mk(actual):
@@ -5292,7 +5292,7 @@ def _control(USR, cat, conectar):
     if _vf is not None and not _vf.empty:
         _vno = _vf[_vf["verif_estado"] != "USADO"]
         if _vno.empty:
-            st.success("🏭 Planta verificó los tanques de este despacho: **todos usados como "
+            st.success("🏭 Planta verificó los tanques de esta orden de venta: **todos usados como "
                        "está formulado** (%d línea(s))." % len(_vf))
         else:
             st.error("🏭 **Planta marcó diferencias con la formulación:** "
@@ -5302,10 +5302,10 @@ def _control(USR, cat, conectar):
                                      (" — " + r["verif_nota"]) if r["verif_nota"] else "")
                                   for _, r in _vno.iterrows()))
     else:
-        st.caption("🏭 Planta todavía no verificó los tanques de este despacho "
-                   "(vista *Despachos* en Producción en planta).")
+        st.caption("🏭 Planta todavía no verificó los tanques de esta orden de venta "
+                   "(vista *Órdenes de venta* en Producción en planta).")
 
-    st.markdown("**Cumplimiento con el laboratorio guardado en el despacho**")
+    st.markdown("**Cumplimiento con el laboratorio guardado en la orden de venta**")
     ok_g, _dv_g = _panel_specs(_mk(False), spec)
     if _nch:
         st.markdown("**Como quedaría con el laboratorio de hoy** (sin pisar lo cargado a mano)")
@@ -5316,7 +5316,7 @@ def _control(USR, cat, conectar):
                "FROM produccion.fact_despacho_desvio WHERE id_despacho=%s ORDER BY creado_en DESC",
                (int(sel),))
     if _dvh is not None and not _dvh.empty:
-        st.error("🚨 **Este despacho tiene %d desvío(s) de especificación registrados:** " % len(_dvh)
+        st.error("🚨 **Esta orden de venta tiene %d desvío(s) de especificación registrados:** " % len(_dvh)
                  + " · ".join("%s +%.1f%% (%s, %s, %s)"
                               % (r["parametro"], float(r["exceso_pct"] or 0), r["origen"],
                                  r["usuario"] or "—", r["cuando"]) for _, r in _dvh.iterrows()))
@@ -5366,7 +5366,7 @@ def _control(USR, cat, conectar):
                                             (int(sel), d["param"], d["valor"], d["limite"],
                                              round(d["exceso"], 2), USR.get("nombre")))
                     cat.clear()
-                    st.success("Despacho #%d CONFIRMADO%s." % (int(sel),
+                    st.success("Orden de venta #%d CONFIRMADO%s." % (int(sel),
                                " con desvío registrado" if _dv_g else ""))
                     _rerun_frag()
                 except Exception as e:
@@ -5393,13 +5393,13 @@ def _control(USR, cat, conectar):
                                              round(d["exceso"], 2), USR.get("nombre"),
                                              (_mtv or "").strip() or None))
                     cat.clear()
-                    st.success("Despacho #%d CONFIRMADO fuera de tolerancia, con desvío y motivo "
+                    st.success("Orden de venta #%d CONFIRMADO fuera de tolerancia, con desvío y motivo "
                                "registrados." % int(sel))
                     _rerun_frag()
                 except Exception as e:
                     st.error("No se pudo confirmar: %s" % e)
     else:
-        c3.caption("Ya está **CONFIRMADO**. El estado se maneja desde *Despachos cargados*.")
+        c3.caption("Ya está **CONFIRMADO**. El estado se maneja desde *Órdenes de venta cargadas*.")
 
 
 # ------------------------------------------------------------------ tickets de portería
@@ -5411,7 +5411,7 @@ def _control(USR, cat, conectar):
 # dispara ese trigger: crear movimientos propios duplicaría la salida.
 
 def _desvio_balanza(cur, id_despacho, usuario):
-    """Recalcula el desvío balanza-vs-formulado del despacho y lo deja registrado.
+    """Recalcula el desvío balanza-vs-formulado dla orden de venta y lo deja registrado.
 
     Cada camión que sale por portería es masa que abandona la planta: si lo pesado
     se aleja >3% de lo formulado, queda como desvío (origen BALANZA) visible para
@@ -5452,7 +5452,7 @@ _ROLES_TK = {
                   "destino PROPIO y el área en el campo *chofer* (EXPORTACIÓN, REACTORES, PILETAS, "
                   "BACHAS). El camión entra cargado y sale vacío, por eso el neto de portería es "
                   "negativo; acá se muestra en valor absoluto. También se listan los ingresos de "
-                  "materia prima de terceros, por si querés trazar el despacho hasta la compra."),
+                  "materia prima de terceros, por si querés trazar la orden de venta hasta la compra."),
         "clases": ("MP_EXPO", "INTERNO", "INGRESO"),
     },
 }
@@ -5490,14 +5490,14 @@ def _tk_candidatos(cat, clases, d1, d2, txt, familia):
 
 
 def _tk_firma(id_despacho, rol, filtros):
-    """Identidad de la GRILLA (despacho + filtros), no del conjunto de filas.
+    """Identidad de la GRILLA (orden de venta + filtros), no del conjunto de filas.
 
     st.data_editor guarda los tildes por posición de fila, atados a su key. Eso deja
     dos formas de romperlo y hay que cuidar las dos:
 
-    * Si la key NO cambia cuando cambia lo que se muestra (otro despacho, otro rango
+    * Si la key NO cambia cuando cambia lo que se muestra (otra orden de venta, otro rango
       de fechas, otra búsqueda), el delta viejo cae sobre filas distintas → tildes
-      perdidos o sobre el ticket equivocado. Por eso la key lleva despacho + filtros.
+      perdidos o sobre el ticket equivocado. Por eso la key lleva orden de venta + filtros.
     * Si la key cambia DEMASIADO —atada al conjunto de tickets— cada ticket nuevo que
       entra en portería la rota y borra los tildes que el operario acababa de hacer.
       En expo entran camiones cada pocos minutos, así que eso pasaba todo el tiempo:
@@ -5534,7 +5534,7 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                      ", ".join(str(int(t)) for t in _err["ticket"].dropna()) +
                      ". Un AFE siempre tiene que tener pesada de entrada y de salida; si falta, el "
                      "camión sigue adentro o la balanza no cerró el ticket. Corregilo en portería "
-                     "antes de confirmar el despacho.")
+                     "antes de confirmar la orden de venta.")
         if not _avi.empty:
             st.warning("⚠️ **Tickets sin pesada cerrada:** " +
                        ", ".join(str(int(t)) for t in _avi["ticket"].dropna()) +
@@ -5635,7 +5635,7 @@ def _tk_panel(USR, cat, conectar, cab, rol):
             st.success("Tildados: " + ", ".join(
                 "#%d" % int(cnd.loc[i, "ticket"]) for i, _, _ in _pick))
         if _perdidos:
-            st.warning("Estos tickets ya no están libres (los tomó otro despacho mientras "
+            st.warning("Estos tickets ya no están libres (los tomó otra orden de venta mientras "
                        "armabas): " + ", ".join(str(t) for t in _perdidos) +
                        ". Destildalos o buscalos por número para ver dónde quedaron.")
         if _pick and st.button(f"✅ Asignar {len(_pick)} ticket(s)", key=f"dsp_tk_add_{rol}",
@@ -5675,7 +5675,7 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                     st.success(f"{_nok} ticket(s) asignados.")
                 else:
                     st.warning(f"{_nok} de {len(filas)} ticket(s) asignados. "
-                               f"{len(filas) - _nok} ya estaban asignados a otro despacho: "
+                               f"{len(filas) - _nok} ya estaban asignados a otra orden de venta: "
                                "buscalos por número para ver dónde están.")
                 _rerun_frag()
             except Exception as e:
@@ -5688,12 +5688,12 @@ def _tickets(USR, cat, conectar):
              "FROM produccion.v_despacho_resumen "
              "ORDER BY fecha_despacho DESC NULLS LAST, id_despacho DESC")
     if df is None or df.empty:
-        st.info("Primero cargá un despacho en *Armar / editar orden de venta*.")
+        st.info("Primero cargá una orden de venta en *Armar / editar orden de venta*.")
         return
     _lbl = {int(r["id_despacho"]): (f"#{int(r['id_despacho'])} · {r['titulo']} · "
                                     f"{r['destino'] or 's/destino'} · {r['fecha_despacho'] or 's/fecha'}")
             for _, r in df.iterrows()}
-    sel = st.selectbox("Despacho", df["id_despacho"].tolist(),
+    sel = st.selectbox("Orden de venta", df["id_despacho"].tolist(),
                        format_func=lambda i: _lbl.get(int(i), str(i)), key="dsp_tk_desp")
     if sel is None:
         return

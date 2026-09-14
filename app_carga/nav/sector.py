@@ -52,10 +52,15 @@ _COMUNES = [
 # Tarjetas extra de un sector puntual (van primero, antes de las comunes).
 _EXTRA_POR_SECTOR = {
     "EXPORTACION": [
-        ("DESPACHOS", "🚢", "Despachos",
-         "Armado de despachos, asignación de tickets de portería y kilos reales por despacho.",
+        ("DESPACHOS", "🚢", "Órdenes de venta",
+         "Armado de la orden de venta, asignación de tickets de portería y kilos reales.",
          "PLANIFICACION", {"pl_grupo_sc": "🚢 Exportación", "pl_grupo": "🚢 Exportación"}),
     ],
+}
+
+# Tarjetas que NO van en un sector: no tienen nada que ver con su trabajo.
+_EXCLUIR_POR_SECTOR = {
+    "EXPORTACION": {"FORMULACION"},     # exportación no formula: despacha lo ya producido
 }
 
 # Ajustes por sector: qué vista clásica cubre "Seguimiento" en cada uno.
@@ -81,8 +86,11 @@ def tiene_home(sec):
 
 def tarjetas(sec):
     out = []
+    excluir = _EXCLUIR_POR_SECTOR.get(sec["codigo"], set())
     for vista, ic, tit, desc, seccion, presets in (
             _EXTRA_POR_SECTOR.get(sec["codigo"], []) + _COMUNES):
+        if vista in excluir:
+            continue
         presets = dict(presets)
         if vista == "SEGUIMIENTO" and sec["codigo"] in _SEGUIMIENTO_POR_SECTOR:
             seccion, presets = _SEGUIMIENTO_POR_SECTOR[sec["codigo"]]
@@ -126,10 +134,12 @@ def _kpis_sector(ctx, sec):
         return
     tn = _i(k.get("tanques_n"))
     if tn:
-        libre, cap = float(k.get("libre_kl") or 0), float(k.get("cap_kl") or 0)
+        # Dirección lee todo en toneladas: los litros libres se pasan a kilos con la
+        # densidad del producto de cada tanque (v_kpi_sector.libre_tn / cap_tn).
+        libre, cap = float(k.get("libre_tn") or 0), float(k.get("cap_tn") or 0)
         pct = 100.0 * (1 - libre / cap) if cap else 0.0
         c1 = _kpi("Acopio disponible del sector",
-                  f"{_n(libre)}<span style='font-size:1rem;font-weight:700;'> kL</span>",
+                  f"{_n(libre)}<span style='font-size:1rem;font-weight:700;'> TN</span>",
                   f"{_i(k.get('tanques_con_espacio'))} de {tn} tanques con lugar · {pct:.0f}% ocupado",
                   "bad" if pct >= 90 else ("warn" if pct >= 75 else ""))
         mp = float(k.get("mp_tn") or 0)

@@ -1190,7 +1190,7 @@ def _control_rendimiento(USR, cat, conectar, idb):
                 _ing = max(_net, _pico if _pico is not None else _net, 0.0)
                 _r = (_ing * _dens) / _expkg if _expkg else None
                 if _net < 0:
-                    _estado = "🔻 se vació (despacho tapó el ingreso)"
+                    _estado = "🔻 se vació (orden de venta tapó el ingreso)"
                 elif _r is not None and _r >= 0.85:
                     _estado = "🟢 cuadra"
                 elif _r is not None and _r >= 0.5:
@@ -1216,7 +1216,7 @@ def _control_rendimiento(USR, cat, conectar, idb):
                                     ["Antes (L)", "Después (L)", "Δ neto (L)", "Δ neto (kg)", "Pico ingreso (L)", "Esperado (kg)"]})
         st.caption(f"Ventana: inicio **{_ini.strftime('%d/%m %H:%M')}** → fin/acopio **{_fin.strftime('%d/%m %H:%M')}**. "
                    "**Antes** = última medición antes del inicio · **Después** = primera tras el fin. Si el tanque se vació "
-                   "(despacho), mirá el **Pico ingreso** (mejor salto entre mediciones).")
+                   "(orden de venta), mirá el **Pico ingreso** (mejor salto entre mediciones).")
     else:
         st.caption("⚠️ Falta inicio o fin/acopio de la reacción: no puedo comparar mediciones de tanque. "
                    "Cargalos en la ficha (Nombre & inicio / horario de acopio final).")
@@ -2246,11 +2246,11 @@ def _desvios_semanal(USR, cat, conectar):
 
 
 def _aprobacion_despachos(USR, cat, conectar):
-    """Despachos fuera de spec: los aprueba (o rechaza) dirección, con nombre y motivo."""
-    st.subheader("🛂 Despachos fuera de especificación — aprobación de dirección")
-    st.caption("Un despacho cuya mezcla ponderada excede algún máximo de la spec **necesita el "
+    """Órdenes de venta fuera de spec: los aprueba (o rechaza) dirección, con nombre y motivo."""
+    st.subheader("🛂 Órdenes de venta fuera de especificación — aprobación de dirección")
+    st.caption("Una orden de venta cuya mezcla ponderada excede algún máximo de la spec **necesita el "
                "OK del director** para salir. La decisión queda con usuario, fecha y motivo, y "
-               "se ve en Despachos → Despachos cargados, columna *Dirección*.")
+               "se ve en Órdenes de venta → Órdenes de venta cargadas, columna *Dirección*.")
     try:
         df = cat("SELECT id_despacho, titulo, cliente, destino, producto, fecha_despacho, estado, "
                  "n_contenedores, tn_total, litros_total, litros_objetivo, "
@@ -2263,10 +2263,10 @@ def _aprobacion_despachos(USR, cat, conectar):
                  "WHERE fuera_spec AND estado IN ('CONFIRMADO','DESPACHADO') "
                  "ORDER BY fecha_despacho DESC, id_despacho DESC")
     except Exception as e:
-        st.warning("No se pudo leer la aprobación de despachos: %s" % e)
+        st.warning("No se pudo leer la aprobación de órdenes de venta: %s" % e)
         return
     if df is None or df.empty:
-        st.success("✅ No hay despachos fuera de especificación esperando aprobación.")
+        st.success("✅ No hay órdenes de venta fuera de especificación esperando aprobación.")
         return
     df = df.copy()
     _ap = df["aprob_direccion"].fillna("")
@@ -2297,10 +2297,10 @@ def _aprobacion_despachos(USR, cat, conectar):
                        ("⛔ Rechazado" if v == "RECHAZADO" else "⏳ Pendiente")) for v in _ap]
     df["Quién"] = [("%s · %s" % (p, c)) if (p and str(p) != "nan") else ""
                    for p, c in zip(df["aprob_por"].fillna(""), df["aprob_cuando"].fillna(""))]
-    _v = df.rename(columns={"id_despacho": "ID", "titulo": "Despacho", "cliente": "Cliente",
+    _v = df.rename(columns={"id_despacho": "ID", "titulo": "Orden de venta", "cliente": "Cliente",
                             "fecha_despacho": "Fecha", "tn_total": "Plan (TN)",
                             "estado": "Estado", "aprob_nota": "Motivo"})
-    st.dataframe(_v[["Decisión", "ID", "Despacho", "Cliente", "Fecha", "Plan (TN)", "Excede",
+    st.dataframe(_v[["Decisión", "ID", "Orden de venta", "Cliente", "Fecha", "Plan (TN)", "Excede",
                      "Quién", "Motivo", "Estado"]],
                  hide_index=True, use_container_width=True,
                  column_config={"Fecha": st.column_config.DateColumn(format="DD/MM/YY"),
@@ -2312,11 +2312,11 @@ def _aprobacion_despachos(USR, cat, conectar):
     if str(USR.get("rol") or "") not in ROLES_DIRECCION:
         st.info("Sólo dirección puede aprobar o rechazar. Vos ves el estado.")
         return
-    st.markdown("**Decidir sobre un despacho**")
+    st.markdown("**Decidir sobre una orden de venta**")
     _lbl = {int(r["id_despacho"]): "#%d · %s · %s · %s"
             % (int(r["id_despacho"]), str(r["titulo"] or "—"), str(r["fecha_despacho"]),
                r["Decisión"]) for _, r in df.iterrows()}
-    _sel = st.selectbox("Despacho", list(_lbl.keys()),
+    _sel = st.selectbox("Orden de venta", list(_lbl.keys()),
                         format_func=lambda i: _lbl.get(int(i), str(i)), key="dir_ap_sel")
     _r = df[df["id_despacho"] == _sel].iloc[0]
     st.caption("Excede: **%s** · plan %.2f TN · cliente %s"
@@ -2339,7 +2339,7 @@ def _aprobacion_despachos(USR, cat, conectar):
                 audit.log("U", "fact_despacho", int(_sel),
                           {"aprob_direccion": _dec, "motivo": _nota.strip()})
             cat.clear()
-            st.success("Despacho #%d marcado como %s." % (int(_sel), _dec))
+            st.success("Orden de venta #%d marcada como %s." % (int(_sel), _dec))
             st.rerun()
         except Exception as e:
             st.error("No se pudo guardar: %s" % e)
@@ -2354,7 +2354,7 @@ def _desvios_despachos(cat):
     fuera de tolerancia) y BALANZA (lo pesado difiere >3% de lo formulado). Acá dirección
     los ve todos juntos sin entrar despacho por despacho.
     """
-    st.subheader("🚨 Desvíos de despachos — spec y balanza")
+    st.subheader("🚨 Desvíos de órdenes de venta — spec y balanza")
     try:
         df = cat(
             "SELECT v.id_despacho, d.titulo, d.producto_codigo, d.estado, d.fecha_despacho, "
@@ -2366,22 +2366,22 @@ def _desvios_despachos(cat):
             "WHERE v.creado_en >= now() - interval '90 days' "
             "ORDER BY v.creado_en DESC")
     except Exception as e:
-        st.warning("No se pudieron leer los desvíos de despachos: %s" % e)
+        st.warning("No se pudieron leer los desvíos de órdenes de venta: %s" % e)
         return
     if df is None or df.empty:
-        st.success("Sin desvíos de despachos registrados en los últimos 90 días. ✔")
+        st.success("Sin desvíos de órdenes de venta registrados en los últimos 90 días. ✔")
         return
     c1, c2, c3 = st.columns(3)
     c1.metric("Desvíos (90 días)", int(len(df)))
     c2.metric("De especificación", int((df["origen"].isin(["ARMADO", "CONTROL"])).sum()))
     c3.metric("De balanza (peso)", int((df["origen"] == "BALANZA").sum()))
-    _v = df.rename(columns={"id_despacho": "Despacho", "titulo": "Título",
+    _v = df.rename(columns={"id_despacho": "Orden de venta", "titulo": "Título",
                             "producto_codigo": "Producto", "estado": "Estado",
                             "fecha_despacho": "Fecha desp.", "parametro": "Parámetro",
                             "valor": "Valor", "limite": "Límite", "exceso_pct": "Exceso %",
                             "origen": "Origen", "usuario": "Usuario", "motivo": "Motivo",
                             "cuando": "Registrado"})
-    st.dataframe(_v[["Despacho", "Título", "Producto", "Fecha desp.", "Parámetro", "Valor",
+    st.dataframe(_v[["Orden de venta", "Título", "Producto", "Fecha desp.", "Parámetro", "Valor",
                      "Límite", "Exceso %", "Origen", "Usuario", "Motivo", "Registrado"]],
                  hide_index=True, use_container_width=True,
                  column_config={"Exceso %": st.column_config.NumberColumn(format="%+.1f"),
@@ -2399,7 +2399,7 @@ def _desvio_stock_ledger(USR, cat, conectar):
         "**Qué compara.** El stock que *debería* haber en los tanques al cierre de la semana contra el que "
         "realmente se midió. Todo en toneladas.\n\n"
         "**La cuenta, en orden, es la fila de la tabla leída de izquierda a derecha:**\n\n"
-        "`Stock ant. + Producción + Ext. entra − Ext. sale − Interno − Insumos − Despachos = Proyectado`\n\n"
+        "`Stock ant. + Producción + Ext. entra − Ext. sale − Interno − Insumos − Órdenes de venta = Proyectado`\n\n"
         "`Desvío = Real − Proyectado`\n\n"
         "**Ext. entra y Ext. sale** salen de los tickets de báscula de portería y el signo del peso "
         "neto dice para qué lado fue la masa: **neto NEGATIVO = el camión descargó = ENTRA** (proveedor "
@@ -2408,12 +2408,12 @@ def _desvio_stock_ledger(USR, cat, conectar):
         "(AFE + calidad S → AFE-S) o por el rótulo. La recuperación desde piletas (interno + PILETAS) "
         "cuenta como entrada: llena tanques.\n\n"
         "**Interno** es informativo y NO mueve el proyectado: un tanque→tanque netea cero, y la carga "
-        "tanque→contenedor ya la descuenta **Despachos** (contarla acá sería doble). Un ticket atado a "
-        "un despacho CONFIRMADO/DESPACHADO tampoco suma en Ext., por lo mismo.\n\n"
+        "tanque→contenedor ya la descuenta **Órdenes de venta** (contarla acá sería doble). Un ticket atado a "
+        "una orden de venta CONFIRMADO/DESPACHADO tampoco suma en Ext., por lo mismo.\n\n"
         "**El resto:** **Stock ant.** = lo medido al cierre de la semana anterior. **Producción** = reacciones "
         "terminadas (kg de tickets de pesada; si no hay tickets, el objetivo de la fórmula). **Insumos** = salidas "
-        "de tanque cargadas como INSUMO o CATALIZADOR (glicerina, fuel, catalizador). **Despachos** = salidas de "
-        "tanque generadas por un despacho (escaladas por lo realmente pesado). **Real** = última medición de "
+        "de tanque cargadas como INSUMO o CATALIZADOR (glicerina, fuel, catalizador). **Órdenes de venta** = salidas de "
+        "tanque generadas por una orden de venta (escaladas por lo realmente pesado). **Real** = última medición de "
         "cada tanque dentro de la semana.\n\n"
         "⚠️ **Lo que el desvío todavía NO explica:** el consumo de AFE/AG hacia los reactores no se "
         "registra como movimiento, así que en semanas de mucha producción el desvío da negativo por esa "
@@ -2467,11 +2467,11 @@ def _desvio_stock_ledger(USR, cat, conectar):
     _disp = dff.rename(columns={"producto": "Producto", "stock_ini_t": "Stock ant. (t)",
                                 "prod_t": "Producción (t)", "ext_in_t": "Ext. entra (t)",
                                 "ext_out_t": "Ext. sale (t)", "interno_t": "Interno (t)",
-                                "cons_t": "Insumos (t)", "desp_t": "Despachos (t)",
+                                "cons_t": "Insumos (t)", "desp_t": "Órdenes de venta (t)",
                                 "stock_proy_t": "Proyectado (t)", "stock_real_t": "Real (t)",
                                 "desvio_t": "Desvío (t)"})
     _disp = _disp[["Semana", "Producto", "Stock ant. (t)", "Producción (t)", "Ext. entra (t)",
-                   "Ext. sale (t)", "Interno (t)", "Insumos (t)", "Despachos (t)",
+                   "Ext. sale (t)", "Interno (t)", "Insumos (t)", "Órdenes de venta (t)",
                    "Proyectado (t)", "Real (t)", "Desvío (t)"]]
 
     def _cc(v):
@@ -2481,7 +2481,7 @@ def _desvio_stock_ledger(USR, cat, conectar):
         return ("color:#16a34a;font-weight:700" if a < 5 else
                 ("color:#b45309;font-weight:700" if a < 20 else "color:#dc2626;font-weight:700"))
     _fmt = {c: "{:,.1f}" for c in ["Stock ant. (t)", "Producción (t)", "Ext. entra (t)", "Ext. sale (t)",
-                                   "Interno (t)", "Insumos (t)", "Despachos (t)",
+                                   "Interno (t)", "Insumos (t)", "Órdenes de venta (t)",
                                    "Proyectado (t)", "Real (t)", "Desvío (t)"]}
     # Cada columna explica sola de dónde sale, pasando el mouse por el título.
     _ayuda = {
@@ -2491,15 +2491,15 @@ def _desvio_stock_ledger(USR, cat, conectar):
                             "hay tickets, el objetivo de la fórmula.",
         "Ext. entra (t)": "Portería: suma de los tickets de báscula de la semana con peso neto POSITIVO "
                           "(entró material). Excluye 'MOVIMIENTO INTERNO' (va a Interno), los clientes de la "
-                          "lista de excluidos, y los tickets ya atados a un despacho confirmado. Suma al proyectado.",
+                          "lista de excluidos, y los tickets ya atados a una orden de venta confirmada. Suma al proyectado.",
         "Ext. sale (t)": "Portería: los mismos tickets pero con peso neto NEGATIVO (salió material), mostrados "
                          "en positivo. El signo del peso del ticket es lo único que decide si va a entra o a "
                          "sale. Mismos filtros. Resta del proyectado.",
         "Interno (t)": "Tickets de portería cuyo cliente empieza con 'MOVIMIENTO INTERNO': material movido "
                        "dentro de planta (ej. AG que se consume para fabricar AG-E). Resta del proyectado.",
         "Insumos (t)": "Salidas de tanque cargadas con rol INSUMO o CATALIZADOR (glicerina, fuel, catalizador). Resta.",
-        "Despachos (t)": "Salidas de tanque generadas por un despacho. Resta.",
-        "Proyectado (t)": "Stock ant. + Producción + Ext. entra − Ext. sale − Interno − Insumos − Despachos.",
+        "Órdenes de venta (t)": "Salidas de tanque generadas por una orden de venta. Resta.",
+        "Proyectado (t)": "Stock ant. + Producción + Ext. entra − Ext. sale − Interno − Insumos − Órdenes de venta.",
         "Real (t)": "Toneladas medidas en los tanques al cierre de la semana (última medición de cada tanque).",
         "Desvío (t)": "Real − Proyectado. Positivo = quedó más de lo esperado; negativo = quedó menos "
                        "(salió, mermó o no se acopió).",
@@ -2526,11 +2526,11 @@ def _desvio_stock_ledger(USR, cat, conectar):
             "producto y queda afuera. El movimiento de portería sí se ve, pero a nivel familia, en "
             "**Balance de masa por familia** más abajo. Para verlo por producto hace falta una tabla de "
             "equivalencias etiqueta de portería → código de producto.")
-    if float(_disp["Despachos (t)"].fillna(0).abs().sum()) == 0:
+    if float(_disp["Órdenes de venta (t)"].fillna(0).abs().sum()) == 0:
         st.warning(
-            "**Despachos (t) está en 0 en todas las filas.** Hoy un despacho no descuenta del tanque: no genera "
-            "movimiento de stock. No lo leas como *no se despachó*, sino como *el despacho todavía no impacta "
-            "este balance* — parte del desvío positivo que ves es justamente despacho no descontado.")
+            "**Órdenes de venta (t) está en 0 en todas las filas.** Hoy una orden de venta no descuenta del tanque: no genera "
+            "movimiento de stock. No lo leas como *no se despachó*, sino como *la orden de venta todavía no impacta "
+            "este balance* — parte del desvío positivo que ves es justamente orden de venta no descontado.")
 
     # ===================== TARJETAS DE LA SEMANA DESTACADA (default: actual) =====================
     st.markdown(f"**Semana destacada · {_semsel}**")
@@ -3639,7 +3639,7 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             _render_dsp(USR, cat, conectar)
         except Exception as _e:
             import traceback as _tb
-            st.error("No se pudo cargar Despachos: %s" % _e)
+            st.error("No se pudo cargar Órdenes de venta: %s" % _e)
             with st.expander("🔧 Detalle técnico (para diagnóstico)"):
                 st.code(_tb.format_exc())
         return

@@ -27,7 +27,7 @@ from .kpis import _FRAGMENT, _TTL, _kpi
 
 # Umbrales de ocupación. Por encima de LLENO no entra un camión más.
 _LLENO, _APRETADO = 90.0, 75.0
-_MIN_KL = 1.0          # tanques de menos de 1 kL (soda, gasoil) no ordenan la lista
+_MIN_TN = 1.0          # recipientes de menos de 1 TN (soda, gasoil) no ordenan la lista
 
 
 # ------------------------------------------------------------------ datos
@@ -36,9 +36,9 @@ def _capacidad(_cf):
     try:
         with _cf() as conn:
             return pd.read_sql_query(
-                "SELECT producto, tanques, cap_kl, act_kl, libre_kl, pct_ocupado, incluye_piletas "
+                "SELECT producto, tanques, cap_tn, act_tn, libre_tn, pct_ocupado, incluye_piletas "
                 "FROM produccion.v_capacidad_ocupada_producto "
-                "WHERE cap_kl > 0 ORDER BY pct_ocupado DESC, cap_kl DESC", conn)
+                "WHERE cap_tn > 0 ORDER BY pct_ocupado DESC, cap_tn DESC", conn)
     except Exception:
         return None
 
@@ -70,7 +70,7 @@ def _estado(pct):
 
 
 def _barra(producto, pct, act, cap, libre, tanques, piletas):
-    """Una fila: nombre · barra horizontal · kL. El ancho es el % ocupado."""
+    """Una fila: nombre · barra horizontal · TN. El ancho es el % ocupado."""
     cls = _estado(pct)
     color = {"bad": "var(--bad)", "warn": "var(--warn)"}.get(cls, "var(--accent)")
     ancho = max(0.6, min(100.0, pct))
@@ -80,7 +80,7 @@ def _barra(producto, pct, act, cap, libre, tanques, piletas):
         f'<div class="cap-n" title="{det}">{producto}</div>'
         f'<div class="cap-t"><div class="cap-f" style="width:{ancho:.4g}%;background:{color}"></div></div>'
         f'<div class="cap-p{" " + cls if cls else ""}">{pct:.0f}%</div>'
-        f'<div class="cap-k">{act:,.0f} / {cap:,.0f} kL<span>libre {libre:,.0f}</span></div>'
+        f'<div class="cap-k">{act:,.0f} / {cap:,.0f} TN<span>libre {libre:,.0f}</span></div>'
         '</div>'
     ).replace(",", ".")
 
@@ -122,11 +122,11 @@ def _panel(ctx):
                 "(capacidad declarada en Tanques).")
         return
 
-    for c in ("cap_kl", "act_kl", "libre_kl", "pct_ocupado"):
+    for c in ("cap_tn", "act_tn", "libre_tn", "pct_ocupado"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     df["tanques"] = pd.to_numeric(df["tanques"], errors="coerce").fillna(0).astype(int)
 
-    cap, act = float(df["cap_kl"].sum()), float(df["act_kl"].sum())
+    cap, act = float(df["cap_tn"].sum()), float(df["act_tn"].sum())
     pct = (act / cap * 100.0) if cap else 0.0
     libre = cap - act
     llenos = df[df["pct_ocupado"] >= _LLENO]
@@ -136,10 +136,10 @@ def _panel(ctx):
     e7 = ev.get("7D")
 
     k1 = _kpi("Capacidad ocupada", f"{pct:.0f}<span style='font-size:1.1rem;font-weight:700;'>%</span>",
-              f"{act:,.0f} kL de {cap:,.0f} kL declarados".replace(",", "."),
+              f"{act:,.0f} TN de {cap:,.0f} TN declaradas".replace(",", "."),
               _estado(pct))
     k2 = _kpi("Lugar libre", f"{libre:,.0f}".replace(",", "."),
-              "kilolitros para descargar en toda la planta",
+              "toneladas para descargar en toda la planta",
               "bad" if libre <= 0 else ("warn" if pct >= _APRETADO else "ok"))
     k3 = _kpi("Productos al límite", str(len(llenos)),
               (f"sin lugar: {', '.join(llenos['producto'].head(3))}" if len(llenos)
@@ -156,20 +156,20 @@ def _panel(ctx):
     st.markdown(f'<div class="kpi-grid">{k1}{k2}{k3}{k4}</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-title">Capacidad de acopio por producto</div>', unsafe_allow_html=True)
-    grandes = df[df["cap_kl"] >= _MIN_KL]
-    chicos = df[df["cap_kl"] < _MIN_KL]
-    filas = "".join(_barra(r["producto"], r["pct_ocupado"], r["act_kl"], r["cap_kl"],
-                           r["libre_kl"], r["tanques"], bool(r["incluye_piletas"]))
+    grandes = df[df["cap_tn"] >= _MIN_TN]
+    chicos = df[df["cap_tn"] < _MIN_TN]
+    filas = "".join(_barra(r["producto"], r["pct_ocupado"], r["act_tn"], r["cap_tn"],
+                           r["libre_tn"], r["tanques"], bool(r["incluye_piletas"]))
                     for _, r in grandes.iterrows())
     st.markdown(_CSS + f'<div class="cap-wrap">{filas}</div>', unsafe_allow_html=True)
     st.caption("Capacidad declarada de cada tanque (planilla de parámetros) contra la última medición "
                "física. Un producto por encima del 90% no admite otro camión; por encima del 75% conviene "
                "mirarlo antes de comprometer una descarga.")
     if not chicos.empty:
-        with st.expander(f"Recipientes chicos ({len(chicos)}) — menos de 1 kL", expanded=False):
+        with st.expander(f"Recipientes chicos ({len(chicos)}) — menos de 1 TN", expanded=False):
             st.markdown(_CSS + '<div class="cap-wrap">' + "".join(
-                _barra(r["producto"], r["pct_ocupado"], r["act_kl"], r["cap_kl"],
-                       r["libre_kl"], r["tanques"], bool(r["incluye_piletas"]))
+                _barra(r["producto"], r["pct_ocupado"], r["act_tn"], r["cap_tn"],
+                       r["libre_tn"], r["tanques"], bool(r["incluye_piletas"]))
                 for _, r in chicos.iterrows()) + '</div>', unsafe_allow_html=True)
 
     if ev.get("HOY") is not None and e7 is not None and e7["peor_corriente"]:
