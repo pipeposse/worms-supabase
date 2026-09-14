@@ -36,8 +36,8 @@ _COMUNES = [
      "Fórmulas del sector: materia prima, insumos, tiempos y la default que usa Planificación.",
      "FORMULAS", {"__fx_sector__": True}),
     ("STOCK", "📦", "Stock",
-     "Cuenta corriente por producto (MP · insumos · producto terminado) con saldo; el stock físico sigue en la sección clásica.",
-     None, {}),          # vista propia de nav (stock_cc.py) sobre v_cuenta_corriente_producto
+     "Los movimientos del sector, uno por uno: origen → destino, ticket y kilos. El físico por tanque sigue en la sección clásica.",
+     None, {}),          # vista propia de nav (stock_cc.py) sobre v_movimiento_sector
     ("ACOPIO", "🛢️", "Acopio",
      "Tanques del sector: contenido, capacidad y última medición.",
      "TANQUES", {}),
@@ -48,6 +48,15 @@ _COMUNES = [
      "Gestión semanal: objetivo vs. real en TN, producto por producto.",
      "PLANIFICACION", {"pl_grupo_sc": "📈 Gestión semanal", "pl_grupo": "📈 Gestión semanal"}),
 ]
+
+# Tarjetas extra de un sector puntual (van primero, antes de las comunes).
+_EXTRA_POR_SECTOR = {
+    "EXPORTACION": [
+        ("DESPACHOS", "🚢", "Despachos",
+         "Armado de despachos, asignación de tickets de portería y kilos reales por despacho.",
+         "PLANIFICACION", {"pl_grupo_sc": "🚢 Exportación", "pl_grupo": "🚢 Exportación"}),
+    ],
+}
 
 # Ajustes por sector: qué vista clásica cubre "Seguimiento" en cada uno.
 _SEGUIMIENTO_POR_SECTOR = {
@@ -72,7 +81,8 @@ def tiene_home(sec):
 
 def tarjetas(sec):
     out = []
-    for vista, ic, tit, desc, seccion, presets in _COMUNES:
+    for vista, ic, tit, desc, seccion, presets in (
+            _EXTRA_POR_SECTOR.get(sec["codigo"], []) + _COMUNES):
         presets = dict(presets)
         if vista == "SEGUIMIENTO" and sec["codigo"] in _SEGUIMIENTO_POR_SECTOR:
             seccion, presets = _SEGUIMIENTO_POR_SECTOR[sec["codigo"]]
