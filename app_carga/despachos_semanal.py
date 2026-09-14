@@ -86,7 +86,7 @@ def _lineas(cat, estados, dias):
 
 
 def _ajustes(cat):
-    """Kg REALES cargados a mano, por despacho y materia prima (los que haya)."""
+    """Kg REALES cargados a mano, por orden de venta y materia prima (los que haya)."""
     df = cat("SELECT id_despacho, producto_codigo AS mp, kg_real, ajustado, "
              "       kg_formulado, nota "
              "FROM produccion.v_despacho_mp WHERE ajustado")
@@ -101,7 +101,7 @@ def _ajustes(cat):
 
 
 def _tickets(cat, dias):
-    """Kg pesados en portería por despacho: el control de que el ajuste cierre."""
+    """Kg pesados en portería por orden de venta: el control de que el ajuste cierre."""
     df = cat("SELECT id_despacho, kg_tickets, n_tickets, n_contenedores "
              "FROM produccion.v_despacho_real_vs_ticket "
              "WHERE fecha_despacho >= current_date - %s", (int(dias),))
@@ -232,7 +232,7 @@ def _orden_mp(df):
 
 
 def _tabla_semana(df_s, mps):
-    """Despachos de una semana × materias primas (TN) + fila TOTAL."""
+    """Órdenes de venta de una semana × materias primas (TN) + fila TOTAL."""
     cab = (df_s.groupby("id_despacho", sort=False)
                .agg(Despacho=("titulo", "first"), Fecha=("fecha_despacho", "first"),
                     Producto=("producto_venta", "first"), Cliente=("cliente", "first"),
@@ -253,7 +253,7 @@ def _tabla_semana(df_s, mps):
     mp_cols = [c for c in t.columns if c in mps] + ["TN total"]
     tot = {c: "" for c in t.columns}
     tot["_aj"] = False
-    tot["Despacho"] = "TOTAL SEMANA"
+    tot["Orden de venta"] = "TOTAL SEMANA"
     tot["Cont"] = int(t["Cont"].sum())
     for c in mp_cols:
         tot[c] = float(t[c].sum())
@@ -265,7 +265,7 @@ def _tabla_semana(df_s, mps):
 
 
 def _tabla_resumen(df, mps):
-    """Semanas × materias primas (TN) + despachos + contenedores + TN total."""
+    """Semanas × materias primas (TN) + órdenes de venta + contenedores + TN total."""
     piv = df.pivot_table(index=["Semana", "Rango"], columns="mp", values="tn", aggfunc="sum", fill_value=0.0)
     piv = piv.reindex(columns=[m for m in mps if m in piv.columns], fill_value=0.0)
     piv["TN total"] = piv.sum(axis=1)
@@ -273,14 +273,14 @@ def _tabla_resumen(df, mps):
     cont = (df.drop_duplicates("id_despacho").groupby(["Semana", "Rango"])["n_contenedores"].sum()
               .rename("Contenedores"))
     r = n.join(cont).join(piv).reset_index().sort_values("Semana")
-    tot = {"Semana": "TOTAL", "Rango": "", "Despachos": int(r["Despachos"].sum()),
+    tot = {"Semana": "TOTAL", "Rango": "", "Órdenes de venta": int(r["Órdenes de venta"].sum()),
            "Contenedores": int(r["Contenedores"].sum())}
     for c in [m for m in mps if m in r.columns] + ["TN total"]:
         tot[c] = float(r[c].sum())
     r = pd.concat([r, pd.DataFrame([tot])], ignore_index=True)
     for c in [m for m in mps if m in r.columns] + ["TN total"]:
         r[c] = pd.to_numeric(r[c], errors="coerce").round(2)
-    for c in ("Despachos", "Contenedores"):
+    for c in ("Órdenes de venta", "Contenedores"):
         r[c] = pd.to_numeric(r[c], errors="coerce").fillna(0).astype(int)
     return r
 
@@ -313,7 +313,7 @@ def _excel(df, mps):
         if "ajustado" in det.columns:
             det["ajustado"] = det["ajustado"].map({True: "kg reales", False: "formulado"}).fillna("formulado")
         det["fecha_despacho"] = det["fecha_despacho"].dt.strftime("%d/%m/%Y")
-        det = det.rename(columns={"fecha_despacho": "Fecha", "titulo": "Despacho", "producto_venta": "Producto venta",
+        det = det.rename(columns={"fecha_despacho": "Fecha", "titulo": "Orden de venta", "producto_venta": "Producto venta",
                                   "cliente": "Cliente", "destino": "Destino", "estado": "Estado",
                                   "n_contenedores": "Cont", "orden": "Línea", "mp": "Materia prima",
                                   "tanque": "Tanque", "litros": "Litros", "densidad": "Densidad",
@@ -376,7 +376,7 @@ def _png_semana(df_s, mps, semana, rango):
     fig = plt.figure(figsize=(12, alto_bar + alto_tab + 1.1), dpi=150)
     gs = fig.add_gridspec(2, 1, height_ratios=[alto_bar, alto_tab], hspace=0.35)
     ax = fig.add_subplot(gs[0])
-    fig.suptitle("Despachos semana %s  ·  %s  ·  %d despachos  ·  %d contenedores  ·  %s TN" % (
+    fig.suptitle("Órdenes de venta semana %s  ·  %s  ·  %d órdenes de venta  ·  %d contenedores  ·  %s TN" % (
         semana, rango, n, int(total["Cont"]), _fmt(total["TN total"])),
         fontsize=12.5, fontweight="bold", x=0.02, ha="left", y=0.995)
 
@@ -393,7 +393,7 @@ def _png_semana(df_s, mps, semana, rango):
     for yi, tot_i in zip(y, cuerpo["TN total"].astype(float).tolist()):
         ax.text(tot_i + 0.5, yi, _fmt(tot_i) + " TN", va="center", fontsize=8, fontweight="bold", color="#111827")
     ax.set_yticks(y)
-    ax.set_yticklabels(["%s  (%s · %d cont.)" % (r["Despacho"], r["Fecha"][:5], int(r["Cont"]))
+    ax.set_yticklabels(["%s  (%s · %d cont.)" % (r["Orden de venta"], r["Fecha"][:5], int(r["Cont"]))
                         for _, r in cuerpo.iterrows()], fontsize=8.5)
     ax.set_xlabel("TN formuladas por materia prima")
     ax.set_xlim(0, max(1.0, float(cuerpo["TN total"].max()) * 1.18))
@@ -403,7 +403,7 @@ def _png_semana(df_s, mps, semana, rango):
 
     axt = fig.add_subplot(gs[1])
     axt.axis("off")
-    cols = ["Despacho", "Fecha", "Producto", "Cliente", "Cont"] + mp_use + ["TN total"]
+    cols = ["Orden de venta", "Fecha", "Producto", "Cliente", "Cont"] + mp_use + ["TN total"]
     celdas = []
     for _, r in t.iterrows():
         fila = []
@@ -430,7 +430,7 @@ def _png_semana(df_s, mps, semana, rango):
             cell.set_text_props(fontweight="bold")
         elif ri % 2 == 0:
             cell.set_facecolor("#f8fafc")
-    fig.text(0.02, 0.005, "Fuente: formulación de despachos (litros × densidad por línea). Estados: %s." % (
+    fig.text(0.02, 0.005, "Fuente: formulación de órdenes de venta (litros × densidad por línea). Estados: %s." % (
         ", ".join(sorted(df_s["estado"].unique().tolist()))), fontsize=7, color="#6b7280")
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
@@ -454,7 +454,7 @@ def _png_resumen(df, mps):
                 ax.text(xi, b + v / 2, _fmt(v), ha="center", va="center", fontsize=7.5, color="white",
                         fontweight="bold")
         base = [a + b for a, b in zip(base, vals)]
-    for xi, tot, nd in zip(x, r["TN total"].astype(float).tolist(), r["Despachos"].tolist()):
+    for xi, tot, nd in zip(x, r["TN total"].astype(float).tolist(), r["Órdenes de venta"].tolist()):
         ax.text(xi, tot + float(r["TN total"].max()) * 0.015, "%s TN\n%d desp." % (_fmt(tot), int(nd)),
                 ha="center", va="bottom", fontsize=8, fontweight="bold", color="#111827")
     ax.set_xticks(x)
@@ -463,8 +463,8 @@ def _png_resumen(df, mps):
     ax.set_ylim(0, float(r["TN total"].max() or 1) * 1.22)
     ax.grid(axis="y", alpha=0.25)
     ax.legend(loc="upper left", ncol=min(len(mp_use), 6), frameon=False, fontsize=8)
-    ax.set_title("Despachos por semana y materia prima (TN)  ·  total %s TN en %d despachos" % (
-        _fmt(r["TN total"].sum()), int(r["Despachos"].sum())), fontsize=12, fontweight="bold", loc="left")
+    ax.set_title("Órdenes de venta por semana y materia prima (TN)  ·  total %s TN en %d órdenes de venta" % (
+        _fmt(r["TN total"].sum()), int(r["Órdenes de venta"].sum())), fontsize=12, fontweight="bold", loc="left")
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -481,14 +481,14 @@ def _paquete(df, mps):
         z.writestr("resumen_semanas.png", _png_resumen(df, mps))
         for s in sorted(df["Semana"].unique().tolist()):
             df_s = df[df["Semana"] == s]
-            z.writestr("despachos_%s.png" % s, _png_semana(df_s, mps, s, df_s["Rango"].iloc[0]))
+            z.writestr("ordenes_venta_%s.png" % s, _png_semana(df_s, mps, s, df_s["Rango"].iloc[0]))
     return xlsx, zbuf.getvalue()
 
 
 # ------------------------------------------------------------------ UI
 
 def _filas_grilla(df_s, mps, tk, aj):
-    """Las filas que consume el componente: efectivo, formulado y balanza por despacho."""
+    """Las filas que consume el componente: efectivo, formulado y balanza por orden de venta."""
     cab = (df_s.groupby("id_despacho", sort=False)
                .agg(desp=("titulo", "first"), fecha=("fecha_despacho", "first"),
                     cont=("n_contenedores", "first"))
@@ -534,7 +534,7 @@ def _grilla_reales(df_s, mps, tk, aj, cat, conectar, USR, semana):
     ss = st.session_state
     st.caption("Lo formulado **no se pisa**: el ajuste se guarda aparte con tu usuario y fecha. "
                "**Balanza** es lo que pesó portería y **⚖** reparte la diferencia para que el "
-               "total dé exactamente eso. El **nombre del despacho** también se edita acá y "
+               "total dé exactamente eso. El **nombre de la orden de venta** también se edita acá y "
                "se renombra en toda la app.")
     _rev = int(ss.get("dsw_rev") or 0)
     # la confirmación se muestra DESPUÉS del rerun (un st.success antes de st.rerun
@@ -575,7 +575,7 @@ def _grilla_reales(df_s, mps, tk, aj, cat, conectar, USR, semana):
                     if n:
                         _msg.append("%d ajuste(s) de kg" % n)
                     if nt:
-                        _msg.append("%d despacho(s) renombrado(s)" % nt)
+                        _msg.append("%d orden de venta(s) renombrado(s)" % nt)
                     ss["dsw_msg"] = ("Guardado: %s. La tabla, el Excel y los PNG ya lo "
                                      "muestran." % " y ".join(_msg))
                     st.rerun()
@@ -590,10 +590,10 @@ def _grilla_reales(df_s, mps, tk, aj, cat, conectar, USR, semana):
 
 
 def _editor_reales(df_s, mps, tk, cat, conectar, USR, semana):
-    """Grilla editable: TN REALES de cada materia prima, despacho por despacho.
+    """Grilla editable: TN REALES de cada materia prima, orden de venta por orden de venta.
 
     Se edita en TN (lo que se ve) y se guarda en kg. Al lado de la mezcla van los kg que
-    pesó la balanza para ese despacho: si el ajuste no cierra contra portería, se ve al
+    pesó la balanza para esa orden de venta: si el ajuste no cierra contra portería, se ve al
     instante y no hace falta ir a buscarlo a otra pantalla.
     """
     st.markdown("##### ✏️ Ajustar a los kg realmente cargados")
@@ -627,14 +627,14 @@ def _editor_reales(df_s, mps, tk, cat, conectar, USR, semana):
         base[c] = pd.to_numeric(base[c], errors="coerce").round(2)
 
     _ids = base["id_despacho"].tolist()
-    _vista = base[["Aj.", "Despacho", "Fecha", "Cont"] + _cols_mp +
+    _vista = base[["Aj.", "Orden de venta", "Fecha", "Cont"] + _cols_mp +
                   ["Mezcla (TN)", "Balanza (TN)", "Dif. vs balanza"]].copy()
 
     _cfg = {"Aj.": st.column_config.TextColumn(
                 "Aj.", width="small", disabled=True,
-                help="✏️ real = este despacho ya tiene kg reales cargados · "
+                help="✏️ real = esta orden de venta ya tiene kg reales cargados · "
                      "· form. = todavía muestra lo formulado."),
-            "Despacho": st.column_config.TextColumn(disabled=True),
+            "Orden de venta": st.column_config.TextColumn(disabled=True),
             "Fecha": st.column_config.TextColumn(disabled=True, width="small"),
             "Cont": st.column_config.NumberColumn("Cont.", disabled=True, width="small"),
             "Mezcla (TN)": st.column_config.NumberColumn(
@@ -642,7 +642,7 @@ def _editor_reales(df_s, mps, tk, cat, conectar, USR, semana):
                 help="Suma de las materias primas de la fila. Se recalcula al guardar."),
             "Balanza (TN)": st.column_config.NumberColumn(
                 format="%.2f", disabled=True,
-                help="Kg pesados en portería para este despacho (tickets vinculados)."),
+                help="Kg pesados en portería para esta orden de venta (tickets vinculados)."),
             "Dif. vs balanza": st.column_config.NumberColumn(
                 format="%.2f", disabled=True,
                 help="Mezcla − balanza. Cerca de cero = los kg por materia prima cierran "
@@ -654,7 +654,7 @@ def _editor_reales(df_s, mps, tk, cat, conectar, USR, semana):
     _k = "dsw_ed_%s_%d" % (semana, int(st.session_state.get("dsw_ed_nonce") or 0))
     ed = st.data_editor(_vista, hide_index=True, use_container_width=True, key=_k,
                         column_config=_cfg,
-                        disabled=["Aj.", "Despacho", "Fecha", "Cont", "Mezcla (TN)",
+                        disabled=["Aj.", "Orden de venta", "Fecha", "Cont", "Mezcla (TN)",
                                   "Balanza (TN)", "Dif. vs balanza"],
                         height=min(38 * (len(_vista) + 1) + 8, 460))
 
@@ -694,10 +694,10 @@ def _editor_reales(df_s, mps, tk, cat, conectar, USR, semana):
 
     _con_aj = [i for i, v in zip(_ids, base["Aj."]) if str(v).startswith("✏️")]
     if _con_aj and conectar is not None:
-        _lbl = {int(r["id_despacho"]): str(r["Despacho"]) for _, r in base.iterrows()}
+        _lbl = {int(r["id_despacho"]): str(r["Orden de venta"]) for _, r in base.iterrows()}
         _sel = g2.selectbox("Volver a lo formulado", ["—"] + [_lbl[i] for i in _con_aj],
                             key="dsw_reset_sel", label_visibility="collapsed")
-        if _sel != "—" and g2.button("↩️ Borrar el ajuste de ese despacho",
+        if _sel != "—" and g2.button("↩️ Borrar el ajuste de esa orden de venta",
                                      use_container_width=True, key="dsw_reset_go"):
             _idd = next(i for i in _con_aj if _lbl[i] == _sel)
             try:
@@ -757,8 +757,8 @@ _CSS = """
 """
 
 
-_COLS_TXT = ("Despacho", "Semana", "Fecha", "Rango", "Cliente", "Destino", "Estado")
-_COLS_INT = ("Cont", "Despachos", "Contenedores")
+_COLS_TXT = ("Orden de venta", "Semana", "Fecha", "Rango", "Cliente", "Destino", "Estado")
+_COLS_INT = ("Cont", "Órdenes de venta", "Contenedores")
 
 
 def _tabla_html(t, mp_cols):
@@ -793,7 +793,7 @@ def _tabla_html(t, mp_cols):
                 continue
             _txt = "" if (v is None or (isinstance(v, float) and pd.isna(v))) else str(v)
             if c == _pri and _txt.startswith("TOTAL") is False and bool(r.get("_aj", False)):
-                _txt += '<span class="tag" title="Este despacho tiene los kg reales '\
+                _txt += '<span class="tag" title="Esta orden de venta tiene los kg reales '\
                         'cargados a mano">KG REALES</span>'
             tds.append('<td class="l%s">%s</td>' % (" d" if c == _pri else " m", _txt))
         filas.append('<tr class="%s">%s</tr>' % ("tot" if _tot else "", "".join(tds)))
@@ -805,8 +805,8 @@ def render(USR, cat, conectar=None):
     st.markdown(_CSS, unsafe_allow_html=True)
     st.markdown(
         '<div class="dsw-hero"><div class="g"></div>'
-        '<h2>📦 Despachos por semana</h2>'
-        '<p>Cada semana con sus despachos y las materias primas en TN. Los que tengan '
+        '<h2>📦 Órdenes de venta por semana</h2>'
+        '<p>Cada semana con sus órdenes de venta y las materias primas en TN. Los que tengan '
         '<b>kg reales cargados</b> se muestran con esos kg; el resto, con los formulados. '
         'Abajo se descargan en Excel y PNG, y se ajustan a lo que realmente se cargó.</p>'
         '</div>', unsafe_allow_html=True)
@@ -820,10 +820,10 @@ def render(USR, cat, conectar=None):
     try:
         raw = _lineas(cat, est, sem * 7 + 6)
     except Exception as e:
-        st.error("No se pudieron leer los despachos: %s" % e)
+        st.error("No se pudieron leer las órdenes de venta: %s" % e)
         return
     if raw is None or raw.empty:
-        st.info("No hay despachos con líneas en ese rango.")
+        st.info("No hay órdenes de venta con líneas en ese rango.")
         return
     df = _preparar(raw)
     # Los kg REALES cargados a mano pisan a los formulados ANTES de cualquier cálculo:
@@ -856,11 +856,11 @@ def render(USR, cat, conectar=None):
     st.markdown(
         '<div class="dsw-k">'
         '<div class="b"><div class="l">Semanas</div><div class="v">%d</div></div>'
-        '<div class="b"><div class="l">Despachos</div><div class="v">%d</div></div>'
+        '<div class="b"><div class="l">Órdenes de venta</div><div class="v">%d</div></div>'
         '<div class="b"><div class="l">Contenedores</div><div class="v">%d</div></div>'
         '<div class="b hi"><div class="l">TN totales</div><div class="v">%s</div>'
         '<div class="s%s">%s</div></div>'
-        '</div>' % (int(len(res) - 1), int(res["Despachos"].iloc[-1]),
+        '</div>' % (int(len(res) - 1), int(res["Órdenes de venta"].iloc[-1]),
                     int(res["Contenedores"].iloc[-1]), _fmt(res["TN total"].iloc[-1]),
                     " ok" if _n_aj else "",
                     ("%d con kg reales" % _n_aj) if _n_aj else "todo formulado"),
@@ -899,11 +899,11 @@ def render(USR, cat, conectar=None):
     _nc = int(df_s.groupby("id_despacho")["n_contenedores"].first().sum())
     c2.markdown(
         "<div style='padding-top:30px;color:#64748b;font-size:.86rem'>"
-        "<b style='color:#0f172a;font-size:1.05rem'>%d despachos</b> · %d contenedores · "
+        "<b style='color:#0f172a;font-size:1.05rem'>%d órdenes de venta</b> · %d contenedores · "
         "<b style='color:#0f172a'>%s TN</b></div>" % (_nd, _nc, _fmt(float(df_s["tn"].sum()))),
         unsafe_allow_html=True)
     st.markdown(_tabla_html(t, mp_cols), unsafe_allow_html=True)
-    st.download_button("⬇️ PNG de la semana %s" % s, png, file_name="despachos_%s.png" % s,
+    st.download_button("⬇️ PNG de la semana %s" % s, png, file_name="ordenes_venta_%s.png" % s,
                        mime="image/png", key="dsw_png_sem")
 
     # ---- ajuste a los kg reales de esa semana ----

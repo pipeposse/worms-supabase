@@ -195,6 +195,26 @@ def inject_global_css():
         background:var(--accent-ink); border-color:var(--accent-ink); transform:none;
       }
       .stButton>button:disabled{opacity:.45; background:var(--surface-2);}
+      /* El rótulo del botón NO es texto suelto: Streamlit lo envuelve en un párrafo
+         adentro del botón. La regla global de párrafos (color var(--ink-2)) le ganaba a
+         la herencia del color del botón, así que el "Entrar" de los botones azules salía
+         oscuro sobre azul y no se leía (dirección, 14/09/2026). Con inherit el rótulo
+         toma siempre el color del botón: blanco en el primario, tinta en el secundario,
+         gris en el terciario, y el del hover cuando corresponde.
+         OJO: nunca escribir etiquetas HTML dentro de estos comentarios; el CSS se inyecta
+         con st.html y el sanitizador descarta TODO el bloque si encuentra una. */
+      .stButton>button p, .stButton>button span, .stButton>button div,
+      .stButton>button [data-testid="stMarkdownContainer"],
+      .stDownloadButton>button p, .stDownloadButton>button span, .stDownloadButton>button div,
+      [data-testid="stFormSubmitButton"]>button p,
+      [data-testid="stFormSubmitButton"]>button span,
+      [data-testid="stFormSubmitButton"]>button div,
+      [data-testid="stBaseButton-primary"] p, [data-testid="stBaseButton-primary"] span,
+      [data-testid="stBaseButton-primary"] div,
+      [data-testid="stBaseButton-secondary"] p, [data-testid="stBaseButton-secondary"] span,
+      [data-testid="stBaseButton-secondary"] div{
+        color:inherit !important;
+      }
 
       /* ------------------------------------------------------- contenedor --- */
       /* La tarjeta delimita, no flota: sin sombra y sin salto al pasar el mouse.
@@ -1072,38 +1092,19 @@ if st.session_state.section is None:
                         st.session_state.pop("portada_esp_open", None)
                         go_to("ESTADO")
 
-    def _render_tiles(_tiles):
-        for i in range(0, len(_tiles), 3):
-            cols = st.columns(3)
-            for col, (icon, tit, desc, sec, key, prim) in zip(cols, _tiles[i:i+3]):
-                with col:
-                    with st.container(border=True):
-                        st.markdown(f'<div class="tile-h">{icon} {tit}</div><div class="tile-d">{desc}</div>',
-                                    unsafe_allow_html=True)
-                        if st.button("Entrar", type="primary", use_container_width=True, key=key):
-                            go_to(sec)
-
-    # ---- SOL-0036: hasta 3 accesos destacados arriba (más usadas / últimas usadas).
-    # El resto queda en el orden fijo de siempre (no se reordena toda la grilla a
-    # propósito: una grilla que se mueve rompe la memoria muscular). ADMIN: sin podio.
-    try:
-        import uso_secciones as _uso
-        _uso_modo, _uso_dest, tiles = _uso.destacadas(_lab_conn, USR, _TILES_LANDING, puede_seccion)
-    except Exception:
-        _uso, _uso_modo, _uso_dest = None, "FIJO", []
-        tiles = [t for t in _TILES_LANDING if puede_seccion(t[3])]
-    if _uso_dest:
-        st.markdown('<div class="section-title">%s</div>' % _uso.TITULOS.get(_uso_modo, "Destacadas"),
-                    unsafe_allow_html=True)
-        _render_tiles(_uso_dest)
-
     st.markdown('<div class="section-title">Accesos</div>', unsafe_allow_html=True)
-    _render_tiles(tiles)
-    if _uso is not None:
-        try:
-            _uso.selector_modo(_lab_conn, USR)
-        except Exception:
-            pass
+
+    tiles = [t for t in _TILES_LANDING if puede_seccion(t[3])]
+
+    for i in range(0, len(tiles), 3):
+        cols = st.columns(3)
+        for col, (icon, tit, desc, sec, key, prim) in zip(cols, tiles[i:i+3]):
+            with col:
+                with st.container(border=True):
+                    st.markdown(f'<div class="tile-h">{icon} {tit}</div><div class="tile-d">{desc}</div>',
+                                unsafe_allow_html=True)
+                    if st.button("Entrar", type="primary", use_container_width=True, key=key):
+                        go_to(sec)
     st.stop()
 
 with st.sidebar:
@@ -1149,13 +1150,6 @@ if not puede_seccion(st.session_state.section):
 if st.session_state.get("_sec_cookie") != st.session_state.section:
     _auth.set_section_cookie(st.session_state.section)
     st.session_state._sec_cookie = st.session_state.section
-
-# ---- SOL-0036: registrar la ENTRADA a la sección (alimenta "más usadas" en la portada) ----
-try:
-    import uso_secciones as _uso
-    _uso.registrar_uso(_lab_conn, USR, st.session_state.section)
-except Exception:
-    pass
 
 # ---- Botón Home visible en TODAS las secciones (además del de la sidebar) ----
 _hcol1, _hcol2 = st.columns([1, 4])
@@ -1746,10 +1740,9 @@ def K(cod, default=None):
 def _render_porteria(USR, cat, conectar):
         # =================== PORTERIA ===================
         st.subheader("\U0001f69b Ingresos de camiones")
-        sub_dia, sub_hist, sub_eflu, sub_solid, sub_labcmp = st.tabs([
+        sub_dia, sub_hist, sub_eflu, sub_labcmp = st.tabs([
             "\U0001f4c5 Entrada diaria", "\U0001f4ca Revision historica",
-            "\U0001f4a7 Disp. final líquidos", "\U0001faa8 Disp. final sólidos",
-            "\U0001f9ea Lab por cliente"])
+            "\U0001f4c8 Por producto", "\U0001f9ea Lab por cliente"])
 
         # ---------------- ENTRADA DIARIA ----------------
         with sub_dia:
@@ -1911,23 +1904,174 @@ def _render_porteria(USR, cat, conectar):
                 st.info("Sin datos en el rango.")
 
 
-        # ---------------- DISPOSICION FINAL DE LIQUIDOS / SOLIDOS ----------------
-        # Antes era un selector generico de "productos evaluables". Direccion pidio
-        # volver a la vista de siempre: lo que entra dia a dia (evaluado) y una
-        # seccion de resultados (comparacion mensual, proyeccion). Misma logica para
-        # solidos. Vive en disposicion_final.py.
+        # ---------------- DISPOSICION FINAL DE LIQUIDOS ----------------
         with sub_eflu:
+            st.caption("Apertura por **producto base** (los evaluables con más movimiento): acumulados, "
+                       "tendencia, comparación mensual y semanal. Efluentes líquidos es un producto más.")
             try:
-                import disposicion_final as _dfin
-                _dfin.render(cat, "LIQUIDOS")
-            except Exception as _e:
-                st.exception(_e)
-        with sub_solid:
+                _topb = cat(
+                    "SELECT producto_base, SUM(ABS(peso_neto)) kg FROM produccion.v_transacciones_limpias "
+                    "WHERE fecha_entrada >= current_date - 365 AND peso_neto IS NOT NULL AND producto_base IS NOT NULL "
+                    "  AND corriente IN (SELECT corriente FROM produccion.dic_corriente_config WHERE evaluable) "
+                    "  AND upper(producto_base) NOT IN (SELECT upper(producto_base) FROM produccion.dic_producto_base_config WHERE NOT evaluable) "
+                    "GROUP BY 1 ORDER BY 2 DESC NULLS LAST LIMIT 20")
+                _pb_opts = _topb["producto_base"].tolist()
+            except Exception:
+                _pb_opts = []
+            if "DISPOSICION FINAL DE LIQUIDOS" not in _pb_opts:
+                _pb_opts = ["DISPOSICION FINAL DE LIQUIDOS"] + _pb_opts
+            cE0, cE1, cE2 = st.columns(3)
+            pb_sel = cE0.selectbox("Producto base", _pb_opts,
+                                   index=_pb_opts.index("DISPOSICION FINAL DE LIQUIDOS"),
+                                   key="ef_pb",
+                                   help="Productos base evaluables ordenados por kg movidos en los últimos 12 meses.")
+            ef_desde = cE1.date_input("Desde", value=date(date.today().year,1,1), key="ef_desde")
+            ef_hasta = cE2.date_input("Hasta", value=date.today(), key="ef_hasta")
+            sql_ef = """
+                SELECT fecha_entrada, hora_e, patente_chasis, cliente, transporte, procedencia,
+                       (peso_neto * -1) AS peso_neto, evaluado
+                FROM produccion.v_transacciones_limpias
+                WHERE producto_base = %s
+                  AND fecha_entrada IS NOT NULL
+                  AND fecha_entrada >= %s AND fecha_entrada <= %s
+                ORDER BY fecha_entrada
+            """
             try:
-                import disposicion_final as _dfin
-                _dfin.render(cat, "SOLIDOS")
-            except Exception as _e:
-                st.exception(_e)
+                df_ef = cat(sql_ef, (pb_sel, ef_desde.isoformat(), ef_hasta.isoformat()))
+            except Exception as e:
+                st.exception(e); df_ef = pd.DataFrame()
+
+            if not df_ef.empty:
+                _clis = sorted(df_ef["cliente"].dropna().astype(str).str.strip().unique().tolist())
+                cli_sel = st.multiselect("Cliente (vacío = todos)", _clis, key="ef_cli",
+                                         help="Filtra todo el análisis (acumulados, comparaciones y CSV) a los clientes elegidos.")
+                if cli_sel:
+                    df_ef = df_ef[df_ef["cliente"].astype(str).str.strip().isin(cli_sel)]
+
+            if df_ef.empty:
+                st.info(f"No hay registros de {pb_sel} en el rango (revisá el filtro de cliente).")
+            else:
+                df_ef["peso_neto"] = pd.to_numeric(df_ef["peso_neto"], errors="coerce")
+                df_ef["fecha_entrada"] = pd.to_datetime(df_ef["fecha_entrada"])
+                total_kg = df_ef["peso_neto"].sum()
+                n_via = len(df_ef)
+                prom = df_ef["peso_neto"].mean()
+                ke1, ke2, ke3 = st.columns(3)
+                ke1.metric("TN netas acumuladas", f"{total_kg/1000:,.2f}")
+                ke2.metric("Viajes", n_via)
+                ke3.metric("TN promedio por viaje", f"{(prom or 0)/1000:,.2f}")
+
+                # Total por mes (barras)
+                dm = df_ef.copy()
+                dm["mes"] = dm["fecha_entrada"].dt.to_period("M").astype(str)
+                tot_mes = dm.groupby("mes")["peso_neto"].sum().reset_index()
+                tot_mes.columns = ["mes", "kg_netos"]
+                tot_mes["TN"] = (tot_mes["kg_netos"] / 1000).round(2)
+                st.markdown("**Total de TN netas por mes**")
+                st.bar_chart(tot_mes, x="mes", y="TN", use_container_width=True)
+
+                # Comparacion mensual: acumulado por dia-del-mes, una linea por mes
+                st.markdown("**Comparacion entre meses (acumulado dia 1 -> fin de mes)**")
+                import calendar as _cal
+                import altair as alt
+                d = df_ef.copy()
+                d["mes"] = d["fecha_entrada"].dt.to_period("M").astype(str)
+                d["dia"] = d["fecha_entrada"].dt.day
+                meses_disp = sorted(d["mes"].unique())
+                hoy = date.today()
+                mes_actual = pd.Period(hoy, freq="M").strftime("%Y-%m")
+                default_meses = meses_disp[-4:] if len(meses_disp) > 4 else meses_disp
+                meses_sel = st.multiselect("Meses a comparar (año-mes)", meses_disp,
+                                           default=default_meses, key="ef_meses")
+                if not meses_sel:
+                    st.info("Elegí al menos un mes.")
+                else:
+                    d2 = d[d["mes"].isin(meses_sel)]
+                    diario = d2.groupby(["mes","dia"])["peso_neto"].sum().reset_index()
+                    diario["acum"] = diario.groupby("mes")["peso_neto"].cumsum()
+                    diario["tipo"] = "real"
+
+                    # Proyeccion del mes actual (si está seleccionado): linea punteada
+                    proy_rows = []
+                    if mes_actual in meses_sel:
+                        dm = diario[diario["mes"]==mes_actual].sort_values("dia")
+                        if not dm.empty:
+                            acum_hoy = float(dm["acum"].iloc[-1])
+                            dia_hoy  = int(dm["dia"].iloc[-1])
+                            dias_mes = _cal.monthrange(hoy.year, hoy.month)[1]
+                            ritmo = acum_hoy / dia_hoy if dia_hoy else 0
+                            # punto de arranque de la proyeccion = ultimo real
+                            proy_rows.append({"mes": f"{mes_actual} (proy)", "dia": dia_hoy, "acum": acum_hoy, "tipo": "proyeccion"})
+                            for dd in range(dia_hoy+1, dias_mes+1):
+                                proy_rows.append({"mes": f"{mes_actual} (proy)", "dia": dd,
+                                                  "acum": ritmo*dd, "tipo": "proyeccion"})
+
+                    plot_df = pd.concat([diario, pd.DataFrame(proy_rows)], ignore_index=True) if proy_rows else diario
+                    plot_df = plot_df.copy()
+                    plot_df["acum_tn"] = plot_df["acum"] / 1000.0
+
+                    chart = alt.Chart(plot_df).mark_line(point=False).encode(
+                        x=alt.X("dia:Q", title="día del mes"),
+                        y=alt.Y("acum_tn:Q", title="TN netas acumuladas"),
+                        color=alt.Color("mes:N", title="mes"),
+                        strokeDash=alt.StrokeDash("tipo:N", title="",
+                                   scale=alt.Scale(domain=["real","proyeccion"], range=[[1,0],[6,4]])),
+                    ).properties(height=380)
+                    st.altair_chart(chart, use_container_width=True)
+                    st.caption("Línea sólida = real. Línea punteada = proyección del mes corriente según el ritmo diario actual.")
+
+                    if mes_actual in meses_sel and proy_rows:
+                        proy_total = proy_rows[-1]["acum"]
+                        cp1, cp2 = st.columns(2)
+                        cp1.metric(f"Acumulado {mes_actual} a hoy (TN)", f"{acum_hoy/1000:,.2f}")
+                        cp2.metric("Proyección fin de mes (TN)", f"{proy_total/1000:,.2f}",
+                                   help="Ritmo diario actual × días del mes")
+
+                # Comparación semanal: misma semana del mes, entre meses (barras)
+                st.markdown("**Comparación semanal — misma semana del mes, entre meses**")
+                dsem = df_ef.copy()
+                dsem["mes"] = dsem["fecha_entrada"].dt.to_period("M").astype(str)
+                dsem["sem_mes"] = ((dsem["fecha_entrada"].dt.day - 1) // 7 + 1).clip(upper=5)
+                _sem_hoy = min(5, (date.today().day - 1) // 7 + 1)
+                cs1, cs2 = st.columns(2)
+                sem_sel = cs1.selectbox("Semana del mes", [1, 2, 3, 4, 5], index=_sem_hoy - 1, key="ef_sem",
+                                        help="Semana 1 = días 1-7 · semana 2 = 8-14 · semana 3 = 15-21 · semana 4 = 22-28 · semana 5 = 29-31.")
+                meses_sem = cs2.multiselect("Meses a comparar", meses_disp, default=default_meses, key="ef_sem_meses")
+                dsem = dsem[(dsem["sem_mes"] == sem_sel) & (dsem["mes"].isin(meses_sem))]
+                if dsem.empty:
+                    st.info("Sin datos para esa semana en los meses elegidos.")
+                else:
+                    tot_sem = (dsem.groupby("mes")
+                               .agg(kg=("peso_neto", "sum"), viajes=("peso_neto", "size"))
+                               .reindex(sorted(meses_sem)).fillna(0).reset_index())
+                    tot_sem["TN"] = (tot_sem["kg"] / 1000).round(2)
+                    _bar_sem = alt.Chart(tot_sem).mark_bar().encode(
+                        x=alt.X("mes:N", title="mes", sort=sorted(meses_sem)),
+                        y=alt.Y("TN:Q", title=f"TN netas · semana {sem_sel} del mes"),
+                        tooltip=[alt.Tooltip("mes:N"), alt.Tooltip("TN:Q"), alt.Tooltip("viajes:Q")],
+                    ).properties(height=300)
+                    st.altair_chart(_bar_sem, use_container_width=True)
+                    _d1, _d2 = (sem_sel - 1) * 7 + 1, min(sem_sel * 7, 31) if sem_sel < 5 else 31
+                    st.caption(f"Compara los días {_d1}–{_d2} de cada mes ({pb_sel}). "
+                               "Ojo con el mes en curso si la semana todavía no terminó.")
+
+                # Estadisticas por procedencia
+                st.markdown("**Por cliente**")
+                by_proc = (df_ef.dropna(subset=["cliente"])
+                                .groupby("cliente")
+                                .agg(viajes=("peso_neto","size"),
+                                     kg_total=("peso_neto","sum"),
+                                     kg_promedio=("peso_neto","mean"))
+                                .sort_values("kg_total", ascending=False).reset_index())
+                by_proc["TN_total"] = (by_proc["kg_total"] / 1000).round(2)
+                by_proc["TN_promedio"] = (by_proc["kg_promedio"] / 1000).round(2)
+                by_proc = by_proc.drop(columns=["kg_total", "kg_promedio"])
+                st.bar_chart(by_proc.head(15), x="cliente", y="TN_total", use_container_width=True)
+                st.dataframe(by_proc, use_container_width=True, hide_index=True)
+
+                st.download_button(f"⬇️ Descargar CSV {pb_sel}",
+                                   df_ef.to_csv(index=False).encode("utf-8"),
+                                   file_name=f"{pb_sel.lower().replace(' ', '_')}_{ef_desde}_{ef_hasta}.csv", mime="text/csv")
 
         # ---------------- LAB POR CLIENTE (procedencia) ----------------
         with sub_labcmp:
@@ -5614,7 +5758,7 @@ with tab_objs[0]:
                     if _opts_mp_tl[0] == "AFE-S":
                         st.info("♻️ **Reproceso de AFE-S calidad D**: al desgomado sólo debería "
                                 "entrar AFE-S **fuera de spec de venta** (azufre > 50 o fósforo "
-                                "> 150 ppm). El A/B/C es producto vendible: se despacha, no se "
+                                "> 150 ppm). El A/B/C es producto vendible: se vende, no se "
                                 "reprocesa.")
                 else:
                     st.caption("📥 Ingresá **N° de ticket** de portería (máx 3 por proceso). La app suma kg y trae los parámetros del laboratorio.")

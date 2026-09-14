@@ -138,7 +138,7 @@ def _familia(prod_cod, prods=None):
 
 
 def _es_base(prod, prod_cod):
-    """True si el producto del tanque es componente BASE dla orden de venta: para un
+    """True si el producto del tanque es componente BASE de la orden de venta: para un
     formulado (AG-E de venta), cualquier MATERIA PRIMA; para el resto, el mismo producto."""
     if str(prod_cod or "").strip().upper() in FORMULADOS:
         return _es_mp_despacho(prod)
@@ -289,7 +289,7 @@ BANDA_DESC = {"A": "excelente", "B": "bueno", "C": "justo", "D": "fuera de spec"
 
 
 def _banda_tk(r, spec):
-    """Banda A/B/C/D del tanque contra la spec dla orden de venta ('—' si no tiene lab)."""
+    """Banda A/B/C/D del tanque contra la spec de la orden de venta ('—' si no tiene lab)."""
     peor, alguno = 0.0, False
     for c, k in (("acidez", "acidez"), ("agua_sedimento", "ays"),
                  ("azufre", "azufre"), ("fosforo", "fosforo")):
@@ -829,7 +829,7 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
                                                     step=500.0, format="%.0f"),
             "Grupo": st.column_config.TextColumn("Producto · banda", width="medium"),
             "Cal.": st.column_config.TextColumn("Cal.", width="small",
-                                                help="Banda contra la spec dla orden de venta."),
+                                                help="Banda contra la spec de la orden de venta."),
             "Disp. (L)": st.column_config.NumberColumn(format="%.0f",
                                                        help="Utilizable ahora: medido − fondo "
                                                             "de tanque − comprometido."),
@@ -1191,7 +1191,7 @@ def _estructura(res, prod_cod, prods=None):
     _mpx = ", ".join(sorted(set(str(x) for x in b["Producto"].dropna()))) or "—"
     c1.metric("Materias primas · %d tanque(s)" % len(b), "{:,.0f} L".format(l_b),
               "%.2f %% del total" % (100.0 * l_b / tot), delta_color="off",
-              help="Las MP dla orden de venta (AFE-M, AG-A/B/C, AFE-AL, AFE-G y los ARE): son lo "
+              help="Las MP de la orden de venta (AFE-M, AG-A/B/C, AFE-AL, AFE-G y los ARE): son lo "
                    "más barato y aportan la acidez y el azufre altos. En esta carga: %s. "
                    "El AG-E ya no entra en la mezcla." % _mpx)
     c2.metric("AFE (diluyente) · %d tanque(s)" % len(d), "{:,.0f} L".format(l_d),
@@ -1218,7 +1218,7 @@ def _estructura(res, prod_cod, prods=None):
         _cods_b = set(str(x).strip().upper() for x in b["Producto"].dropna())
         if _cods_b and all(c.startswith("ARE") for c in _cods_b):
             msgs.append(("info", "Carga **100%% ARE** (%s), sin dilución. El ARE ya sale de "
-                                 "reactores en especificación, así que se despacha tal cual. "
+                                 "reactores en especificación, así que se vende tal cual. "
                                  "El cumplimiento de spec se controla igual, acá abajo."
                          % ", ".join(sorted(_cods_b))))
         else:
@@ -1409,7 +1409,7 @@ REGLAS = (
          valor=lambda: "_AIRE_SPEC = %.1f%%" % (_AIRE_SPEC * 100),
          donde="_cumple() dentro de _sugerir()"),
     dict(id="R10", grupo="Bandas de calidad", titulo="A / B / C / D",
-         regla="La banda de un tanque es su PEOR parámetro relativo a la spec dla orden de venta: "
+         regla="La banda de un tanque es su PEOR parámetro relativo a la spec de la orden de venta: "
                "A ≤ 0,80 · B ≤ 0,90 · C ≤ 1,00 · D > 1,00. Sin análisis: '—'.",
          porque="Mismo idioma y mismos umbrales que el Balance, para que un tanque sea 'B' "
                 "en toda la plataforma y no una cosa distinta en cada pantalla.",
@@ -1496,7 +1496,7 @@ def _sugerir(tks, prod_cod, litros_obj, spec, prods=None, l_base=None, maximizar
     Dos palancas compiten por el MISMO margen de spec y no se pueden maximizar a la vez:
 
     * los litros de MATERIAS PRIMAS (AFE-M, AG-A/B/C, AFE-AL, AFE-G y los ARE),
-      que son lo más barato dla orden de venta, y
+      que son lo más barato de la orden de venta, y
     * la cantidad de AFE-S C+D que se logra colocar (el AFE-S A+B escasea y hay que
       reservarlo para los próximos órdenes de venta).
 
@@ -2259,7 +2259,7 @@ _VERIF_INV = {v: k for k, v in _VERIF_MAPA.items()}
 
 
 def _plan_contenedores(lineas, n_cont, base_cod):
-    """Reparte las líneas dla orden de venta en contenedores.
+    """Reparte las líneas de la orden de venta en contenedores.
 
     Las MATERIAS PRIMAS van en partes iguales en TODOS los contenedores: la calidad
     queda homogénea y se respeta el mínimo por contenedor. Los diluyentes (AFE) se
@@ -2433,12 +2433,12 @@ def _params_por_contenedor(plan, lin, spec, id_despacho):
                    % ", ".join(sorted(set(_sin))))
     st.download_button("⬇️ Descargar control por contenedor (CSV)",
                        _df[_cols].to_csv(index=False).encode("utf-8-sig"),
-                       file_name="contenedores_despacho_%d.csv" % int(id_despacho),
+                       file_name="contenedores_orden_venta_%d.csv" % int(id_despacho),
                        mime="text/csv", key="cont_par_dl_%d" % int(id_despacho))
 
 
 def verificacion_planta(USR, cat, conectar):
-    """Vista para Producción en planta: dirección arma la formulación dla orden de venta y acá
+    """Vista para Producción en planta: dirección arma la formulación de la orden de venta y acá
     los operarios confirman, tanque por tanque, si la carga salió DE VERDAD de esos
     tanques. Queda registrado con usuario y fecha, y dirección lo ve en Control y
     confirmación. Un "no se usó" es una alerta directa de que la formulación en papel
@@ -3083,7 +3083,7 @@ def _reglas(USR, cat, conectar):
                     st.caption("**Excepción:** %s" % r["excepcion"])
                 st.caption("`%s` · se aplica en %s" % (r["valor"](), r["donde"]))
     st.download_button("⬇️ Bajar las reglas (.md)", _reglas_md().encode("utf-8"),
-                       file_name="reglas_formulacion_despachos.md", mime="text/markdown",
+                       file_name="reglas_formulacion_ordenes_venta.md", mime="text/markdown",
                        help="Para imprimir o pegar en el manual de planta.")
 
 
@@ -3234,7 +3234,7 @@ def _monitor_baja(USR, cat, conectar):
                  })
     st.caption("**Ledger** = asiento en el stock (se genera solo al confirmar). "
                "**Portería** = camiones pesados en balanza. **Medición** = prueba física: "
-               "cuántos tanques dla orden de venta tienen medición antes y después sin recarga en "
+               "cuántos tanques de la orden de venta tienen medición antes y después sin recarga en "
                "el medio. Comparar *Caída medida* contra *Plan de esos*, no contra el plan total.")
 
     if not _pend.empty:
@@ -3421,7 +3421,7 @@ def _analisis(USR, cat):
         st.altair_chart(
             alt.Chart(_g).mark_bar().encode(
                 x=alt.X("Semana:N", sort=None, title=None),
-                y=alt.Y("TN:Q", title="TN despachadas"),
+                y=alt.Y("TN:Q", title="TN vendidas"),
                 color=alt.Color("Producto:N", legend=alt.Legend(orient="bottom", title=None)),
                 tooltip=["Semana", "Producto", alt.Tooltip("TN:Q", format=",.1f")]),
             use_container_width=True)
@@ -3469,7 +3469,7 @@ def _analisis(USR, cat):
 
     # ---- conciliación con portería: que no se escape ningún camión
     st.markdown("---")
-    st.markdown("**⚖️ Despachado vs lo que salió por portería** — tickets de SALIDA "
+    st.markdown("**⚖️ Órdenes de venta vs lo que salió por portería** — tickets de SALIDA "
                 "(exportación, en su mayoría a EGNITRADE, producto AG)")
     try:
         prt = cat(
@@ -3568,7 +3568,7 @@ def _analisis(USR, cat):
                      column_config={"TN": st.column_config.NumberColumn(format="%.1f"),
                                     "Fecha": st.column_config.DateColumn(format="DD/MM/YY")})
         st.download_button("⬇️ CSV", _v[_cols].to_csv(index=False).encode("utf-8"),
-                           file_name="analisis_despachos.csv", mime="text/csv", key="dsa_dl")
+                           file_name="analisis_ordenes_venta.csv", mime="text/csv", key="dsa_dl")
 
 
 def _lineas_set(ss, df):
@@ -3624,7 +3624,7 @@ def _armar(USR, cat, conectar):
             ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
             _borr_restaurar(cat, USR)
             _rerun_frag()
-        _rr2.caption("Cada cambio dla orden de venta se guarda solo como borrador. Si algo se ve "
+        _rr2.caption("Cada cambio de la orden de venta se guarda solo como borrador. Si algo se ve "
                      "vacío o distinto a lo que cargaste, este botón lo trae de vuelta.")
     tks = _tanques(cat)
     if tks.empty:
@@ -3706,7 +3706,7 @@ def _armar(USR, cat, conectar):
         if _c in _pl:
             _def_p = _pl.index(_c)
             break
-    prod_lbl = c1.selectbox("Producto a despachar", _pl, index=_def_p, key="dsp_prod",
+    prod_lbl = c1.selectbox("Producto a vender", _pl, index=_def_p, key="dsp_prod",
                             help="Rótulo oficial. Define el filtro de tanques en la sugerencia.")
     prod_cod = _pcod.get(prod_lbl, prod_lbl)
     tipo = c2.selectbox("Tipo de carga", TIPOS_CARGA, key="dsp_tipo")
@@ -3793,7 +3793,7 @@ def _armar(USR, cat, conectar):
         "🔓 Permitir tanques vacíos o con fondo (<%s L) — el stock a veces está desactualizado"
         % f"{MIN_L_DESPACHO:,.0f}", key="dsp_incv",
         help="Los habilita en el selector aunque figuren sin stock útil. Si les cargás litros, "
-             "queda CONSTANCIA en la línea dla orden de venta de que el stock del sistema no alcanzaba "
+             "queda CONSTANCIA en la línea de la orden de venta de que el stock del sistema no alcanzaba "
              "(medido vs cargado), para poder auditar después.")
     if not _fondo.empty:
         st.caption("🛢️ **%s por fondo de tanque (<%s L):** "
@@ -3835,7 +3835,7 @@ def _armar(USR, cat, conectar):
         _tot_c = float(_cmp_fam["litros_comp"].sum())
         _n_d = int(_cmp_fam["id_despacho"].nunique())
         st.info("🔒 **%s L comprometidos** en %d orden de venta(s) confirmado(s) sin terminar de "
-                "despachar: ya están descontados de la disponibilidad de arriba, así el "
+                "vender: ya están descontados de la disponibilidad de arriba, así el "
                 "orden de venta nueva se arma con lo que realmente va a quedar. El descuento se "
                 "libera cuando la orden de venta termina de pesar TODOS sus contenedores."
                 % ("{:,.0f}".format(_tot_c), _n_d))
@@ -4132,7 +4132,7 @@ def _armar(USR, cat, conectar):
                        ("%s L fuera del filtro" % "{:,.0f}".format(_dtot - _dsel))
                        if _secs_dil else None,
                        help="Suma de los tanques diluyentes usables (≥%s L) de los "
-                            "sectores elegidos. Comparalo con el objetivo dla orden de venta."
+                            "sectores elegidos. Comparalo con el objetivo de la orden de venta."
                             % "{:,.0f}".format(MIN_L_DESPACHO))
             if _secs_dil and _dsel < float(lit_obj) * 0.5:
                 st.warning("📍 En %s hay **%s L** de %s usable y la orden de venta pide %s L. "
@@ -4322,7 +4322,7 @@ def _armar(USR, cat, conectar):
             st.caption("Tres formas de armar el misma orden de venta con números comparables: "
                        "A maximiza las materias primas, B resigna MP para colocar el máximo "
                        "de AFE-S C+D, C cumple la spec sin tolerancia. Elegís una y se carga "
-                       "en la formulación — la decisión es de quien despacha, no del algoritmo.")
+                       "en la formulación — la decisión es de quien arma la orden, no del algoritmo.")
             if st.button("Generar propuestas", key="dsp_btn_props"):
                 with st.spinner("Armando variantes…"):
                     ss["dsp_props"] = _propuestas(tks_sug, prod_cod, lit_obj, spec, prods, _tol,
@@ -4443,7 +4443,7 @@ def _armar(USR, cat, conectar):
                                                    help="Disponible AHORA del tanque elegido (ya "
                                                         "descontado fondo y comprometidos)."),
             "Calidad": st.column_config.TextColumn("Calidad (último lab)", disabled=True,
-                                                   help="Semáforo contra la spec dla orden de venta."),
+                                                   help="Semáforo contra la spec de la orden de venta."),
         }
         if pisar:
             _cfg.update({
@@ -4715,7 +4715,7 @@ def _armar(USR, cat, conectar):
             st.error(f"No se pudo guardar: {e}")
 
     st.download_button("⬇️ Descargar planilla (.xlsx)", _excel(cab, res, spec),
-                       file_name=f"despacho_{fecha:%Y%m%d}_{(destino or 'SD').replace(' ','_')}.xlsx",
+                       file_name=f"orden_venta_{fecha:%Y%m%d}_{(destino or 'SD').replace(' ','_')}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
@@ -4985,7 +4985,7 @@ def _listado(USR, cat, conectar):
                                {"cerrada_en": _ntk, "remanente": _rem,
                                 "nueva_orden": _idn, "titulo_nuevo": _tit_nva})
                     cat.clear()
-                    st.success("✅ Orden #%d cerrada en %d contenedores (DESPACHADO). Nueva "
+                    st.success("✅ Orden #%d cerrada en %d contenedores. Nueva "
                                "orden #%d «%s» para el %s con %d contenedores. La formulación "
                                "de la nueva se arma en el armador cuando toque; el booking "
                                "final se pone con ✏️ Renombrar."
@@ -5016,7 +5016,7 @@ def _listado(USR, cat, conectar):
                 st.warning("Estado actualizado, pero no se generaron movimientos de stock "
                            "(revisá que la orden de venta tenga líneas con tanque y litros).")
             else:
-                st.success("Estado actualizado. Se revirtieron los movimientos de stock dla orden de venta.")
+                st.success("Estado actualizado. Se revirtieron los movimientos de stock de la orden de venta.")
             _rerun_frag()
         except Exception as e:
             st.error(f"No se pudo actualizar: {e}")
@@ -5047,7 +5047,7 @@ def _borradores(USR, cat, conectar):
              "ORDER BY actualizado_en DESC NULLS LAST, id_despacho DESC")
     if df is None or df.empty:
         st.success("✅ No hay borradores: todas las órdenes de venta están confirmadas o "
-                   "despachadas.")
+                   "vendidas.")
         st.caption("Los borradores se crean guardando una orden sin confirmar, desde "
                    "*Armar / editar orden de venta*.")
         return
@@ -5411,7 +5411,7 @@ def _control(USR, cat, conectar):
 # dispara ese trigger: crear movimientos propios duplicaría la salida.
 
 def _desvio_balanza(cur, id_despacho, usuario):
-    """Recalcula el desvío balanza-vs-formulado dla orden de venta y lo deja registrado.
+    """Recalcula el desvío balanza-vs-formulado de la orden de venta y lo deja registrado.
 
     Cada camión que sale por portería es masa que abandona la planta: si lo pesado
     se aleja >3% de lo formulado, queda como desvío (origen BALANZA) visible para
@@ -5709,7 +5709,7 @@ def _tickets(USR, cat, conectar):
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Contenedores", f"{_ns} de {_nc}", delta=(None if _ns == _nc else f"{_ns - _nc:+d}"))
-    m2.metric("Salida despachada", f"{_ks / 1000:,.1f} TN".replace(",", "."))
+    m2.metric("Salida vendida", f"{_ks / 1000:,.1f} TN".replace(",", "."))
     m3.metric("Objetivo formulación", f"{_tn:,.1f} TN".replace(",", "."))
     m4.metric("Cliente", str(cab.get("cliente") or "EGNITRADE"))
 

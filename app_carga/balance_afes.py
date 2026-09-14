@@ -11,7 +11,7 @@ Responde una sola pregunta: ¿alcanza el AFE-S A+B para sostener la exportación
   - Proyección: cuánto AFE-S A+B exige exportar E tn/semana con x% de AG-E, contra lo que
     entra y lo que hay en tanques → semanas de autonomía del stock A+B.
 
-La misma clasificación explica el algoritmo de despacho: maximizar AG-E y, entre los AFE-S,
+La misma clasificación explica el algoritmo de armado de órdenes: maximizar AG-E y, entre los AFE-S,
 usar primero los de PEOR calidad que la spec tolere (C y D), reservando los A+B.
 """
 import altair as alt
@@ -96,7 +96,7 @@ def render(USR, cat, conectar):
         "con el análisis de laboratorio de cada camión, cuánta capacidad de dilución tiene ese "
         "AFE-S.\n\n"
         "**Umbrales de calidad** — se clasifica por el peor de los dos parámetros contra la spec "
-        "de venta (S 50 / P 150), el mismo criterio que usa el algoritmo de despacho:\n\n"
+        "de venta (S 50 / P 150), el mismo criterio que usa el algoritmo de armado de órdenes:\n\n"
         "| Banda | Descripción | Margen contra la spec | En números | Cuánto AG-E banca solo* |\n"
         "|---|---|---|---|---|\n"
         "| 🟢 **A** | excelente | 20% o más | S ≤ 40 **y** P ≤ 120 | ~7% |\n"
@@ -482,8 +482,8 @@ def render(USR, cat, conectar):
     # ---------------- 5 · simulación stock + flujo ----------------
     st.markdown("#### 5 · ¿Alcanza el AFE-S A+B? (simulación de stock + flujo)")
     st.caption("Modelo de tres pools de diluyente (**A+B**, **C**, **D**): cada semana "
-               "se despacha usando primero el D, después el C y recién al final el A+B "
-               "(la misma política que el botón *Sugerir* de Despachos), contra el stock útil en "
+               "se carga usando primero el D, después el C y recién al final el A+B "
+               "(la misma política que el botón *Sugerir* de Órdenes de venta), contra el stock útil en "
                "tanques más lo que entra por semana (compras + producción propia). El SIN LAB se "
                "prorratea con la proporción de lo medido.")
 
@@ -657,17 +657,17 @@ def render(USR, cat, conectar):
         st.success("✅ Con **%.1f%% de AG-E** a %.0f t/sem, las 8 semanas cierran. Stock de A+B "
                    "al final: %s t (hoy: %.0f t)." % (x_pct, exp_obj, _fin_b, stk0["A+B"]))
     st.caption("La mezcla de cada semana usa el mínimo de A+B posible (primero D, después "
-               "C): es exactamente lo que hace *Sugerir mezcla* en Despachos. Si acá se rompe, "
+               "C): es exactamente lo que hace *Sugerir mezcla* en Órdenes de venta. Si acá se rompe, "
                "en la planta se rompe igual — esto solo lo anticipa.")
 
     # ---------------- 6 · cómo ajusta la fórmula de despacho ----------------
-    with st.expander("📐 Cómo ajusta esto la fórmula de despacho", expanded=True):
+    with st.expander("📐 Cómo ajusta esto la fórmula de la orden de venta", expanded=True):
         st.markdown(
             "1. **El AG-E sigue al máximo** que la spec tolere (es lo más barato): eso no cambia.\n"
             "2. **Entre los AFE-S, la sugerencia ahora carga primero los de PEOR calidad** (azufre y "
             "fósforo altos) y va sumando A+B **sólo los necesarios** para que la mezcla cierre en "
             "spec. Antes hacía lo contrario (gastaba los mejores primero) y por eso el A+B se agotaba.\n"
-            "3. El **techo sostenible de %% AG-E** sale de la tabla de arriba: si el despacho pide más "
+            "3. El **techo sostenible de %% AG-E** sale de la tabla de arriba: si la orden de venta pide más "
             "AG-E que ese techo, cumple hoy pero funde el stock de A+B en las semanas indicadas.\n"
             "4. Regla operativa: si la autonomía baja de ~4 semanas, o se consigue AFE-S A+B "
             "(ver pestaña por proveedor: quién lo trae), o se baja un punto el %% de AG-E.\n"

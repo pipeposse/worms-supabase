@@ -7,7 +7,7 @@ Ocho páginas, para leerse en un desayuno:
   3. Stock único      — por producto, más insumos contra fórmula
   4. Ingresos de AFE  — qué categoría entra y quién la vende
   5. Producción       — cronograma por reacción y registro de tiempos
-  6. Despachos        — resumen por despacho y fuera de especificación
+  6. Órdenes de venta        — resumen por orden de venta y fuera de especificación
   7. Reactores        — reparto de horas desgomado/ARE y categoría del desgomado
   8. Tendencias       — proyección por proceso, líquidos y apéndice
 
@@ -357,11 +357,11 @@ def render(D):
     _p_ac = _pctm(_mg_ac_prom, meta.get("are_acidez_max"))
 
     fil_meta = [
-        _fila_meta("Despachos", f'{_n(meta.get("despachos_tn"),0)} TN',
-                   f'{_n(_dm_tn,0)} TN · {len(_dm)} despachos', f'{_n(_dm_proy,0)} TN',
+        _fila_meta("Órdenes de venta", f'{_n(meta.get("despachos_tn"),0)} TN',
+                   f'{_n(_dm_tn,0)} TN · {len(_dm)} órdenes de venta', f'{_n(_dm_proy,0)} TN',
                    _p_desp_r, _p_desp_y,
                    f'proy. {_n(_p_desp_y,0)}%' if _p_desp_y is not None else "s/d", _m_desp),
-        _fila_meta("Despachos fuera de espec", f'≤ {_n(meta.get("fuera_spec_max_pct"),0)}%',
+        _fila_meta("Órdenes de venta fuera de espec", f'≤ {_n(meta.get("fuera_spec_max_pct"),0)}%',
                    f'{_dm_fs_n} de {len(_dm)} ({_n(_dm_fs_pct,0)}%)', "—",
                    _p_fs, None,
                    f'{_n(_p_fs/100,1)}× el tope' if _p_fs is not None else "s/d", _m_fs),
@@ -400,7 +400,7 @@ def render(D):
         f'proyecta <b>{_n(_mg_are_proy,0)}</b> ({_est_txt(*_m_are)})',
         _peor(_m_dg, _m_are)[0])
     chip_desp = meta_chip(
-        f'Despachar <b>{_n(meta.get("despachos_tn"),0)} TN</b> — lleva {_n(_dm_tn,0)}, '
+        f'Vender <b>{_n(meta.get("despachos_tn"),0)} TN</b> — lleva {_n(_dm_tn,0)}, '
         f'proyecta <b>{_n(_dm_proy,0)}</b> ({_est_txt(*_m_desp)}) &nbsp;·&nbsp; '
         f'fuera de espec <b>≤ {_n(meta.get("fuera_spec_max_pct"),0)}%</b> — '
         f'va {_n(_dm_fs_pct,0)}% ({_est_txt(*_m_fs)})',
@@ -433,7 +433,7 @@ def render(D):
     _a_in_sem = c_now.get("A", 0) or 0
     tits = [
         (titular("ok",
-                 f"<b>El balance del AFE-S cierra.</b> Con los despachos cargados desde el "
+                 f"<b>El balance del AFE-S cierra.</b> Con las órdenes de venta cargadas desde el "
                  f"{fdate(DESDE)}, el desvío de la semana es <b>{_n(b_now.get('desvio'),0)} TN "
                  f"({_n(desv_pct,0)}% del stock medido)</b> — diferencia de medición, no faltante.")
          if desv_pct < 25 else
@@ -462,7 +462,7 @@ def render(D):
                  f"{_n(ab_libre,0)} TN). Las mezclas ya salen con azufre en 37–42 ppm — cuidar "
                  f"ese stock para las próximas expo y no quemarlo en mezclas al límite.")),
         titular("grave",
-                f"<b>{_fs_n} despachos fuera de especificación</b> desde el {fdate(DESDE)}: "
+                f"<b>{_fs_n} órdenes de venta fuera de especificación</b> desde el {fdate(DESDE)}: "
                 f"{_fs_s_n} por azufre (hasta <b>{_n(_fs_s_max,1)} ppm</b> contra ≤50) y "
                 f"{_fs_p_n} por fósforo (hasta <b>{_n(_fs_p_max,1)}</b> contra ≤150). "
                 f"El detalle, en la página 6."),
@@ -479,8 +479,8 @@ def render(D):
         kpi("AFE-S ingresado", _n(afe_in, 1), " TN",
             f"{_n(pct_ab_in,0)}% en categorías A+B", microbarra(c_now),
             delta(afe_in, afe_in_prev), delta(afe_in, afe_in_p4)),
-        kpi("Exportado en despachos", _n(exp_tn, 1), " TN",
-            f"{exp_cam} camiones · {exp_nd} despachos"
+        kpi("Exportado en órdenes de venta", _n(exp_tn, 1), " TN",
+            f"{exp_cam} camiones · {exp_nd} órdenes de venta"
             + (f" · y otras salidas por <b>{_n(otras_tn,1)} TN</b> ({otras_cam} camiones)"
                if otras_tn >= 1 else ""), "",
             delta(exp_tn, exp_prev), delta(exp_tn, exp_p4)),
@@ -491,16 +491,16 @@ def render(D):
             f"utilización {_n(are.get('uti'),0)}%", "",
             delta(are.get("tn"), are_p.get("tn"))),
         kpi("Desvío del AFE-S", _n(b_now.get("desvio"), 1), " TN",
-            f"{_n(desv_pct,0)}% del stock medido · balance con despachos", "",
+            f"{_n(desv_pct,0)}% del stock medido · balance con órdenes de venta", "",
             delta(abs(b_now.get("desvio", 0)), abs(b_prev.get("desvio", 0)), mas_es_mejor=False)),
         kpi("AFE-S libre en tanque", _n(libre_total, 1), " TN",
             f"<b>{_n(ab_libre,1)} TN</b> de categorías A+B "
             f"({_n(ab_libre/(libre_total or 1)*100,0)}%)",
             microbarra({b: afe_s[b]["libre"] for b in "ABCD"})),
-        kpi("AFE-S para despachos comprometidos", _n(afe_necesario, 0), " TN",
-            f"{len(dfut)} despachos · el libre cubre {_n(cobertura_afe,0)}%"),
+        kpi("AFE-S para órdenes de venta comprometidos", _n(afe_necesario, 0), " TN",
+            f"{len(dfut)} órdenes de venta · el libre cubre {_n(cobertura_afe,0)}%"),
         kpi("Margen de especificación", _n(mg_prom, 1), "%",
-            f"promedio {len(de)} despachos · {mg_neg} por debajo de cero"),
+            f"promedio {len(de)} órdenes de venta · {mg_neg} por debajo de cero"),
     ]
 
     fig_stock = figura(
@@ -509,7 +509,7 @@ def render(D):
                        afe_s[b]["c_desp"], afe_s[b]["libre"], afe_s[b]["tn"],
                        f'{afe_s[b]["tanques"]} tanques' if afe_s[b]["tanques"] else "sin stock")
                       for b in "ABCD"], alto_fila=27),
-        leyenda=leyenda([("#2a78d6", "comprometido a un despacho confirmado"), (LIBRE, "libre")]),
+        leyenda=leyenda([("#2a78d6", "comprometido a una orden de venta confirmada"), (LIBRE, "libre")]),
         nota=("Comprometido a: " + " · ".join(
             f'{fdate(x["fecha"])} {_e(x["titulo"])} ({_n(x["tn"],0)} TN)'
             for x in dfut if x.get("estado") == "CONFIRMADO") + "."
@@ -524,14 +524,14 @@ def render(D):
                  ("Ingresos portería", b_now.get("ing", 0), "suma"),
                  ("Producido desgomado", b_now.get("prod", 0), "suma"),
                  ("Consumido reactores", -b_now.get("cons", 0), "resta"),
-                 ("Despachado", -b_now.get("desp", 0), "resta"),
+                 ("Órdenes de venta", -b_now.get("desp", 0), "resta"),
                  ("Stock único", b_now.get("esp", 0), "total"),
                  ("Medido en tanque", b_now.get("med", 0), "medido")],
                 y_titulo="TN de AFE-S", h=248),
         subtitulo=(f"Lo que el libro dice que debería haber (<b>{_n(b_now.get('esp'),0)} TN</b>) "
                    f"contra lo que midieron los radares (<b>{_n(b_now.get('med'),0)} TN</b>): "
                    f"desvío de <b>{_n(b_now.get('desvio'),0)} TN</b>."),
-        nota=f"La salida sale de las líneas de despacho. Antes del {fdate(DESDE)} los despachos "
+        nota=f"La salida sale de las líneas de orden de venta. Antes del {fdate(DESDE)} las órdenes de venta "
              "no se registraban: el histórico previo no compara.")
 
     fil_bal = []
@@ -552,10 +552,10 @@ def render(D):
                f'<span class="mut">({sum(int(bal[s]["nd"] or 0) for s in sem_ago)})</span>',
                "—", "—", _n(sum(bal[s]["desvio"] or 0 for s in sem_ago), 1)]
     t_bal = tabla(["Semana", "AFE-S inicial", "Ingresado", "Producido (desgomado)",
-                   "Consumido", "Despachado (n despachos)", "Stock único", "Medido en tanque",
+                   "Consumido", "Órdenes de venta (n)", "Stock único", "Medido en tanque",
                    "Desvío TN"], fil_bal, total=_tb_tot,
                   fuente="Ingresado: tickets de portería (AFE-S) · Producido y consumido: batches "
-                         "· Despachado: líneas de despacho · Medido: radares y aforo")
+                         "· Órdenes de venta: sus líneas · Medido: radares y aforo")
 
     # la caja que responde si el desvío es faltante o medición (rótulo + frescura)
     caja_med = ""
@@ -640,7 +640,7 @@ def render(D):
     t_dp = tabla(["Producto", "Inicial", "Producido", "Ingresos", "Salidas",
                   "Uso interno (neto)°", "Stock único", "Medición", "Desvío TN"], fil_dp,
                  total=_dp_tot,
-                 fuente="Movimientos ejecutados + líneas de despacho (AFE-S y AG-E) + salidas "
+                 fuente="Movimientos ejecutados + líneas de orden de venta (AFE-S y AG-E) + salidas "
                         "de báscula del AFE (ventas directas y movimientos internos) · "
                         "° derivado para que cada fila cierre: inicial + producido + ingresos "
                         "− salidas − uso interno = stock único")
@@ -877,12 +877,12 @@ def render(D):
     _de_plan = sum(d.get("tn_plan") or 0 for d in de)
     _de_tkt = sum(d.get("tn_ticket") or 0 for d in de)
     _de_ntkt = sum(1 for d in de if d.get("tn_ticket") is not None)
-    _de_tot = [f"<b>Total {len(de)} despachos</b>", "—",
+    _de_tot = [f"<b>Total {len(de)} órdenes de venta</b>", "—",
                f'{_n(_de_plan,1)} → <b>{_n(_de_tkt,1)}</b>'
                + (f' <span class="mut">({_de_ntkt} c/ticket)</span>'
                   if _de_ntkt < len(de) else ""),
                "—", "—", "—", "—", "—", "—"]
-    t_de = tabla(["Fecha", "Despacho", "TN plan → ticket", "Ocup.", "Tq.",
+    t_de = tabla(["Fecha", "Orden de venta", "TN plan → ticket", "Ocup.", "Tq.",
                   "Acidez %", "Azufre ppm", "Fósforo ppm", "Margen"], fil_de,
                  aligns=["l", "l", "r", "r", "c", "r", "r", "r", "r"], total=_de_tot,
                  fuente="Plan: líneas de carga · Ticket: báscula de salida · Parámetros: mezcla "
@@ -902,15 +902,15 @@ def render(D):
                                nombre, f'<b>{_n(v,dec)} {uni}</b>', f"≤ {_n(lim,dec)} {uni}",
                                f'<span style="color:{CRIT};font-weight:700">'
                                f'+{_n(v-lim,dec)} ({_n((v-lim)/lim*100,1)}%)</span>'])
-    t_fs = tabla(["Fecha", "Despacho", "Parámetro", "Medido", "Límite", "Exceso"],
+    t_fs = tabla(["Fecha", "Orden de venta", "Parámetro", "Medido", "Límite", "Exceso"],
                  fil_fs, aligns=["l", "l", "l", "r", "r", "r"],
-                 fuente="Mismos despachos de la tabla de arriba: sólo los que superan el límite "
+                 fuente="Mismos órdenes de venta de la tabla de arriba: sólo los que superan el límite "
                         "de su contrato")
 
     fig_disp = figura(
         "Cuantos más tanques entran en la mezcla, menos margen queda",
         dispersion([(d["tq"], d["mg"], d["titulo"], CRIT if d["mg"] < 0 else GOOD) for d in de],
-                   x_titulo="tanques distintos usados en el despacho",
+                   x_titulo="tanques distintos usados en la orden de venta",
                    y_titulo="margen contra el límite (%)",
                    x_max=max(d["tq"] for d in de) + 2, h=170),
         subtitulo=(f"Con hasta 6 tanques el margen promedio es <b>{_n(mg_pocos,1)}%</b>; con 7 o "
@@ -1029,13 +1029,13 @@ def render(D):
         ["Producto", "Entra por", "Sale por", "Se consume en"],
         [["<b>AFE-S</b>", "camiones de portería + producido por el desgomado "
           f"({_n(b_now.get('prod'),0)} TN)",
-          f"líneas de despacho de exportación ({_n(b_now.get('desp'),0)} TN)", "—"],
+          f"líneas de orden de venta de exportación ({_n(b_now.get('desp'),0)} TN)", "—"],
          ["<b>AG-C</b>", "camiones de portería", "—",
           "MP de la producción de ARE (se convierte en ARE-B)"],
-         ["<b>AG-E</b>", "se arma en el despacho (AFE-S + ARE-B); esa entrada no se registra",
-          f"líneas de despacho ({_n(_ag_e_desp,1)} TN)", "—"],
+         ["<b>AG-E</b>", "se arma en la orden de venta (AFE-S + ARE-B); esa entrada no se registra",
+          f"líneas de orden de venta ({_n(_ag_e_desp,1)} TN)", "—"],
          ["<b>ARE-B</b>", "producido por los reactores (PRODUCCION_ARE) a partir de AG-C",
-          "venta directa por portería + el armado del AG-E de los despachos", "—"],
+          "venta directa por portería + el armado del AG-E de las órdenes de venta", "—"],
          ["<b>AFE-SG</b>", "camiones de portería",
           ("báscula: venta directa / mov. interno "
            f"({_n(_saf.get('AFE-SG', {}).get('tn'), 1)} TN esta semana)"
@@ -1067,17 +1067,17 @@ def render(D):
              for x in de if x.get("tn_ticket") and x.get("tn_plan")]
     if _gaps:
         _gp = sum(_gaps) / len(_gaps)
-        fil_cons.append(_chk("Despachado: plan vs báscula",
+        fil_cons.append(_chk("Órdenes de venta: plan vs báscula",
                              "líneas de carga vs báscula",
-                             f"diferencia promedio {_n(_gp,1)}% ({len(_gaps)} despachos)",
+                             f"diferencia promedio {_n(_gp,1)}% ({len(_gaps)} órdenes de venta)",
                              "ok" if _gp < 5 else ("warn" if _gp < 10 else "err")))
     if s_now.get("tn"):
         _sal_afe_tn = s_now.get("tn_afe") or 0
-        _quien = (" (AFE sin despacho: venta o mov. interno)"
+        _quien = (" (AFE sin orden de venta: venta o mov. interno)"
                   if otras_tn >= 1 and abs(otras_tn - _sal_afe_tn) < 1.5 else "")
-        fil_cons.append(_chk("Salidas de báscula vs despachos",
-                             "báscula vs tickets de despacho",
-                             f"{_n(s_now.get('tn'),1)} = {_n(exp_tn,1)} despachos + "
+        fil_cons.append(_chk("Salidas de báscula vs órdenes de venta",
+                             "báscula vs tickets de orden de venta",
+                             f"{_n(s_now.get('tn'),1)} = {_n(exp_tn,1)} órdenes de venta + "
                              f"{_n(otras_tn,1)} otras{_quien}",
                              "ok" if otras_tn < 1 else "warn"))
     if _sr_f is not None:
@@ -1111,7 +1111,7 @@ def render(D):
     if _desp_tot_sem:
         _pct_age = (_ag_e_desp or 0) / _desp_tot_sem * 100
         _esp_age = (1 - parte_afe) * 100
-        fil_cons.append(_chk("Mezcla del despacho", "parte de AG-E vs declarada",
+        fil_cons.append(_chk("Mezcla de la orden de venta", "parte de AG-E vs declarada",
                              f"{_n(_pct_age,1)}% de AG-E (declarado ≈ {_n(_esp_age,1)}%)",
                              "ok" if abs(_pct_age - _esp_age) < 3
                              else ("warn" if abs(_pct_age - _esp_age) < 8 else "err")))
@@ -1285,11 +1285,11 @@ tr:last-child td{border-bottom:none}
         return f"""<div class="hd">
   <div><h1>WORMS · Brief de Dirección</h1>
     <div class="sub">Semana {iso} · {fdate(sem)} al {fdate(sem_fin)} de {sem[:4]} ·
-    los desvíos se informan desde el {fdate(DESDE)}, inicio del registro de despachos</div></div>
+    los desvíos se informan desde el {fdate(DESDE)}, inicio del registro de órdenes de venta</div></div>
   <div class="rt"><b>{p}</b>emitido {fdate(D['emitido'])}</div></div>"""
 
     def foot(p, t):
-        return (f'<div class="foot"><span>Portería, laboratorio, radares de tanque, despachos y '
+        return (f'<div class="foot"><span>Portería, laboratorio, radares de tanque, órdenes de venta y '
                 f'batches (Supabase). Semana cerrada, del lunes {fdate(sem)} al ' 
                 f'{"sábado" if datetime.strptime(str(sem_fin), "%Y-%m-%d").weekday() == 5 else "domingo"} {fdate(sem_fin)}.</span>'
                 f'<span>{t} · pág. {p}/8</span></div>')
@@ -1304,7 +1304,7 @@ tr:last-child td{border-bottom:none}
 <h2><span class="n">3</span>Metas de {MES_NOM[mes_act[5:7]]}: cómo venimos</h2>
 <p class="lead">Las fija dirección y se editan en la app (Dirección → Brief semanal → 🎯 Metas
 del mes). La proyección extiende el ritmo del mes corrido (día {_dias_corr}) a los {_dias_m} días.
-<b>En la barra, la marca | es siempre la meta</b>: llegar a la marca es cumplirla. En despachos
+<b>En la barra, la marca | es siempre la meta</b>: llegar a la marca es cumplirla. En ventas
 y producción la barra es lo real y el <b>◆</b> la proyección — el mes se cumple si el ◆ alcanza
 la marca. En las metas de tope (fuera de espec, acidez), <b>pasar la marca es incumplir</b>.
 El color dice el estado: <b style="color:{GOOD}">verde</b> cumple ·
@@ -1327,15 +1327,15 @@ El color dice el estado: <b style="color:{GOOD}">verde</b> cumple ·
     H.append(f"""<div class="page">{head("Stock único")}
 <h2><span class="n">5</span>Stock único contra medición, por producto</h2>
 <p class="lead"><b>Stock único</b> = inicial + producido + ingresos − salidas − consumo de
-producción: lo que dice el libro. <b>Medición</b> = radares y varillas. Lo despachado es siempre
+producción: lo que dice el libro. <b>Medición</b> = radares y varillas. Lo que sale vendido es siempre
 <b>mezcla de AFE-S y AG-E</b>: por eso las filas AFE-S (<span class="mut">*</span>) y AG-E
-(<span class="mut">**</span>) toman su salida de las líneas de despacho — {_n(b_now.get('desp'),0)}
+(<span class="mut">**</span>) toman su salida de las líneas de orden de venta — {_n(b_now.get('desp'),0)}
 y {_n(_ag_e_desp,1)} TN esta semana — y ya no dan cero.</p>
 {t_dp}
 <div class="box"><b>Cómo leerlo.</b> Desvío verde: menor al 10% — diferencia normal de medición.
 Ámbar: 10–25% — mirar el registro de esa familia. Rojo: mayor al 25% — hay movimientos sin
-registrar. El caso AG-E lo muestra: su salida por despachos ahora está ({_n(_ag_e_desp,1)} TN),
-pero la <b>mezcla que lo produce</b> (AFE-S + ARE-B que se vuelve AG-E al armarse el despacho) no
+registrar. El caso AG-E lo muestra: su salida por órdenes de venta ahora está ({_n(_ag_e_desp,1)} TN),
+pero la <b>mezcla que lo produce</b> (AFE-S + ARE-B que se vuelve AG-E al armarse la orden de venta) no
 se registra como entrada — por eso su stock único da negativo. BORRA-B, EMULSION y BORRA-ANIMAL
 siguen sin circuito de salida cargado.</div>
 <h2><span class="n">6</span>Insumos de la semana: fórmula contra tanque</h2>
@@ -1404,10 +1404,10 @@ por batch, falta cargar el análisis del tanque de MP al armar el batch.</div>
 {foot(5, "Producción")}</div>""")
 
     # ---------------- 6 · DESPACHOS ----------------
-    H.append(f"""<div class="page">{head("Despachos")}
-<h2><span class="n">11</span>Resumen por despacho</h2>
+    H.append(f"""<div class="page">{head("Órdenes de venta")}
+<h2><span class="n">11</span>Resumen por orden de venta</h2>
 {chip_desp}
-<p class="lead">Cada despacho de exportación es una mezcla de varios tanques (AFE-S + AG-E).
+<p class="lead">Cada orden de venta de exportación es una mezcla de varios tanques (AFE-S + AG-E).
 <b>TN plan → ticket</b>: lo pedido en las líneas de carga contra lo pesado en báscula al salir.
 <b>Ocupación</b>: cuánto del volumen contratado se llenó — abajo de 98% se paga flete por espacio
 vacío. <b>Tq.</b>: de cuántos tanques se bombeó. <b>Acidez, azufre y fósforo</b>: el valor de la
@@ -1419,18 +1419,18 @@ límite, tomando el peor de azufre y fósforo — negativo es fuera de especific
 {t_fs}
 {fig_disp if len(de) <= 14 else ""}
 <div class="box"><b>Las cuatro conclusiones.</b>
-<b>1 · La logística no es el problema:</b> {ocup_ok} de {len(de)} despachos salieron con el
+<b>1 · La logística no es el problema:</b> {ocup_ok} de {len(de)} órdenes de venta salieron con el
 contenedor lleno al 98% o más, y lo pesado en báscula acompaña lo planificado.
-<b>2 · La calidad sí:</b> el margen promedio es {_n(mg_prom,1)}% y {mg_neg} de {len(de)} despachos
+<b>2 · La calidad sí:</b> el margen promedio es {_n(mg_prom,1)}% y {mg_neg} de {len(de)} órdenes de venta
 salieron por debajo de cero — casi siempre por <b>azufre</b>. La mezcla vale lo que el AFE-S del
 que parte: con A/B en tanque el margen aparece; sin A/B, se sale al límite.
 <b>3 · Menos tanques, más margen:</b> con hasta 6 tanques el margen promedia {_n(mg_pocos,1)}%;
-con 7 o más, {_n(mg_muchos,1)}%. Armar el despacho con pocos tanques bien elegidos es la única
+con 7 o más, {_n(mg_muchos,1)}%. Armar la orden de venta con pocos tanques bien elegidos es la única
 palanca gratis que hay hoy.
 <b>4 · Se registra, no se planifica:</b> la anticipación promedio es {_n(antic_prom,1)} días y hay
-despachos creados después de la salida. Además {exc_total} líneas pidieron más litros de los que el
+órdenes de venta creados después de la salida. Además {exc_total} líneas pidieron más litros de los que el
 tanque tenía medidos: el plan se armó sobre stock que no estaba.</div>
-{foot(6, "Despachos")}</div>""")
+{foot(6, "Órdenes de venta")}</div>""")
 
     # ---------------- 7 · REACTORES: TRADE-OFF ----------------
     H.append(f"""<div class="page">{head("Reactores")}
@@ -1452,7 +1452,7 @@ el desgomado entregó {_n(_b_ant,0)} TN de categoría A/B; en {fmes(_dc[-1]['mes
 lleva {_n(_b_ult,0)} sobre {_n(_t_ult,0)} producidas — hoy está agregando volumen, no categoría.
 Y el reparto de horas oscila sin patrón: entre {_n(min(_hs_dg) if _hs_dg else 0,0)} y
 {_n(max(_hs_dg) if _hs_dg else 0,0)} horas semanales a desgomado. Fijar ese reparto según dos
-datos — el ARE-B que piden los despachos comprometidos y la categoría que falta para las próximas
+datos — el ARE-B que piden las órdenes de venta comprometidos y la categoría que falta para las próximas
 expo — es la decisión de dirección pendiente.</div>
 </div>
 {foot(7, "Reactores")}</div>""")
@@ -1471,7 +1471,7 @@ expo — es la decisión de dirección pendiente.</div>
 <h3>Control de consistencia de los datos de esta semana</h3>
 {t_consis}
 <p class="nota"><b>Nota metodológica.</b> Ingresos y salidas: tickets de portería (categoría por
-lab del ticket) · Stock: radares y aforo · Balances de AFE-S y AG-E: líneas de despacho como
+lab del ticket) · Stock: radares y aforo · Balances de AFE-S y AG-E: líneas de orden de venta como
 salida · Tiempos: batches cerrados · Insumos: fórmula vs movimientos. Nada se carga a mano.</p>
 {foot(8, "Tendencias")}</div>""")
 

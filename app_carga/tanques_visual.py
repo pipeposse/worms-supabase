@@ -2,11 +2,11 @@
 """Visualización de tanques — el estado de la planta de un vistazo.
 
 Cada tanque es un recipiente a escala: nivel = stock medido / capacidad, la franja
-rayada arriba del líquido es lo COMPROMETIDO en despachos confirmados, el color es
+rayada arriba del líquido es lo COMPROMETIDO en órdenes de venta confirmadas, el color es
 el producto. Chip de calidad: para AFE/AG es la banda A/B/C/D contra la spec de
 venta; para el resto (ARE-B, AG-C…) es la calidad propia del producto. Cada
 tarjeta dice el medidor (WeDo/Manual), cuándo se midió por última vez y cuál fue
-el último movimiento tipificado (despacho, asignación AFE, carga…).
+el último movimiento tipificado (orden de venta, asignación AFE, carga…).
 
 El HTML se genera SIN saltos de línea: st.markdown trata las líneas con sangría
 como bloque de código y aparecían '</div>' sueltos en pantalla.
@@ -22,12 +22,12 @@ _PROD_COL = [("AFE-SG", "#64748b"), ("AFE-S", "#0284c7"), ("AFE-G", "#7c3aed"),
              ("AFE", "#0ea5e9"), ("AG-E", "#d97706"), ("AG", "#f59e0b"),
              ("ARE", "#16a34a"), ("SEBO", "#a16207"), ("GLICERINA", "#db2777"),
              ("MP", "#6b7280")]
-_ORIGEN_LBL = {"despacho": "🚢 Despacho", "asignacion_afe": "🎯 Asig. AFE",
+_ORIGEN_LBL = {"despacho": "🚢 Orden de venta", "asignacion_afe": "🎯 Asig. AFE",
                "recuperacion_ag": "♻️ Recuperación", "carga_operario": "🏭 Carga",
                "decantacion": "🧴 Decantación", "planificacion": "🗓️ Planif.",
                "lab_sync": "🚛 Ingreso", "porteria_sync": "🚛 Ingreso",
                "ajuste_manual": "✍️ Ajuste", "sistema": "⚙️ Sistema",
-               "sync_wedo": "📡 WeDo", "despacho_salida": "🚢 Despacho"}
+               "sync_wedo": "📡 WeDo", "despacho_salida": "🚢 Orden de venta"}
 
 
 def _color_prod(p):
@@ -149,7 +149,7 @@ def _card(r, mov, ult):
          "<div class='tvq-body'>"
          "<div class='tvq-tank %s'>"
          "<div class='tvq-fill' style='height:%.1f%%;background:linear-gradient(180deg,%scc,%s);bottom:%.1f%%'></div>"
-         "<div class='tvq-comp' style='height:%.1f%%' title='🔒 %s kL comprometidos en despachos confirmados'></div>"
+         "<div class='tvq-comp' style='height:%.1f%%' title='🔒 %s kL comprometidos en órdenes de venta confirmadas'></div>"
          "<div class='tvq-pct'>%.0f%%</div>"
          "</div>"
          "<div class='tvq-info'>"
@@ -211,7 +211,7 @@ def render(USR, cat, conectar=None):
         "padding:16px 20px;margin:0 0 12px'>"
         "<div style='color:#fff;font-size:1.4rem;font-weight:900'>🧭 Visualización de tanques</div>"
         "<div style='color:#e0f2fe;font-size:.88rem;margin-top:3px'>La planta de un vistazo: nivel "
-        "sobre capacidad, producto, calidad, comprometido en despachos, medidor y últimos "
+        "sobre capacidad, producto, calidad, comprometido en órdenes de venta, medidor y últimos "
         "movimientos.</div></div>", unsafe_allow_html=True)
 
     # ---- vista: mapa de planta o editor de composicion multi-producto ----
@@ -332,7 +332,7 @@ def render(USR, cat, conectar=None):
     k2.metric("Stock", "%s t" % _fnum((_lts * _dns).sum() / 1000.0))
     k3.metric("Ocupación", "%.0f %%" % (100.0 * _lts.sum() / _cap.sum() if _cap.sum() else 0))
     k4.metric("🔒 Comprometido", "%s kL" % _fkl(_comp.sum()),
-              help="En despachos confirmados sin terminar de pesar: es la franja rayada "
+              help="En órdenes de venta confirmadas sin terminar de pesar: es la franja rayada "
                    "arriba del líquido de cada tanque.")
     _neto_f = sum(_mv.get(int(t), {"neto": 0})["neto"] for t in df["id_tanque"])
     k5.metric("Δ últimas %d h" % _hs, "%s%s kL" % ("+" if _neto_f >= 0 else "−", _fkl(abs(_neto_f))),
@@ -340,7 +340,7 @@ def render(USR, cat, conectar=None):
     st.caption("🎨 Chip de calidad: en **AFE/AG** es la banda contra la spec de venta "
                "(🟢 A excelente · 🔵 B bueno · 🟠 C justo · 🔴 D fuera de spec · — sin lab); "
                "en el resto es la **calidad del producto** (ARE-B → B). Franja **rayada** = "
-               "comprometido en despachos · recipiente **punteado** = sin medición · "
+               "comprometido en órdenes de venta · recipiente **punteado** = sin medición · "
                "📡 WeDo / ✍️ Manual con fecha y hora de la última medición · "
                "⏱ = medición con más de 48 h.")
 

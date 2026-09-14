@@ -1,4 +1,4 @@
-"""Componente de formulación de despachos (HTML/JS propio, sin build).
+"""Componente de formulación de órdenes de venta (HTML/JS propio, sin build).
 
 POR QUÉ EXISTE
 --------------

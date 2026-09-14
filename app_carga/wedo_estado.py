@@ -5,7 +5,7 @@ Ese día venció la API key de WeDo y el sync siguió 'en verde' sin traer una
 sola medición: la app mostró 32 horas los niveles congelados y una formulación
 se armó con litros que no existían. Este módulo mira vw_tanque_wedo_map (que
 ahora expone ultimo_status/ultimo_error por dispositivo) y pinta un banner
-imposible de ignorar en las pantallas que usan niveles: armador de despachos,
+imposible de ignorar en las pantallas que usan niveles: armador de órdenes de venta,
 informe de stock y disponibilidad de descarga."""
 
 import pandas as pd

@@ -6,8 +6,8 @@ Tres niveles, la misma cuenta en todos:
     STOCK DISPONIBLE = MEDIDO − COMPROMETIDO
 
   · MEDIDO       = la última medición física del tanque.
-  · COMPROMETIDO = lo designado en despachos CONFIRMADOS que todavía no terminaron
-                   de pesar en portería (regla: un despacho retiene el 100% de sus
+  · COMPROMETIDO = lo designado en órdenes de venta CONFIRMADAS que todavía no terminaron
+                   de pesar en portería (regla: una orden de venta retiene el 100% de sus
                    líneas hasta que pesa todos sus contenedores).
   · DISPONIBLE   = lo que realmente se puede usar/vender hoy.
 
@@ -32,7 +32,7 @@ _BORD = ["A", "B", "C", "D", "SIN LAB"]
 
 
 def _banda(s_, p_):
-    """Banda de calidad contra la spec de venta — la misma regla que Balance y Despachos."""
+    """Banda de calidad contra la spec de venta — la misma regla que Balance y Órdenes de venta."""
     _s = None if (s_ is None or pd.isna(s_) or float(s_) <= 0) else float(s_)
     _p = None if (p_ is None or pd.isna(p_) or float(p_) <= 0) else float(p_)
     if _s is None and _p is None:
@@ -58,7 +58,7 @@ def _n(v, dec=0):
 
 
 def _datos(cat):
-    """Tanques con medido/comprometido/disponible + a qué despachos está comprometido."""
+    """Tanques con medido/comprometido/disponible + a qué órdenes de venta está comprometido."""
     tk = cat("SELECT id_tanque, nombre, sector, producto_principal, producto_rotulo, "
              "capacidad_litros, "
              "COALESCE(litros_actual,0) AS medido_l, COALESCE(kg_actual,0) AS medido_kg, "
@@ -128,12 +128,12 @@ def _excel(res, det, desp, porde=None, bandas=None):
             bandas.to_excel(w, sheet_name="Por calidad (banda)", index=False)
         det.to_excel(w, sheet_name="Detalle por tanque", index=False)
         if porde is not None and not porde.empty:
-            porde.to_excel(w, sheet_name="Por despacho", index=False)
+            porde.to_excel(w, sheet_name="Por orden de venta", index=False)
         if desp is not None and not desp.empty:
-            desp.to_excel(w, sheet_name="Despacho x tanque", index=False)
+            desp.to_excel(w, sheet_name="Orden de venta x tanque", index=False)
         for _sh, _df in (("Resumen", res), ("Por calidad (banda)", bandas),
                          ("Detalle por tanque", det),
-                         ("Por despacho", porde), ("Despacho x tanque", desp)):
+                         ("Por orden de venta", porde), ("Orden de venta x tanque", desp)):
             if _df is None or _df.empty:
                 continue
             ws = w.sheets[_sh]
@@ -205,7 +205,7 @@ def _vista_rapida(d):
     """Lo que se mira todos los días: cuánto AFE-S y cuánto AG-E hay de cada banda."""
     st.markdown("##### ⚡ Vista rápida por calidad — AFE-S y AG-E")
     st.caption("Banda contra la **spec de venta** (S ≤ 50 · P ≤ 150), la misma que usan Balance "
-               "y el armador de despachos: 🟢 **A** excelente (S≤40 y P≤120) · 🔵 **B** bueno "
+               "y el armador de órdenes de venta: 🟢 **A** excelente (S≤40 y P≤120) · 🔵 **B** bueno "
                "(S≤45 y P≤135) · 🟠 **C** justo (cumple sin margen) · 🔴 **D** fuera de spec "
                "(sólo entra mezclado) · ⚪ sin análisis.")
     _tabs = st.tabs(["🔵 AFE-S", "🟠 AG-E", "🧪 Todos los AFE"])
@@ -265,7 +265,7 @@ def render(USR, cat, conectar=None):
         "<div style='color:#fff;font-size:1.4rem;font-weight:900'>📦 Informe de stock por "
         "producto y calidad</div>"
         "<div style='color:#e0f2fe;font-size:.88rem;margin-top:3px'>Qué hay de cada producto, "
-        "en qué tanque, cuánto está comprometido en despachos y cuánto queda realmente "
+        "en qué tanque, cuánto está comprometido en órdenes de venta y cuánto queda realmente "
         "disponible.</div></div>", unsafe_allow_html=True)
     try:
         import wedo_estado
@@ -336,7 +336,7 @@ def render(USR, cat, conectar=None):
               "%s kL" % _n(d["medido_l"].sum(), 2))
     k2.metric("🔒 Comprometido", "%s t" % _n(d["comp_t"].sum(), 1),
               "%s kL" % _n(d["comp_l"].sum(), 2),
-              help="En despachos confirmados que todavía no terminaron de pesar.")
+              help="En órdenes de venta confirmadas que todavía no terminaron de pesar.")
     k3.metric("✅ Disponible", "%s t" % _n(d["disp_t"].sum(), 1),
               "%s kL" % _n(d["disp_l"].sum(), 2))
     k4.metric("Productos · tanques", "%d · %d" % (d["prod_cal"].nunique(), len(d)))
@@ -344,7 +344,7 @@ def render(USR, cat, conectar=None):
                "densidad medida por el **laboratorio en cada tanque**; si no hay o es "
                "implausible, la **mediana de lo medido por el lab** en tanques del mismo "
                "producto (columnas *Dens.* y *Dens. fuente* en el detalle). **Disponible = Medido − Comprometido.** *Medido* es la última medición física "
-               "del tanque; *comprometido* es lo designado en despachos **confirmados** que "
+               "del tanque; *comprometido* es lo designado en órdenes de venta **confirmados** que "
                "aún no pesaron todos sus contenedores (se libera solo al completarse).")
 
     # ---------- 0 · vista rápida por calidad (AFE y AG-E) ----------
@@ -429,7 +429,7 @@ def render(USR, cat, conectar=None):
                      "AyS %": st.column_config.NumberColumn(format="%.2f"),
                      "Comprometido en": st.column_config.TextColumn(
                          "Comprometido en", width="medium",
-                         help="Despachos confirmados que retienen ese stock."),
+                         help="Órdenes de venta confirmados que retienen ese stock."),
                      "Últ. medición": st.column_config.DatetimeColumn(format="DD/MM/YY HH:mm")},
                  height=min(38 * (len(det_v) + 1) + 6, 520))
 
@@ -443,7 +443,7 @@ def render(USR, cat, conectar=None):
             _nm = d.set_index("id_tanque")["nombre"].to_dict()
             _dc["Producto · calidad"] = _dc["id_tanque"].map(lambda i: _pm.get(int(i), "—"))
             _dc["Tanque"] = _dc["id_tanque"].map(lambda i: _nm.get(int(i), str(i)))
-            st.markdown("##### 3 · Comprometido por despacho — **cuánto retiene cada uno**")
+            st.markdown("##### 3 · Comprometido por orden de venta — **cuánto retiene cada uno**")
             _dc["_t"] = _dc.apply(
                 lambda r: float(r["litros"]) * float(
                     d.set_index("id_tanque")["densidad"].get(int(r["id_tanque"]), 0.91)), axis=1)
@@ -460,12 +460,12 @@ def render(USR, cat, conectar=None):
                 lambda r: "%d/%d tickets" % (int(r["_tk"] or 0), int(r["_cont"] or 0)), axis=1)
             porde["Falta"] = porde.apply(
                 lambda r: max(0, int(r["_cont"] or 0) - int(r["_tk"] or 0)), axis=1)
-            porde = porde.rename(columns={"id_despacho": "Despacho", "titulo": "Título",
+            porde = porde.rename(columns={"id_despacho": "Orden de venta", "titulo": "Título",
                                           "cliente": "Cliente",
                                           "fecha_despacho": "Fecha"})
-            _colpd = ["Despacho", "Título", "Cliente", "Fecha", "kL", "Toneladas",
+            _colpd = ["Orden de venta", "Título", "Cliente", "Fecha", "kL", "Toneladas",
                       "Tanques", "Productos", "Avance", "Falta"]
-            _totpd = {"Despacho": "TOTAL", "Título": "", "Cliente": "", "Fecha": None,
+            _totpd = {"Orden de venta": "TOTAL", "Título": "", "Cliente": "", "Fecha": None,
                       "kL": float(porde["kL"].sum()),
                       "Toneladas": float(porde["Toneladas"].sum()),
                       "Tanques": int(porde["Tanques"].sum()), "Productos": "",
@@ -479,21 +479,21 @@ def render(USR, cat, conectar=None):
                              "Falta": st.column_config.NumberColumn(
                                  "Faltan pesar", format="%d",
                                  help="Contenedores que faltan pesar. Cuando llega a 0, ese "
-                                      "despacho libera todo el stock que retiene.")})
-            st.caption("**Cuánto retiene cada despacho.** Mientras le falte pesar aunque sea un "
+                                      "orden de venta libera todo el stock que retiene.")})
+            st.caption("**Cuánto retiene cada orden de venta.** Mientras le falte pesar aunque sea un "
                        "contenedor, retiene el 100% de sus líneas. Al completar los tickets en "
-                       "*Despachos → Tickets de portería*, ese stock vuelve a estar disponible.")
-            st.markdown("**Apertura despacho × tanque**")
+                       "*Órdenes de venta → Tickets de portería*, ese stock vuelve a estar disponible.")
+            st.markdown("**Apertura orden de venta × tanque**")
             desp_v = _dc.rename(columns={
-                "id_despacho": "Despacho", "titulo": "Título", "cliente": "Cliente",
+                "id_despacho": "Orden de venta", "titulo": "Título", "cliente": "Cliente",
                 "destino": "Destino", "fecha_despacho": "Fecha", "litros": "kL",
                 "estado": "Estado"})
             desp_v["Avance"] = desp_v.apply(
                 lambda r: "%d/%d tickets" % (int(r["n_tickets"] or 0),
                                              int(r["n_contenedores"] or 0)), axis=1)
-            desp_v = desp_v[["Producto · calidad", "Despacho", "Título", "Cliente", "Destino",
+            desp_v = desp_v[["Producto · calidad", "Orden de venta", "Título", "Cliente", "Destino",
                              "Fecha", "Tanque", "kL", "Avance", "Estado"]] \
-                .sort_values(["Producto · calidad", "Despacho", "kL"],
+                .sort_values(["Producto · calidad", "Orden de venta", "kL"],
                              ascending=[True, True, False])
             st.dataframe(desp_v, hide_index=True, use_container_width=True,
                          column_config={
@@ -554,9 +554,9 @@ def render(USR, cat, conectar=None):
         p1.caption("No se pudo generar la imagen: %s" % e)
     if _porde is not None and not _porde.empty:
         try:
-            p2.download_button("🖼️ PNG · Por despacho",
-                               _png(_porde, "Stock comprometido por despacho"),
-                               file_name="comprometido_despacho_%s.png" % _hoy,
+            p2.download_button("🖼️ PNG · Por orden de venta",
+                               _png(_porde, "Stock comprometido por orden de venta"),
+                               file_name="comprometido_orden_venta_%s.png" % _hoy,
                                mime="image/png", use_container_width=True)
         except Exception as e:
             p2.caption("No se pudo generar la imagen: %s" % e)
@@ -570,5 +570,5 @@ def render(USR, cat, conectar=None):
     except Exception as e:
         p3.caption("No se pudo generar la imagen: %s" % e)
     st.caption("El **Excel** trae las hojas: Resumen, Por calidad (banda), Detalle por tanque, "
-               "Por despacho y Despacho × tanque. Los **PNG** son para pegar en un mensaje o informe (las "
+               "Por orden de venta y Orden de venta × tanque. Los **PNG** son para pegar en un mensaje o informe (las "
                "primeras 45 filas). Los CSV usan codificación compatible con Excel en español.")

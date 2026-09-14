@@ -226,7 +226,7 @@ def _portada(df, p):
             "🚨 **%d código(s) de precio existen pero no tienen precio cargado:** " % len(_vacios)
             + ", ".join("`%s`" % c for c in _vacios["codigo"].astype(str))
             + ".\n\nTodo producto vinculado a estos códigos **vale USD 0 en toda la app**: "
-              "no suma al inventario valorizado, no suma al valor despachado, y ningún total "
+              "no suma al inventario valorizado, no suma al valor vendido, y ningún total "
               "da error — simplemente falta plata. Cargales el precio en el bloque 2️⃣, "
               "más abajo.")
     if not _venc.empty:
@@ -290,7 +290,7 @@ def _config_productos(cods):
     return {
         "Producto": st.column_config.TextColumn(
             help="Código del producto en `dim_producto`. Es el mismo que aparece en stock, "
-                 "reacciones y despachos."),
+                 "reacciones y órdenes de venta."),
         "Nombre": st.column_config.TextColumn(help="Nombre largo del producto."),
         "Tipo": st.column_config.TextColumn(
             help="MP = materia prima que se compra. FINAL = producto terminado que se vende. "
@@ -561,7 +561,7 @@ def _config_codigos(con_interno):
                  "un insumo de proceso. Se define al crear el código."),
         "Precio export": st.column_config.NumberColumn(
             format="%.2f",
-            help="El precio con el que la app valoriza hoy TODO: stock, despachos, "
+            help="El precio con el que la app valoriza hoy TODO: stock, órdenes de venta, "
                  "rendimiento y conversión. Normalmente el precio de exportación en USD. "
                  "Vacío = este código no valoriza nada."),
         "USD/t export": st.column_config.NumberColumn(
@@ -587,7 +587,7 @@ def _config_codigos(con_interno):
             help="Lo que se cobra en el mercado local, en la misma unidad que la columna "
                  "Unidad. Dejalo vacío si ese producto no se vende acá. "
                  "OJO: hoy es informativo — la app sigue valorizando con el precio de export "
-                 "porque todavía no se marca en el despacho si la venta fue interna.")
+                 "porque todavía no se marca en la orden de venta si la venta fue interna.")
         cfg["USD/t interno"] = st.column_config.NumberColumn(
             format="%.0f", help="El precio interno llevado a dólares por tonelada con "
                                 "TC_USD, para poder compararlo contra el de exportación.")
@@ -858,8 +858,8 @@ def _historial(cat):
 def _cierre():
     st.caption(
         "El precio de mercado interno todavía es **informativo**: sirve para comparar contra "
-        "el de exportación, pero la app sigue valorizando stock y despachos con el precio de "
-        "export. Para que el interno pese de verdad hay que marcar en cada despacho si la "
+        "el de exportación, pero la app sigue valorizando stock y órdenes de venta con el precio de "
+        "export. Para que el interno pese de verdad hay que marcar en cada orden de venta si la "
         "venta fue interna o de exportación — decime y lo agrego.")
 
 

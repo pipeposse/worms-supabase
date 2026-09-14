@@ -130,12 +130,17 @@ def render(cat, tipo="LIQUIDOS"):
     if cfg["evalua"]:
         _ev = int(df["ev"].sum())
         _rc = int(df["rech"].sum())
-        k5.metric("🧪 Evaluados", "%d / %d" % (_ev, len(df)),
+        k5.metric("🧪 Evaluados por laboratorio", "%d / %d" % (_ev, len(df)),
                   ("%d rechazado(s)" % _rc) if _rc else "sin rechazos",
                   delta_color=("inverse" if _rc else "off"))
     else:
         _pb = df.groupby("producto_base")["tn"].sum().sort_values(ascending=False)
         k5.metric("Por tipo", " · ".join("%s %.0f" % (i.title(), v) for i, v in _pb.items()) or "—")
+
+    if cfg["evalua"]:
+        st.caption("🔒 Laboratorio evalúa desde su propia sección. Acá **solo se consulta** lo que "
+                   "laboratorio ya evaluó (calidad y aceptado/rechazado por camión); no se carga ni "
+                   "se modifica ninguna evaluación.")
 
     # ================= Día a día =================
     st.markdown("### 📅 Día a día")
@@ -193,7 +198,7 @@ def render(cat, tipo="LIQUIDOS"):
             "TN": det["tn"].round(2),
         })
         if cfg["evalua"]:
-            _t["Lab"] = det.apply(
+            _t["Resultado lab"] = det.apply(
                 lambda r: ("❌ RECHAZADO" if r["rech"] else
                            ("✅ %s" % (r["lab_calidad"] or "OK")) if r["ev"] else "⏳ sin evaluar"), axis=1)
         else:

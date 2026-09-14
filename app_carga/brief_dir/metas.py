@@ -48,7 +48,7 @@ def editor(USR, cat, conectar):
         st.caption(
             "Estas metas alimentan la sección **Metas del mes** de la primera página del "
             "brief. Una fila por mes (se puede agregar el mes que viene con ➕). "
-            "Cantidad en TN; calidad: % máximo de despachos fuera de espec, % mínimo del "
+            "Cantidad en TN; calidad: % máximo de órdenes de venta fuera de espec, % mínimo del "
             "desgomado en categoría A/B y acidez final máxima del ARE-B. Un valor vacío "
             "aparece como *s/d* en el brief.")
         try:
@@ -69,7 +69,7 @@ def editor(USR, cat, conectar):
                     "Mes", format="YYYY-MM",
                     help="Cualquier día del mes vale: se guarda como el mes entero."),
                 "despachos_tn": st.column_config.NumberColumn(
-                    "Despachos TN", min_value=0.0, step=50.0),
+                    "Órdenes de venta TN", min_value=0.0, step=50.0),
                 "fuera_spec_max_pct": st.column_config.NumberColumn(
                     "Fuera de espec ≤ %", min_value=0.0, max_value=100.0, step=1.0),
                 "desgomado_tn": st.column_config.NumberColumn(

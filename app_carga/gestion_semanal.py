@@ -345,7 +345,7 @@ def _nombres(USR, cat, conectar):
     st.caption("Todo lo que hoy **no se puede asociar a un Producto y un Sector**, o está "
                "cargado con nombres distintos para la misma cosa. Cada fila rompe (o "
                "ensucia) el análisis: mientras esté acá, esos kg no cuentan bien en el "
-               "tablero. El booking de cada despacho (FLEX…, ISOS…) NO es un problema: "
+               "tablero. El booking de cada orden de venta (FLEX…, ISOS…) NO es un problema: "
                "es el identificador real de esa carga.")
     aud = cat("SELECT entidad, id, nombre_actual, nombre_propuesto, problema, severidad "
               "FROM produccion.vw_auditoria_nombres "
@@ -413,7 +413,7 @@ def _nombres(USR, cat, conectar):
             "desgomar varios productos y exportar varios productos. El producto concreto "
             "(AG-E, AFE-S, ARE-B…) se elige **adentro** de la sección, nunca en el título.\n\n"
             "| Antes | Ahora | Por qué |\n|---|---|---|\n"
-            "| Despachos | **Exportación** | Es el sector, no el movimiento. Admite "
+            "| Órdenes de venta | **Exportación** | Es el sector, no el movimiento. Admite "
             "cualquier producto de exportación. |\n"
             "| Desgomado acuoso | **Producción AFE** | El desgomado es el proceso; lo que "
             "importa para gestión es el AFE que sale. |\n"
@@ -424,7 +424,7 @@ def _nombres(USR, cat, conectar):
             "| Gestión / Administración de reacciones | **… de producción** | Consistencia "
             "con lo anterior. |\n\n"
             "Los códigos internos (`DESGOMADO_ACUOSO`, `PRODUCCION_ARE`) **no cambian**: "
-            "son claves de la base, no títulos. Y el nombre de cada **despacho individual** "
+            "son claves de la base, no títulos. Y el nombre de cada **orden de venta individual** "
             "sigue siendo su booking (FLEX…, ISOS…), que es su identificador real.")
 
 

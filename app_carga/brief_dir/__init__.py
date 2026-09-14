@@ -45,7 +45,7 @@ def render(USR, cat, conectar=None):
         "<div style='color:#fff;font-size:1.4rem;font-weight:900'>📋 Brief semanal</div>"
         "<div style='color:#dbeafe;font-size:.88rem;margin-top:3px'>Ocho páginas sobre la "
         "semana cerrada: ingresos, calidad, stock por calidad, compromisos, desvíos, "
-        "despachos y proyecciones. Todo comparado con las semanas y meses previos.</div></div>",
+        "órdenes de venta y proyecciones. Todo comparado con las semanas y meses previos.</div></div>",
         unsafe_allow_html=True)
 
     if USR.get("rol") not in ROLES and "DIRECCION" not in (USR.get("secciones_app") or []):

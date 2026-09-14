@@ -2,7 +2,7 @@
 """⚖️ Densidades — catálogo único de densidades de los líquidos, visible y editable.
 
 La densidad (g/ml = kg/L) es la que usa TODO el sistema para pasar de litros a
-kilos: el armador de despachos, la asignación AFE, el balance, los informes de
+kilos: el armador de órdenes de venta, la asignación AFE, el balance, los informes de
 stock y las reacciones. Acá se ven todas juntas y se corrigen en un solo lugar
 (dim_producto.densidad_g_ml para productos, dic_insumo.densidad_g_ml para
 insumos). Cada cambio queda auditado.
@@ -37,7 +37,7 @@ def render(USR, cat, conectar):
         "padding:16px 20px;margin:0 0 12px'>"
         "<div style='color:#fff;font-size:1.4rem;font-weight:900'>⚖️ Densidades</div>"
         "<div style='color:#dbeafe;font-size:.88rem;margin-top:3px'>La densidad (g/ml = kg/L) "
-        "con la que el sistema convierte litros ↔ kilos en despachos, asignación, balance, "
+        "con la que el sistema convierte litros ↔ kilos en órdenes de venta, asignación, balance, "
         "stock y reacciones. Un solo catálogo, editable acá.</div></div>",
         unsafe_allow_html=True)
 

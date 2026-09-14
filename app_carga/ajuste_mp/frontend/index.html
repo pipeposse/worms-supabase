@@ -246,8 +246,8 @@ function cerrarFila(r, sinSnap) {
 }
 function cerrarTodas() { snap(); var n = 0;
   S.rows.forEach(function (r) { if (cerrarFila(r, true)) n++; });
-  S.nota = n ? ("Se cerraron " + n + " despacho(s) contra la balanza. Revisá y guardá.")
-             : "Ninguno de estos despachos tiene kg pesados en portería todavía.";
+  S.nota = n ? ("Se cerraron " + n + " orden(es) de venta contra la balanza. Revisá y guardá.")
+             : "Ninguna de estas órdenes de venta tiene kg pesados en portería todavía.";
   draw(); }
 function descartar() { snap(); S.ed = {}; S.edT = {}; borrarLocal(); S.nota = null; draw(); }
 
@@ -290,7 +290,7 @@ function filaHTML(r, i) {
   return '<tr data-r="' + i + '">' +
     '<td class="l"><input class="tit' + (tituloCambiado(r) ? " ed" : "") +
       '" data-t="' + i + '" value="' + esc(titulo(r)) + '" maxlength="80" ' +
-      'title="El nombre del despacho: escribí acá para renombrarlo (se guarda con Guardar)">' +
+      'title="El nombre de la orden de venta: escribí acá para renombrarlo (se guarda con Guardar)">' +
       '<div class="meta">' + esc(r.fecha) + ' · ' + (r.cont || 0) + ' cont.' +
       (r.aj ? ' <span class="tag">KG REALES</span>' : '') + '</div></td>' +
     tds +
@@ -328,7 +328,7 @@ function draw() {
   document.getElementById("app").innerHTML =
    '<div class="card">' +
     '<div class="bar"><div><h3>Kg reales por materia prima</h3>' +
-      '<div class="sub">' + esc(S.titulo) + ' · ' + S.rows.length + ' despacho(s) · ' +
+      '<div class="sub">' + esc(S.titulo) + ' · ' + S.rows.length + ' orden(es) de venta · ' +
       'se edita al instante, <b>sin recargar la página</b></div></div>' +
       '<span class="spacer"></span>' +
       '<span class="estado ' + (n ? "p" : "d") + '"><span class="pt"></span>' +
@@ -336,13 +336,13 @@ function draw() {
       '</span></div>' +
     (S.nota ? '<div class="aviso"><span>⚠️</span><span>' + esc(S.nota) + '</span></div>' : "") +
     '<div class="wrap"><table><thead><tr>' +
-      '<th class="l">Despacho</th>' +
+      '<th class="l">Orden de venta</th>' +
       S.mps.map(function (m) { return '<th>' + esc(m) + '</th>'; }).join("") +
       '<th class="res">Mezcla</th><th class="res">Balanza</th><th class="res">Dif.</th>' +
       '<th class="res"></th>' +
       '</tr></thead><tbody>' +
       (S.rows.length ? S.rows.map(filaHTML).join("")
-        : '<tr><td colspan="' + ncols + '"><div class="vacio">No hay despachos en esta ' +
+        : '<tr><td colspan="' + ncols + '"><div class="vacio">No hay órdenes de venta en esta ' +
           'semana.</div></td></tr>') +
       '</tbody><tfoot>' + pieHTML() + '</tfoot></table></div>' +
     '<div class="ft">' +
@@ -407,7 +407,7 @@ function wire() {
     var el = e.target;
     var c = el.closest("[data-cerrar]");
     if (c) { var r = S.rows[parseInt(c.getAttribute("data-cerrar"), 10)];
-      snap(); if (!cerrarFila(r, true)) S.nota = "Ese despacho todavía no tiene kg de balanza.";
+      snap(); if (!cerrarFila(r, true)) S.nota = "Esa orden de venta todavía no tiene kg de balanza.";
       draw(); return; }
     var v = el.closest("[data-rev]");
     if (v) { revertirFila(S.rows[parseInt(v.getAttribute("data-rev"), 10)]); draw(); return; }

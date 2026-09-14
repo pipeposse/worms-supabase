@@ -123,7 +123,7 @@ def _mapa(USR, cat):
         st.warning("🔴 **Poco espacio para:** " + " · ".join(
             "**%s** %.1f kL" % (i, x / 1000.0) for i, x in _crit.items())
             + ". Un camión (~30 kL) de esos productos va a terminar repartido: "
-              "conviene despachar o reacomodar antes de que llegue.")
+              "conviene vender o reacomodar antes de que llegue.")
 
     st.caption("Cada tarjeta: producto y **banda de calidad** del contenido (A/B/C/D contra la "
                "spec de venta S≤50 · P≤150), barra de **% lleno** y los **kL libres**. Borde "
@@ -217,7 +217,7 @@ def _recomendador(USR, cat):
     if len(sug) >= 4:
         st.warning("⚠️ Hacen falta **%d tanques** para absorber este camión: la "
                    "disponibilidad está crítica (el caso de los 7 tanques). Mirá el mapa "
-                   "y considerá despachar o reacomodar antes." % len(sug))
+                   "y considerá vender o reacomodar antes." % len(sug))
     for s in sug:
         _fa = float(s.get("_falta") or 0.0)
         st.markdown("**%d. %s** (%s) — **%s kg** · afinidad %.0f%% · libre %s L · %s"
@@ -227,7 +227,7 @@ def _recomendador(USR, cat):
         if _fa > 0.5:
             st.error("⛔ Quedan **%s kg SIN LUGAR** ni repartiendo en 7 tanques: no hay "
                      "espacio suficiente para este producto. Hay que liberar tanques "
-                     "(despachar) antes de recibir el camión." % "{:,.0f}".format(_fa))
+                     "(vender) antes de recibir el camión." % "{:,.0f}".format(_fa))
     with st.expander("📊 Ranking completo de tanques (por qué cada puntaje)", expanded=False):
         _rows = [{
             "Tanque": str(r["nombre"]), "Sector": str(r["sector"]),

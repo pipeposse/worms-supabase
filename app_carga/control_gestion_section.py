@@ -214,7 +214,7 @@ def _portada():
             "más confiable que hay: menos del 0,3 % de los tickets están incompletos.\n"
             "2. **Los sensores de los tanques** — 20 tanques con radar miden el nivel cada ~18 minutos. "
             "El resto se mide a mano, una vez por día o menos.\n"
-            "3. **Lo que la gente carga en el sistema** — reacciones, despachos, movimientos, tickets.\n\n"
+            "3. **Lo que la gente carga en el sistema** — reacciones, órdenes de venta, movimientos, tickets.\n\n"
             "Cuando los tres coinciden, el número es un hecho. Cuando no coinciden, hay un desvío — y el desvío "
             "puede ser un error de carga, una merma real, o algo que se fue sin registrar. **El sistema no puede "
             "distinguir entre esos tres si el dato base no es confiable.**\n\n"
@@ -310,7 +310,7 @@ def _bloque_dinero(USR, cat, conectar, precios, fecha_precios, df_precios):
             "millones de dólares.\n\n"
             "| Tarjeta | Qué mide | Ventana | ¿Es pérdida? |\n"
             "|---|---|---|---|\n"
-            "| Salió sin circuito cerrado | Producto que cruzó la balanza de salida sin despacho emitido "
+            "| Salió sin circuito cerrado | Producto que cruzó la balanza de salida sin orden de venta emitida "
             "ni descuento de tanque | 28 días | **No.** Casi todo es venta legítima mal registrada |\n"
             "| Brecha de rendimiento | Producto que el proceso no entregó respecto del objetivo de receta "
             "| 120 días | **Parcialmente.** Es un supuesto extrapolado |\n"
@@ -340,7 +340,7 @@ def _bloque_dinero(USR, cat, conectar, precios, fecha_precios, df_precios):
     sal = _q_salidas(cat)
     if sal is not None and not sal.empty:
         sal = _num(sal.copy(), ["camiones", "toneladas", "usd"])
-        _m = sal["estado_control"].isin(["SIN RESPALDO", "SIN DESPACHO", "SIN SALIDA DE TANQUE"])
+        _m = sal["estado_control"].isin(["SIN RESPALDO", "SIN ORDEN DE VENTA", "SIN SALIDA DE TANQUE"])
         _usd_sr = float(sal.loc[_m, "usd"].sum())
 
     # --- Brecha de rendimiento (120 d) ---
@@ -374,7 +374,7 @@ def _bloque_dinero(USR, cat, conectar, precios, fecha_precios, df_precios):
              (ROJO if (_usd_sr or 0) > 0 else VERDE), valor_txt=_fmt_usd(_usd_sr),
              sufijo="valorizado a precio de venta",
              ayuda="QUÉ MIDE: camiones que cruzaron la balanza de salida en los últimos 28 días sin "
-                   "un despacho emitido en el sistema o sin el descuento correspondiente en el tanque. "
+                   "una orden de venta emitida en el sistema o sin el descuento correspondiente en el tanque. "
                    "CÓMO SE CALCULA: suma de kg de v_salida_sin_respaldo con estado distinto de OK, "
                    "convertida a toneladas y multiplicada por el precio de referencia del producto final "
                    "que corresponde a ese flujo de portería. "
@@ -591,17 +591,17 @@ def _bloque_confiabilidad(cat):
 
     # --- Detalle: salidas sin respaldo ---
     st.markdown("**Camiones que salieron cargados y no cerraron el circuito**")
-    st.caption("Un camión que sale con producto debería dejar tres rastros: el peso en balanza, un despacho "
+    st.caption("Un camión que sale con producto debería dejar tres rastros: el peso en balanza, una orden de venta "
                "emitido y un descuento del tanque del que se cargó. Acá aparece cuáles de los tres faltan.")
     sal = _q_salidas(cat)
     if sal is None or sal.empty:
         st.info("Sin salidas registradas en los últimos 28 días.")
     else:
         sal = _num(sal.copy(), ["camiones", "toneladas", "usd"])
-        _lbl = {"OK": "🟢 OK — despacho emitido y tanque descontado",
-                "SIN DESPACHO": "🟡 Salió sin despacho emitido",
-                "SIN SALIDA DE TANQUE": "🟡 Hay despacho pero no se descontó del tanque",
-                "SIN RESPALDO": "🔴 Sin despacho y sin descuento de tanque"}
+        _lbl = {"OK": "🟢 OK — orden de venta emitida y tanque descontado",
+                "SIN ORDEN DE VENTA": "🟡 Salió sin orden de venta emitida",
+                "SIN SALIDA DE TANQUE": "🟡 Hay orden de venta pero no se descontó del tanque",
+                "SIN RESPALDO": "🔴 Sin orden de venta y sin descuento de tanque"}
         sal["Estado"] = sal["estado_control"].map(lambda x: _lbl.get(x, x))
         st.dataframe(sal[["Estado", "camiones", "toneladas", "usd"]]
                      .rename(columns={"camiones": "Camiones", "toneladas": "Toneladas",
@@ -609,7 +609,7 @@ def _bloque_confiabilidad(cat):
                      hide_index=True, use_container_width=True,
                      column_config={
                          "Estado": _coltxt(
-                             "Qué rastros dejó el camión. OK = pesada + despacho emitido + descuento de "
+                             "Qué rastros dejó el camión. OK = pesada + orden de venta emitida + descuento de "
                              "tanque. Los demás estados indican cuál de los tres falta."),
                          "Camiones": _colnum(
                              "%d", "Cantidad de tickets de salida de portería en ese estado, últimos 28 días."),
@@ -627,7 +627,7 @@ def _bloque_confiabilidad(cat):
         _su = float(_f["usd"].sum() or 0)
         if _sr > 0:
             st.warning(
-                f"**{_sr:,.0f} t — {_fmt_usd(_su)} — salieron en los últimos 28 días sin despacho ni "
+                f"**{_sr:,.0f} t — {_fmt_usd(_su)} — salieron en los últimos 28 días sin orden de venta ni "
                 "descuento de tanque.** Cuidado con leer esto como faltante: casi todo es producto "
                 "legítimamente vendido cuyo circuito administrativo nunca se cerró en el sistema. "
                 "El problema no es que falte producto, es que **no hay forma de saberlo**. "
@@ -711,7 +711,7 @@ def _bloque_conversion(cat):
              ayuda="QUÉ MIDE: el valor del producto terminado que salió por balanza en la misma ventana. "
                    "CÓMO SE CALCULA: kg de balanza de cada ticket clasificado como PF ÷ 1000 × precio de "
                    "referencia en USD/t del producto final de ese flujo. "
-                   "OJO: es el producto que físicamente cruzó el portón, tenga o no despacho emitido. "
+                   "OJO: es el producto que físicamente cruzó el portón, tenga o no orden de venta emitida. "
                    "No es facturación.")
     _tarjeta(d3, "Diferencia — entró y todavía no salió", None, "", None,
              (AMBAR if (_u_mp - _u_pf) > 0 else VERDE), valor_txt=_fmt_usd(_u_mp - _u_pf),
@@ -776,7 +776,7 @@ def _bloque_conversion(cat):
                      "PF salida (t)": _colnum("%.0f", "Toneladas de producto terminado que salieron esa "
                                                       "semana según balanza de portería."),
                      "Conversión %": _colnum("%.1f", "PF salida ÷ MP entrada × 100, dentro de la misma "
-                                                     "semana. Puede pasar de 100 % si se despacha stock "
+                                                     "semana. Puede pasar de 100 % si se vende stock "
                                                      "acopiado de semanas anteriores."),
                      "Media móvil 4s %": _colnum("%.1f", "Suma de PF de 4 semanas ÷ suma de MP de esas "
                                                          "mismas 4 semanas × 100. Se suman los totales y "
@@ -1074,7 +1074,7 @@ def _bloque_stock(cat):
                    "prima o insumo. "
                    "CÓMO SE CALCULA: mismo cálculo que la tarjeta anterior, filtrando los productos con "
                    "tipo_producto = FINAL en dim_producto. "
-                   "OJO: es la porción que se convierte en cobranza apenas se despache. El resto todavía "
+                   "OJO: es la porción que se convierte en cobranza apenas se venda. El resto todavía "
                    "tiene que pasar por proceso.")
     _tarjeta(g3, "Toneladas sin precio de referencia", _sinp, " t", None,
              (AMBAR if _sinp > 0 else VERDE), sufijo="quedan fuera del valorizado",
@@ -1224,8 +1224,8 @@ def _que_falta():
         "| # | El número | Qué está suponiendo | Si el supuesto es falso | Qué lo arregla |\n"
         "|---|---|---|---|---|\n"
         "| 1 | Producto que salió sin cerrar el circuito (USD) | Que todo lo que salió por balanza sin "
-        "despacho es comparable a producto terminado vendible | El monto se infla varias veces: buena "
-        "parte son flujos internos o de menor valor | Emitir despacho para toda salida; distinguir venta "
+        "orden de venta es comparable a producto terminado vendible | El monto se infla varias veces: buena "
+        "parte son flujos internos o de menor valor | Emitir orden de venta para toda salida; distinguir venta "
         "de movimiento interno en portería |\n"
         "| 2 | Brecha de rendimiento (USD) | Que los batches sin pesar rinden igual que los pesados | La "
         "brecha real puede ser cero o el doble: hoy no hay forma de saberlo | Cargar el ticket final "
@@ -1243,7 +1243,7 @@ def _que_falta():
 
     st.markdown("**Lo que falta cargar, en orden de impacto sobre la precisión**")
     st.markdown(
-        "**1 · Despacho emitido en toda salida.** Es el que más mueve la aguja: hoy la cobertura de "
+        "**1 · Orden de venta emitido en toda salida.** Es el que más mueve la aguja: hoy la cobertura de "
         "salidas con respaldo es del 0 %, lo que convierte el KPI de trazabilidad en un número que no "
         "discrimina nada. Mientras todo esté sin respaldo, no se puede distinguir la salida legítima de "
         "la que hay que investigar. Es disciplina operativa, no desarrollo.\n\n"
@@ -1290,7 +1290,7 @@ def _que_falta():
 def _cierre():
     with st.expander("🧭 En qué orden conviene atacar esto"):
         st.markdown(
-            "**1 · Cerrar el circuito de salida.** Ningún camión sale sin despacho emitido, y todo despacho "
+            "**1 · Cerrar el circuito de salida.** Ningún camión sale sin orden de venta emitida, y todo orden de venta "
             "descuenta del tanque. La cañería del sistema ya está hecha; falta que operaciones use el módulo "
             "en vez de dejar la salida solo en portería. Mientras esto no pase, todo control de pérdidas es decoración.\n\n"
             "**2 · Cargar el ticket final de cada batch.** Es lo que convierte el rendimiento de un plan en una "

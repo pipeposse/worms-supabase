@@ -60,8 +60,8 @@ def vista_por_sector(cat):
     st.markdown("### 📊 Stock por sector")
     st.caption("El **Stock (kL)** es la **última medición física cargada** (en kilolitros, 1 kL = 1.000 L) (lo que registra el operario / sensor). "
                "Si hay movimientos posteriores sin conciliar, se muestran aparte como *Estimado* — no pisan la medición. "
-               "El **Comprometido** es lo designado en despachos CONFIRMADOS que aún no terminaron de pesar en "
-               "portería: no está disponible para despachos nuevos y se libera cuando el despacho completa todos sus tickets.")
+               "El **Comprometido** es lo designado en órdenes de venta CONFIRMADAS que aún no terminaron de pesar en "
+               "portería: no está disponible para órdenes de venta nuevas y se libera cuando la orden de venta completa todos sus tickets.")
     df = _panel(cat)
     if df.empty:
         st.info("No hay tanques cargados.")
@@ -78,12 +78,12 @@ def vista_por_sector(cat):
     g3.metric("Stock total", f"{_fmt_l(df['_litros'].sum())} kL", f"{df['_tn'].sum():,.0f} TN")
     _tot_comp = float(df["_comp"].sum())
     g4.metric("🔒 Comprometido", f"{_fmt_l(_tot_comp)} kL",
-              help="Designado en despachos CONFIRMADOS con tickets pendientes: sale de acá "
+              help="Designado en órdenes de venta CONFIRMADAS con tickets pendientes: sale de acá "
                    "en los próximos camiones. Disponible = Stock − Comprometido.")
     _occ = (df["_litros"].sum() / df["_cap"].sum() * 100.0) if df["_cap"].sum() else 0
     g5.metric("Ocupación", f"{_occ:.0f}%")
     if _tot_comp > 0:
-        st.caption("✅ **Disponible real: %s kL** (stock medido menos lo comprometido en despachos "
+        st.caption("✅ **Disponible real: %s kL** (stock medido menos lo comprometido en órdenes de venta "
                    "confirmados)." % _fmt_l(df["_disp"].sum()))
 
     # Resumen por sector
@@ -108,7 +108,7 @@ def vista_por_sector(cat):
             "Capacidad (kL)": st.column_config.NumberColumn(format="%.2f"),
             "Stock (kL)": st.column_config.NumberColumn(format="%.2f"),
             "Comprometido (kL)": st.column_config.NumberColumn(
-                format="%.2f", help="En despachos confirmados con tickets pendientes."),
+                format="%.2f", help="En órdenes de venta confirmadas con tickets pendientes."),
             "Disponible (kL)": st.column_config.NumberColumn(
                 format="%.2f", help="Stock − Comprometido."),
             "Stock (TN)": st.column_config.NumberColumn(format="%.0f"),
@@ -140,7 +140,7 @@ def vista_por_sector(cat):
                          column_config={
                              "Stock (kL) medido": st.column_config.NumberColumn(format="%.0f"),
                              "Comprometido (kL)": st.column_config.NumberColumn(
-                                 format="%.0f", help="En despachos confirmados con tickets pendientes."),
+                                 format="%.0f", help="En órdenes de venta confirmadas con tickets pendientes."),
                              "Disponible (kL)": st.column_config.NumberColumn(
                                  format="%.0f", help="Stock − Comprometido."),
                              "Estimado c/movs (kL)": st.column_config.NumberColumn(format="%.0f"),
@@ -175,7 +175,7 @@ def resumen_filtrado(cat):
     k1.metric("Tanques", f"{len(d)}")
     k2.metric("Stock (kL)", _fmt_l(d["_litros"].sum()))
     k3.metric("🔒 Comprometido (kL)", _fmt_l(d["_comp"].sum()),
-              help="En despachos confirmados con tickets pendientes. Disponible = Stock − Comprometido.")
+              help="En órdenes de venta confirmadas con tickets pendientes. Disponible = Stock − Comprometido.")
     k4.metric("Disponible (kL)", _fmt_l(d["_disp"].sum()))
     k5.metric("Capacidad (kL)", _fmt_l(d["_cap"].sum()))
 
@@ -223,7 +223,7 @@ def resumen_filtrado(cat):
     st.dataframe(show, use_container_width=True, hide_index=True,
                  column_config={"Stock (kL)": st.column_config.NumberColumn(format="%.2f"),
                                 "Comprometido (kL)": st.column_config.NumberColumn(
-                                    format="%.0f", help="En despachos confirmados con tickets pendientes."),
+                                    format="%.0f", help="En órdenes de venta confirmadas con tickets pendientes."),
                                 "Disponible (kL)": st.column_config.NumberColumn(
                                     format="%.0f", help="Stock − Comprometido."),
                                 "Capacidad (kL)": st.column_config.NumberColumn(format="%.2f"),

@@ -1257,7 +1257,7 @@ def _control_rendimiento(USR, cat, conectar, idb):
               (f"{_pct:.0f}% del teórico" if _pct is not None else None))
     st.caption(f"**{_ver}** · fuente del real: {_fuente}. Prioridad de evidencia: tickets de pesada > variación de tanque (pico) "
                "> movimiento registrado. El **pico** capta el ingreso aunque el tanque se drene; para el control más limpio, "
-               "medí el tanque destino **justo después del acopio y antes de despachar**.")
+               "medí el tanque destino **justo después del acopio y antes de cargar la venta**.")
 
 
 
@@ -2390,7 +2390,7 @@ def _desvios_despachos(cat):
                "superó el 10%) · CONTROL = se confirmó fuera de tolerancia · BALANZA = lo pesado "
                "en portería difiere >3% de lo formulado.")
     st.download_button("⬇️ CSV", _v.to_csv(index=False).encode("utf-8"),
-                       file_name="desvios_despachos.csv", mime="text/csv", key="dir_dv_dl")
+                       file_name="desvios_ordenes_venta.csv", mime="text/csv", key="dir_dv_dl")
 
 
 def _desvio_stock_ledger(USR, cat, conectar):
@@ -2529,7 +2529,7 @@ def _desvio_stock_ledger(USR, cat, conectar):
     if float(_disp["Órdenes de venta (t)"].fillna(0).abs().sum()) == 0:
         st.warning(
             "**Órdenes de venta (t) está en 0 en todas las filas.** Hoy una orden de venta no descuenta del tanque: no genera "
-            "movimiento de stock. No lo leas como *no se despachó*, sino como *la orden de venta todavía no impacta "
+            "movimiento de stock. No lo leas como *no se vendió*, sino como *la orden de venta todavía no impacta "
             "este balance* — parte del desvío positivo que ves es justamente orden de venta no descontado.")
 
     # ===================== TARJETAS DE LA SEMANA DESTACADA (default: actual) =====================

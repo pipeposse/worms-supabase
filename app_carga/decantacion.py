@@ -343,11 +343,11 @@ def produccion(USR, cat, conectar, id_batch=None):
     else:
         st.caption("🎫 **Sin ticket de pesada final.** Cargalo en la ficha (🏁 Producto final) — es la evidencia más "
                    "confiable del rendimiento.")
-    _medido = st.checkbox("☑️ Medí el tanque de ARE destino **después del acopio** (antes de despachar) — obligatorio",
+    _medido = st.checkbox("☑️ Medí el tanque de ARE destino **después del acopio** (antes de cargar la venta) — obligatorio",
                           key="dec_medido_gate")
     if not _medido:
         st.info("Medí el tanque destino y marcá la casilla: sin medición post-acopio no se puede verificar el rendimiento "
-                "real (si se despacha antes de medir, el ingreso queda tapado).")
+                "real (si se carga la venta antes de medir, el ingreso queda tapado).")
     st.caption("⚠️ Confirmar la decantación NO carga los kilos obtenidos. Después de esto entrá a "
                "**🏭 Producción → 🏁 Acopio final** y cargá cuánto salió: sin ese dato la orden queda "
                "cerrada sin rendimiento y aparece en la bandeja HOY hasta que se complete.")
