@@ -7,7 +7,9 @@ Pedido de dirección (14/09/2026):
   · el período se elige por año, por semana o por fechas — nunca "últimos 30 días";
   · todo en toneladas (litros × densidad del producto), nunca kilolitros;
   · los grupos se llaman por su nombre (Materia prima / Insumos / Producto terminado)
-    y el que no tiene movimientos no se muestra.
+    y el que no tiene movimientos no se muestra;
+  · los movimientos se pueden ver AGRUPADOS POR REFERENCIA — en Exportación, la orden
+    de venta — y al hacer click en una referencia se abre todo su desglose.
 
 Sale de produccion.v_movimiento_sector.
 """
@@ -73,6 +75,40 @@ def _tabla_director(df):
     })
 
 
+def _tabla_por_ref(df):
+    """Una fila por REFERENCIA (en Exportación, la orden de venta)."""
+    d = df.copy()
+    d["_ref"] = d["referencia"].fillna("").astype(str).str.strip()
+    d.loc[d["_ref"] == "", "_ref"] = "— sin referencia"
+    d["_ent"] = d["kg_neto"].map(lambda v: v if v > 0 else 0)
+    d["_sal"] = d["kg_neto"].map(lambda v: -v if v < 0 else 0)
+    g = d.groupby("_ref", as_index=False).agg(
+        _desde=("momento", "min"), _hasta=("momento", "max"), _n=("id_mov", "size"),
+        _prods=("producto", lambda s: len({x for x in s if x})),
+        _tks=("ticket", lambda s: len({str(x) for x in s if x and str(x) != "nan"})),
+        _ent=("_ent", "sum"), _sal=("_sal", "sum"), _neto=("kg_neto", "sum"))
+    g = g.sort_values("_hasta", ascending=False)
+
+    def _rango(r):
+        a = pd.to_datetime(r["_desde"]); b = pd.to_datetime(r["_hasta"])
+        if pd.isna(a):
+            return ""
+        if pd.isna(b) or a.date() == b.date():
+            return a.strftime("%d/%m/%Y")
+        return "%s → %s" % (a.strftime("%d/%m"), b.strftime("%d/%m/%Y"))
+
+    return pd.DataFrame({
+        "REF.": g["_ref"],
+        "FECHA": g.apply(_rango, axis=1),
+        "MOVIM.": g["_n"].astype(int),
+        "PRODUCTOS": g["_prods"].astype(int),
+        "TICKETS": g["_tks"].astype(int),
+        "ENTRADA TN": g["_ent"].map(_tn),
+        "SALIDA TN": g["_sal"].map(_tn),
+        "NETO TN": g["_neto"].map(lambda x: "" if float(x) == 0 else f"{float(x) / 1000.0:+,.1f}"),
+    }).reset_index(drop=True), g["_ref"].tolist()
+
+
 def _resumen_producto(df):
     ent = df["kg_neto"].map(lambda v: v if v > 0 else 0)
     sal = df["kg_neto"].map(lambda v: -v if v < 0 else 0)
@@ -121,6 +157,7 @@ def _movimientos(ctx, sec):
                          format_func=lambda g: "Todo" if g == "TODOS" else _GRUPO_LBL.get(g, g))
     tipo = f2.radio("Movimiento", list(_TIPOS), index=0, horizontal=True,
                     key=f"nav_mv_tipo_{cod}", label_visibility="collapsed")
+    _VISTAS = ["🧾 Por referencia", "📄 Uno por uno"]
     busca = f3.text_input("Buscar", key=f"nav_mv_q_{cod}", placeholder="ID, ticket, cliente, tanque, producto…",
                           label_visibility="collapsed")
     if f4.button("↻", key=f"nav_mv_ref_{cod}", use_container_width=True, help="Releer ahora"):
@@ -158,18 +195,74 @@ def _movimientos(ctx, sec):
         st.info(f"Sin movimientos de {sec['nombre_ui']} en {etiqueta} con esos filtros.")
         return
     tabla = _tabla_director(v)
-    st.dataframe(tabla, hide_index=True, use_container_width=True, height=min(620, 60 + 35 * len(tabla)))
+
+    # Agrupar por REF sólo tiene sentido cuando una referencia junta varios
+    # movimientos: en Exportación una orden de venta son 10-14 asientos, en
+    # Piletas cada camión trae su propia referencia y agrupar no agrupa nada.
+    _refs_n = int(v["referencia"].fillna("").astype(str).str.strip().replace("", pd.NA).nunique())
+    _agrupa = bool(_refs_n) and (len(v) / max(1, _refs_n)) >= 1.5
+    _k_vista = f"nav_mv_vista_{cod}"
+    if st.session_state.get(_k_vista) not in _VISTAS:
+        st.session_state[_k_vista] = _VISTAS[0] if _agrupa else _VISTAS[1]
+    _vista = st.radio("Ver", _VISTAS, horizontal=True, key=_k_vista, label_visibility="collapsed",
+                      help="Por referencia: una fila por orden de venta (o por comprobante), con "
+                           "el desglose al hacer click. Uno por uno: cada asiento del libro de stock.")
+
+    _agrup = None
+    if _vista.startswith("🧾"):
+        _tg, _orden_refs = _tabla_por_ref(v)
+        _agrup = _tg
+        _sel_ref = None
+        try:
+            _ev = st.dataframe(_tg, hide_index=True, use_container_width=True,
+                               height=min(620, 60 + 35 * len(_tg)), key=f"nav_mv_tabref_{cod}",
+                               on_select="rerun", selection_mode="single-row")
+            _rows = list(getattr(getattr(_ev, "selection", None), "rows", None) or [])
+            if _rows:
+                _sel_ref = str(_tg.iloc[_rows[0]]["REF."])
+        except Exception:
+            st.dataframe(_tg, hide_index=True, use_container_width=True,
+                         height=min(620, 60 + 35 * len(_tg)))
+        if _sel_ref is None and len(_tg):
+            _sel_ref = st.selectbox("Referencia", _tg["REF."].tolist(), key=f"nav_mv_selref_{cod}",
+                                    help="👆 También podés hacer click en una fila de la tabla.")
+            st.caption("👆 Hacé click en una referencia para ver su desglose.")
+        if _sel_ref:
+            _r = v["referencia"].fillna("").astype(str).str.strip()
+            _det = v[_r == _sel_ref] if _sel_ref != "— sin referencia" else v[_r == ""]
+            _ent_d = float(_det["kg_neto"].map(lambda x: x if x > 0 else 0).sum())
+            _egr_d = float(_det["kg_neto"].map(lambda x: -x if x < 0 else 0).sum())
+            st.markdown(
+                f"<div style='background:#f1f5f9;border-left:5px solid #0ea5e9;border-radius:10px;"
+                f"padding:8px 14px;margin:10px 0 6px'>"
+                f"<b style='font-size:1.05rem'>{_sel_ref}</b>"
+                f"<span style='color:#475569;font-size:.85rem'> · {len(_det)} movimiento(s) · "
+                f"{_det['producto'].nunique()} producto(s) · entradas {_n(_ent_d/1000)} TN · "
+                f"salidas {_n(_egr_d/1000)} TN</span></div>", unsafe_allow_html=True)
+            st.dataframe(_tabla_director(_det), hide_index=True, use_container_width=True,
+                         height=min(520, 60 + 35 * len(_det)))
+            _tkd = sorted({str(x) for x in _det["tickets_detalle"].fillna("").tolist() if x} |
+                          {str(x) for x in _det["ticket"].fillna("").tolist() if x})
+            if _tkd:
+                st.caption("Tickets de portería: %s" % ", ".join(_tkd[:40]))
+    else:
+        st.dataframe(tabla, hide_index=True, use_container_width=True, height=min(620, 60 + 35 * len(tabla)))
+
     with st.expander(f"Resumen por producto ({v['producto'].nunique()})", expanded=False):
         st.dataframe(_resumen_producto(v), hide_index=True, use_container_width=True)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         tabla.to_excel(xw, index=False, sheet_name="Movimientos")
+        if _agrup is None:
+            _agrup, _ = _tabla_por_ref(v)
+        _agrup.to_excel(xw, index=False, sheet_name="Por referencia")
         _resumen_producto(v).to_excel(xw, index=False, sheet_name="Por producto")
     st.download_button("⬇️ Descargar Excel", buf.getvalue(),
                        file_name=f"stock_{cod.lower()}_{desde:%Y%m%d}_{hasta:%Y%m%d}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        key=f"nav_mv_xls_{cod}")
-    st.caption("Cada fila es un movimiento de stock de este sector y de ningún otro, con su ID del libro de stock. "
+    st.caption("**Por referencia**: una fila por orden de venta / comprobante, con todos sus asientos "
+               "adentro (click para abrir). **Uno por uno**: cada movimiento del libro de stock con su ID. "
                "El ticket es el de portería; en una orden de venta se muestra el primero y cuántos más la acompañan "
                "(la lista completa está en el buscador y en el Excel). Todo en toneladas: los litros se pasan a kilos "
                "con la densidad del producto.")
