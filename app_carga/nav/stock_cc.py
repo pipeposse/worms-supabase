@@ -11,7 +11,10 @@ Pedido de dirección (14/09/2026):
   · los movimientos se pueden ver AGRUPADOS POR REFERENCIA — en Exportación, la orden
     de venta — y al hacer click en una referencia se abre todo su desglose.
 
-Sale de produccion.v_movimiento_sector.
+Sale de produccion.v_movimiento_sector. Dos cosas NO se muestran, por pedido de
+dirección: los ajustes automáticos de medición (reconciliación con los sensores,
+no es mercadería) y, en Exportación, las entradas de materia prima a los tanques
+de plataforma (eso es recepción, se ve en Ingresos / Asignación AFE).
 """
 
 import io
@@ -25,6 +28,12 @@ from .kpis import _FRAGMENT, _TTL, _kpi, _n, _rerun_fragment
 # el código del grupo nunca se muestra: se muestra el nombre
 _GRUPO_LBL = {"MP": "Materia prima", "INSUMO": "Insumos", "PT": "Producto terminado", "OTRO": "Otros"}
 _TIPOS = {"Todos": None, "⬇️ Entradas": "ENTRADA", "⬆️ Salidas": "SALIDA"}
+
+# Los tanques de plataforma son de Exportación, pero también RECIBEN materia prima
+# (AFE-S, AFE-SG, AG-C que llegan por portería y se asignan a un tanque). Esa entrada
+# es recepción de materia prima, no exportación: se ve en Ingresos / Asignación AFE.
+_SIN_ENTRADA_MP = {"EXPORTACION"}
+_GRUPOS_MP = ("MP", "INSUMO")
 
 
 # ------------------------------------------------------------------ datos
@@ -140,10 +149,22 @@ def _movimientos(ctx, sec):
     if df is None:
         st.caption("Sin conexión a la base en este momento.")
         return
-    ajustes_n = int(df["es_ajuste_sistema"].sum())
+
+    # Los ajustes automáticos de medición (reconciliación contra los sensores) NO son
+    # mercadería que entró o salió: no se muestran nunca. El stock físico real de cada
+    # tanque se mira en Stock clásico.
+    df = df[~df["es_ajuste_sistema"]]
+    _mp_fuera = 0
+    if cod in _SIN_ENTRADA_MP:
+        _mask_mp = (df["tipo"] == "ENTRADA") & (df["grupo"].isin(_GRUPOS_MP))
+        _mp_fuera = int(_mask_mp.sum())
+        df = df[~_mask_mp]
+    if df.empty:
+        st.info(f"Sin movimientos de {sec['nombre_ui']} en el período elegido.")
+        return
 
     # Los grupos salen de los datos: si el sector no movió insumos, no hay pestaña de insumos.
-    reales = df[~df["es_ajuste_sistema"]]
+    reales = df
     presentes = [g for g in ("MP", "INSUMO", "PT", "OTRO") if (reales["grupo"] == g).any()]
     opciones = (["TODOS"] + presentes) if len(presentes) > 1 else presentes
 
@@ -162,12 +183,7 @@ def _movimientos(ctx, sec):
                           label_visibility="collapsed")
     if f4.button("↻", key=f"nav_mv_ref_{cod}", use_container_width=True, help="Releer ahora"):
         invalidar(); _rerun_fragment()
-    ver_aj = False
-    if ajustes_n:
-        ver_aj = st.toggle(f"Ver ajustes automáticos de medición ({ajustes_n})", value=False, key=f"nav_mv_aj_{cod}",
-                           help="Reconciliación contra los sensores: no es mercadería que entró o salió.")
-
-    v = df if ver_aj else reales
+    v = df
     if grupo and grupo != "TODOS":
         v = v[v["grupo"] == grupo]
     if tipo and _TIPOS[tipo]:
@@ -187,13 +203,17 @@ def _movimientos(ctx, sec):
               f"{int((v['kg_neto'] < 0).sum())} movimientos · {etiqueta}", "")
     k3 = _kpi("Neto del período", f"{(ing-egr)/1000:+,.1f}<span style='font-size:1rem;font-weight:700;'> TN</span>",
               f"sólo {sec['nombre_ui']}", "warn" if ing - egr < 0 else "ok")
-    k4 = _kpi("Movimientos", str(len(v)),
-              (f"{ajustes_n} ajustes de medición escondidos" if (ajustes_n and not ver_aj) else "en la tabla de abajo"), "")
+    k4 = _kpi("Movimientos", str(len(v)), "en la tabla de abajo", "")
     st.markdown(f'<div class="kpi-grid">{k1}{k2}{k3}{k4}</div>', unsafe_allow_html=True)
 
     if v.empty:
         st.info(f"Sin movimientos de {sec['nombre_ui']} en {etiqueta} con esos filtros.")
         return
+    if _mp_fuera:
+        st.caption(f"ℹ️ {_mp_fuera} entrada(s) de materia prima a tanques de plataforma no se "
+                   f"muestran acá: son recepción de AFE/AG por portería, no exportación. "
+                   f"Se ven en **Ingresos** y en **Asignación AFE**.")
+
     tabla = _tabla_director(v)
 
     # Agrupar por REF sólo tiene sentido cuando una referencia junta varios
