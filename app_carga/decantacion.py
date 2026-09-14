@@ -354,27 +354,44 @@ def produccion(USR, cat, conectar, id_batch=None):
     if st.button("🚚 Confirmar y generar movimientos de stock", type="primary", use_container_width=True,
                  key="dec_confirm", disabled=not _medido):
         try:
+            _ya = False
             with conectar(uid) as (conn, audit):
                 with conn.cursor() as cur:
-                    cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto='GLICERINA-RECUP'")
-                    _r = cur.fetchone(); id_gli = _r[0] if _r else None
-                    cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto='ARE-B'")
-                    _r = cur.fetchone(); id_are = _r[0] if _r else None
-                    _mov(cur, b, uid, "SUBPRODUCTO", id_gli, "Glicerina recuperada", int(dg), l_gli, 1.05)
-                    _mov(cur, b, uid, "PRODUCTO_FINAL", id_are, "ARE-B", int(df_), l_are, DENS_ARE)
-                    cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL",
-                                (int(b["id_batch"]),))
-                    cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,fin_ts,id_usuario) "
-                                "VALUES (%s,'EN_TANQUE',now(),now(),%s)", (int(b["id_batch"]), uid))
-                    cur.execute("UPDATE produccion.fact_batch_proceso SET estado='FINALIZADO', etapa_actual='EN_TANQUE', "
-                                "decant_confirmada_ts=now(), id_usuario_estado=%s, "
-                                "motivo_estado='Decantación confirmada: glicerina recuperada y ARE a destino' "
-                                "WHERE id_batch=%s", (uid, int(b["id_batch"])))
-                audit.log("U", "fact_batch_proceso", int(b["id_batch"]), {"estado": "FINALIZADO"})
-            st.success("Decantación confirmada. Movimientos generados y producción FINALIZADA.")
-            st.warning("Falta el paso final: cargá los kilos obtenidos en **🏭 Producción → 🏁 Acopio final**. "
-                       "Hasta entonces esta orden no tiene rendimiento calculable.")
-            st.balloons(); cat.clear(); st.rerun()
+                    # SOL-0034: cada click repetido volvía a escribir los movimientos de
+                    # cierre (RE-409 entró 31 veces: 858 TN de ARE-B fantasma en Tanque 6).
+                    # El lock serializa los clicks que llegan juntos y el chequeo de
+                    # decant_confirmada_ts hace que el segundo no escriba nada.
+                    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                                ("decant_confirm:%d" % int(b["id_batch"]),))
+                    cur.execute("SELECT decant_confirmada_ts FROM produccion.fact_batch_proceso "
+                                "WHERE id_batch=%s FOR UPDATE", (int(b["id_batch"]),))
+                    _rr = cur.fetchone()
+                    _ya = bool(_rr and _rr[0] is not None)
+                    if not _ya:
+                        cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto='GLICERINA-RECUP'")
+                        _r = cur.fetchone(); id_gli = _r[0] if _r else None
+                        cur.execute("SELECT id_producto FROM produccion.dim_producto WHERE codigo_producto='ARE-B'")
+                        _r = cur.fetchone(); id_are = _r[0] if _r else None
+                        _mov(cur, b, uid, "SUBPRODUCTO", id_gli, "Glicerina recuperada", int(dg), l_gli, 1.05)
+                        _mov(cur, b, uid, "PRODUCTO_FINAL", id_are, "ARE-B", int(df_), l_are, DENS_ARE)
+                        cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL",
+                                    (int(b["id_batch"]),))
+                        cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,fin_ts,id_usuario) "
+                                    "VALUES (%s,'EN_TANQUE',now(),now(),%s)", (int(b["id_batch"]), uid))
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET estado='FINALIZADO', etapa_actual='EN_TANQUE', "
+                                    "decant_confirmada_ts=now(), id_usuario_estado=%s, "
+                                    "motivo_estado='Decantación confirmada: glicerina recuperada y ARE a destino' "
+                                    "WHERE id_batch=%s", (uid, int(b["id_batch"])))
+                if not _ya:
+                    audit.log("U", "fact_batch_proceso", int(b["id_batch"]), {"estado": "FINALIZADO"})
+            if _ya:
+                st.info("Esta decantación **ya estaba confirmada**: no se volvió a escribir nada.")
+            else:
+                st.success("Decantación confirmada. Movimientos generados y producción FINALIZADA.")
+                st.warning("Falta el paso final: cargá los kilos obtenidos en **🏭 Producción → 🏁 Acopio final**. "
+                           "Hasta entonces esta orden no tiene rendimiento calculable.")
+                st.balloons()
+            cat.clear(); st.rerun()
         except Exception as e:
             st.exception(e)
 

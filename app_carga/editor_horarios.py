@@ -106,13 +106,27 @@ SQL_BASE = (
     "vt.tickets_kg, vt.kg_obtenido, vt.real_asignado_kg, vt.real_metodo, "
     "lf.fuente_lab, lf.id_procesos_lab, lf.n_tickets, lf.n_con_lab, "
     "lf.acidez_pct, lf.agua_pct, "
-    "b.id_producto_buscado, dl.lab_producto, dl.lab_calidad "
+    "b.id_producto_buscado, dl.lab_producto, dl.lab_calidad, "
+    "mpm.kg AS mp_movs_kg "
     "FROM produccion.v_perf_reaccion p "
     "LEFT JOIN produccion.v_reaccion_terminada vt ON vt.id_batch = p.id_batch "
     "LEFT JOIN produccion.v_reaccion_lab_final lf ON lf.id_batch = p.id_batch "
     "LEFT JOIN produccion.fact_batch_proceso b ON b.id_batch = p.id_batch "
     "LEFT JOIN produccion.dic_producto_lab dl ON dl.id_producto = b.id_producto_buscado "
+    # MP que efectivamente descontó stock. mp_kg es fact_batch_proceso.kg_inicial (un
+    # número declarado); esto es la suma de los movimientos rol='MP'. Editar el primero
+    # NO toca el segundo, así que se muestran los dos y se avisa si no coinciden.
+    "LEFT JOIN (SELECT id_batch, sum(abs(COALESCE(kg,0))) AS kg "
+    "           FROM produccion.fact_movimiento_stock "
+    "           WHERE rol='MP' AND NOT COALESCE(anulado,false) "
+    "           GROUP BY id_batch) mpm ON mpm.id_batch = p.id_batch "
     "ORDER BY p.fecha DESC NULLS LAST, p.id_batch DESC")
+
+# Familia de producto final válida por tipo de proceso: una reacción de ARE termina en
+# un ARE y un desgomado en un AFE. Se usa para validar el cambio de producto.
+FAM_PF = {"PRODUCCION_ARE": "ARE", "DESGOMADO_ACUOSO": "AFE"}
+# El AFE-SG es la ENTRADA del desgomado, nunca el producto final: no se ofrece.
+PF_EXCLUIDOS = ("AFE-SG",)
 
 SQL_TK_ASIG = (
     "SELECT f.id, f.ticket, f.producto, f.calidad, f.kg, f.fraccion, "
@@ -241,6 +255,27 @@ def _tabla(USR, cat, conectar, base):
                                        str(_n.iloc[0]["n"]), str(_n.iloc[0]["codigo"] or "")))
         return _l
 
+    # --- productos finales elegibles (SOL-0031) ---
+    # Un data_editor tiene UNA lista de opciones para toda la columna, así que se ofrece
+    # la unión de ARE* + AFE* activos; al guardar se valida que el elegido corresponda al
+    # tipo de proceso de ESA fila. Los productos ya usados se agregan aunque estén
+    # inactivos, para que el valor actual esté siempre entre las opciones.
+    _dfp = cat("SELECT id_producto, codigo_producto FROM produccion.dim_producto "
+               "WHERE codigo_producto ~ '^(ARE|AFE)' AND COALESCE(activo,true) "
+               "  AND codigo_producto <> ALL(%s) ORDER BY codigo_producto",
+               (list(PF_EXCLUIDOS),))
+    prod2id, id2prod = {}, {}
+    if _dfp is not None and not _dfp.empty:
+        for _, _r in _dfp.iterrows():
+            prod2id[str(_r["codigo_producto"])] = int(_r["id_producto"])
+            id2prod[int(_r["id_producto"])] = str(_r["codigo_producto"])
+    for _i in range(len(base)):
+        _c, _ip = base.iloc[_i]["producto"], base.iloc[_i]["id_producto"]
+        if pd.notna(_c) and pd.notna(_ip):
+            prod2id.setdefault(str(_c), int(_ip))
+            id2prod.setdefault(int(_ip), str(_c))
+    _ops_prod = sorted(prod2id.keys())
+
     base = base.copy()
     base["tk_lbl"] = base.apply(_lbl_actual, axis=1)
     _opciones = sorted(lbl2tk.keys())
@@ -251,6 +286,7 @@ def _tabla(USR, cat, conectar, base):
         "Reacción": base["etiqueta"],
         "Producto": base["producto"],
         "MP (TN)": (base["mp_kg"] / 1000.0).round(2),
+        "MP movs (TN)": (base["mp_movs_kg"] / 1000.0).round(2),
         "Final (TN)": (base["real_kg"] / 1000.0).round(2),
         "Origen": [_origen(base.iloc[i]) for i in range(len(base))],
         "Tickets (TN)": (base["tickets_kg"] / 1000.0).round(2),
@@ -264,11 +300,14 @@ def _tabla(USR, cat, conectar, base):
         "Tanque final": base["tk_lbl"],
     })
     view["Δ (h)"] = (view["Real (h)"] - view["Programado (h)"]).round(1)
-    view = view[["ID", "Semana", "Reacción", "Producto", "MP (TN)", "Final (TN)", "Origen",
-                 "Tickets (TN)", "N° tk", "Lab", "Acidez %", "Inicio real", "Fin reacción real",
-                 "Programado (h)", "Real (h)", "Δ (h)", "Tanque final"]]
+    view = view[["ID", "Semana", "Reacción", "Producto", "MP (TN)", "MP movs (TN)",
+                 "Final (TN)", "Origen", "Tickets (TN)", "N° tk", "Lab", "Acidez %",
+                 "Inicio real", "Fin reacción real", "Programado (h)", "Real (h)", "Δ (h)",
+                 "Tanque final"]]
 
-    _bloq = ["ID", "Semana", "Reacción", "Producto", "MP (TN)", "Origen", "Tickets (TN)",
+    # SOL-0031: Producto y MP (TN) pasan a ser editables. "MP movs (TN)" es el contraste
+    # con el stock y queda de sólo lectura.
+    _bloq = ["ID", "Semana", "Reacción", "MP movs (TN)", "Origen", "Tickets (TN)",
              "N° tk", "Lab", "Acidez %", "Programado (h)", "Real (h)", "Δ (h)"]
     if not _ed_ok:
         _bloq = list(view.columns)
@@ -278,8 +317,21 @@ def _tabla(USR, cat, conectar, base):
         column_config={
             "Semana": st.column_config.TextColumn(
                 "Semana", help="Semana ISO (lunes a domingo) de la fecha de la reacción."),
+            "Producto": st.column_config.SelectboxColumn(
+                "Producto", options=_ops_prod, required=False,
+                help="Producto final obtenido — EDITABLE. Una reacción de ARE tiene que "
+                     "terminar en un ARE y un desgomado en un AFE; si no corresponde al tipo "
+                     "de proceso de la fila, no se guarda. Si ya hay Tanque final cargado, "
+                     "tiene que ser un tanque habilitado para el producto nuevo."),
             "MP (TN)": st.column_config.NumberColumn(
-                format="%.2f", help="Materia prima cargada al reactor."),
+                format="%.2f", min_value=0.0, step=0.01,
+                help="Materia prima cargada al reactor — EDITABLE. Se guarda en kg_inicial y "
+                     "es el número con el que se calculan rendimiento y utilización. NO mueve "
+                     "stock: los movimientos de MP quedan como están (ver MP movs)."),
+            "MP movs (TN)": st.column_config.NumberColumn(
+                format="%.2f", help="Suma de los movimientos de MP que realmente descontaron "
+                                    "stock. Si difiere de MP (TN), uno de los dos está mal: "
+                                    "este editor sólo corrige el declarado."),
             "Final (TN)": st.column_config.NumberColumn(
                 format="%.2f", min_value=0.0, step=0.01,
                 help="Producto final real en TN — EDITABLE. Se guarda como cierre manual "
@@ -335,27 +387,61 @@ def _tabla(USR, cat, conectar, base):
         new_t = ed.iloc[i]["Tanque final"] if pd.notna(ed.iloc[i]["Tanque final"]) else None
         old_k = round(float(base.iloc[i]["real_kg"]) / 1000.0, 2) if pd.notna(base.iloc[i]["real_kg"]) else None
         new_k = float(ed.iloc[i]["Final (TN)"]) if pd.notna(ed.iloc[i]["Final (TN)"]) else None
+        old_p = str(base.iloc[i]["producto"]) if pd.notna(base.iloc[i]["producto"]) else None
+        new_p = str(ed.iloc[i]["Producto"]) if pd.notna(ed.iloc[i]["Producto"]) else None
+        old_mp = round(float(base.iloc[i]["mp_kg"]) / 1000.0, 2) if pd.notna(base.iloc[i]["mp_kg"]) else None
+        new_mp = float(ed.iloc[i]["MP (TN)"]) if pd.notna(ed.iloc[i]["MP (TN)"]) else None
         chg_i = pd.notna(new_i) and (pd.isna(old_i) or new_i != old_i)
         chg_f = pd.notna(new_f) and (pd.isna(old_f) or new_f != old_f)
         chg_t = (new_t is not None) and (new_t != old_t)
         chg_k = (new_k is not None) and (old_k is None or abs(new_k - old_k) > 0.005)
-        if not (chg_i or chg_f or chg_t or chg_k):
+        chg_p = (new_p is not None) and (new_p != old_p)
+        chg_mp = (new_mp is not None) and (old_mp is None or abs(new_mp - old_mp) > 0.005)
+        if not (chg_i or chg_f or chg_t or chg_k or chg_p or chg_mp):
             continue
         _ident = str(base.iloc[i]["ident"])
+        _tp = str(base.iloc[i]["tipo_proceso"] or "")
         eff_i = new_i if pd.notna(new_i) else old_i
         eff_f = new_f if pd.notna(new_f) else old_f
         if (chg_i or chg_f) and pd.notna(eff_i) and pd.notna(eff_f) and eff_f <= eff_i:
             invalidas.append("%s: fin ≤ inicio" % _ident)
             continue
+        # producto final: tiene que ser de la familia del tipo de proceso (SOL-0031)
+        pid_new = None
+        if chg_p:
+            pid_new = prod2id.get(new_p)
+            _fam = FAM_PF.get(_tp)
+            if pid_new is None:
+                invalidas.append("%s: no encuentro el producto %s" % (_ident, new_p))
+                continue
+            if _fam and not new_p.upper().startswith(_fam):
+                invalidas.append("%s: es un proceso de %s, así que el producto final tiene que "
+                                 "ser un %s — %s no lo es" % (_ident, _fam, _fam, new_p))
+                continue
+        if chg_mp and new_mp <= 0:
+            invalidas.append("%s: la MP tiene que ser mayor a 0" % _ident)
+            continue
+
+        # El tanque final tiene que ser del producto VIGENTE después de este guardado:
+        # si se cambia el producto, se revalida el tanque que ya estaba cargado.
+        _idp_eff = pid_new if pid_new is not None else (
+            int(base.iloc[i]["id_producto"]) if pd.notna(base.iloc[i]["id_producto"]) else None)
+        _p_eff = new_p if chg_p else (old_p or "?")
         tk_new = None
         if chg_t:
             _info = lbl2tk.get(new_t)
-            _idp = int(base.iloc[i]["id_producto"]) if pd.notna(base.iloc[i]["id_producto"]) else None
-            if _info is None or _idp is None or _info[1] != _idp:
+            if _info is None or _idp_eff is None or _info[1] != _idp_eff:
                 invalidas.append("%s: el tanque elegido no es del producto %s"
-                                 % (_ident, base.iloc[i]["producto"] or "?"))
+                                 % (_ident, _p_eff))
                 continue
             tk_new = _info
+        elif chg_p and old_t:
+            # cambió el producto y había tanque: si ya no corresponde, se avisa y no se guarda
+            _info_old = lbl2tk.get(old_t)
+            if _info_old is not None and _idp_eff is not None and _info_old[1] != _idp_eff:
+                invalidas.append("%s: pasa a %s pero el Tanque final sigue siendo de %s — "
+                                 "cambiá también el tanque" % (_ident, _p_eff, old_p or "?"))
+                continue
         cambios.append({"idb": idb, "ident": _ident,
                         "tipo_proceso": str(base.iloc[i]["tipo_proceso"] or ""),
                         "old_i": old_i, "old_f": old_f,
@@ -363,6 +449,10 @@ def _tabla(USR, cat, conectar, base):
                         "eff_i": eff_i, "eff_f": eff_f,
                         "tk": tk_new, "tk_lbl": (new_t if chg_t else None),
                         "kg": (round(new_k * 1000.0, 1) if chg_k else None),
+                        "pid": pid_new, "prod_lbl": (new_p if chg_p else None),
+                        "mp_kg": (round(new_mp * 1000.0, 1) if chg_mp else None),
+                        "mp_movs": (float(base.iloc[i]["mp_movs_kg"])
+                                    if pd.notna(base.iloc[i]["mp_movs_kg"]) else None),
                         "origen": str(view.iloc[i]["Origen"]),
                         "prog": base.iloc[i]["prog_h"]})
 
@@ -378,12 +468,30 @@ def _tabla(USR, cat, conectar, base):
                          if pd.notna(c["eff_i"]) and pd.notna(c["eff_f"]) else None),
             "Prog. (h)": (round(float(c["prog"]), 1) if pd.notna(c["prog"]) else None),
             "Nuevo tanque": (c["tk_lbl"] or "(sin cambio)"),
+            "Nuevo producto": (c["prod_lbl"] or "(sin cambio)"),
+            "MP (TN)": (round(c["mp_kg"] / 1000.0, 2) if c["mp_kg"] is not None else "(sin cambio)"),
             "Final (TN)": (round(c["kg"] / 1000.0, 2) if c["kg"] is not None else "(sin cambio)"),
             "Pisa a": (c["origen"] if c["kg"] is not None else "—"),
         } for c in cambios])
         _prev["Δ (h)"] = (_prev["Real (h)"] - _prev["Prog. (h)"]).round(1)
         st.markdown("**%d reacción(es) con cambios:**" % len(cambios))
         st.dataframe(_prev, hide_index=True, use_container_width=True)
+        _mpdif = [c for c in cambios if c["mp_kg"] is not None and c["mp_movs"] is not None
+                  and abs(c["mp_kg"] - c["mp_movs"]) > 50]
+        if _mpdif:
+            st.warning("⚠️ En %d reacción(es) la MP que vas a declarar no coincide con los "
+                       "movimientos de MP que descontaron stock: %s. Esto corrige el número "
+                       "de rendimiento, **no el stock** — si lo que está mal es el stock, hay "
+                       "que corregir los movimientos."
+                       % (len(_mpdif), ", ".join("%s (%.2f vs %.2f TN)"
+                                                 % (c["ident"], c["mp_kg"] / 1000.0,
+                                                    c["mp_movs"] / 1000.0) for c in _mpdif)))
+        _camb_p = [c for c in cambios if c["pid"] is not None]
+        if _camb_p:
+            st.warning("🏷️ %d reacción(es) cambian de producto final: %s. Eso reclasifica lo "
+                       "producido en los informes de producción y de stock por producto."
+                       % (len(_camb_p), ", ".join("%s → %s" % (c["ident"], c["prod_lbl"])
+                                                  for c in _camb_p)))
         _pisa = [c for c in cambios if c["kg"] is not None and "tickets" in c["origen"]]
         if _pisa:
             st.warning("⚠️ %d reacción(es) tenían el real sacado de **tickets de pesada** y vas a "
@@ -391,8 +499,8 @@ def _tabla(USR, cat, conectar, base):
                        "dejan de ser el número que usa la app."
                        % (len(_pisa), ", ".join(c["ident"] for c in _pisa)))
     else:
-        st.caption("Sin cambios pendientes: editá Inicio real / Fin reacción real / Final (TN) / "
-                   "Tanque final y apretá Guardar.")
+        st.caption("Sin cambios pendientes: editá Inicio real / Fin reacción real / Producto / "
+                   "MP (TN) / Final (TN) / Tanque final y apretá Guardar.")
 
     if st.button("💾 Guardar cambios de la tabla", type="primary", key="ehz_save",
                  disabled=(not cambios)):
@@ -437,6 +545,14 @@ def _tabla(USR, cat, conectar, base):
                                 cur.execute("UPDATE produccion.fact_batch_proceso "
                                             "SET id_tanque_are_final=%s, tanque_destino=%s "
                                             "WHERE id_batch=%s", (_idt, _txt, idb))
+                        if c["pid"] is not None:
+                            cur.execute("UPDATE produccion.fact_batch_proceso "
+                                        "SET id_producto_buscado=%s WHERE id_batch=%s",
+                                        (int(c["pid"]), idb))
+                        if c["mp_kg"] is not None:
+                            cur.execute("UPDATE produccion.fact_batch_proceso "
+                                        "SET kg_inicial=%s WHERE id_batch=%s",
+                                        (float(c["mp_kg"]), idb))
                         if c["kg"] is not None:
                             cur.execute("INSERT INTO produccion.fact_reaccion_cierre "
                                         "(id_batch, real_kg, metodo, id_usuario, actualizado_en) "
@@ -450,6 +566,8 @@ def _tabla(USR, cat, conectar, base):
                                    "fin": (str(c["new_f"]) if c["new_f"] is not None else None),
                                    "tanque_final": (c["tk"][0] if c["tk"] is not None else None),
                                    "real_kg": c["kg"],
+                                   "id_producto_buscado": c["pid"],
+                                   "kg_inicial": c["mp_kg"],
                                    "via": "planificacion_editor_horarios"})
             _ids = ", ".join(str(c.get("ident") or c["idb"]) for c in cambios[:6])
             _flash("tabla", "Guardado: %d reacción(es) actualizadas." % len(cambios),
@@ -793,9 +911,10 @@ def _lab(USR, cat, conectar, r):
 
 def render(USR, cat, conectar):
     st.caption(
-        "Todo lo de una reacción terminada en una pantalla: **horarios reales, kilos finales, "
-        "tickets de pesada, tanque de acopio y evaluación de laboratorio**. Arriba la tabla de "
-        "todas (editable en la grilla); abajo el detalle de la que elijas.")
+        "Todo lo de una reacción terminada en una pantalla: **horarios reales, producto final, "
+        "MP cargada, kilos finales, tickets de pesada, tanque de acopio y evaluación de "
+        "laboratorio**. Arriba la tabla de todas (editable en la grilla); abajo el detalle de "
+        "la que elijas.")
 
     _confirmacion("tabla")
     _historial()
@@ -809,7 +928,7 @@ def render(USR, cat, conectar):
     df["inicio"] = pd.to_datetime(df["inicio"], errors="coerce")
     df["fin"] = pd.to_datetime(df["fin"], errors="coerce")
     df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-    for _c in ("prog_h", "mp_kg", "real_kg", "tickets_kg", "kg_obtenido", "real_asignado_kg",
+    for _c in ("prog_h", "mp_kg", "mp_movs_kg", "real_kg", "tickets_kg", "kg_obtenido", "real_asignado_kg",
                "n_tickets", "n_con_lab", "acidez_pct", "agua_pct"):
         if _c in df.columns:
             df[_c] = pd.to_numeric(df[_c], errors="coerce")
