@@ -106,6 +106,7 @@ CAL_AFE   = ["S", "SG", "G", "P", "AL", "M", FUERA]          # variantes AFE del
 CAL_ARE   = ["A", "B", FUERA]                                # ARE-A / ARE-B
 CAL_EFLU  = ["LIQUIDO"]
 CAL_BORRA = ["A", "B", "ANIMAL", "PES", FUERA]               # BORRA-A/B (V) + animal + pescado
+CAL_EMUL  = ["UNICA", FUERA]                                 # EMULSION: calidad única (SOL-0033)
 CAL_SEBO  = ["A-1RA", "A-2DA", "B-1RA", "B-2DA", "C-2DA", FUERA]  # sebo: grado + 1ra/2da (ya NO A/B/C solo)
 CAL_GEN   = ["UNICA", "A", "B", "C", "D", "E", FUERA]
 CAL_GLI   = ["A", "B", "C", "D"]   # A (fresca) >80 · B (fresca) 70-80 · C (recuperada) 60-80 sed<=10 · D (FE) resto
@@ -305,12 +306,13 @@ def _cab(p, pf, tok):
     return d
 
 
-def _cierre(p, pf, tok, calidades, default_corriente=None):
+def _cierre(p, pf, tok, calidades, default_corriente=None, default_calidad=None):
     c1, c2 = st.columns(2)
     with c1:
         corriente = _s("Corriente", "corriente", CORRIENTE, pf, p, tok, "corr",
                        default=default_corriente)
-        calidad = _s("Calidad final *", "calidad_final_lab", calidades, pf, p, tok, "cal")
+        calidad = _s("Calidad final *", "calidad_final_lab", calidades, pf, p, tok, "cal",
+                     default=default_calidad)
         rechazado = _s("Rechazado/Aceptado *", "rechazado", RECHAZADO, pf, p, tok, "rech")
         descuento = _n("Descuento al ticket (%)", "descuento_pct", pf, p, tok, "desc",
                        min_value=0.0, max_value=100.0, step=0.5,
@@ -541,10 +543,15 @@ def _form_BORRA(pf, ctx, tok, get_conn, usuario):
             prc_sedimentos = _n("Sedimentos (%)", "prc_sedimentos", pf, p, tok, "sed")
             prc_agua = _n("Agua (%)", "prc_agua", pf, p, tok, "ag")
         producto_lab = _t("Producto laboratorio *", "producto_lab", pf, p, tok, "plab")
-        _plb = (producto_lab or (pf or {}).get("producto_lab") or "")
-        _cal_b = ["UNICA", FUERA] if "PES" in _plb.upper() else CAL_BORRA
-        _defcb = "ANIMAL" if "PES" in _plb.upper() else "VEGETAL"
-        cier = _cierre(p, pf, tok, _cal_b, default_corriente=_defcb)
+        _plb = (producto_lab or (pf or {}).get("producto_lab") or "").upper()
+        if "EMULS" in _plb:
+            # la emulsión no tiene grados A/B: es calidad única o fuera de spec (SOL-0033)
+            _cal_b, _defcb, _defcal = CAL_EMUL, "VEGETAL", "UNICA"
+        elif "PES" in _plb:
+            _cal_b, _defcb, _defcal = ["UNICA", FUERA], "ANIMAL", None
+        else:
+            _cal_b, _defcb, _defcal = CAL_BORRA, "VEGETAL", None
+        cier = _cierre(p, pf, tok, _cal_b, default_corriente=_defcb, default_calidad=_defcal)
         enviar = st.form_submit_button("GUARDAR", use_container_width=True)
     if enviar:
         data = dict(tipo_formulario="BORRA", producto_lab=(producto_lab or "BORRA"),

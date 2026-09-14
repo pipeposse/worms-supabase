@@ -2696,6 +2696,9 @@ _TK_CALIDAD_FAMILIA = {
     "ARE": ["A", "B", "FUERA DE ESPECIFICACION"],
     "AFE": ["S", "SG", "G", "P", "AL", "M", "FUERA DE ESPECIFICACION"],
     "BORRA": ["A", "B", "ANIMAL", "PES", "FUERA DE ESPECIFICACION"],
+    # la emulsión no tiene grados: calidad única o fuera de spec (SOL-0033). Sin esta
+    # entrada, la familia "EMULSION" no caía en ninguna y la pantalla no ofrecía calidad.
+    "EMULSION": ["UNICA", "FUERA DE ESPECIFICACION"],
 }
 
 
