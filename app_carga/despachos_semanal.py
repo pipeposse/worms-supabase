@@ -269,7 +269,7 @@ def _tabla_resumen(df, mps):
     piv = df.pivot_table(index=["Semana", "Rango"], columns="mp", values="tn", aggfunc="sum", fill_value=0.0)
     piv = piv.reindex(columns=[m for m in mps if m in piv.columns], fill_value=0.0)
     piv["TN total"] = piv.sum(axis=1)
-    n = df.groupby(["Semana", "Rango"]).agg(Despachos=("id_despacho", "nunique"))
+    n = df.groupby(["Semana", "Rango"]).agg(**{"Órdenes de venta": ("id_despacho", "nunique")})
     cont = (df.drop_duplicates("id_despacho").groupby(["Semana", "Rango"])["n_contenedores"].sum()
               .rename("Contenedores"))
     r = n.join(cont).join(piv).reset_index().sort_values("Semana")
