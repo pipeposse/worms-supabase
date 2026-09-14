@@ -165,7 +165,8 @@ def _area_admin(ctx):
 
 
 def _franja_hoy(ctx):
-    """Barra de entrada a la bandeja HOY: lo pendiente antes que el mapa de la planta."""
+    """Barra de entrada a la bandeja HOY (dentro de "Planificar y analizar"): sólo aparece
+    cuando hay algo pendiente, y va en rojo si hay algo para ahora."""
     try:
         from .hoy import _leer, visibles, contar
         v = visibles(_leer(ctx["conn_factory"]), ctx["puede_seccion"])
@@ -189,28 +190,10 @@ def _franja_hoy(ctx):
 def _area_produccion(ctx):
     USR, puede = ctx["USR"], ctx["puede_seccion"]
     _hero("ÁREA PRODUCCIÓN", USR, icono="🏭")
-    _franja_hoy(ctx)
 
-    # --- Indicadores del área (Fase 1): acopio · descargas · personal · sectores · tickets ---
-    try:
-        from .kpis import render_kpis_area
-        render_kpis_area(ctx)
-    except Exception as _e:
-        st.caption(f"Indicadores del área no disponibles: {_e}")
-
-    # --- Planificación / Reportes / Panel de Control ---
-    fijas = [dict(icono=i, titulo=t, desc=d, key=f"nav_prod_{s}", on_click=_ir(ctx, "PRODUCCION", None, s))
-             for (i, t, d, s) in _PROD_FIJAS if puede(s)]
-    i, t, d, s = _PANEL_CONTROL
-    if puede(s):
-        fijas.append(dict(icono=i, titulo=t, desc=d, key=f"nav_prod_{s}",
-                          on_click=lambda: _st.set_nav("PRODUCCION", None, "PANEL", rerun=False)))
-    if fijas:
-        st.markdown('<div class="section-title">Planificar y analizar</div>', unsafe_allow_html=True)
-        _grid(fijas, por_fila=3)
-
-    # --- Sectores de planta, agrupados por ÁREA en el orden de dirección ---
+    # --- 1 · Sectores de planta, agrupados por ÁREA en el orden de dirección ---
     # Recepción (líquidos / sólidos) → Tratamiento (líquidos / sólidos) → Exportación → Soporte.
+    # Es lo primero que se ve al entrar a Producción.
     st.markdown('<div class="section-title">Sectores de planta</div>', unsafe_allow_html=True)
     df = sectores_nav(ctx["conn_factory"])
     from .sector import tiene_home
@@ -244,6 +227,24 @@ def _area_produccion(ctx):
             _grid([_item(r) for _, r in resto_sin_area.iterrows()], por_fila=3)
     else:
         _grid([_item(r) for _, r in df.iterrows()], por_fila=3)
+
+    # --- 2 · Planificar y analizar: lo de HOY en planta + indicadores + accesos ---
+    st.markdown('<div class="section-title">Planificar y analizar</div>', unsafe_allow_html=True)
+    _franja_hoy(ctx)
+    try:
+        from .kpis import render_kpis_area
+        render_kpis_area(ctx)
+    except Exception as _e:
+        st.caption(f"Indicadores del área no disponibles: {_e}")
+    fijas = [dict(icono="📥", titulo="Hoy en planta", desc="La bandeja: lo urgente, lo de hoy y lo que hay que revisar.",
+                  key="nav_prod_HOY", on_click=lambda: _st.set_nav("PRODUCCION", None, "HOY", rerun=False))]
+    fijas += [dict(icono=i, titulo=t, desc=d, key=f"nav_prod_{s}", on_click=_ir(ctx, "PRODUCCION", None, s))
+              for (i, t, d, s) in _PROD_FIJAS if puede(s)]
+    i, t, d, s = _PANEL_CONTROL
+    if puede(s):
+        fijas.append(dict(icono=i, titulo=t, desc=d, key=f"nav_prod_{s}",
+                          on_click=lambda: _st.set_nav("PRODUCCION", None, "PANEL", rerun=False)))
+    _grid(fijas, por_fila=4 if len(fijas) == 4 else 3)
 
     # --- Todo lo que hoy existe y todavía no tiene tarjeta propia: no se pierde nada ---
     cubiertas = set(df["seccion_clasica"].dropna().tolist()) | {s for (_, _, _, s) in _PROD_FIJAS} | {_PANEL_CONTROL[3]}
@@ -311,16 +312,9 @@ def render_landing(ctx):
         if render_sector(ctx, nav["sector"]):
             return
         _st.set_nav("PRODUCCION", rerun=False)   # sector sin home: se muestra el área
-    # Portada del área: primero lo que falta hacer; el mapa de sectores queda a un clic
-    # (y es la portada directa cuando no hay nada pendiente, para no mostrar una lista vacía).
-    if nav["vista"] != "SECTORES":
-        try:
-            from .hoy import hay_pendientes, render_hoy
-            if hay_pendientes(ctx):
-                render_hoy(ctx)
-                return
-        except Exception:
-            pass
+    # Portada del área (dirección, 14/09): al entrar a Producción se ven las ÁREAS con
+    # sus sectores. Lo de hoy en planta (bandeja + indicadores) vive abajo, en
+    # "Planificar y analizar", y la bandeja sigue a un clic.
     _area_produccion(ctx)
 
 
