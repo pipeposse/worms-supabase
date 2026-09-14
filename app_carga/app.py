@@ -1072,19 +1072,38 @@ if st.session_state.section is None:
                         st.session_state.pop("portada_esp_open", None)
                         go_to("ESTADO")
 
+    def _render_tiles(_tiles):
+        for i in range(0, len(_tiles), 3):
+            cols = st.columns(3)
+            for col, (icon, tit, desc, sec, key, prim) in zip(cols, _tiles[i:i+3]):
+                with col:
+                    with st.container(border=True):
+                        st.markdown(f'<div class="tile-h">{icon} {tit}</div><div class="tile-d">{desc}</div>',
+                                    unsafe_allow_html=True)
+                        if st.button("Entrar", type="primary", use_container_width=True, key=key):
+                            go_to(sec)
+
+    # ---- SOL-0036: hasta 3 accesos destacados arriba (más usadas / últimas usadas).
+    # El resto queda en el orden fijo de siempre (no se reordena toda la grilla a
+    # propósito: una grilla que se mueve rompe la memoria muscular). ADMIN: sin podio.
+    try:
+        import uso_secciones as _uso
+        _uso_modo, _uso_dest, tiles = _uso.destacadas(_lab_conn, USR, _TILES_LANDING, puede_seccion)
+    except Exception:
+        _uso, _uso_modo, _uso_dest = None, "FIJO", []
+        tiles = [t for t in _TILES_LANDING if puede_seccion(t[3])]
+    if _uso_dest:
+        st.markdown('<div class="section-title">%s</div>' % _uso.TITULOS.get(_uso_modo, "Destacadas"),
+                    unsafe_allow_html=True)
+        _render_tiles(_uso_dest)
+
     st.markdown('<div class="section-title">Accesos</div>', unsafe_allow_html=True)
-
-    tiles = [t for t in _TILES_LANDING if puede_seccion(t[3])]
-
-    for i in range(0, len(tiles), 3):
-        cols = st.columns(3)
-        for col, (icon, tit, desc, sec, key, prim) in zip(cols, tiles[i:i+3]):
-            with col:
-                with st.container(border=True):
-                    st.markdown(f'<div class="tile-h">{icon} {tit}</div><div class="tile-d">{desc}</div>',
-                                unsafe_allow_html=True)
-                    if st.button("Entrar", type="primary", use_container_width=True, key=key):
-                        go_to(sec)
+    _render_tiles(tiles)
+    if _uso is not None:
+        try:
+            _uso.selector_modo(_lab_conn, USR)
+        except Exception:
+            pass
     st.stop()
 
 with st.sidebar:
@@ -1130,6 +1149,13 @@ if not puede_seccion(st.session_state.section):
 if st.session_state.get("_sec_cookie") != st.session_state.section:
     _auth.set_section_cookie(st.session_state.section)
     st.session_state._sec_cookie = st.session_state.section
+
+# ---- SOL-0036: registrar la ENTRADA a la sección (alimenta "más usadas" en la portada) ----
+try:
+    import uso_secciones as _uso
+    _uso.registrar_uso(_lab_conn, USR, st.session_state.section)
+except Exception:
+    pass
 
 # ---- Botón Home visible en TODAS las secciones (además del de la sidebar) ----
 _hcol1, _hcol2 = st.columns([1, 4])
