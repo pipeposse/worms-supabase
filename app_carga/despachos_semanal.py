@@ -455,7 +455,7 @@ def _png_resumen(df, mps):
                         fontweight="bold")
         base = [a + b for a, b in zip(base, vals)]
     for xi, tot, nd in zip(x, r["TN total"].astype(float).tolist(), r["Órdenes de venta"].tolist()):
-        ax.text(xi, tot + float(r["TN total"].max()) * 0.015, "%s TN\n%d desp." % (_fmt(tot), int(nd)),
+        ax.text(xi, tot + float(r["TN total"].max()) * 0.015, "%s TN\n%d ODV" % (_fmt(tot), int(nd)),
                 ha="center", va="bottom", fontsize=8, fontweight="bold", color="#111827")
     ax.set_xticks(x)
     ax.set_xticklabels(["%s\n%s" % (s, g) for s, g in zip(r["Semana"], r["Rango"])], fontsize=8)
@@ -477,7 +477,7 @@ def _paquete(df, mps):
     xlsx = _excel(df, mps)
     zbuf = io.BytesIO()
     with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("despachos_semanal.xlsx", xlsx)
+        z.writestr("odv_semanal.xlsx", xlsx)
         z.writestr("resumen_semanas.png", _png_resumen(df, mps))
         for s in sorted(df["Semana"].unique().tolist()):
             df_s = df[df["Semana"] == s]
@@ -876,14 +876,14 @@ def render(USR, cat, conectar=None):
             return
     with st.expander("⬇️ Descargar todo (Excel · PNG · ZIP)", expanded=False):
         d1, d2, d3 = st.columns(3)
-        d1.download_button("Excel · todas las semanas", xlsx, file_name="despachos_semanal.xlsx",
+        d1.download_button("Excel · todas las semanas", xlsx, file_name="odv_semanal.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            key="dsw_xlsx", use_container_width=True, type="primary")
         d2.download_button("PNG · resumen de semanas", _png_resumen(df, mps),
                            file_name="resumen_semanas.png", mime="image/png",
                            key="dsw_png_res", use_container_width=True)
         d3.download_button("ZIP · Excel + PNG de cada semana", zipb,
-                           file_name="despachos_semanal.zip", mime="application/zip",
+                           file_name="odv_semanal.zip", mime="application/zip",
                            key="dsw_zip", use_container_width=True)
 
     # ---- una semana

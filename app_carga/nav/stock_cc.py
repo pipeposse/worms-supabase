@@ -6,8 +6,9 @@ Modelo entregado por dirección (15/09/2026, planilla "modelo_stock"):
     · Una hoja por producto, y el producto se nombra corriente + producto + calidad
       (V-AFE-S, V-AG-E: V = vegetal, A = animal).
     · Cada hoja es una cuenta corriente:
-          FECHA · ORIGEN / DESTINO · N° TICKET · UM · INGRESO · EGRESO · SALDO · COMENTARIO
+          FECHA · ORIGEN · DESTINO · N° TICKET · INGRESO · EGRESO · SALDO · COMENTARIO
       arrancando en un SALDO INICIAL y con el saldo corriendo fila por fila.
+      Origen y destino van en columnas separadas: todo movimiento tiene los dos.
     · Una hoja REPORTE con el saldo consolidado de todos los productos a una fecha.
     · "El stock se tiene que ver por producto y sólo el Q" — la cantidad. Después se
       cruza con laboratorio y producción.
@@ -16,11 +17,16 @@ Acá está eso mismo, sin planilla: el Q sale del libro de movimientos de la pla
 (produccion.v_stock_cuenta_sector), que atribuye cada movimiento a un sector por el
 TANQUE, así que cada sector ve lo suyo y nada más.
 
-El SALDO INICIAL es un número monitoreable, no un acumulado infinito: el día 1 de cada mes
-queda grabado el saldo de cada producto con la medición física de los tanques del sector
-(produccion.fact_stock_saldo_inicial, corte automático a las 3:30 y botón para rehacerlo).
-Contra ese corte corre la cuenta corriente del mes, y la diferencia contra lo que miden los
+El SALDO INICIAL es un número monitoreable, no un acumulado infinito: el PRIMER DÍA HÁBIL de
+cada mes queda grabado el stock de cada producto con la medición física de los tanques del
+sector (produccion.fact_stock_saldo_inicial, automático a las 3:30 y botón para rehacerlo).
+Contra ese número corre la cuenta corriente del mes, y la diferencia contra lo que miden los
 tanques hoy es el desvío del mes — lo que dirección quiere monetizar.
+
+Cada sector ve SOLO los productos que maneja, que son los de sus tanques
+(produccion.v_producto_sector). Un movimiento viejo de un producto ajeno cargado contra un
+tanque del sector no es stock del sector: no entra en ningún saldo y se lista aparte en el
+Excel, hoja "Revisar", para que se corrija en el origen.
 
 La calidad la define laboratorio. En las cuentas aparece cuando es un grado (V-AG-C, V-AG-E,
 V-ARE-A); la letra que distingue al producto no es calidad: AFE-S es AFE Soja, corriente
@@ -42,7 +48,7 @@ _GRUPO_LBL = {"MP": "Materia prima", "INSUMO": "Insumos", "PT": "Producto termin
 _UM = {"TN": ("kg_neto", 1000.0), "KL": ("litros_neto", 1000.0)}
 _COLS = ("id_mov, momento, fecha, cuenta, cuenta_nombre, calidad, corriente_nombre, producto, grupo, "
          "tipo, origen, destino, ticket, tickets_detalle, contraparte, kg_neto, litros_neto, "
-         "referencia, usuario, es_ajuste_sistema, observacion")
+         "referencia, usuario, es_ajuste_sistema, observacion, tanque, es_del_sector")
 
 
 # ------------------------------------------------------------------ datos
@@ -56,6 +62,7 @@ def _movs(_cf, sector, desde, hasta):
         for c in ("kg_neto", "litros_neto"):
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).astype(float)
         df["es_ajuste_sistema"] = df["es_ajuste_sistema"].fillna(False).astype(bool)
+        df["es_del_sector"] = df["es_del_sector"].fillna(False).astype(bool)
         df["cuenta"] = df["cuenta"].fillna("(sin producto)")
         return df
     except Exception:
@@ -120,21 +127,21 @@ def _q(x, cero="—"):
     return f"{float(x):,.1f}"
 
 
-def _contraparte(r):
-    """La columna ORIGEN / DESTINO de la planilla: con quién fue el movimiento.
-    En una entrada es de dónde vino; en una salida, a dónde fue."""
-    return (r["origen"] if float(r["_val"]) >= 0 else r["destino"]) or "—"
+def _od(v, col):
+    """ORIGEN y DESTINO, cada uno en su columna: de dónde salió y a dónde fue el producto.
+    Dirección los quiere separados — en un movimiento de stock los dos son un dato."""
+    return v[col].fillna("").replace("", "—")
 
 
 def _cuenta_corriente(v, saldo_ini, etiqueta_ini, comentario_ini=""):
     """La hoja del producto tal cual la pidió dirección, con el saldo corriendo."""
-    cols = ["ID", "FECHA", "ORIGEN / DESTINO", "N° TICKET", "INGRESO", "EGRESO", "SALDO", "COMENTARIO"]
+    cols = ["ID", "FECHA", "ORIGEN", "DESTINO", "N° TICKET", "INGRESO", "EGRESO", "SALDO", "COMENTARIO"]
     if v.empty:                      # producto con saldo de arrastre y sin movimientos en el período
         filas = pd.DataFrame(columns=cols)
     else:
         filas = _filas(v, saldo_ini)
     cab = pd.DataFrame([{
-        "ID": "", "FECHA": etiqueta_ini, "ORIGEN / DESTINO": "SALDO INICIAL", "N° TICKET": "",
+        "ID": "", "FECHA": etiqueta_ini, "ORIGEN": "SALDO INICIAL", "DESTINO": "—", "N° TICKET": "",
         "INGRESO": "", "EGRESO": "", "SALDO": f"{float(saldo_ini):,.1f}",
         "COMENTARIO": comentario_ini,
     }])
@@ -148,7 +155,8 @@ def _filas(v, saldo_ini):
     return pd.DataFrame({
         "ID": v["id_mov"].map(lambda i: "" if pd.isna(i) else f"{int(i)}"),
         "FECHA": v["momento"].map(lambda t: pd.to_datetime(t).strftime("%d/%m/%Y %H:%M") if not pd.isna(t) else ""),
-        "ORIGEN / DESTINO": v.apply(_contraparte, axis=1),
+        "ORIGEN": _od(v, "origen"),
+        "DESTINO": _od(v, "destino"),
         "N° TICKET": v["ticket"].fillna(""),
         "INGRESO": ing.map(lambda x: _q(x, "")),
         "EGRESO": egr.map(lambda x: _q(x, "")),
@@ -197,52 +205,61 @@ def _reporte(v, ini, um):
 
 
 def _control(ctx, sec, cod, um, s_fin, ini):
-    """De dónde sale el saldo inicial y cuánto se aparta el libro de lo que miden los tanques.
+    """De dónde sale el saldo inicial y cuánto se aparta el libro de los tanques.
 
-    El saldo inicial del mes es un número monitoreable: se graba el día 1 con la medición
-    física de los tanques del sector (produccion.fact_stock_saldo_inicial). Contra ese número
-    corre la cuenta corriente, y la diferencia contra la medición de hoy es el desvío del mes."""
-    base_f = None
-    base_fte = "LIBRE"
-    if "base_fecha" in ini.columns and not ini.empty:
+    El saldo inicial es el stock del PRIMER DÍA HÁBIL del mes, guardado en
+    produccion.fact_stock_saldo_inicial: se toma de la medición física de los tanques del
+    sector. Contra ese número corre la cuenta corriente del mes."""
+    base_f, base_fte = None, "LIBRE"
+    if not ini.empty and "base_fecha" in ini.columns:
         _b = ini["base_fecha"].dropna()
         base_f = pd.to_datetime(_b.iloc[0]).date() if len(_b) else None
-        base_fte = (ini["base_fuente"].dropna().iloc[0] if ini["base_fuente"].notna().any() else "LIBRE")
+        if ini["base_fuente"].notna().any():
+            base_fte = ini["base_fuente"].dropna().iloc[0]
 
     med = _medido_tanques(ctx["conn_factory"], cod)
     fisico = (med[0] if um == "TN" else med[1]) if med else None
     c1, c2 = st.columns([4, 1.3])
-    if base_fte == "CORTE" and base_f:
-        txt = (f"**Saldo inicial del corte del {base_f:%d/%m/%Y}** — la medición física de los tanques de "
-               f"{sec['nombre_ui']} ese día. El libro corre desde ahí.")
+    if base_f is not None:
+        txt = (f"**Saldo inicial del {base_f:%d/%m/%Y}** (primer día hábil del mes), tomado de la medición "
+               f"física de los tanques de {sec['nombre_ui']}. El libro corre desde ahí.")
     else:
-        txt = (f"**Todavía no hay corte de saldo inicial para {sec['nombre_ui']}.** El saldo que se muestra "
-               "es el arrastre del libro entero desde que se empezó a cargar el sistema, así que no cierra "
-               "contra los tanques. Cerrá el saldo inicial del mes para que empiece a cerrar.")
+        txt = (f"**Todavía no hay saldo inicial cargado para {sec['nombre_ui']}.** Lo que se muestra es el "
+               "arrastre del libro entero, así que no cierra contra los tanques. Cerrá el saldo inicial "
+               "del mes para que empiece a cerrar.")
     if fisico is not None:
         dif = s_fin - fisico
         txt += (f" Hoy los tanques miden **{fisico:,.1f} {um}** y el libro cierra en **{s_fin:,.1f} {um}**: "
-                f"diferencia de **{dif:+,.1f} {um}**." )
+                f"diferencia de **{dif:+,.1f} {um}**.")
     c1.caption(txt)
+
+    # Una cuenta con saldo inicial negativo no es un error de cálculo: el libro tiene más
+    # entradas que lo que el tanque muestra hoy (salidas sin cargar o cambios de categoría sin
+    # asentar). Se avisa por nombre para que se corrija en el origen.
+    if not ini.empty:
+        _neg = ini.loc[ini["_val"] < -0.05, "cuenta"].tolist() if "_val" in ini.columns else []
+        if _neg:
+            c1.caption("⚠️ Arrancan en negativo: **" + ", ".join(_neg) + "**. El libro registra más entradas "
+                       "que lo que hoy hay en el tanque: falta cargar salidas o asentar un cambio de "
+                       "categoría. Es el desvío a corregir en la carga, no un error de la pantalla.")
 
     conectar = ctx.get("conectar")
     if conectar is not None and ctx["puede_seccion"]("STOCK"):
         from datetime import date
-        primero = date.today().replace(day=1)
-        if c2.button(f"📌 Cerrar saldo inicial {primero:%m/%Y}", key=f"nav_mv_corte_{cod}",
+        hoy = date.today()
+        if c2.button(f"📌 Rehacer saldo inicial {hoy:%m/%Y}", key=f"nav_mv_corte_{cod}",
                      use_container_width=True,
-                     help=("Graba el saldo inicial del mes con lo que miden hoy los tanques de este sector. "
-                           "Se puede volver a correr: pisa el corte del mismo mes.")):
+                     help=("Vuelve a calcular el stock del primer día hábil de este mes con la medición de "
+                           "hoy y los movimientos del mes. El día 1 se hace solo.")):
             try:
-                row = _cerrar_corte(conectar, ctx["USR"], cod, primero)
+                row = _cerrar_corte(conectar, ctx["USR"], cod, hoy)
                 invalidar()
-                st.success(f"Saldo inicial del {primero:%d/%m/%Y} grabado: "
-                           f"{int(row[0])} producto(s), {float(row[1]):,.1f} TN.")
+                st.success(f"Saldo inicial rehecho: {int(row[0])} producto(s), {float(row[1]):,.1f} TN.")
                 _rerun_fragment()
             except Exception as e:
                 st.error(f"No se pudo cerrar el saldo inicial: {e}")
-    return (f"corte del {base_f:%d/%m/%Y} · medición de los tanques" if (base_fte == "CORTE" and base_f)
-            else "arrastre del libro (todavía sin corte de saldo inicial)")
+    return (f"stock del {base_f:%d/%m/%Y} · medición de los tanques" if base_f is not None
+            else "arrastre del libro (todavía sin saldo inicial cargado)")
 
 
 def _ir_stock_clasico(ctx):
@@ -274,7 +291,12 @@ def _movimientos(ctx, sec):
         return
 
     ajustes_n = int(df["es_ajuste_sistema"].sum())
-    v = df[~df["es_ajuste_sistema"]].copy()
+    reales = df[~df["es_ajuste_sistema"]]
+    # Un sector no ve stock de productos que no maneja. Los productos son los de SUS tanques
+    # (produccion.v_producto_sector): lo demás son cargas mal imputadas de otro sector y se va
+    # entero al Excel, hoja "Revisar", sin tocar saldos ni indicadores.
+    ajenos = reales[~reales["es_del_sector"]]
+    v = reales[reales["es_del_sector"]].copy()
     v["_val"] = v[col] / div
     v["_ing"] = v["_val"].map(lambda x: x if x > 0 else 0.0)
     v["_egr"] = v["_val"].map(lambda x: -x if x < 0 else 0.0)
@@ -331,13 +353,18 @@ def _movimientos(ctx, sec):
     s_ini_cta = float(ini.loc[ini["cuenta"] == cta, "_val"].sum())
     tabla = _cuenta_corriente(w, s_ini_cta, f"al {desde:%d/%m/%Y}", _txt_ini)
     st.dataframe(tabla, hide_index=True, use_container_width=True, height=min(620, 60 + 35 * len(tabla)),
-                 column_config={"ORIGEN / DESTINO": st.column_config.TextColumn(width="medium"),
+                 column_config={"ORIGEN": st.column_config.TextColumn(width="medium"),
+                                "DESTINO": st.column_config.TextColumn(width="medium"),
                                 "COMENTARIO": st.column_config.TextColumn(width="medium")})
+    _fuera = ""
+    if not ajenos.empty:
+        _fuera = (f" Quedan afuera {len(ajenos)} movimientos de productos que {sec['nombre_ui']} no maneja "
+                  "(cargas mal imputadas a un tanque del sector): están en el Excel, hoja «Revisar».")
     st.caption(f"Cantidades en **{um}**. Cada fila es un movimiento de {sec['nombre_ui']} y de ningún otro "
                "sector, con su ID del libro de stock y el ticket de portería. El saldo corre de arriba hacia "
                "abajo, arrancando en el saldo inicial."
                + (f" Quedan afuera {ajustes_n} ajustes automáticos de medición, que no son mercadería que "
-                  "entró o salió." if ajustes_n else ""))
+                  "entró o salió." if ajustes_n else "") + _fuera)
 
     # ---------------- Excel: el mismo libro que la planilla ----------------
     buf = io.BytesIO()
@@ -349,6 +376,18 @@ def _movimientos(ctx, sec):
             _si = float(ini.loc[ini["cuenta"] == c, "_val"].sum())
             _cuenta_corriente(_w, _si, f"al {desde:%d/%m/%Y}", _txt_ini).to_excel(xw, index=False,
                                                                                  sheet_name=hoja)
+        if not ajenos.empty:
+            pd.DataFrame({
+                "ID": ajenos["id_mov"].map(lambda i: "" if pd.isna(i) else f"{int(i)}"),
+                "FECHA": ajenos["momento"].map(lambda t: pd.to_datetime(t).strftime("%d/%m/%Y %H:%M")
+                                               if not pd.isna(t) else ""),
+                "TANQUE": ajenos["tanque"].fillna(""),
+                "PRODUCTO": ajenos["cuenta"].fillna(""),
+                "ORIGEN": ajenos["origen"].fillna(""), "DESTINO": ajenos["destino"].fillna(""),
+                "N° TICKET": ajenos["ticket"].fillna(""),
+                "KG": ajenos["kg_neto"].map(lambda x: f"{float(x):,.0f}"),
+                "QUIÉN": ajenos["usuario"].fillna(""),
+            }).to_excel(xw, index=False, sheet_name="Revisar")
     st.download_button("⬇️ Descargar Excel (una hoja por producto)", buf.getvalue(),
                        file_name=f"stock_{cod.lower()}_{desde:%Y%m%d}_{hasta:%Y%m%d}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -368,4 +407,5 @@ def render_stock(ctx, sec):
                "(V = vegetal, A = animal; V-AFE-S es AFE Soja de corriente vegetal) y cada producto lleva "
                "su cuenta corriente con saldo inicial, ingresos, egresos y saldo. La calidad la define "
                "laboratorio y se muestra cuando es un grado (V-AG-C, V-AG-E, V-ARE-A). El saldo inicial "
-               "se cierra el día 1 de cada mes con la medición física de los tanques del sector.")
+               "es el stock del primer día hábil del mes, medido en los tanques del sector. Sólo se "
+               "muestran los productos de este sector.")

@@ -2377,15 +2377,15 @@ def _desvios_despachos(cat):
     c3.metric("De balanza (peso)", int((df["origen"] == "BALANZA").sum()))
     _v = df.rename(columns={"id_despacho": "Orden de venta", "titulo": "Título",
                             "producto_codigo": "Producto", "estado": "Estado",
-                            "fecha_despacho": "Fecha desp.", "parametro": "Parámetro",
+                            "fecha_despacho": "Fecha ODV", "parametro": "Parámetro",
                             "valor": "Valor", "limite": "Límite", "exceso_pct": "Exceso %",
                             "origen": "Origen", "usuario": "Usuario", "motivo": "Motivo",
                             "cuando": "Registrado"})
-    st.dataframe(_v[["Orden de venta", "Título", "Producto", "Fecha desp.", "Parámetro", "Valor",
+    st.dataframe(_v[["Orden de venta", "Título", "Producto", "Fecha ODV", "Parámetro", "Valor",
                      "Límite", "Exceso %", "Origen", "Usuario", "Motivo", "Registrado"]],
                  hide_index=True, use_container_width=True,
                  column_config={"Exceso %": st.column_config.NumberColumn(format="%+.1f"),
-                                "Fecha desp.": st.column_config.DateColumn(format="DD/MM/YY")})
+                                "Fecha ODV": st.column_config.DateColumn(format="DD/MM/YY")})
     st.caption("ARMADO = se guardó fuera de spec (dentro o fuera de tolerancia, con motivo si "
                "superó el 10%) · CONTROL = se confirmó fuera de tolerancia · BALANZA = lo pesado "
                "en portería difiere >3% de lo formulado.")
