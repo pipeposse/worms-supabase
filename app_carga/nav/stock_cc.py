@@ -6,7 +6,7 @@ Modelo entregado por dirección (15/09/2026, planilla "modelo_stock"):
     · Una hoja por producto, y el producto se nombra corriente + producto + calidad
       (V-AFE-S, V-AG-E: V = vegetal, A = animal).
     · Cada hoja es una cuenta corriente:
-          FECHA · ORIGEN · DESTINO · N° TICKET · INGRESO · EGRESO · SALDO · COMENTARIO
+          FECHA · ORIGEN · DESTINO · N° TICKET · INGRESO · EGRESO · SALDO · DESCRIPCIÓN
       arrancando en un SALDO INICIAL y con el saldo corriendo fila por fila.
       Origen y destino van en columnas separadas: todo movimiento tiene los dos.
     · Una hoja REPORTE con el saldo consolidado de todos los productos a una fecha.
@@ -23,14 +23,18 @@ sector (produccion.fact_stock_saldo_inicial, automático a las 3:30 y botón par
 Contra ese número corre la cuenta corriente del mes, y la diferencia contra lo que miden los
 tanques hoy es el desvío del mes — lo que dirección quiere monetizar.
 
-Cada sector ve SOLO los productos que maneja, que son los de sus tanques
-(produccion.v_producto_sector). Un movimiento viejo de un producto ajeno cargado contra un
-tanque del sector no es stock del sector: no entra en ningún saldo y se lista aparte en el
-Excel, hoja "Revisar", para que se corrija en el origen.
+Están TODOS los productos que pasaron por los tanques del sector: no se esconde ninguno. La
+columna DESCRIPCIÓN dice qué es cada uno y qué papel juega ahí — si sale por ODV o si sólo
+está acopiado (produccion.v_cuenta_sector) — y el filtro de arriba deja mirar una parte.
+Así se ve de una por qué en Exportación aparece, por ejemplo, AFE Soja con goma: está
+guardado en un tanque de plataforma y nunca salió por una orden de venta.
 
-La calidad la define laboratorio. En las cuentas aparece cuando es un grado (V-AG-C, V-AG-E,
-V-ARE-A); la letra que distingue al producto no es calidad: AFE-S es AFE Soja, corriente
-vegetal, y su cuenta es V-AFE-S.
+La calidad la define laboratorio y la cuenta se abre por calidad. En la familia AFE el grado
+sale del azufre y el fósforo del TANQUE, con la misma regla que ya usa el brief de dirección
+(produccion.fn_categoria_afe: A hasta el 80% del límite, B 90%, C 100%, D por encima), así que
+el AFE de soja se lleva en V-AFE-S-A, V-AFE-S-C y V-AFE-S-D. Un tanque sin análisis queda en
+V-AFE-S, sin grado, para que se vea que falta el laboratorio. La letra que distingue al
+producto no es calidad: AFE-S es AFE Soja, corriente vegetal.
 
 Unidad: TN por defecto (litros × densidad del producto), con opción de verlo en KL
 como viene la planilla.
@@ -102,6 +106,23 @@ def _cerrar_corte(conectar, USR, sector, fecha):
 
 
 @st.cache_data(ttl=_TTL, show_spinner=False)
+def _cuentas(_cf, sector):
+    """Qué es cada producto del sector y qué papel juega: si se exporta o sólo está acopiado.
+    Es la columna DESCRIPCIÓN y el filtro de la pantalla (produccion.v_cuenta_sector)."""
+    sql = ("SELECT cuenta, descripcion, rol, tanques_en_uso, salidas_odv, tn_odv "
+           "FROM produccion.v_cuenta_sector WHERE sector = %s")
+    try:
+        with _cf() as conn:
+            df = pd.read_sql_query(sql, conn, params=(sector,))
+        df["descripcion"] = df["descripcion"].fillna("")
+        df["rol"] = df["rol"].fillna("HISTORICO")
+        return df
+    except Exception:
+        return pd.DataFrame(columns=["cuenta", "descripcion", "rol", "tanques_en_uso",
+                                     "salidas_odv", "tn_odv"])
+
+
+@st.cache_data(ttl=_TTL, show_spinner=False)
 def _medido_tanques(_cf, sector):
     """Control: lo que hoy hay MEDIDO en los tanques del sector (TN y KL)."""
     sql = ("SELECT COALESCE(SUM(act_tn),0) AS tn, COALESCE(SUM(act_l),0)/1000.0 AS kl "
@@ -116,7 +137,7 @@ def _medido_tanques(_cf, sector):
 
 
 def invalidar():
-    _movs.clear(); _saldo_inicial.clear(); _medido_tanques.clear()
+    _movs.clear(); _saldo_inicial.clear(); _medido_tanques.clear(); _cuentas.clear()
 
 
 # ------------------------------------------------------------------ helpers
@@ -135,7 +156,7 @@ def _od(v, col):
 
 def _cuenta_corriente(v, saldo_ini, etiqueta_ini, comentario_ini=""):
     """La hoja del producto tal cual la pidió dirección, con el saldo corriendo."""
-    cols = ["ID", "FECHA", "ORIGEN", "DESTINO", "N° TICKET", "INGRESO", "EGRESO", "SALDO", "COMENTARIO"]
+    cols = ["ID", "FECHA", "ORIGEN", "DESTINO", "N° TICKET", "INGRESO", "EGRESO", "SALDO", "DESCRIPCIÓN"]
     if v.empty:                      # producto con saldo de arrastre y sin movimientos en el período
         filas = pd.DataFrame(columns=cols)
     else:
@@ -143,7 +164,7 @@ def _cuenta_corriente(v, saldo_ini, etiqueta_ini, comentario_ini=""):
     cab = pd.DataFrame([{
         "ID": "", "FECHA": etiqueta_ini, "ORIGEN": "SALDO INICIAL", "DESTINO": "—", "N° TICKET": "",
         "INGRESO": "", "EGRESO": "", "SALDO": f"{float(saldo_ini):,.1f}",
-        "COMENTARIO": comentario_ini,
+        "DESCRIPCIÓN": comentario_ini,
     }])
     return pd.concat([cab, filas], ignore_index=True)[cols]
 
@@ -161,11 +182,39 @@ def _filas(v, saldo_ini):
         "INGRESO": ing.map(lambda x: _q(x, "")),
         "EGRESO": egr.map(lambda x: _q(x, "")),
         "SALDO": saldo.map(lambda x: f"{float(x):,.1f}"),
-        "COMENTARIO": [(o or r or "") for o, r in zip(v["observacion"].fillna(""), v["referencia"].fillna(""))],
+        # Qué fue ese movimiento, en palabras. Si nadie escribió nada, se arma con lo que hay:
+        # de dónde vino o a dónde fue, para que ninguna fila quede sin explicación.
+        "DESCRIPCIÓN": [(o or r or d) for o, r, d in
+                        zip(v["observacion"].fillna(""), v["referencia"].fillna(""),
+                            (v["tipo"].fillna("").map({"ENTRADA": "Entrada", "SALIDA": "Salida",
+                                                       "AJUSTE": "Ajuste de medición"})
+                             .fillna("Movimiento")))],
     })
 
 
-def _reporte(v, ini, um):
+_ROL_TXT = {"EXPORTA": "sale por ODV", "ACOPIO": "sólo acopio, no sale por ODV",
+            "TANQUE FUERA DE USO": "tanque fuera de uso", "HISTORICO": "ya no está en ningún tanque"}
+_ROL_FILTRO = {"TODO": None, "Sale por ODV": "EXPORTA", "Sólo acopio": "ACOPIO"}
+
+
+def _describir(cta, cuentas):
+    """Qué es el producto y qué hace en este sector. Contesta de una la pregunta "¿y esto qué
+    tiene que ver con exportación?": dice si salió alguna vez por una ODV o si sólo está acopiado."""
+    if cuentas is None or cuentas.empty:
+        return ""
+    f = cuentas[cuentas["cuenta"] == cta]
+    if f.empty:
+        return ""
+    r = f.iloc[0]
+    txt = (r.get("descripcion") or "").strip()
+    rol = _ROL_TXT.get(r.get("rol"), "")
+    tn = float(r.get("tn_odv") or 0)
+    if r.get("rol") == "EXPORTA" and tn >= 0.05:
+        rol = f"sale por ODV ({tn:,.0f} TN embarcadas)"
+    return " · ".join(x for x in (txt, rol) if x)
+
+
+def _reporte(v, ini, um, cuentas=None):
     """La hoja REPORTE: saldo consolidado por producto al cierre del período."""
     _D = ["cuenta_nombre", "calidad", "corriente_nombre"]
     mov = v.groupby("cuenta", dropna=False, as_index=False).agg(ING=("_ing", "sum"), EGR=("_egr", "sum"))
@@ -189,6 +238,7 @@ def _reporte(v, ini, um):
     out = pd.DataFrame({
         "CUENTA": g["cuenta"].fillna("(sin producto)"),
         "PRODUCTO": g["cuenta_nombre"].fillna(""),
+        "DESCRIPCIÓN": [_describir(c, cuentas) for c in g["cuenta"]],
         "CALIDAD": g["calidad"].fillna("—"),
         "CORRIENTE": g["corriente_nombre"].fillna("—"),
         f"SALDO INICIAL {um}": g["INI"].map(lambda x: _q(x, "0.0")),
@@ -197,7 +247,8 @@ def _reporte(v, ini, um):
         f"SALDO FINAL {um}": g["FIN"].map(lambda x: _q(x, "0.0")),
     })
     tot = pd.DataFrame([{
-        "CUENTA": "TOTAL", "PRODUCTO": f"{len(g)} producto(s)", "CALIDAD": "", "CORRIENTE": "",
+        "CUENTA": "TOTAL", "PRODUCTO": f"{len(g)} producto(s)", "DESCRIPCIÓN": "",
+        "CALIDAD": "", "CORRIENTE": "",
         f"SALDO INICIAL {um}": f"{g['INI'].sum():,.1f}", f"INGRESOS {um}": f"{g['ING'].sum():,.1f}",
         f"EGRESOS {um}": f"{g['EGR'].sum():,.1f}", f"SALDO FINAL {um}": f"{g['FIN'].sum():,.1f}",
     }])
@@ -274,34 +325,44 @@ def _movimientos(ctx, sec):
     cod = sec["codigo"]
     desde, hasta, etiqueta = _per.selector(f"stk_{cod}")
 
-    c1, c2, c3 = st.columns([1.1, 2.2, 0.5])
+    c1, c2, c3, c4 = st.columns([0.9, 1.5, 1.8, 0.5])
     um = c1.radio("Unidad", list(_UM), horizontal=True, key=f"nav_mv_um_{cod}",
                   label_visibility="collapsed",
                   help="Toneladas (los litros se pasan con la densidad del producto) o kilolitros.")
-    busca = c2.text_input("Buscar", key=f"nav_mv_q_{cod}", placeholder="ID, ticket, cliente, producto…",
+    # Están todos los productos; este filtro es para mirar sólo una parte, no para esconder.
+    rol = c2.radio("Qué productos", list(_ROL_FILTRO), horizontal=True, key=f"nav_mv_rol_{cod}",
+                   label_visibility="collapsed",
+                   format_func=lambda r: "Todos" if r == "TODO" else r,
+                   help="«Sale por ODV» son los que alguna vez se embarcaron; «Sólo acopio», los que "
+                        "están guardados en tanques del sector pero nunca salieron por una orden de venta.")
+    busca = c3.text_input("Buscar", key=f"nav_mv_q_{cod}", placeholder="ID, ticket, cliente, producto…",
                           label_visibility="collapsed")
-    if c3.button("↻", key=f"nav_mv_ref_{cod}", use_container_width=True, help="Releer ahora"):
+    if c4.button("↻", key=f"nav_mv_ref_{cod}", use_container_width=True, help="Releer ahora"):
         invalidar(); _rerun_fragment()
 
     col, div = _UM[um]
     df = _movs(ctx["conn_factory"], cod, desde, hasta)
     ini = _saldo_inicial(ctx["conn_factory"], cod, desde)
+    cuentas = _cuentas(ctx["conn_factory"], cod)
     if df is None or ini is None:
         st.caption("Sin conexión a la base en este momento.")
         return
 
     ajustes_n = int(df["es_ajuste_sistema"].sum())
-    reales = df[~df["es_ajuste_sistema"]]
-    # Un sector no ve stock de productos que no maneja. Los productos son los de SUS tanques
-    # (produccion.v_producto_sector): lo demás son cargas mal imputadas de otro sector y se va
-    # entero al Excel, hoja "Revisar", sin tocar saldos ni indicadores.
-    ajenos = reales[~reales["es_del_sector"]]
-    v = reales[reales["es_del_sector"]].copy()
+    # Están TODOS los productos que pasaron por los tanques del sector: no se esconde ninguno.
+    # Lo que decide qué mirar es el filtro de abajo, y la columna DESCRIPCIÓN dice qué es cada
+    # producto y si se exporta o sólo está acopiado ahí.
+    v = df[~df["es_ajuste_sistema"]].copy()
     v["_val"] = v[col] / div
     v["_ing"] = v["_val"].map(lambda x: x if x > 0 else 0.0)
     v["_egr"] = v["_val"].map(lambda x: -x if x < 0 else 0.0)
     ini = ini.copy()
     ini["_val"] = ini[col] / div
+    _rol = _ROL_FILTRO.get(rol)
+    if _rol and not cuentas.empty:
+        _ok = set(cuentas.loc[cuentas["rol"] == _rol, "cuenta"])
+        v = v[v["cuenta"].isin(_ok)]
+        ini = ini[ini["cuenta"].isin(_ok)]
 
     if v.empty and float(ini["_val"].abs().sum()) == 0:
         st.info(f"Sin movimientos de {sec['nombre_ui']} en {etiqueta}.")
@@ -322,26 +383,28 @@ def _movimientos(ctx, sec):
     # ---------------- REPORTE: saldo consolidado por producto ----------------
     st.markdown("<div class='section-title' style='margin:10px 0 2px'>Saldo consolidado por producto</div>",
                 unsafe_allow_html=True)
-    rep, g = _reporte(v, ini, um)
+    rep, g = _reporte(v, ini, um, cuentas)
     st.dataframe(rep, hide_index=True, use_container_width=True, height=min(520, 60 + 35 * len(rep)),
                  column_config={"CUENTA": st.column_config.TextColumn(width="small"),
-                                "PRODUCTO": st.column_config.TextColumn(width="medium")})
+                                "PRODUCTO": st.column_config.TextColumn(width="small"),
+                                "DESCRIPCIÓN": st.column_config.TextColumn(width="large")})
 
     _txt_ini = _control(ctx, sec, cod, um, s_fin, ini)
 
     # ---------------- La hoja del producto: cuenta corriente ----------------
     # el orden es el del reporte (saldo de mayor a menor): lo primero que se abre es lo que más pesa
-    cuentas = [c for c in g["cuenta"].tolist() if pd.notna(c)]
-    if not cuentas:
+    ctas = [c for c in g["cuenta"].tolist() if pd.notna(c)]
+    if not ctas:
         return
     st.markdown("<div class='section-title' style='margin:14px 0 2px'>Cuenta corriente del producto</div>",
                 unsafe_allow_html=True)
     k_c = f"nav_mv_cta_{cod}"
-    if st.session_state.get(k_c) not in cuentas:
-        st.session_state[k_c] = cuentas[0]
+    if st.session_state.get(k_c) not in ctas:
+        st.session_state[k_c] = ctas[0]
     _nom = dict(zip(g["cuenta"], g["cuenta_nombre"].fillna("")))
-    cta = st.selectbox("Producto", cuentas, key=k_c, label_visibility="collapsed",
-                       format_func=lambda c: f"{c} · {_nom.get(c, '')}".strip(" ·"))
+    cta = st.selectbox("Producto", ctas, key=k_c, label_visibility="collapsed",
+                       format_func=lambda c: " · ".join(x for x in (c, _nom.get(c, ""),
+                                                                    _describir(c, cuentas)) if x))
 
     w = v[v["cuenta"] == cta].sort_values(["momento", "id_mov"])
     if busca.strip():
@@ -355,39 +418,24 @@ def _movimientos(ctx, sec):
     st.dataframe(tabla, hide_index=True, use_container_width=True, height=min(620, 60 + 35 * len(tabla)),
                  column_config={"ORIGEN": st.column_config.TextColumn(width="medium"),
                                 "DESTINO": st.column_config.TextColumn(width="medium"),
-                                "COMENTARIO": st.column_config.TextColumn(width="medium")})
-    _fuera = ""
-    if not ajenos.empty:
-        _fuera = (f" Quedan afuera {len(ajenos)} movimientos de productos que {sec['nombre_ui']} no maneja "
-                  "(cargas mal imputadas a un tanque del sector): están en el Excel, hoja «Revisar».")
+                                "DESCRIPCIÓN": st.column_config.TextColumn(width="medium")})
     st.caption(f"Cantidades en **{um}**. Cada fila es un movimiento de {sec['nombre_ui']} y de ningún otro "
                "sector, con su ID del libro de stock y el ticket de portería. El saldo corre de arriba hacia "
                "abajo, arrancando en el saldo inicial."
                + (f" Quedan afuera {ajustes_n} ajustes automáticos de medición, que no son mercadería que "
-                  "entró o salió." if ajustes_n else "") + _fuera)
+                  "entró o salió." if ajustes_n else ""))
 
     # ---------------- Excel: el mismo libro que la planilla ----------------
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         rep.to_excel(xw, index=False, sheet_name="REPORTE")
-        for c in cuentas[:40]:
+        for c in ctas[:40]:
             hoja = str(c)[:28].replace("/", "-").replace("\\", "-").replace(":", "-")
             _w = v[v["cuenta"] == c].sort_values(["momento", "id_mov"])
             _si = float(ini.loc[ini["cuenta"] == c, "_val"].sum())
             _cuenta_corriente(_w, _si, f"al {desde:%d/%m/%Y}", _txt_ini).to_excel(xw, index=False,
                                                                                  sheet_name=hoja)
-        if not ajenos.empty:
-            pd.DataFrame({
-                "ID": ajenos["id_mov"].map(lambda i: "" if pd.isna(i) else f"{int(i)}"),
-                "FECHA": ajenos["momento"].map(lambda t: pd.to_datetime(t).strftime("%d/%m/%Y %H:%M")
-                                               if not pd.isna(t) else ""),
-                "TANQUE": ajenos["tanque"].fillna(""),
-                "PRODUCTO": ajenos["cuenta"].fillna(""),
-                "ORIGEN": ajenos["origen"].fillna(""), "DESTINO": ajenos["destino"].fillna(""),
-                "N° TICKET": ajenos["ticket"].fillna(""),
-                "KG": ajenos["kg_neto"].map(lambda x: f"{float(x):,.0f}"),
-                "QUIÉN": ajenos["usuario"].fillna(""),
-            }).to_excel(xw, index=False, sheet_name="Revisar")
+
     st.download_button("⬇️ Descargar Excel (una hoja por producto)", buf.getvalue(),
                        file_name=f"stock_{cod.lower()}_{desde:%Y%m%d}_{hasta:%Y%m%d}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -406,6 +454,8 @@ def render_stock(ctx, sec):
     st.caption("Modelo de stock de dirección: el producto se nombra corriente + producto + calidad "
                "(V = vegetal, A = animal; V-AFE-S es AFE Soja de corriente vegetal) y cada producto lleva "
                "su cuenta corriente con saldo inicial, ingresos, egresos y saldo. La calidad la define "
-               "laboratorio y se muestra cuando es un grado (V-AG-C, V-AG-E, V-ARE-A). El saldo inicial "
+               "laboratorio y se muestra cuando es un grado: en la familia AFE sale del azufre y el "
+               "fósforo del tanque (A hasta el 80% del límite, B 90%, C 100%, D por encima), así que "
+               "el AFE-S se abre en V-AFE-S-A, -C y -D como está en los tanques. El saldo inicial "
                "es el stock del primer día hábil del mes, medido en los tanques del sector. Sólo se "
                "muestran los productos de este sector.")
