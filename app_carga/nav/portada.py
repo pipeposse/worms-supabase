@@ -295,7 +295,7 @@ def render_landing(ctx):
         return
     if nav["sector"]:
         from .sector import render_sector
-        if nav["vista"] in ("PLAN", "DESVIOS", "STOCK"):
+        if nav["vista"] in ("PLAN", "DESVIOS", "STOCK", "LAB", "ACOPIO"):
             sec = sector_por_codigo(ctx["conn_factory"], nav["sector"])
             if sec:
                 if nav["vista"] == "PLAN":
@@ -304,6 +304,12 @@ def render_landing(ctx):
                 elif nav["vista"] == "DESVIOS":
                     from .desvios import render_desvios
                     render_desvios(ctx, sec)
+                elif nav["vista"] == "LAB":
+                    from .lab_sector import render_lab
+                    render_lab(ctx, sec)
+                elif nav["vista"] == "ACOPIO":
+                    from .acopio_sector import render_acopio
+                    render_acopio(ctx, sec)
                 else:
                     from .stock_cc import render_stock
                     render_stock(ctx, sec)

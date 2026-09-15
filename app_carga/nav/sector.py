@@ -39,11 +39,11 @@ _COMUNES = [
      "Los movimientos del sector, uno por uno: origen → destino, ticket y kilos. El físico por tanque sigue en la sección clásica.",
      None, {}),          # vista propia de nav (stock_cc.py) sobre v_movimiento_sector
     ("ACOPIO", "🛢️", "Acopio",
-     "Tanques del sector: contenido, capacidad y última medición.",
-     "TANQUES", {}),
+     "Tanques de este sector: qué hay, cuánto hay disponible y cuánto lugar queda.",
+     None, {}),         # vista propia de nav (acopio_sector.py): sólo los tanques del sector
     ("LAB", "🧪", "Laboratorio",
-     "Evaluaciones de laboratorio; el supervisor busca por producto o ticket.",
-     "LAB", {}),
+     "Calidad de los productos de este sector: qué dio cada análisis. Sólo consulta.",
+     None, {}),         # vista propia de nav (lab_sector.py): NO abre la carga de laboratorio
     ("REPORTES", "📊", "Reportes",
      "Gestión semanal: objetivo vs. real en TN, producto por producto.",
      "PLANIFICACION", {"pl_grupo_sc": "📈 Gestión semanal", "pl_grupo": "📈 Gestión semanal"}),
@@ -160,10 +160,17 @@ def _kpis_sector(ctx, sec):
     pers = _i(k.get("personal_presente"))
     c4 = _kpi("Personas trabajando", str(pers),
               "registraron trabajo en este sector" if pers else "nadie registró trabajo acá todavía", "ok" if pers else "")
-    # La meta / cumplimiento de la planificación NO va acá (pedido de dirección
-    # 14/09): en el tablero del sector confundía — el objetivo vs. real, producto
-    # por producto, vive en Gestión semanal, que es donde se carga y se cierra.
-    st.markdown(f'<div class="kpi-grid">{c1}{c2}{c3}{c4}</div>', unsafe_allow_html=True)
+    if k.get("tn_objetivo") and float(k["tn_objetivo"]) > 0:
+        pct = float(k.get("pct_cumplimiento") or 0)
+        c5 = _kpi("Cumplimiento de la planificación",
+                  f"{pct:.0f}<span style='font-size:1rem;font-weight:700;'> %</span>",
+                  f"semana {_i(k.get('semana_iso'))}: {_n(k.get('tn_real'))} de {_n(k.get('tn_objetivo'))} TN objetivo"
+                  + (" · plan cerrado" if k.get("plan_cerrado") else " · plan abierto"),
+                  "ok" if pct >= 90 else ("warn" if pct >= 50 else "bad"))
+    else:
+        c5 = _kpi("Cumplimiento de la planificación", "—",
+                  f"sin objetivo cargado para la semana {_i(k.get('semana_iso'))} (Gestión semanal → Objetivos)", "")
+    st.markdown(f'<div class="kpi-grid">{c1}{c2}{c3}{c4}{c5}</div>', unsafe_allow_html=True)
 
     b1, b2, _ = st.columns([1.6, 0.8, 3])
     conectar = ctx.get("conectar")
