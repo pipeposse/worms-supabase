@@ -5489,25 +5489,17 @@ def _tk_candidatos(cat, clases, d1, d2, txt, familia):
     return cat(q, tuple(par))
 
 
-def _tk_firma(id_despacho, rol, filtros):
-    """Identidad de la GRILLA (orden de venta + filtros), no del conjunto de filas.
-
-    st.data_editor guarda los tildes por posición de fila, atados a su key. Eso deja
-    dos formas de romperlo y hay que cuidar las dos:
-
-    * Si la key NO cambia cuando cambia lo que se muestra (otra orden de venta, otro rango
-      de fechas, otra búsqueda), el delta viejo cae sobre filas distintas → tildes
-      perdidos o sobre el ticket equivocado. Por eso la key lleva orden de venta + filtros.
-    * Si la key cambia DEMASIADO —atada al conjunto de tickets— cada ticket nuevo que
-      entra en portería la rota y borra los tildes que el operario acababa de hacer.
-      En expo entran camiones cada pocos minutos, así que eso pasaba todo el tiempo:
-      la grilla mostraba los tildes viejos del navegador y el contador decía
-      "0 seleccionados". Por eso el conjunto de filas NO entra en la key.
-
-    Lo que hace robusto el resto es leer la selección por NÚMERO DE TICKET y no por
-    posición (ver `_tk_panel`), más el orden ascendente de `_tk_candidatos`."""
-    h = _hashlib.md5(("|".join(str(x) for x in filtros)).encode("utf-8")).hexdigest()[:10]
-    return "dsp_tk_ed_%s_%s_%s" % (rol, int(id_despacho), h)
+# Historia de este panel (SOL-0028 / SOL-0037), para que no se vuelva a intentar:
+# la elección de tickets se hizo primero con los tildes de st.data_editor. Ese widget
+# no guarda los tildes dentro de los datos sino como un delta {fila: {columna: valor}}
+# atado a su key. El navegador pinta el tilde al instante, pero el delta se aplica
+# después contra el DataFrame que le toque a esa corrida: si entró un camión nuevo, si
+# cambió el filtro o si la key cambió, ese delta se descarta o cae sobre otra fila. El
+# síntoma es siempre el mismo y desconcierta: la grilla muestra los tildes puestos y el
+# contador dice "0 seleccionados". Se probó ordenar ascendente, atar la key a los
+# filtros y leer por número de ticket; achicó el problema pero no lo sacó.
+# Hoy la elección es un multiselect de NÚMEROS DE TICKET: el estado es el número en sí,
+# no una posición dentro de una tabla, así que no hay nada que se pueda desalinear.
 
 
 def _tk_purgar(actual, rol):
@@ -5589,55 +5581,84 @@ def _tk_panel(USR, cat, conectar, cab, rol):
             return
         cnd = cnd.copy()
         cnd["kg"] = pd.to_numeric(cnd["kg"], errors="coerce")
-        cnd["Asignar"] = False
-        cnd["Contenedor"] = ""
-        cnd["Precinto"] = ""
-        _pre = cnd.rename(columns={"ticket": "Ticket", "fecha": "Fecha", "hora": "Hora",
-                                   "producto": "Producto", "destino": "Destino", "area": "Área",
-                                   "patente": "Patente", "sin_pesada": "Sin pesada",
-                                   "procedencia": "Procedencia", "observaciones": "Obs. portería"})
-        _c = (["Asignar", "Ticket", "Fecha", "Hora", "Producto", "Destino", "Patente", "kg",
-               "Sin pesada", "Obs. portería", "Contenedor", "Precinto"] if rol == "SALIDA" else
-              ["Asignar", "Ticket", "Fecha", "Hora", "Producto", "Procedencia", "Área", "Patente",
-               "kg", "Sin pesada", "Obs. portería", "Contenedor", "Precinto"])
-        _k_ed = _tk_firma(cab["id_despacho"], rol, (d1, d2, fam, txt.strip()))
-        _tk_purgar(_k_ed, rol)
-        ed = st.data_editor(
-            _pre[_c], hide_index=True, use_container_width=True, key=_k_ed,
-            disabled=[c for c in _c if c not in ("Asignar", "Contenedor", "Precinto")],
-            column_config={
-                "Asignar": st.column_config.CheckboxColumn("✔", width="small"),
-                "kg": st.column_config.NumberColumn("kg", format="%.0f"),
-                "Sin pesada": st.column_config.CheckboxColumn("Sin pesada", disabled=True,
-                                                              help="El ticket no tiene pesada de salida cerrada."),
-                "Contenedor": st.column_config.TextColumn("Contenedor", width="small"),
-                "Precinto": st.column_config.TextColumn("Precinto", width="small"),
-            })
-        # La selección se identifica por NÚMERO DE TICKET. Por posición de fila se
-        # rompía en cuanto el operario ordenaba la grilla por una columna (el orden
-        # visual no es el de los datos) o entraba un ticket nuevo (SOL-0028).
-        _sel = ed[ed["Asignar"] == True]  # noqa: E712
-        _by_tk = {int(r["ticket"]): i for i, r in cnd.iterrows() if pd.notna(r["ticket"])}
-        _pick, _perdidos = [], []
-        for _i, _r in _sel.iterrows():
-            _t = _r.get("Ticket")
-            if pd.isna(_t) or int(_t) not in _by_tk:
-                _perdidos.append(_t)
-                continue
-            _pick.append((_by_tk[int(_t)],
-                          str(_r.get("Contenedor") or "").strip() or None,
-                          str(_r.get("Precinto") or "").strip() or None))
+        cnd = cnd[cnd["ticket"].notna()]
+        cnd["ticket"] = cnd["ticket"].astype(int)
+        cnd = cnd.drop_duplicates("ticket").reset_index(drop=True)
+
+        # SOL-0037. La elección ya NO se hace con los tildes de st.data_editor ni con un
+        # multiselect: los dos guardan la selección ATADA AL CONJUNTO que se muestra (el
+        # data_editor como un delta por posición de fila; el multiselect como un valor
+        # atado a su lista de opciones). En expo entran camiones cada pocos minutos, así
+        # que ese conjunto cambia solo: probado los dos, la selección se vacía sola y la
+        # pantalla queda mostrando los tildes con el contador en "0 seleccionados".
+        # Acá cada ticket tiene SU PROPIO tilde, con su propia clave (…_<nº de ticket>).
+        # Un ticket nuevo agrega un tilde más y no toca los que ya estaban marcados.
+        _tk_purgar("", rol)                     # limpia los editores viejos que ya no se usan
+        _idd = int(cab["id_despacho"])
+        _ck = lambda t: "dsp_tk_chk_%s_%d_%d" % (rol, _idd, int(t))
+        _kc = lambda t: "dsp_tk_cont_%s_%d_%d" % (rol, _idd, int(t))
+        _kp = lambda t: "dsp_tk_prec_%s_%d_%d" % (rol, _idd, int(t))
+
+        _v = cnd.rename(columns={"ticket": "Ticket", "fecha": "Fecha", "hora": "Hora",
+                                 "producto": "Producto", "destino": "Destino", "area": "Área",
+                                 "patente": "Patente", "sin_pesada": "Sin pesada",
+                                 "procedencia": "Procedencia", "observaciones": "Obs. portería"})
+        _c = (["Ticket", "Fecha", "Hora", "Producto", "Destino", "Patente", "kg",
+               "Sin pesada", "Obs. portería"] if rol == "SALIDA" else
+              ["Ticket", "Fecha", "Hora", "Producto", "Procedencia", "Área", "Patente",
+               "kg", "Sin pesada", "Obs. portería"])
+        # OJO: todo esto vive DENTRO del expander "Asignar tickets", y Streamlit no
+        # permite un expander adentro de otro: por eso se usan toggles, no expanders.
+        if st.toggle(f"Ver los {len(cnd)} tickets libres en una tabla", key=f"dsp_tk_tab_{rol}"):
+            st.dataframe(_v[_c], hide_index=True, use_container_width=True,
+                         column_config={"kg": st.column_config.NumberColumn("kg", format="%.0f")})
+
+        _MAX = 60
+        _lista = cnd.head(_MAX)
+        if len(cnd) > _MAX:
+            st.warning(f"Hay {len(cnd)} tickets libres: se listan los {_MAX} primeros. "
+                       "Achicá el rango de fechas o buscá por número para ver el resto.")
+        b1, b2, _b3 = st.columns([1, 1, 4])
+
+        def _marcar(valor):
+            for _t in _lista["ticket"].tolist():
+                st.session_state[_ck(_t)] = bool(valor)
+        b1.button("Marcar todos", key=f"dsp_tk_all_{rol}", use_container_width=True,
+                  on_click=_marcar, args=(True,))
+        b2.button("Ninguno", key=f"dsp_tk_none_{rol}", use_container_width=True,
+                  on_click=_marcar, args=(False,))
+
+        st.markdown('<div class="tk-lista"></div>', unsafe_allow_html=True)
+        elegidos = []
+        for _, _r in _lista.iterrows():
+            _t = int(_r["ticket"])
+            c0, c1, c2 = st.columns([0.35, 3.2, 2.2])
+            _on = c0.checkbox(f"#{_t}", key=_ck(_t), label_visibility="collapsed")
+            _kgtxt = ("%0.0f kg" % _r["kg"]).replace(",", ".") if pd.notna(_r["kg"]) else "sin pesada"
+            _dst = (_r.get("destino") if rol == "SALIDA" else _r.get("area")) or "s/destino"
+            c1.markdown(f"**#{_t}** · {str(_r['fecha'])[:10]} {str(_r.get('hora') or '')[:5]} · "
+                        f"{_r.get('producto') or '—'} · {_dst}")
+            c2.markdown(f"{_kgtxt} · {_r.get('patente') or 's/patente'}"
+                        + ("  ⚠️ sin pesada" if bool(_r.get("sin_pesada")) else ""))
+            if _on:
+                elegidos.append(_t)
+        _pos = {int(r["ticket"]): i for i, r in cnd.iterrows()}
+        _pick = [(_pos[_t],
+                  str(st.session_state.get(_kc(_t)) or "").strip() or None,
+                  str(st.session_state.get(_kp(_t)) or "").strip() or None) for _t in elegidos]
         _kg_sel = float(cnd.loc[[i for i, _, _ in _pick], "kg"].fillna(0).sum()) if _pick else 0.0
         st.caption(f"{len(cnd)} tickets libres en el rango · {len(_pick)} seleccionados "
                    f"({_kg_sel:,.0f} kg)".replace(",", "."))
-        if _pick:
-            # el operario tiene que VER que el tilde quedó registrado antes de confirmar
-            st.success("Tildados: " + ", ".join(
-                "#%d" % int(cnd.loc[i, "ticket"]) for i, _, _ in _pick))
-        if _perdidos:
-            st.warning("Estos tickets ya no están libres (los tomó otra orden de venta mientras "
-                       "armabas): " + ", ".join(str(t) for t in _perdidos) +
-                       ". Destildalos o buscalos por número para ver dónde quedaron.")
+        if elegidos:
+            st.success("Tildados: " + ", ".join("#%d" % t for t in elegidos))
+            if st.toggle("Cargar contenedor y precinto de cada ticket", key=f"dsp_tk_cp_{rol}"):
+                for _t in elegidos:
+                    cc1, cc2, cc3 = st.columns([1, 1.4, 1.4])
+                    cc1.markdown(f"**#{_t}**")
+                    cc2.text_input("Contenedor", key=_kc(_t), label_visibility="collapsed",
+                                   placeholder="Contenedor")
+                    cc3.text_input("Precinto", key=_kp(_t), label_visibility="collapsed",
+                                   placeholder="Precinto")
         if _pick and st.button(f"✅ Asignar {len(_pick)} ticket(s)", key=f"dsp_tk_add_{rol}",
                                type="primary"):
             filas = []
@@ -5669,7 +5690,10 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                             _nok += 1
                         if rol == "SALIDA":
                             _desvio_balanza(cur, int(cab["id_despacho"]), USR.get("nombre"))
-                st.session_state.pop(_k_ed, None)   # la grilla arranca limpia
+                # los tildes arrancan limpios (con su contenedor y precinto)
+                for _tk in [int(cnd.loc[i, "ticket"]) for i, _, _ in _pick]:
+                    for _kk in (_ck(_tk), _kc(_tk), _kp(_tk)):
+                        st.session_state.pop(_kk, None)
                 cat.clear()
                 if _nok == len(filas):
                     st.success(f"{_nok} ticket(s) asignados.")
