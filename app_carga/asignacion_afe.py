@@ -556,7 +556,24 @@ def _confirmar(conectar, USR, tk, cab, lineas, contexto, obs, med=None):
                     (cab.get("fecha"), int(cab["id_producto"]), cab.get("producto"),
                      idt, ln.get("label"), tk, kg, kg, lts, uid,
                      "Asignación AFE ticket %s (%d/%d)" % (tk, i + 1, len(lineas)), uid))
-                id_mov = cur.fetchone()[0]
+                # Mismo caso que en Recuperación AG: el trigger anti-doble-carga puede
+                # descartar el INSERT si ya hay un movimiento idéntico de hace <90 s. En ese
+                # caso se sigue con el gemelo en vez de reventar con un TypeError.
+                _rm = cur.fetchone()
+                if _rm is None:
+                    cur.execute(
+                        "SELECT id_mov_stock FROM produccion.fact_movimiento_stock "
+                        "WHERE NOT COALESCE(anulado,false) AND origen='asignacion_afe' "
+                        "  AND regexp_replace(COALESCE(ticket_porteria,''),'\\.0+$','')=%s "
+                        "  AND id_tanque=%s AND id_producto=%s "
+                        "ORDER BY creado_en DESC LIMIT 1",
+                        (tk, idt, int(cab["id_producto"])))
+                    _rm = cur.fetchone()
+                if _rm is None:
+                    raise RuntimeError(
+                        "No se pudo registrar el movimiento de stock del ticket %s en %s. "
+                        "Volvé a intentar en un minuto." % (tk, ln.get("label") or idt))
+                id_mov = int(_rm[0])
 
                 # 4) espejo de tanque (los MP no los espeja el trigger)
                 cur.execute(

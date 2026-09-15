@@ -303,7 +303,24 @@ def _confirmar(conectar, USR, tk, dat, clasif, prod_row, destino_tipo, tanque, o
                     (dat.get("fecha_entrada"), idp, str(prod_row["codigo_producto"]),
                      idt, str(tanque["nombre"]), tk, kg, kg, lts, uid,
                      "Recuperación AG ticket %s" % tk, uid))
-                id_mov = cur.fetchone()[0]
+                _rm = cur.fetchone()
+                if _rm is None:
+                    # El trigger anti-doble-carga (fn_evitar_doble_mov_stock) descartó el
+                    # INSERT: ya hay un movimiento idéntico de hace menos de 90 s. No es un
+                    # error — es exactamente lo que el trigger promete ("para quien carga, ya
+                    # estaba guardado"). Se recupera el id del gemelo y se sigue.
+                    cur.execute(
+                        "SELECT id_mov_stock FROM produccion.fact_movimiento_stock "
+                        "WHERE NOT COALESCE(anulado,false) AND origen='recuperacion_ag' "
+                        "  AND regexp_replace(COALESCE(ticket_porteria,''),'\\.0+$','')=%s "
+                        "  AND id_tanque=%s AND id_producto=%s "
+                        "ORDER BY creado_en DESC LIMIT 1", (tk, idt, idp))
+                    _rm = cur.fetchone()
+                if _rm is None:
+                    raise RuntimeError(
+                        "No se pudo registrar el movimiento de stock del ticket %s. "
+                        "Volvé a intentar en un minuto; si sigue igual, avisá a dirección." % tk)
+                id_mov = int(_rm[0])
 
                 # 3) espejo de tanque
                 cur.execute(
