@@ -5,19 +5,18 @@ Pedido de dirección (14/09): al entrar a este sector se ve SOLO lo de efluentes
 líquidos; nada de otros sectores. Antes la tarjeta abría la sección Laboratorio
 completa (todos los productos, todas las vistas).
 
-Todo lo que se muestra acá está filtrado por producto_base / producto_lab =
-"DISPOSICION FINAL DE LIQUIDOS" (así se llama en portería y en el laboratorio):
-    · indicadores del día y del mes (camiones, TN, análisis pendientes)
-    · análisis de efluente (formulario EFLUENTE de lab_carga, con el ticket ya elegido)
-    · pendientes de laboratorio del día
-    · buscar y editar análisis ya cargados
-    · camiones ingresados (portería) con exportación a CSV
-
-No hay lógica de negocio nueva: se reutilizan las funciones de lab_carga.py.
+EL SECTOR NO EVALÚA: es de SOLO LECTURA. Laboratorio carga sus análisis desde su
+propia sección; acá únicamente se consulta lo que ya cargó. Lo que se muestra,
+todo filtrado por producto_base = "DISPOSICION FINAL DE LIQUIDOS":
+    · indicadores del día y del mes (camiones, TN, cuántos tienen análisis)
+    · resultados del mes: comparación entre meses, proyección de cierre y TN por mes
+    · camiones ingresados por portería con el resultado del laboratorio al lado
+    · el flujo de las piletas (entra efluente, sale AG recuperado)
+    · exportación a CSV
 """
 
-from datetime import date, timedelta
-import uuid
+import calendar as _cal
+from datetime import date
 
 import pandas as pd
 import streamlit as st
@@ -25,7 +24,8 @@ import streamlit as st
 from .kpis import _TTL, _kpi, _n, _i
 
 PB = "DISPOSICION FINAL DE LIQUIDOS"          # producto_base (portería) y producto_lab (laboratorio)
-_MODOS = ["🧪 Analizar efluente", "📋 Pendientes", "✏️ Buscar y editar", "🚛 Camiones ingresados"]
+# El sector NO carga análisis: laboratorio los hace en su sección. Acá sólo se mira.
+_MODOS = ["🚛 Camiones ingresados"]
 _EXCL_CLI = ("NOT EXISTS (SELECT 1 FROM produccion.dic_cliente_excluido e WHERE e.activo "
              "AND upper(COALESCE(t.cliente,'')) LIKE upper(e.patron))")
 
@@ -63,6 +63,7 @@ def _camiones(_cf, desde, hasta):
         SELECT t.transaccion::bigint AS ticket, t.fecha_entrada::date AS fecha, t.hora_e AS hora,
                t.cliente, t.procedencia, t.transporte, t.patente_chasis, t.patente_acoplado,
                abs(t.peso_neto) AS kg, t.evaluado,
+               t.lab_calidad, t.lab_rechazado, t.lab_num_muestra, t.lab_fecha,
                EXISTS (SELECT 1 FROM produccion.fact_movimiento_stock m
                         WHERE m.origen = 'efluente_porteria' AND NOT m.anulado
                           AND regexp_replace(m.ticket_porteria, '\\.0+$', '')
@@ -75,6 +76,33 @@ def _camiones(_cf, desde, hasta):
         with _cf() as conn:
             df = pd.read_sql_query(sql, conn, params=(PB, desde, hasta))
         df["kg"] = pd.to_numeric(df["kg"], errors="coerce")
+        return df
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=_TTL, show_spinner=False)
+def _historico(_cf, meses=6):
+    """Un renglón por día de los últimos N meses: con eso se arma el acumulado
+    por día del mes, la comparación entre meses y la proyección de cierre."""
+    sql = f"""
+        SELECT t.fecha_entrada::date AS fecha, abs(t.peso_neto) AS kg
+        FROM produccion.v_transacciones_limpias t
+        WHERE t.producto_base = %s
+          AND t.fecha_entrada >= (date_trunc('month', current_date) - make_interval(months => %s))::date
+          AND t.peso_neto IS NOT NULL
+          AND {_EXCL_CLI}
+    """
+    try:
+        with _cf() as conn:
+            df = pd.read_sql_query(sql, conn, params=(PB, int(meses)))
+        if df.empty:
+            return df
+        df["kg"] = pd.to_numeric(df["kg"], errors="coerce").fillna(0.0)
+        df["tn"] = df["kg"] / 1000.0
+        _f = pd.to_datetime(df["fecha"])
+        df["mes"] = _f.dt.to_period("M").astype(str)
+        df["dia"] = _f.dt.day
         return df
     except Exception:
         return None
@@ -96,6 +124,7 @@ def _flujo_piletas(_cf, n=6):
 def _invalidar():
     _leer_kpis.clear()
     _camiones.clear()
+    _historico.clear()
     _flujo_piletas.clear()
 
 
@@ -112,151 +141,117 @@ def _indicadores(ctx):
     c2 = _kpi("Efluente del mes",
               f"{_n(float(k.get('tn_mes') or 0))}<span style='font-size:1rem;font-weight:700;'> TN</span>",
               f"{_i(k.get('camiones_mes'))} camiones · {date.today().strftime('%B %Y')}", "")
+    # Dato informativo, NO una tarea del sector: quien evalúa es laboratorio,
+    # desde su propia sección.
     pend, ev = _i(k.get("pend_hoy")), _i(k.get("eval_hoy"))
-    c3 = _kpi("Análisis pendientes hoy", str(pend),
-              (f"{ev} evaluados · faltan {pend}" if pend else (f"{ev} evaluados · completo ✅" if ev else "sin ingresos")),
-              "warn" if pend else ("ok" if ev else ""))
+    c3 = _kpi("Con análisis de laboratorio", ("%d de %d" % (ev, ev + pend)) if (ev + pend) else "—",
+              ("los analiza laboratorio desde su sección" if (ev + pend) else "sin ingresos hoy"), "")
     st.markdown(f'<div class="kpi-grid">{c1}{c2}{c3}</div>', unsafe_allow_html=True)
 
 
-# ------------------------------------------------------------------ modos
-def _modo_analizar(ctx, lab, get_conn, usuario):
-    ss = st.session_state
-    st.markdown("**Ticket de portería** — escribí el número o elegilo de la lista (sólo camiones de efluente líquido, últimos 90 días).")
-    c1, c2 = st.columns([1.2, 3])
-    f_tk = c1.text_input("Nº de ticket", key="ef_tk", help="Número del ticket de portería del camión de efluente.")
-    try:
-        ticks = lab.tickets_porteria([PB], f_tk or None, 90, get_conn=get_conn)
-    except Exception as e:
-        ticks = []
-        st.caption(f"(no pude leer tickets: {e})")
-    tk_sel = None
-    if ticks:
-        opt = {"— sin ticket —": None}
-        for t in ticks:
-            opt[lab._lbl_tk(t)] = t
-        keys = list(opt.keys())
-        ft = (f_tk or "").strip()
-        auto = 0
-        if ft:
-            for i, (_, tv) in enumerate(opt.items()):
-                if tv and str(tv["transaccion"]) == ft:
-                    auto = i
-                    break
-        eleg = c2.selectbox(f"Ticket ({len(ticks)})", keys, index=auto, key=f"ef_tksel_{ft}")
-        tk_sel = opt[eleg]
-    else:
-        c2.caption("No hay tickets de efluente líquido en los últimos 90 días con ese número.")
-    pf = {"producto_lab": PB}
-    if tk_sel:
-        pf.update(ticket=str(tk_sel["transaccion"]), patente_chasis=tk_sel.get("patente_chasis"),
-                  patente_acoplado=tk_sel.get("patente_acoplado"))
-        st.success(f"Ticket #{tk_sel['transaccion']} · {tk_sel.get('cliente') or '-'} · "
-                   f"{str(tk_sel.get('fecha_entrada') or '')[:10]} · patentes "
-                   f"{tk_sel.get('patente_chasis') or '-'}/{tk_sel.get('patente_acoplado') or '-'}"
-                   + (" · ya evaluado ✓" if str(tk_sel.get("evaluado")).upper() == "SI" else ""))
-    tkid = (f_tk or "").strip() or (str(tk_sel["transaccion"]) if tk_sel else "blank")
-    tok = f"{ss['lab_tok']}_ef_{tkid}"
-    lab._form_EFLUENTE(pf, None, tok, get_conn, usuario)
-
-    st.divider()
-    st.markdown("#### 📋 Efluentes cargados hoy")
-    try:
-        hoy = [r for r in lab.cargas_del_dia(get_conn=get_conn)
-               if _es_efluente(r.get("Producto"))]
-    except Exception as e:
-        hoy = []
-        st.caption(f"(no pude leer lo cargado hoy: {e})")
-    if not hoy:
-        st.caption("Todavía no se cargó ningún análisis de efluente hoy.")
-    else:
-        st.caption(f"{len(hoy)} análisis de efluente cargado(s) hoy")
-        st.dataframe(hoy, use_container_width=True, hide_index=True)
-
-
-def _es_efluente(v):
-    s = str(v or "").upper()
-    return s == PB or s == "EFLUENTE" or ("EFLU" in s and "LIQU" in s)
-
-
-def _modo_pendientes(ctx, lab, get_conn):
-    ss = st.session_state
-    st.markdown("**Camiones de efluente sin análisis** — tocá **Evaluar** y se abre el formulario con ese ticket cargado.")
-    ss.setdefault("ef_pend_dia", date.today())
-    cprev, cdia, cnext = st.columns([1, 2, 1])
-    if cprev.button("◀ Día anterior", key="ef_pend_prev", use_container_width=True):
-        ss["ef_pend_dia"] = ss["ef_pend_dia"] - timedelta(days=1)
-        st.rerun()
-    dia = cdia.date_input("Día", value=ss["ef_pend_dia"], key="ef_pend_dia_inp", format="DD/MM/YYYY")
-    ss["ef_pend_dia"] = dia
+# ------------------------------------------------------------------ resultados
+def _resultados(ctx):
+    """Cómo viene el mes contra los anteriores, y en cuánto cierra al ritmo de hoy."""
+    st.markdown("#### 📊 Cómo viene el mes")
     hoy = date.today()
-    if cnext.button("Día siguiente ▶", key="ef_pend_next", use_container_width=True, disabled=(dia >= hoy)):
-        ss["ef_pend_dia"] = min(dia + timedelta(days=1), hoy)
-        st.rerun()
+    n_meses = st.slider("Meses a comparar", 2, 12, 4, step=1, key="ef_res_meses",
+                        help="Se comparan los últimos meses completos contra el mes en curso.")
+    df = _historico(ctx["conn_factory"], max(6, n_meses))
+    if df is None:
+        st.caption("No pude leer el histórico de efluentes.")
+        return
+    if df.empty:
+        st.info("Todavía no hay ingresos de efluente para comparar.")
+        return
+
+    mes_act = pd.Period(hoy, freq="M").strftime("%Y-%m")
+    mes_ant = (pd.Period(hoy, freq="M") - 1).strftime("%Y-%m")
+    d_mes = df[df["mes"] == mes_act]
+    d_ant = df[df["mes"] == mes_ant]
+    dia = max(1, hoy.day)
+    dias_mes = _cal.monthrange(hoy.year, hoy.month)[1]
+    acum = float(d_mes["tn"].sum())
+    ritmo = acum / dia
+    proy = ritmo * dias_mes
+    ant_mismo_dia = float(d_ant[d_ant["dia"] <= dia]["tn"].sum())
+    ant_total = float(d_ant["tn"].sum())
+
+    k1 = _kpi("Mes a hoy", f"{_n(acum)}<span style='font-size:1rem;font-weight:700;'> TN</span>",
+              f"{len(d_mes)} camiones · día {dia} de {dias_mes}", "")
+    k2 = _kpi("Proyección de cierre", f"{_n(proy)}<span style='font-size:1rem;font-weight:700;'> TN</span>",
+              f"al ritmo actual de {_n(ritmo)} TN por día", "")
+    if ant_mismo_dia > 0:
+        _var = (acum / ant_mismo_dia - 1) * 100
+        k3 = _kpi("Contra el mes pasado", f"{_var:+.0f}<span style='font-size:1rem;font-weight:700;'> %</span>",
+                  f"a esta altura del mes pasado iban {_n(ant_mismo_dia)} TN",
+                  "ok" if _var >= 0 else "warn")
+    else:
+        k3 = _kpi("Contra el mes pasado", "—", "sin ingresos del mes pasado para comparar", "")
+    k4 = _kpi("Mes pasado completo", f"{_n(ant_total)}<span style='font-size:1rem;font-weight:700;'> TN</span>",
+              f"{len(d_ant)} camiones en {mes_ant}", "")
+    st.markdown(f'<div class="kpi-grid">{k1}{k2}{k3}{k4}</div>', unsafe_allow_html=True)
+
+    meses_disp = sorted(df["mes"].unique())
+    meses_sel = meses_disp[-int(n_meses):]
+    d2 = df[df["mes"].isin(meses_sel)]
+
     try:
-        pend = lab.tickets_pendientes(dia, get_conn=get_conn, producto_base=[PB])
-    except Exception as e:
-        pend = []
-        st.error(f"No pude leer pendientes: {e}")
-    et = "hoy" if dia == hoy else dia.strftime("%d/%m/%Y")
-    if not pend:
-        st.success(f"✅ Sin camiones de efluente pendientes de análisis para {et}.")
-        return
-    st.caption(f"{len(pend)} camión(es) de efluente sin evaluar · {et}")
-    for ix, t in enumerate(pend):
-        pat = "/".join([x for x in [t.get("patente_chasis"), t.get("patente_acoplado")] if x])
-        tn = abs(t.get("peso_neto") or 0) / 1000.0
-        c1, c2 = st.columns([5, 1])
-        c1.markdown(f"**#{t['transaccion']}** · {(t.get('cliente') or '')[:28]}"
-                    f"{(' · ' + pat) if pat else ''}{(f' · {tn:,.1f} TN' if tn else '')}")
-        if c2.button("Evaluar", key=f"ef_pend_ev_{ix}_{t['transaccion']}", use_container_width=True):
-            ss["ef_tk"] = str(t["transaccion"])
-            ss["_ef_force_modo"] = _MODOS[0]
-            st.rerun()
+        import altair as alt
+        diario = d2.groupby(["mes", "dia"], as_index=False)["tn"].sum()
+        diario["acum"] = diario.sort_values("dia").groupby("mes")["tn"].cumsum()
+        diario["tipo"] = "real"
+        # La proyección arranca en el último día real del mes en curso y sigue al
+        # ritmo diario de hoy hasta fin de mes: es una recta, no un pronóstico fino.
+        filas = []
+        if mes_act in meses_sel and not d_mes.empty:
+            dm = diario[diario["mes"] == mes_act].sort_values("dia")
+            if not dm.empty:
+                d_ult = int(dm["dia"].iloc[-1])
+                a_ult = float(dm["acum"].iloc[-1])
+                filas.append({"mes": mes_act + " (proyección)", "dia": d_ult, "acum": a_ult,
+                              "tipo": "proyección"})
+                for dd in range(d_ult + 1, dias_mes + 1):
+                    filas.append({"mes": mes_act + " (proyección)", "dia": dd,
+                                  "acum": ritmo * dd, "tipo": "proyección"})
+        plot = pd.concat([diario, pd.DataFrame(filas)], ignore_index=True) if filas else diario
+        ch = (alt.Chart(plot).mark_line(point=False)
+              .encode(x=alt.X("dia:Q", title="día del mes",
+                              scale=alt.Scale(domain=[1, dias_mes], nice=False)),
+                      y=alt.Y("acum:Q", title="TN acumuladas"),
+                      color=alt.Color("mes:N", title="mes"),
+                      strokeDash=alt.StrokeDash("tipo:N", title="",
+                                                scale=alt.Scale(domain=["real", "proyección"],
+                                                                range=[[1, 0], [6, 4]])),
+                      tooltip=["mes:N", alt.Tooltip("dia:Q", title="día"),
+                               alt.Tooltip("acum:Q", title="TN acum.", format=",.1f")])
+              .properties(height=340, title="Acumulado del mes, día por día"))
+        st.altair_chart(ch, use_container_width=True)
+        st.caption("Línea llena = lo que entró de verdad. Línea punteada = en cuánto cierra el mes "
+                   "si sigue entrando al ritmo de estos días.")
+    except Exception as _e:
+        st.caption("No se pudo dibujar la comparación: %s" % _e)
+
+    c1, c2 = st.columns(2)
+    por_mes = (d2.groupby("mes", as_index=False)["tn"].sum().sort_values("mes"))
+    por_mes["TN"] = por_mes["tn"].round(1)
+    c1.markdown("**Total por mes**")
+    c1.bar_chart(por_mes, x="mes", y="TN", use_container_width=True, color="#0284c7")
+
+    d3 = d2.copy()
+    d3["sem"] = ((d3["dia"] - 1) // 7 + 1).clip(upper=5)
+    sem_hoy = min(5, (hoy.day - 1) // 7 + 1)
+    sem = c2.selectbox("Semana del mes", [1, 2, 3, 4, 5], index=sem_hoy - 1, key="ef_res_sem",
+                       help="1 = días 1-7 · 2 = 8-14 · 3 = 15-21 · 4 = 22-28 · 5 = 29-31.")
+    ds = d3[d3["sem"] == sem].groupby("mes", as_index=False)["tn"].sum().sort_values("mes")
+    ds["TN"] = ds["tn"].round(1)
+    if ds.empty:
+        c2.info("Sin datos en esa semana.")
+    else:
+        c2.bar_chart(ds, x="mes", y="TN", use_container_width=True, color="#0284c7")
+        c2.caption(f"Misma semana ({sem}ª) de cada mes, para comparar contra el mismo tramo.")
 
 
-def _modo_editar(ctx, lab, get_conn, usuario):
-    ss = st.session_state
-    with st.expander("Buscar análisis de efluente", expanded=(ss.get("ef_edit_ctx") is None)):
-        c1, c2 = st.columns([3, 1])
-        ticket = c1.text_input("Ticket contiene", key="ef_q_ticket")
-        buscar = c2.button("Buscar", key="ef_q_btn", use_container_width=True)
-        if buscar:
-            try:
-                ss["ef_busqueda"] = lab.buscar_registros(ticket=ticket or None, producto=PB, get_conn=get_conn)
-            except Exception as e:
-                st.error(f"Error buscando: {e}")
-                ss["ef_busqueda"] = []
-        res = ss.get("ef_busqueda", [])
-        if res:
-            def _lbl(r):
-                f = str(r["fecha"])[:16] if r.get("fecha") else "s/f"
-                org = "APP" if r["source_id"] == lab.APP_SOURCE else "Access"
-                return (f"[{org}] {f} · tk {r.get('ticket') or '-'} · cal {r.get('calidad_final_lab') or '-'} "
-                        f"· {r.get('rechazado') or '-'} · id {r['id_access']}")
-            opciones = {_lbl(r): r for r in res}
-            eleg = st.selectbox(f"{len(res)} resultado(s)", list(opciones.keys()), key="ef_sel")
-            if st.button("Cargar para editar", key="ef_edit_btn", type="primary", use_container_width=True):
-                r = opciones[eleg]
-                full = lab.cargar_registro(r["source_id"], r["id_access"], get_conn=get_conn)
-                ss["ef_edit_ctx"] = {"source_id": r["source_id"], "id_access": r["id_access"], "full": full}
-                ss["lab_tok"] = uuid.uuid4().hex[:8]
-                st.rerun()
-        elif buscar:
-            st.info("Sin resultados.")
-    ctx_ed = ss.get("ef_edit_ctx")
-    if not ctx_ed:
-        return
-    full = ctx_ed["full"] or {}
-    org = "la app" if ctx_ed["source_id"] == lab.APP_SOURCE else "Access (se adopta al guardar)"
-    st.info(f"Editando análisis id {ctx_ed['id_access']} · origen: {org}")
-    if st.button("✖ Cancelar edición", key="ef_edit_cancel"):
-        ss["ef_edit_ctx"] = None
-        st.rerun()
-    st.divider()
-    lab._form_EFLUENTE(full, ctx_ed, f"{ss['lab_tok']}_efed_{ctx_ed['id_access']}", get_conn, usuario)
-
-
+# ------------------------------------------------------------------ modos
 def _modo_camiones(ctx):
     c1, c2 = st.columns(2)
     desde = c1.date_input("Desde", value=date.today().replace(day=1), key="ef_cam_desde", format="DD/MM/YYYY")
@@ -278,7 +273,9 @@ def _modo_camiones(ctx):
     m1.metric("Camiones", len(df))
     m2.metric("TN netas", f"{tot/1000:,.1f}")
     m3.metric("TN por camión", f"{(tot/len(df))/1000:,.2f}" if len(df) else "—")
-    m4.metric("Sin análisis", int((df["evaluado"].fillna("NO").astype(str).str.upper() != "SI").sum()))
+    m4.metric("Sin análisis de lab",
+              int((df["evaluado"].fillna("NO").astype(str).str.upper() != "SI").sum()),
+              help="Los carga laboratorio desde su propia sección. Acá es sólo información.")
     m5.metric("Sin registrar en stock", _falta_stock,
               help="Cada camión de efluente se registra solo como entrada a piletas en el libro de stock; "
                    "la sincronización corre cada 15 minutos.")
@@ -287,10 +284,20 @@ def _modo_camiones(ctx):
     por_mes = dm.groupby("mes")["kg"].sum().div(1000).round(1).reset_index().rename(columns={"kg": "TN"})
     if len(por_mes) > 1:
         st.bar_chart(por_mes, x="mes", y="TN", use_container_width=True)
+    df = df.copy()
+    df["_res"] = df.apply(
+        lambda r: ("❌ RECHAZADO" if str(r.get("lab_rechazado") or "").upper().startswith("RECHAZ")
+                   else ("✅ " + str(r.get("lab_calidad") or "OK")
+                         if str(r.get("evaluado") or "").upper() == "SI" else "⏳ sin analizar")), axis=1)
     vista = df.rename(columns={"ticket": "Ticket", "fecha": "Fecha", "hora": "Hora", "cliente": "Cliente",
                                "procedencia": "Procedencia", "transporte": "Transporte",
                                "patente_chasis": "Chasis", "patente_acoplado": "Acoplado",
-                               "kg": "Kg", "evaluado": "Analizado", "en_stock": "En stock"})
+                               "kg": "Kg", "_res": "Resultado lab", "lab_num_muestra": "Nº muestra",
+                               "en_stock": "En stock"})
+    _cols = [c for c in ["Ticket", "Fecha", "Hora", "Cliente", "Procedencia", "Transporte",
+                         "Chasis", "Acoplado", "Kg", "Resultado lab", "Nº muestra", "En stock"]
+             if c in vista.columns]
+    vista = vista[_cols]
     st.dataframe(vista, use_container_width=True, hide_index=True, height=420)
     st.download_button("⬇️ Descargar CSV", vista.to_csv(index=False).encode("utf-8"),
                        file_name=f"efluentes_{desde}_{hasta}.csv", mime="text/csv", key="ef_cam_csv")
@@ -316,45 +323,17 @@ def _flujo(ctx):
 # ------------------------------------------------------------------ pantalla
 def render_sector_efluentes(ctx, sec):
     from .portada import _hero, _pie_soporte
-    import lab_carga as lab
 
-    USR, puede = ctx["USR"], ctx["puede_seccion"]
-    ss = st.session_state
+    USR = ctx["USR"]
     _hero(f"SECTOR {sec['nombre_ui'].upper()}", USR, icono=sec.get("icono") or "💧",
-          sub="Efluentes líquidos: camiones ingresados y sus análisis de laboratorio. Sólo este producto.")
+          sub="Efluentes líquidos: camiones ingresados y el resultado del laboratorio. Sólo consulta.")
     _indicadores(ctx)
-
-    ss.setdefault("lab_tok", uuid.uuid4().hex[:8])
-    ss["_lab_externo"] = False                       # nunca muestra externa desde acá
-    if ss.pop("lab_celebrar", False):                # lab_carga._reset lo prende tras guardar
-        ss["ef_edit_ctx"] = None
-        _invalidar()
-        st.toast("Análisis de efluente guardado", icon="✅")
-
-    puede_lab = puede("LAB")
-    modos = _MODOS if puede_lab else [_MODOS[3]]
-    force = ss.pop("_ef_force_modo", None)
-    if force in modos:
-        ss["ef_modo"] = force
-    modo = st.radio("Vista", modos, horizontal=True, key="ef_modo", label_visibility="collapsed")
-    if not puede_lab:
-        st.caption("Sin permiso de Laboratorio: se muestran sólo los ingresos de portería.")
-
-    get_conn = ctx["conn_factory"]
-    usuario = ""
-    if puede_lab and not modo.startswith("🚛"):
-        uname = str(USR.get("nombre_full") or USR.get("nombre") or USR.get("id_usuario") or "")
-        usuario = st.text_input("Empleado / usuario que carga (queda registrado en la base)",
-                                value=uname, key="lab_user")
-    if modo.startswith("🧪"):
-        _modo_analizar(ctx, lab, get_conn, usuario)
-    elif modo.startswith("📋"):
-        _modo_pendientes(ctx, lab, get_conn)
-    elif modo.startswith("✏️"):
-        _modo_editar(ctx, lab, get_conn, usuario)
-    else:
-        _modo_camiones(ctx)
-    st.caption("Este sector muestra únicamente efluentes líquidos (DISPOSICION FINAL DE LIQUIDOS). "
-               "Los demás productos se evalúan desde su sector o desde Laboratorio.")
+    _resultados(ctx)
+    st.divider()
+    st.markdown("#### 🚛 Camiones ingresados")
+    _modo_camiones(ctx)
+    st.caption("Este sector muestra únicamente efluentes líquidos (DISPOSICION FINAL DE LIQUIDOS) y es de "
+               "**sólo lectura**: los análisis los carga **Laboratorio** desde su propia sección. Acá se "
+               "consulta lo que ya evaluó.")
     _pie_soporte(ctx)
     return True
