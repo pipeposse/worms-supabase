@@ -23,6 +23,8 @@ import datetime as _dt
 import pandas as pd
 import streamlit as st
 
+import guardado as _g          # recibo de guardado verificado contra la base
+
 ROLES_DIRECCION = ("SUPERVISOR", "ADMIN")
 
 SPEC_DEFAULT = {"acidez": 5.0, "ays": 2.0, "azufre": 50.0, "fosforo": 150.0}
@@ -3594,6 +3596,8 @@ def _lineas_set(ss, df):
 
 def _armar(USR, cat, conectar):
     ss = st.session_state
+    # Lo primero que se ve: si la última vez guardó o no. Sobrevive al rerun.
+    _g.mostrar("dsp_armado")
     # Keep-alive: re-marcar los campos como estado programático ANTES de instanciar los
     # widgets. Sin esto, Streamlit purga el valor de todo widget que no se dibujó en el
     # run anterior (p.ej. al pasar por Control y volver) y el formulario nacía vacío.
@@ -4695,24 +4699,48 @@ def _armar(USR, cat, conectar):
                   help="Fuera de spec por encima de la tolerancia: escribí el motivo y se "
                        "habilita el guardado (el desvío queda registrado).")
     elif g2.button("💾 Guardar", type="primary", use_container_width=True):
+        _era_edicion = bool(ss.get("dsp_edit_id"))
+        _tit_ov = cab["titulo"]
         try:
-            _era_edicion = bool(ss.get("dsp_edit_id"))
-            _id = _guardar(conectar, USR, cab, res, ss.get("dsp_edit_id"), desvios=_desv)
+            with st.spinner("Guardando la formulación…"):
+                _id = _guardar(conectar, USR, cab, res, ss.get("dsp_edit_id"), desvios=_desv)
+            # No alcanza con que el INSERT no explote: se vuelve a leer la base y se
+            # cuenta lo que quedó. Si acá dan 0 líneas, el recibo lo dice y nadie se
+            # queda pensando que guardó.
+            _chk = _g.fila("SELECT count(*), COALESCE(sum(litros),0) "
+                           "FROM produccion.fact_despacho_linea WHERE id_despacho=%s", (int(_id),))
+            _nl = int(_chk[0]) if _chk else 0
+            _ll = float(_chk[1]) if _chk else 0.0
+            if _chk is None:
+                _verif = ""
+            elif _nl == 0:
+                _g.anotar("dsp_armado", False,
+                          "La orden de venta #%d quedó SIN líneas" % _id,
+                          detalle="%s · %s" % (_tit_ov, cab["producto_codigo"]),
+                          error="Se releyó la base y no hay ninguna línea guardada. "
+                                "Volvé a armar la mezcla y guardá de nuevo.")
+                _borr_limpiar(conectar, USR); cat.clear(); ss["dsp_edit_id"] = None
+                _rerun_frag()
+                return
+            else:
+                _verif = "%d línea(s) y %s L leídos de vuelta de fact_despacho_linea" \
+                         % (_nl, "{:,.0f}".format(_ll).replace(",", "."))
             _borr_limpiar(conectar, USR)
             cat.clear()
             ss["dsp_edit_id"] = None
+            _g.anotar("dsp_armado", True,
+                      ("Orden de venta #%d ACTUALIZADA" if _era_edicion
+                       else "Orden de venta #%d CREADA") % _id,
+                      detalle="%s · %s · %s L en %d tanque(s) · estado %s"
+                              % (_tit_ov, cab["producto_codigo"],
+                                 "{:,.0f}".format(tot_l).replace(",", "."), len(res), cab["estado"]),
+                      verificado=_verif)
             st.balloons()
-            if _era_edicion:
-                st.success("🎈 Orden de venta **#%d actualizado**: %s · %s · %s L en %d tanque(s), "
-                           "estado %s." % (_id, cab["titulo"], cab["producto_codigo"],
-                                           f"{tot_l:,.0f}", len(res), cab["estado"]))
-            else:
-                st.success("🎈 **Orden de venta nueva #%d creado**: %s · %s · %s L en %d tanque(s), "
-                           "estado %s. Lo ves en 📋 Órdenes de venta cargadas y se confirma en "
-                           "🔬 Control y confirmación." % (_id, cab["titulo"], cab["producto_codigo"],
-                                                          f"{tot_l:,.0f}", len(res), cab["estado"]))
+            _rerun_frag()
         except Exception as e:
-            st.error(f"No se pudo guardar: {e}")
+            _g.anotar("dsp_armado", False, "No se guardó la orden de venta",
+                      detalle="%s · %s" % (_tit_ov, cab["producto_codigo"]), error=str(e))
+            _rerun_frag()
 
     st.download_button("⬇️ Descargar planilla (.xlsx)", _excel(cab, res, spec),
                        file_name=f"orden_venta_{fecha:%Y%m%d}_{(destino or 'SD').replace(' ','_')}.xlsx",
@@ -5514,6 +5542,9 @@ def _tk_panel(USR, cat, conectar, cab, rol):
     spec = _ROLES_TK[rol]
     st.markdown(f"##### {spec['titulo']}")
     st.caption(spec["ayuda"])
+    # El resultado de la última asignación, después del rerun del fragmento (antes
+    # el st.success se lo comía el rerun y parecía que no había guardado).
+    _g.mostrar("dsp_tk_%s_%s" % (rol, cab["id_despacho"]))
 
     asg = _tk_asignados(cat, cab["id_despacho"], rol)
     if asg is not None and not asg.empty:
@@ -5695,15 +5726,37 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                     for _kk in (_ck(_tk), _kc(_tk), _kp(_tk)):
                         st.session_state.pop(_kk, None)
                 cat.clear()
-                if _nok == len(filas):
-                    st.success(f"{_nok} ticket(s) asignados.")
+                # Verificación real: se cuentan los tickets que quedaron en la base
+                # para esta orden de venta, no los que creímos haber insertado.
+                _tks = [int(cnd.loc[i, "ticket"]) for i, _, _ in _pick]
+                _en_base = _g.contar(
+                    "SELECT count(*) FROM produccion.fact_despacho_ticket "
+                    "WHERE id_despacho=%s AND rol=%s AND ticket = ANY(%s)",
+                    (int(cab["id_despacho"]), rol, _tks))
+                _clave = "dsp_tk_%s_%s" % (rol, cab["id_despacho"])
+                _det = "Orden de venta #%d · tickets %s" % (
+                    int(cab["id_despacho"]), ", ".join("#%d" % t for t in _tks))
+                if _en_base is None:
+                    _verif = ""
                 else:
-                    st.warning(f"{_nok} de {len(filas)} ticket(s) asignados. "
-                               f"{len(filas) - _nok} ya estaban asignados a otra orden de venta: "
-                               "buscalos por número para ver dónde están.")
+                    _verif = "%d de %d ticket(s) están en fact_despacho_ticket" % (_en_base, len(_tks))
+                if _en_base == 0:
+                    _g.anotar(_clave, False, "No se asignó ningún ticket", detalle=_det,
+                              error="Se releyó la base y no quedó ninguno. Probá de nuevo.")
+                elif _nok == len(filas):
+                    _g.anotar(_clave, True, "%d ticket(s) asignados" % _nok,
+                              detalle=_det, verificado=_verif)
+                else:
+                    _g.anotar(_clave, True, "%d de %d ticket(s) asignados" % (_nok, len(filas)),
+                              detalle=_det + " — los que faltan ya estaban asignados a otra "
+                                             "orden de venta; buscalos por número para ver dónde están",
+                              verificado=_verif)
                 _rerun_frag()
             except Exception as e:
-                st.error(f"No se pudieron asignar: {e}")
+                _g.anotar("dsp_tk_%s_%s" % (rol, cab["id_despacho"]), False,
+                          "No se pudieron asignar los tickets",
+                          detalle="Orden de venta #%d" % int(cab["id_despacho"]), error=str(e))
+                _rerun_frag()
 
 
 def _tickets(USR, cat, conectar):

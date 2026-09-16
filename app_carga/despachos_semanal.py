@@ -31,6 +31,8 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+import guardado as _g          # recibo de guardado verificado contra la base
+
 # Grilla propia para el ajuste (ver ajuste_mp/): un st.data_editor vuelve al servidor en
 # cada celda y redibuja la sección entera — en planta eso se siente como que "se cuelga y
 # se reinicia". Si el componente no carga, queda el data_editor como respaldo.
@@ -210,6 +212,26 @@ def _guardar_ajustes(conectar, USR, cambios):
                   {"ajustes": [[int(a), str(b), (None if c is None else round(float(c), 2))]
                                for a, b, c in cambios]})
     return n
+
+
+def _verif_ajustes(cambios, renombres):
+    """Vuelve a leer la base y cuenta lo que quedó de verdad. Es lo que convierte el
+    cartel verde en una confirmación: si acá no aparece, el ajuste no está."""
+    _txt = []
+    _ids = sorted({int(c[0]) for c in (cambios or [])})
+    if _ids:
+        _n = _g.contar("SELECT count(*) FROM produccion.fact_despacho_real "
+                       "WHERE id_despacho = ANY(%s)", (_ids,))
+        if _n is not None:
+            _txt.append("%d ajuste(s) en fact_despacho_real" % _n)
+    _idt = sorted({int(r[0]) for r in (renombres or [])})
+    if _idt:
+        _n = _g.contar("SELECT count(*) FROM produccion.fact_despacho "
+                       "WHERE id_despacho = ANY(%s) AND actualizado_en > now() - interval '2 minutes'",
+                       (_idt,))
+        if _n is not None:
+            _txt.append("%d orden(es) con el nombre recién actualizado" % _n)
+    return " · ".join(_txt)
 
 
 def _preparar(df):
@@ -542,6 +564,7 @@ def _grilla_reales(df_s, mps, tk, aj, cat, conectar, USR, semana):
     _msg_ok = ss.pop("dsw_msg", None)
     if _msg_ok:
         st.success(_msg_ok)
+    _g.mostrar("dsw_ajuste")
     val = _grilla_mp(rows=_filas_grilla(df_s, mps, tk, aj), mps=mps, rev=_rev,
                      titulo="Semana %s" % semana, key="dsw_grilla")
     if isinstance(val, dict) and val.get("action") == "save" \
@@ -578,9 +601,14 @@ def _grilla_reales(df_s, mps, tk, aj, cat, conectar, USR, semana):
                         _msg.append("%d orden de venta(s) renombrado(s)" % nt)
                     ss["dsw_msg"] = ("Guardado: %s. La tabla, el Excel y los PNG ya lo "
                                      "muestran." % " y ".join(_msg))
+                    _g.anotar("dsw_ajuste", True, "Ajuste de la semana %s guardado" % semana,
+                              detalle=" y ".join(_msg) or "sin cambios",
+                              verificado=_verif_ajustes(cambios, renombres))
                     st.rerun()
                 except Exception as e:
-                    st.error("No se pudo guardar: %s" % e)
+                    _g.anotar("dsw_ajuste", False, "No se guardó el ajuste de la semana %s" % semana,
+                              error=str(e))
+                    st.rerun()
     if st.checkbox("🧱 Usar la tabla clásica de Streamlit en vez de esta grilla",
                    key="dsw_clasico",
                    help="Respaldo por si la grilla no funciona en alguna máquina de planta. "
@@ -597,6 +625,7 @@ def _editor_reales(df_s, mps, tk, cat, conectar, USR, semana):
     instante y no hace falta ir a buscarlo a otra pantalla.
     """
     st.markdown("##### ✏️ Ajustar a los kg realmente cargados")
+    _g.mostrar("dsw_ajuste")
     st.caption("Escribí las **TN reales** de cada materia prima. Lo formulado **no se pisa**: "
                "el ajuste se guarda aparte con tu usuario y fecha, y de ahí en más la tabla, "
                "el Excel y los PNG muestran este número. Dejá una celda **vacía** para que esa "
@@ -682,15 +711,19 @@ def _editor_reales(df_s, mps, tk, cat, conectar, USR, semana):
             st.error("Esta vista se abrió sin permisos de escritura.")
         else:
             try:
-                n = _guardar_ajustes(conectar, USR, cambios)
+                with st.spinner("Guardando el ajuste…"):
+                    n = _guardar_ajustes(conectar, USR, cambios)
                 cat.clear()
                 st.session_state["dsw_ed_nonce"] = int(
                     st.session_state.get("dsw_ed_nonce") or 0) + 1
-                st.success("Guardado: %d ajuste(s). La tabla, el Excel y los PNG ya usan "
-                           "estos kg." % n)
+                _g.anotar("dsw_ajuste", True, "%d ajuste(s) de kg guardados" % n,
+                          detalle="Semana %s · la tabla, el Excel y los PNG ya usan estos kg" % semana,
+                          verificado=_verif_ajustes(cambios, []))
                 st.rerun()
             except Exception as e:
-                st.error("No se pudo guardar: %s" % e)
+                _g.anotar("dsw_ajuste", False, "No se guardó el ajuste",
+                          detalle="Semana %s" % semana, error=str(e))
+                st.rerun()
 
     _con_aj = [i for i, v in zip(_ids, base["Aj."]) if str(v).startswith("✏️")]
     if _con_aj and conectar is not None:
@@ -701,14 +734,22 @@ def _editor_reales(df_s, mps, tk, cat, conectar, USR, semana):
                                      use_container_width=True, key="dsw_reset_go"):
             _idd = next(i for i in _con_aj if _lbl[i] == _sel)
             try:
-                _guardar_ajustes(conectar, USR, [(_idd, m, None) for m in _cols_mp])
+                with st.spinner("Borrando el ajuste…"):
+                    _guardar_ajustes(conectar, USR, [(_idd, m, None) for m in _cols_mp])
                 cat.clear()
                 st.session_state["dsw_ed_nonce"] = int(
                     st.session_state.get("dsw_ed_nonce") or 0) + 1
-                st.success("Listo: %s vuelve a mostrar lo formulado." % _sel)
+                _n_q = _g.contar("SELECT count(*) FROM produccion.fact_despacho_real "
+                                 "WHERE id_despacho=%s", (int(_idd),))
+                _g.anotar("dsw_ajuste", True, "Ajuste borrado: %s" % _sel,
+                          detalle="Vuelve a mostrar lo formulado",
+                          verificado=("quedan %d ajuste(s) en la base para esa orden" % _n_q)
+                                     if _n_q is not None else "")
                 st.rerun()
             except Exception as e:
-                st.error("No se pudo borrar: %s" % e)
+                _g.anotar("dsw_ajuste", False, "No se pudo borrar el ajuste",
+                          detalle=str(_sel), error=str(e))
+                st.rerun()
     g3.caption("El ajuste es por **materia prima**, no por tanque: los kg se reparten entre "
                "los tanques de esa materia prima en la misma proporción que tenía la "
                "formulación, así el detalle de líneas del Excel sigue cerrando.")
