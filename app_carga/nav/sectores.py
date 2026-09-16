@@ -7,7 +7,7 @@ import streamlit as st
 _SQL = """
     SELECT s.codigo, s.nombre_ui, s.icono, s.orden, s.activo, s.tiene_datos,
            s.sector_gestion, s.sector_batch, s.seccion_clasica, s.descripcion,
-           s.stock_simple, s.patron_tanques,
+           s.stock_simple, s.patron_tanques, COALESCE(s.en_construccion, false) AS en_construccion,
            s.area, a.nombre_ui AS area_nombre, a.icono AS area_icono,
            COALESCE(a.orden, 999) AS area_orden
     FROM produccion.dim_sector_nav s
@@ -22,14 +22,12 @@ _AREAS_FALLBACK = [
     ("RECEP_LIQ",   "Recepción de Residuos Líquidos",   "🚛", 10),
     ("RECEP_SOL",   "Recepción de Residuos Sólidos",    "🚛", 20),
     ("TRAT_LIQ",    "Tratamiento de Residuos Líquidos", "⚗️", 30),
-    ("TRAT_SOL",    "Tratamiento de Residuos Sólidos",  "🧱", 40),
     ("EXPORTACION", "Exportación",                      "🚢", 50),
     ("SOPORTE",     "Soporte",                          "🛠️", 60),
 ]
 _AREA_DE = {   # sector → área, para el respaldo sin base
     "DF_LIQUIDOS": "RECEP_LIQ", "DF_SOLIDOS": "RECEP_SOL",
     "PILETAS": "TRAT_LIQ", "BACHAS": "TRAT_LIQ", "REACTORES": "TRAT_LIQ",
-    "NFU": "TRAT_SOL", "COMPOST": "TRAT_SOL", "CEREAL_POLVILLO": "TRAT_SOL", "TIERRAS_FILTRANTES": "TRAT_SOL",
     "EXPORTACION": "EXPORTACION",
     "LABORATORIO": "SOPORTE", "INTENDENCIA": "SOPORTE", "TALLER": "SOPORTE", "MANTENIMIENTO": "SOPORTE",
     "LOGISTICA": "SOPORTE", "ADMINISTRACION": "SOPORTE", "AUDITORIA_STOCK": "SOPORTE", "PORTERIA": "SOPORTE",
@@ -37,9 +35,9 @@ _AREA_DE = {   # sector → área, para el respaldo sin base
 
 # Respaldo si la tabla no existe en el entorno (dev local sin la migración):
 # la grilla del director, en su orden.
-_SIMPLES = {"NFU", "COMPOST",                                       # sin tanques: ledger propio (Fase 5)
-            "CEREAL_POLVILLO", "TIERRAS_FILTRANTES"}
+_SIMPLES = set()                    # sin tanques: ledger propio (Fase 5) — hoy ninguno
 _PROPIOS = {"DF_LIQUIDOS", "DF_SOLIDOS"}                            # pantalla propia (nav/sector_*.py)
+_EN_OBRA = {"BACHAS"}               # se ve en la portada pero no se puede entrar (respaldo sin base)
 _PATRONES = {"REACTORES": "^(Reactores|Consumibles Reactores)", "BACHAS": "^Bachas",   # dim_tanque.sector ~ patrón
              "PILETAS": "^Piletas", "EXPORTACION": "^Plataforma"}
 _FALLBACK = [  # (codigo, nombre_ui, icono, sector_gestion, sector_batch, seccion_clasica) — orden área → sector
@@ -47,8 +45,6 @@ _FALLBACK = [  # (codigo, nombre_ui, icono, sector_gestion, sector_batch, seccio
     ("DF_SOLIDOS", "Disp. Final Sólidos", "🗑️", None, None, None),   # home propio: sector_solidos.py
     ("PILETAS", "Piletas", "🌊", "PILETAS", "RECUPERACION", "RECUPERACION"),
     ("BACHAS", "Bachas", "🛢️", "BACHAS", "BACHAS", "INICIAR"), ("REACTORES", "Reactor", "⚙️", "REACTORES", "REACTORES", "INICIAR"),
-    ("NFU", "NFU", "♻️", None, None, None), ("COMPOST", "Compost & Fertilizante", "🌱", None, None, None),
-    ("CEREAL_POLVILLO", "Cereal & Polvillo", "🌾", None, None, None), ("TIERRAS_FILTRANTES", "Tierras Filtrantes", "🪨", None, None, None),
     ("EXPORTACION", "Exportación", "🚢", "EXPORTACION", "EXPO", "STOCK"),
     ("LABORATORIO", "Laboratorio", "🧪", None, None, "LAB"), ("INTENDENCIA", "Intendencia", "🧹", None, None, None),
     ("TALLER", "Taller Mecánico", "🔧", None, None, "REPUESTOS"), ("MANTENIMIENTO", "Mantenimiento", "🛠️", None, None, None),
@@ -91,7 +87,7 @@ def _cargar(conn_factory) -> pd.DataFrame:
         rows.append(dict(codigo=c, nombre_ui=n, icono=i, orden=(k + 1) * 10, activo=True,
                          tiene_datos=bool(s) or c in _SIMPLES or c in _PROPIOS, sector_gestion=g, sector_batch=b,
                          seccion_clasica=s, descripcion=None, stock_simple=(c in _SIMPLES),
-                         patron_tanques=_PATRONES.get(c),
+                         patron_tanques=_PATRONES.get(c), en_construccion=(c in _EN_OBRA),
                          area=_a, area_nombre=_an, area_icono=_ai, area_orden=_ao))
     df = pd.DataFrame(rows)
     return df.sort_values(["area_orden", "orden"]).reset_index(drop=True)

@@ -200,9 +200,26 @@ def _kpis_sector(ctx, sec):
         _rerun_fragment()
 
 
+def _en_obra(ctx, sec):
+    """Sector marcado en construcción (dim_sector_nav.en_construccion): pantalla de
+    aviso y nada más. Corta también la entrada por URL o por estado guardado, no
+    sólo el click en la tarjeta."""
+    from .portada import _hero, _pie_soporte
+    _hero(f"SECTOR {sec['nombre_ui'].upper()}", ctx["USR"], icono="🚧",
+          sub="Sección en construcción.")
+    st.warning("🚧 **Esta sección está en construcción.** No está disponible para usar por ahora. "
+               "Cuando esté lista se habilita desde acá mismo, sin que tengas que hacer nada.")
+    st.caption("Si necesitás cargar o consultar algo de este sector mientras tanto, escribile a "
+               "sistemas para que te indique por dónde hacerlo.")
+    _pie_soporte(ctx)
+    return True
+
+
 def render_sector(ctx, codigo):
     """Home del sector `codigo`. Devuelve False si el sector no tiene home (la portada decide qué hacer)."""
     sec = sector_por_codigo(ctx["conn_factory"], codigo)
+    if sec and bool(sec.get("en_construccion")):
+        return _en_obra(ctx, sec)
     if not tiene_home(sec):
         return False
     if sec["codigo"] in _HOMES_PROPIOS:

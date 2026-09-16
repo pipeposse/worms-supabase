@@ -202,6 +202,12 @@ def _area_produccion(ctx):
         sec_cl = r.get("seccion_clasica")
         habil = (bool(sec_cl) and puede(sec_cl)) or tiene_home(r.to_dict())
         sin_datos = not bool(r.get("tiene_datos"))
+        if bool(r.get("en_construccion")):
+            # Sector en obra: se muestra para que se sepa que existe, pero no se entra.
+            return dict(icono="🚧", titulo=r["nombre_ui"],
+                        desc="Sección en construcción. No está disponible por ahora.",
+                        key=f"nav_sec_{r['codigo']}", disabled=True, label="🚧 En construcción",
+                        tipo="secondary", atenuado=True, on_click=None)
         if not sec_cl and not habil:
             lbl, dis, tipo = "Próximamente", True, "secondary"
         elif not habil:
