@@ -32,8 +32,9 @@ guardado en un tanque de plataforma y nunca salió por una orden de venta.
 La calidad la define laboratorio y la cuenta se abre por calidad. En la familia AFE el grado
 sale del azufre y el fósforo del TANQUE, con la misma regla que ya usa el brief de dirección
 (produccion.fn_categoria_afe: A hasta el 80% del límite, B 90%, C 100%, D por encima), así que
-el AFE de soja se lleva en V-AFE-S-A, V-AFE-S-C y V-AFE-S-D. Un tanque sin análisis queda en
-V-AFE-S, sin grado, para que se vea que falta el laboratorio. La letra que distingue al
+el AFE de soja se lleva en V-AFE-S-A, V-AFE-S-C y V-AFE-S-D. Nunca queda "sin calidad": un
+tanque que laboratorio todavía no calificó va a V-AFE-S-NE, NO EVALUADO, y se lista con el
+ticket de su último ingreso para ir a buscar la muestra. La letra que distingue al
 producto no es calidad: AFE-S es AFE Soja, corriente vegetal.
 
 Unidad: TN por defecto (litros × densidad del producto), con opción de verlo en KL
@@ -109,8 +110,8 @@ def _cerrar_corte(conectar, USR, sector, fecha):
 def _cuentas(_cf, sector):
     """Qué es cada producto del sector y qué papel juega: si se exporta o sólo está acopiado.
     Es la columna DESCRIPCIÓN y el filtro de la pantalla (produccion.v_cuenta_sector)."""
-    sql = ("SELECT cuenta, descripcion, rol, tanques_en_uso, salidas_odv, tn_odv "
-           "FROM produccion.v_cuenta_sector WHERE sector = %s")
+    sql = ("SELECT cuenta, descripcion, rol, del_sector, producto_codigo, tanques_en_uso, "
+           "salidas_odv, tn_odv FROM produccion.v_cuenta_sector WHERE sector = %s")
     try:
         with _cf() as conn:
             df = pd.read_sql_query(sql, conn, params=(sector,))
@@ -118,8 +119,23 @@ def _cuentas(_cf, sector):
         df["rol"] = df["rol"].fillna("HISTORICO")
         return df
     except Exception:
-        return pd.DataFrame(columns=["cuenta", "descripcion", "rol", "tanques_en_uso",
-                                     "salidas_odv", "tn_odv"])
+        return pd.DataFrame(columns=["cuenta", "descripcion", "rol", "del_sector",
+                                     "producto_codigo", "tanques_en_uso", "salidas_odv", "tn_odv"])
+
+
+@st.cache_data(ttl=_TTL, show_spinner=False)
+def _sin_evaluar(_cf, sector):
+    """Lo que está en tanque esperando que laboratorio lo califique, con el ticket del último
+    ingreso para ir a buscarlo. Es la cuenta NO EVALUADO."""
+    sql = ("SELECT tanque, grupo_fisico, producto, tn, ultimo_ticket, fecha_ultimo_ingreso, "
+           "ultimo_proveedor, dias_desde_el_ingreso, ultima_medicion, metodo_medicion, "
+           "tanque_dado_de_alta, dias_de_alta, movimientos_reales, medicion_al_tope "
+           "FROM produccion.v_stock_sin_evaluar WHERE sector = %s ORDER BY tn DESC")
+    try:
+        with _cf() as conn:
+            return pd.read_sql_query(sql, conn, params=(sector,))
+    except Exception:
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=_TTL, show_spinner=False)
@@ -137,7 +153,7 @@ def _medido_tanques(_cf, sector):
 
 
 def invalidar():
-    _movs.clear(); _saldo_inicial.clear(); _medido_tanques.clear(); _cuentas.clear()
+    _movs.clear(); _saldo_inicial.clear(); _medido_tanques.clear(); _cuentas.clear(); _sin_evaluar.clear()
 
 
 # ------------------------------------------------------------------ helpers
@@ -194,7 +210,11 @@ def _filas(v, saldo_ini):
 
 _ROL_TXT = {"EXPORTA": "sale por ODV", "ACOPIO": "sólo acopio, no sale por ODV",
             "TANQUE FUERA DE USO": "tanque fuera de uso", "HISTORICO": "ya no está en ningún tanque"}
-_ROL_FILTRO = {"TODO": None, "Sale por ODV": "EXPORTA", "Sólo acopio": "ACOPIO"}
+# El filtro arranca en "Del sector": los productos que el sector despacha o que el maestro de
+# productos le asigna. Lo demás está en sus tanques por una designación equivocada — se sigue
+# pudiendo ver con "Todos", pero no ensucia la pantalla de todos los días.
+_FILTRO = {"Lo que exportamos": "EXPORTA", "Del sector": "DEL_SECTOR",
+           "Sólo acopio": "ACOPIO", "Todos": None}
 
 
 def _describir(cta, cuentas):
@@ -211,13 +231,22 @@ def _describir(cta, cuentas):
     tn = float(r.get("tn_odv") or 0)
     if r.get("rol") == "EXPORTA" and tn >= 0.05:
         rol = f"sale por ODV ({tn:,.0f} TN embarcadas)"
+    if not bool(r.get("del_sector", True)):
+        rol = "⚠️ no es un producto de este sector: está acá porque un tanque quedó designado así"
     return " · ".join(x for x in (txt, rol) if x)
 
 
 def _reporte(v, ini, um, cuentas=None):
-    """La hoja REPORTE: saldo consolidado por producto al cierre del período."""
+    """La hoja REPORTE: saldo consolidado por producto al cierre del período.
+
+    Lo que se exporta va primero y con su propia columna: es lo que mira dirección."""
     _D = ["cuenta_nombre", "calidad", "corriente_nombre"]
-    mov = v.groupby("cuenta", dropna=False, as_index=False).agg(ING=("_ing", "sum"), EGR=("_egr", "sum"))
+    v = v.copy()
+    # lo que salió por una orden de venta, separado del resto de los egresos
+    v["_odv"] = [e if str(d or "").startswith("ODV") else 0.0
+                 for e, d in zip(v["_egr"], v["destino"])]
+    mov = v.groupby("cuenta", dropna=False, as_index=False).agg(
+        ING=("_ing", "sum"), EGR=("_egr", "sum"), ODV=("_odv", "sum"))
     base = (ini.groupby("cuenta", dropna=False, as_index=False).agg(INI=("_val", "sum"))
             if not ini.empty else pd.DataFrame({"cuenta": [], "INI": []}))
     g = mov.merge(base, on="cuenta", how="outer")
@@ -231,10 +260,13 @@ def _reporte(v, ini, um, cuentas=None):
     for c in _D:
         if c not in g.columns:
             g[c] = None
-    for c in ("ING", "EGR", "INI"):
+    for c in ("ING", "EGR", "INI", "ODV"):
+        if c not in g.columns:
+            g[c] = 0.0
         g[c] = pd.to_numeric(g[c], errors="coerce").fillna(0.0)
     g["FIN"] = g["INI"] + g["ING"] - g["EGR"]
-    g = g.sort_values("FIN", ascending=False)
+    # primero lo que se exportó en el período, después el resto por saldo
+    g = g.sort_values(["ODV", "FIN"], ascending=[False, False])
     out = pd.DataFrame({
         "CUENTA": g["cuenta"].fillna("(sin producto)"),
         "PRODUCTO": g["cuenta_nombre"].fillna(""),
@@ -243,6 +275,7 @@ def _reporte(v, ini, um, cuentas=None):
         "CORRIENTE": g["corriente_nombre"].fillna("—"),
         f"SALDO INICIAL {um}": g["INI"].map(lambda x: _q(x, "0.0")),
         f"INGRESOS {um}": g["ING"].map(_q),
+        f"EXPORTADO {um}": g["ODV"].map(_q),
         f"EGRESOS {um}": g["EGR"].map(_q),
         f"SALDO FINAL {um}": g["FIN"].map(lambda x: _q(x, "0.0")),
     })
@@ -250,6 +283,7 @@ def _reporte(v, ini, um, cuentas=None):
         "CUENTA": "TOTAL", "PRODUCTO": f"{len(g)} producto(s)", "DESCRIPCIÓN": "",
         "CALIDAD": "", "CORRIENTE": "",
         f"SALDO INICIAL {um}": f"{g['INI'].sum():,.1f}", f"INGRESOS {um}": f"{g['ING'].sum():,.1f}",
+        f"EXPORTADO {um}": f"{g['ODV'].sum():,.1f}",
         f"EGRESOS {um}": f"{g['EGR'].sum():,.1f}", f"SALDO FINAL {um}": f"{g['FIN'].sum():,.1f}",
     }])
     return pd.concat([out, tot], ignore_index=True), g
@@ -294,21 +328,60 @@ def _control(ctx, sec, cod, um, s_fin, ini):
                        "que lo que hoy hay en el tanque: falta cargar salidas o asentar un cambio de "
                        "categoría. Es el desvío a corregir en la carga, no un error de la pantalla.")
 
+    # Lo que espera laboratorio: la cuenta NO EVALUADO, con el ticket para ir a buscarlo.
+    ne = _sin_evaluar(ctx["conn_factory"], cod)
+    if ne is not None and not ne.empty:
+        _tn = float(pd.to_numeric(ne["tn"], errors="coerce").fillna(0).sum())
+        with st.expander(f"🧪 Esperando laboratorio: {_tn:,.1f} TN sin calificar en {len(ne)} tanque(s)",
+                         expanded=False):
+            st.dataframe(pd.DataFrame({
+                "TANQUE": ne["tanque"].fillna(""),
+                "DÓNDE": ne["grupo_fisico"].fillna(""),
+                "PRODUCTO": ne["producto"].fillna(""),
+                "TN": pd.to_numeric(ne["tn"], errors="coerce").map(lambda x: f"{float(x):,.1f}"),
+                "TICKET DEL ÚLTIMO INGRESO": ne["ultimo_ticket"].fillna("— ninguno"),
+                "PROVEEDOR": ne["ultimo_proveedor"].fillna("—"),
+                "INGRESOS CARGADOS": ne["movimientos_reales"].map(
+                    lambda n: "" if pd.isna(n) else f"{int(n)}"),
+                "TANQUE DADO DE ALTA": [
+                    ("" if pd.isna(f) else f"{pd.to_datetime(f):%d/%m/%Y}"
+                     + ("" if pd.isna(d) else f" · hace {int(d)} días"))
+                    for f, d in zip(ne["tanque_dado_de_alta"], ne["dias_de_alta"])],
+                "MEDICIÓN": [f"{m or '—'}" + (" · cargada justo al tope de capacidad ⚠️" if t else "")
+                             for m, t in zip(ne["metodo_medicion"],
+                                             ne["medicion_al_tope"].fillna(False).astype(bool))],
+            }), hide_index=True, use_container_width=True,
+                column_config={"TANQUE DADO DE ALTA": st.column_config.TextColumn(width="medium"),
+                               "MEDICIÓN": st.column_config.TextColumn(width="medium")})
+            st.caption("Estas toneladas están en la cuenta NO EVALUADO: el tanque no tiene azufre ni "
+                       "fósforo cargados, así que el sistema no puede darle calidad. Casi todos los "
+                       "tanques sí están evaluados, por eso los que caen acá son la excepción y valen "
+                       "una revisada: **si no tiene ingresos cargados**, las toneladas entraron por una "
+                       "medición manual y no por portería — nadie le tomó muestra porque para el "
+                       "sistema nunca llegó nada. **Si además la medición quedó justo al tope de la "
+                       "capacidad**, lo más probable es que se haya cargado el tanque como lleno en "
+                       "lugar de medirlo.")
+
     conectar = ctx.get("conectar")
     if conectar is not None and ctx["puede_seccion"]("STOCK"):
         from datetime import date
         hoy = date.today()
-        if c2.button(f"📌 Rehacer saldo inicial {hoy:%m/%Y}", key=f"nav_mv_corte_{cod}",
+        _pdh = date(hoy.year, hoy.month, 1)
+        while _pdh.weekday() >= 5:
+            _pdh = _pdh.fromordinal(_pdh.toordinal() + 1)
+        if c2.button(f"🔄 Recalcular el stock del {_pdh:%d/%m}", key=f"nav_mv_corte_{cod}",
                      use_container_width=True,
-                     help=("Vuelve a calcular el stock del primer día hábil de este mes con la medición de "
-                           "hoy y los movimientos del mes. El día 1 se hace solo.")):
+                     help=(f"Vuelve a calcular con qué stock arrancó el mes cada producto: toma la "
+                           f"medición de los tanques de hoy y le resta todo lo que entró y salió desde "
+                           f"el {_pdh:%d/%m}. Sirve cuando se corrigió una medición o se cargó un "
+                           "movimiento viejo. El día 1 de cada mes se hace solo.")):
             try:
                 row = _cerrar_corte(conectar, ctx["USR"], cod, hoy)
                 invalidar()
-                st.success(f"Saldo inicial rehecho: {int(row[0])} producto(s), {float(row[1]):,.1f} TN.")
+                st.success(f"Saldo inicial recalculado: {int(row[0])} producto(s), {float(row[1]):,.1f} TN.")
                 _rerun_fragment()
             except Exception as e:
-                st.error(f"No se pudo cerrar el saldo inicial: {e}")
+                st.error(f"No se pudo recalcular el saldo inicial: {e}")
     return (f"stock del {base_f:%d/%m/%Y} · medición de los tanques" if base_f is not None
             else "arrastre del libro (todavía sin saldo inicial cargado)")
 
@@ -330,11 +403,11 @@ def _movimientos(ctx, sec):
                   label_visibility="collapsed",
                   help="Toneladas (los litros se pasan con la densidad del producto) o kilolitros.")
     # Están todos los productos; este filtro es para mirar sólo una parte, no para esconder.
-    rol = c2.radio("Qué productos", list(_ROL_FILTRO), horizontal=True, key=f"nav_mv_rol_{cod}",
+    rol = c2.radio("Qué productos", list(_FILTRO), horizontal=True, key=f"nav_mv_rol_{cod}",
                    label_visibility="collapsed",
-                   format_func=lambda r: "Todos" if r == "TODO" else r,
-                   help="«Sale por ODV» son los que alguna vez se embarcaron; «Sólo acopio», los que "
-                        "están guardados en tanques del sector pero nunca salieron por una orden de venta.")
+                   help="«Del sector» es lo que el sector despacha o que el maestro de productos le "
+                        "asigna — es lo que se mira todos los días. «Todos» agrega lo que está en sus "
+                        "tanques por una designación equivocada, para poder corregirlo.")
     busca = c3.text_input("Buscar", key=f"nav_mv_q_{cod}", placeholder="ID, ticket, cliente, producto…",
                           label_visibility="collapsed")
     if c4.button("↻", key=f"nav_mv_ref_{cod}", use_container_width=True, help="Releer ahora"):
@@ -358,11 +431,23 @@ def _movimientos(ctx, sec):
     v["_egr"] = v["_val"].map(lambda x: -x if x < 0 else 0.0)
     ini = ini.copy()
     ini["_val"] = ini[col] / div
-    _rol = _ROL_FILTRO.get(rol)
-    if _rol and not cuentas.empty:
-        _ok = set(cuentas.loc[cuentas["rol"] == _rol, "cuenta"])
+    _f = _FILTRO.get(rol)
+    if _f and not cuentas.empty:
+        if _f == "DEL_SECTOR":
+            _ok = set(cuentas.loc[cuentas["del_sector"].fillna(True).astype(bool), "cuenta"])
+        elif _f == "EXPORTA":
+            # por PRODUCTO, no por calidad: el AFE-S que espera laboratorio también se exporta
+            _pe = set(cuentas.loc[cuentas["salidas_odv"].fillna(0) > 0, "producto_codigo"])
+            _ok = set(cuentas.loc[cuentas["producto_codigo"].isin(_pe), "cuenta"])
+        else:
+            _ok = set(cuentas.loc[cuentas["rol"] == _f, "cuenta"])
         v = v[v["cuenta"].isin(_ok)]
         ini = ini[ini["cuenta"].isin(_ok)]
+        _aj = cuentas.loc[~cuentas["del_sector"].fillna(True).astype(bool), "cuenta"]
+        if _f in ("DEL_SECTOR", "EXPORTA") and len(_aj):
+            st.caption(f"Se dejan afuera {len(_aj)} producto(s) que no son de {sec['nombre_ui']} "
+                       f"({', '.join(sorted(_aj)[:6])}{'…' if len(_aj) > 6 else ''}): están en sus "
+                       "tanques porque quedaron designados así. Con «Todos» se ven, para corregirlos.")
 
     if v.empty and float(ini["_val"].abs().sum()) == 0:
         st.info(f"Sin movimientos de {sec['nombre_ui']} en {etiqueta}.")
@@ -371,14 +456,24 @@ def _movimientos(ctx, sec):
     s_ini = float(ini["_val"].sum())
     s_ing, s_egr = float(v["_ing"].sum()), float(v["_egr"].sum())
     s_fin = s_ini + s_ing - s_egr
+    # Lo que se exportó: es lo que mira dirección, así que va primero y con su propio indicador.
+    _es_odv = v["destino"].fillna("").astype(str).str.startswith("ODV")
+    s_odv = float(v.loc[_es_odv, "_egr"].sum())
+    n_odv = int(v.loc[_es_odv, "destino"].nunique())
     _u = f"<span style='font-size:1rem;font-weight:700;'> {um}</span>"
+    k0 = _kpi("Exportado en el período", f"{_n(s_odv,1)}{_u}",
+              (f"{n_odv} orden(es) de venta · " if n_odv else "sin embarques · ")
+              + f"{(100.0 * s_odv / s_egr if s_egr else 0):.0f}% de lo que salió",
+              "ok" if s_odv else "")
     k1 = _kpi("Saldo inicial", f"{_n(s_ini,1)}{_u}", f"con lo que arranca {etiqueta}", "")
     k2 = _kpi("Ingresos del período", f"{_n(s_ing,1)}{_u}", f"{int((v['_val'] > 0).sum())} movimientos", "")
-    k3 = _kpi("Egresos del período", f"{_n(s_egr,1)}{_u}", f"{int((v['_val'] < 0).sum())} movimientos", "")
+    k3 = _kpi("Egresos del período", f"{_n(s_egr,1)}{_u}",
+              f"{int((v['_val'] < 0).sum())} movimientos · "
+              + (f"{_n(s_egr - s_odv,1)} {um} a proceso" if s_egr - s_odv >= 0.05 else "todo por ODV"), "")
     k4 = _kpi("Saldo final", f"{_n(s_fin,1)}{_u}",
               f"{(s_fin - s_ini):+,.1f} {um} en el período · sólo {sec['nombre_ui']}",
               "warn" if s_fin < 0 else "ok")
-    st.markdown(f'<div class="kpi-grid">{k1}{k2}{k3}{k4}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi-grid">{k0}{k1}{k2}{k3}{k4}</div>', unsafe_allow_html=True)
 
     # ---------------- REPORTE: saldo consolidado por producto ----------------
     st.markdown("<div class='section-title' style='margin:10px 0 2px'>Saldo consolidado por producto</div>",
@@ -456,6 +551,7 @@ def render_stock(ctx, sec):
                "su cuenta corriente con saldo inicial, ingresos, egresos y saldo. La calidad la define "
                "laboratorio y se muestra cuando es un grado: en la familia AFE sale del azufre y el "
                "fósforo del tanque (A hasta el 80% del límite, B 90%, C 100%, D por encima), así que "
-               "el AFE-S se abre en V-AFE-S-A, -C y -D como está en los tanques. El saldo inicial "
+               "el AFE-S se abre en V-AFE-S-A, -C y -D como está en los tanques; lo que laboratorio "
+               "todavía no calificó va a NO EVALUADO, nunca sin calidad. El saldo inicial "
                "es el stock del primer día hábil del mes, medido en los tanques del sector. Sólo se "
                "muestran los productos de este sector.")
