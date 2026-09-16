@@ -234,6 +234,14 @@ def render_kpis_area(ctx):
     # ---- Panel de Control: capacidad ocupada por producto (barra horizontal, como pidió Fernando) ----
     with st.expander("🎛️ Capacidad de acopio ocupada por producto", expanded=False):
         _render_capacidad(cf)
+    # ---- PARÁMETROS: qué tiene que dar cada producto líquido para ser de cada calidad ----
+    with st.expander("📋 PARÁMETROS · productos líquidos, calidades y sus límites",
+                     expanded=False):
+        try:
+            from .parametros import render as _render_parametros
+            _render_parametros(cf)
+        except Exception as _e:
+            st.caption(f"No se pudieron leer los parámetros: {_e}")
     st.caption("Indicadores propuestos por dirección · a validar con Eugenia, Pablo y Fernando. "
                "“Sin dato” = todavía no se carga en el sistema (sólidos, presencia), no un cero.")
 
