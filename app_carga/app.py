@@ -537,6 +537,7 @@ SECCIONES_APP = [
     ("INICIAR", "👷 Producción Sector"),
     ("RECUPERACION", "♻️ Recuperación AG"),
     ("LAB", "🧪 Laboratorio"), ("TANQUES", "🛢️ Tanques"), ("STOCK", "📦 Stock"), ("REPUESTOS", "🔧 Repuestos"), ("ISCC", "📑 ISCC"), ("REMITOS", "📸 Remitos"),
+    ("STOCK_CONS", "🧮 Stock consolidado"),
     ("ESTADO", "📈 Estado de planta"), ("ANALISIS", "🔬 Análisis de reacciones"),
     ("PLANIFICACION", "🗓️ Centro de Planificación"), ("CONDICIONALES", "🧮 Condicionales"), ("FORMULAS", "🧪 Fórmulas"), ("CHAT", "🤖 Consultas IA"),
     ("CIERRES", "💰 Cierres mensuales"), ("MEJORAS", "🛠️ Mejoras y problemas"), ("DIRECCION", "🛂 Dirección"), ("ADMIN", "⚙️ Admin"),
@@ -546,7 +547,8 @@ SECCIONES_APP = [
 def _secciones_default(rol):
     base = ["INICIAR", "LAB", "TANQUES", "STOCK", "REMITOS", "ESTADO", "MEJORAS"]
     if rol in ("SUPERVISOR", "ADMIN"):
-        base += ["REPUESTOS", "ISCC", "ANALISIS", "PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT", "CIERRES"]
+        base += ["REPUESTOS", "ISCC", "ANALISIS", "PLANIFICACION", "CONDICIONALES", "FORMULAS", "CHAT", "CIERRES",
+                 "STOCK_CONS"]
     if rol == "ADMIN":
         base += ["DIRECCION", "ADMIN"]
     return base
@@ -906,6 +908,7 @@ _TILES_LANDING = [
     ("📸", "Remitos", "Sacá o arrastrá la foto del remito: se leen los datos con IA, los revisás y quedan en la base junto al ticket de balanza.", "REMITOS", "land_remitos", False),
     ("📈", "Estado de planta", "Tablero de reacciones, bandeja de laboratorio, trazabilidad de lote, mermas y alertas.", "ESTADO", "land_estado", False),
 ]
+_TILES_LANDING.append(("🧮", "Stock consolidado", "Toda la planta con la misma lógica de stock por sector: saldo inicial medido en los tanques, ingresos, egresos y saldo, producto por producto, más lo que se está escapando.", "STOCK_CONS", "land_stock_cons", False))
 _TILES_LANDING.append(("🔧", "Repuestos", "Pañol de mantenimiento: ingresos y egresos rápidos, stock actual, mínimos y alertas de reposición.", "REPUESTOS", "land_repuestos", False))
 _TILES_LANDING.append(("📑", "ISCC", "Proyecto ISCC: genera la planilla mensual de camiones con kg prorrateados, remitos correlativos y patentes espaciadas.", "ISCC", "land_iscc", False))
 _TILES_LANDING.append(("🔬", "Análisis de reacciones", "Semana a semana: toneladas, desvíos vs tiempo estimado, laboratorio del producto final y eficiencia de reactores.", "ANALISIS", "land_analisis", False))
@@ -4938,6 +4941,17 @@ if st.session_state.section != "CARGAS":
                 st.error(f"No se pudo cargar Ingresos: {_e}")
                 with st.expander("Detalle"):
                     st.code(_tbp.format_exc())
+
+    elif st.session_state.section == "STOCK_CONS":
+        try:
+            from nav.stock_consolidado import render as _render_stock_cons
+            _render_stock_cons({"USR": USR, "conn_factory": _lab_conn, "conectar": conectar,
+                                "puede_seccion": puede_seccion})
+        except Exception as _e:
+            import traceback as _tbc
+            st.error(f"No se pudo cargar Stock consolidado: {_e}")
+            with st.expander("Detalle"):
+                st.code(_tbc.format_exc())
 
     elif st.session_state.section == "ISCC":
         try:
