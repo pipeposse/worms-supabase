@@ -72,8 +72,10 @@ _SEGUIMIENTO_POR_SECTOR = {
 
 # Sectores con pantalla propia (módulo, función) acotada a lo suyo: no abren una
 # sección clásica entera. DF_LIQUIDOS (14/09): sólo efluentes líquidos.
+# DF_SOLIDOS (16/09): misma estructura, con sólido = todo ingreso que no es líquido.
 _HOMES_PROPIOS = {
     "DF_LIQUIDOS": ("sector_efluentes", "render_sector_efluentes"),
+    "DF_SOLIDOS": ("sector_solidos", "render_sector_solidos"),
 }
 
 

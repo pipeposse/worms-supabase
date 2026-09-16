@@ -28,28 +28,27 @@ _AREAS_FALLBACK = [
 ]
 _AREA_DE = {   # sector → área, para el respaldo sin base
     "DF_LIQUIDOS": "RECEP_LIQ", "DF_SOLIDOS": "RECEP_SOL",
-    "PILETAS": "TRAT_LIQ", "SECADO": "TRAT_LIQ", "BACHAS": "TRAT_LIQ", "REACTORES": "TRAT_LIQ", "SALES": "TRAT_LIQ",
+    "PILETAS": "TRAT_LIQ", "BACHAS": "TRAT_LIQ", "REACTORES": "TRAT_LIQ",
     "NFU": "TRAT_SOL", "COMPOST": "TRAT_SOL", "CEREAL_POLVILLO": "TRAT_SOL", "TIERRAS_FILTRANTES": "TRAT_SOL",
-    "SOLIDOS": "TRAT_SOL", "EXPORTACION": "EXPORTACION",
+    "EXPORTACION": "EXPORTACION",
     "LABORATORIO": "SOPORTE", "INTENDENCIA": "SOPORTE", "TALLER": "SOPORTE", "MANTENIMIENTO": "SOPORTE",
     "LOGISTICA": "SOPORTE", "ADMINISTRACION": "SOPORTE", "AUDITORIA_STOCK": "SOPORTE", "PORTERIA": "SOPORTE",
 }
 
 # Respaldo si la tabla no existe en el entorno (dev local sin la migración):
 # la grilla del director, en su orden.
-_SIMPLES = {"SOLIDOS", "DF_SOLIDOS", "NFU", "COMPOST",              # sin tanques: ledger propio (Fase 5)
-            "SECADO", "SALES", "CEREAL_POLVILLO", "TIERRAS_FILTRANTES"}
+_SIMPLES = {"NFU", "COMPOST",                                       # sin tanques: ledger propio (Fase 5)
+            "CEREAL_POLVILLO", "TIERRAS_FILTRANTES"}
+_PROPIOS = {"DF_LIQUIDOS", "DF_SOLIDOS"}                            # pantalla propia (nav/sector_*.py)
 _PATRONES = {"REACTORES": "^(Reactores|Consumibles Reactores)", "BACHAS": "^Bachas",   # dim_tanque.sector ~ patrón
              "PILETAS": "^Piletas", "EXPORTACION": "^Plataforma"}
 _FALLBACK = [  # (codigo, nombre_ui, icono, sector_gestion, sector_batch, seccion_clasica) — orden área → sector
     ("DF_LIQUIDOS", "Disp. Final Líquidos", "💧", None, None, None),   # home propio: sector_efluentes.py
-    ("DF_SOLIDOS", "Disp. Final Sólidos", "🗑️", None, None, None),
-    ("PILETAS", "Piletas", "🌊", "PILETAS", "RECUPERACION", "RECUPERACION"), ("SECADO", "Secado", "🌬️", None, None, None),
+    ("DF_SOLIDOS", "Disp. Final Sólidos", "🗑️", None, None, None),   # home propio: sector_solidos.py
+    ("PILETAS", "Piletas", "🌊", "PILETAS", "RECUPERACION", "RECUPERACION"),
     ("BACHAS", "Bachas", "🛢️", "BACHAS", "BACHAS", "INICIAR"), ("REACTORES", "Reactor", "⚙️", "REACTORES", "REACTORES", "INICIAR"),
-    ("SALES", "Sales", "🧂", None, None, None),
     ("NFU", "NFU", "♻️", None, None, None), ("COMPOST", "Compost & Fertilizante", "🌱", None, None, None),
     ("CEREAL_POLVILLO", "Cereal & Polvillo", "🌾", None, None, None), ("TIERRAS_FILTRANTES", "Tierras Filtrantes", "🪨", None, None, None),
-    ("SOLIDOS", "Sólidos", "🧱", None, None, None),
     ("EXPORTACION", "Exportación", "🚢", "EXPORTACION", "EXPO", "STOCK"),
     ("LABORATORIO", "Laboratorio", "🧪", None, None, "LAB"), ("INTENDENCIA", "Intendencia", "🧹", None, None, None),
     ("TALLER", "Taller Mecánico", "🔧", None, None, "REPUESTOS"), ("MANTENIMIENTO", "Mantenimiento", "🛠️", None, None, None),
@@ -90,7 +89,7 @@ def _cargar(conn_factory) -> pd.DataFrame:
         _a = _AREA_DE.get(c)
         _an, _ai, _ao = _ar.get(_a, (None, None, 999))
         rows.append(dict(codigo=c, nombre_ui=n, icono=i, orden=(k + 1) * 10, activo=True,
-                         tiene_datos=bool(s) or c in _SIMPLES or c == "DF_LIQUIDOS", sector_gestion=g, sector_batch=b,
+                         tiene_datos=bool(s) or c in _SIMPLES or c in _PROPIOS, sector_gestion=g, sector_batch=b,
                          seccion_clasica=s, descripcion=None, stock_simple=(c in _SIMPLES),
                          patron_tanques=_PATRONES.get(c),
                          area=_a, area_nombre=_an, area_icono=_ai, area_orden=_ao))

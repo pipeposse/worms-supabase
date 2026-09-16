@@ -53,7 +53,7 @@ _GRUPO_LBL = {"MP": "Materia prima", "INSUMO": "Insumos", "PT": "Producto termin
 _UM = {"TN": ("kg_neto", 1000.0), "KL": ("litros_neto", 1000.0)}
 _COLS = ("id_mov, momento, fecha, cuenta, cuenta_nombre, calidad, corriente_nombre, producto, grupo, "
          "tipo, origen, destino, ticket, tickets_detalle, contraparte, kg_neto, litros_neto, "
-         "referencia, usuario, es_ajuste_sistema, observacion, tanque, es_del_sector")
+         "referencia, usuario, es_ajuste_sistema, observacion, tanque, es_del_sector, sector")
 
 
 # ------------------------------------------------------------------ datos
@@ -225,9 +225,9 @@ _ROL_TXT = {"EXPORTA": "sale por ODV", "ACOPIO": "sólo acopio, no sale por ODV"
 # final. En los dos casos "Del sector" es lo que le pertenece y "Todos" muestra hasta lo que
 # está ahí por una designación de tanque equivocada.
 _FILTRO_EXPO = {"Lo que exportamos": "EXPORTA", "Del sector": "DEL_SECTOR",
-                "Sólo acopio": "ACOPIO", "Todos": None}
+                "Sólo acopio": "ACOPIO", "Todos (incluye mal cargados)": None}
 _FILTRO_PROD = {"Del sector": "DEL_SECTOR", "Materia prima": "G:MP", "Insumos": "G:INSUMO",
-                "Producto final": "G:PT", "Todos": None}
+                "Producto final": "G:PT", "Todos (incluye mal cargados)": None}
 _GRUPO_NOM = {"MP": "materia prima", "INSUMO": "insumos", "PT": "producto final"}
 
 
@@ -453,6 +453,10 @@ def _movimientos(ctx, sec):
     # Lo que decide qué mirar es el filtro de abajo, y la columna DESCRIPCIÓN dice qué es cada
     # producto y si se exporta o sólo está acopiado ahí.
     v = df[~df["es_ajuste_sistema"]].copy()
+    # Red de seguridad: la consulta ya trae sólo este sector, pero un movimiento de otro sector
+    # en esta pantalla sería un error grave. Se corta acá también.
+    if "sector" in v.columns:
+        v = v[v["sector"] == cod]
     v["_val"] = v[col] / div
     v["_ing"] = v["_val"].map(lambda x: x if x > 0 else 0.0)
     v["_egr"] = v["_val"].map(lambda x: -x if x < 0 else 0.0)
