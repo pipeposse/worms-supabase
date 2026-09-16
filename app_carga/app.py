@@ -899,6 +899,21 @@ def _home_df(sql, params=None):
         return None
 
 
+# ---- "¿Se guardó?": que el cartel verde sobreviva al rerun (app_carga/guardado.py) ----
+# En 122 lugares la app hace st.success("Guardado") y enseguida st.rerun(): el rerun
+# redibuja la página entera y el cartel dura un parpadeo. En planta eso se traduce en
+# apretar Guardar 5 o 9 veces seguidas — está contado en produccion.log_doble_carga.
+# Se arregla una sola vez, acá: instalar() envuelve st.success/st.warning/st.toast y
+# st.rerun, y guarda el cartel para dibujarlo DESPUÉS del rerun, pero sólo cuando esa
+# vuelta escribió de verdad contra la base (lo avisa el hook de commit de etl.db).
+try:
+    import guardado as _gdo
+    _gdo.instalar()
+    _gdo.flash_mostrar()        # el cartel que dejó el rerun anterior, ahora sí visible
+except Exception:
+    _gdo = None
+
+
 # ---- Accesos de la portada (misma lista para la vista clásica y la navegación v2) ----
 _TILES_LANDING = [
     ("👷", "Producción Sector", "Elegí una producción planificada para tu sector y arrancá la reacción (checklist + caldera).", "INICIAR", "land_iniciar", True),
@@ -1216,6 +1231,7 @@ try:
         _etl_db.ON_COMMIT_HOOKS.append(_cache_rev.on_commit)
 except Exception:
     pass
+
 
 
 @st.cache_data(ttl=300, max_entries=400)

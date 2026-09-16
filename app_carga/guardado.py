@@ -110,6 +110,7 @@ def hay(clave):
 
 def mostrar(clave, minutos=_MINUTOS):
     """Dibuja el recibo pendiente (si hay) y lo deja hasta que el usuario lo cierre."""
+    flash_mostrar()
     k = _PREFIJO + str(clave)
     r = st.session_state.get(k)
     if not isinstance(r, dict):
@@ -175,3 +176,166 @@ def envolver(clave, titulo, fn, verificar=None, detalle=""):
             _v = ""
     anotar(clave, True, titulo, detalle=detalle, verificado=_v)
     return out
+
+
+# ==================================================================== flash global
+# EL ARREGLO DE FONDO
+# -------------------
+# `st.success("Guardado") ; st.rerun()` está escrito así en 122 lugares de la app.
+# En los 122 el cartel dura un parpadeo: el rerun redibuja la página desde cero y
+# se lo lleva puesto. Tocar 122 lugares a mano es un riesgo mayor que el bug, así
+# que se intercepta una sola vez:
+#
+#   · se envuelven st.success / st.warning / st.toast: además de dibujar, anotan
+#     el texto en un buffer de este dibujado;
+#   · se envuelve st.rerun: si en ESTE dibujado hubo un COMMIT contra la base
+#     (lo avisa el hook de etl.db) y hay textos en el buffer, los guarda como
+#     "flash" en session_state antes de rerunear;
+#   · `flash_mostrar()` (arriba de cada pantalla) los dibuja después del rerun,
+#     con la hora y qué tablas se escribieron, y ahí sí quedan a la vista.
+#
+# La condición del commit es la que evita ruido: un st.success informativo de la
+# pantalla no se reenvía; sólo se reenvía el que acompañó una escritura real.
+
+_BUF = "_gdo_buf"
+_COMMIT = "_gdo_commit"
+_FLASH = "_gdo_flash"
+_INSTALADO = [False]
+
+
+def _ss():
+    try:
+        return st.session_state
+    except Exception:
+        return None
+
+
+def _anotar_buffer(tipo, texto):
+    ss = _ss()
+    if ss is None:
+        return
+    try:
+        buf = ss.get(_BUF)
+        if not isinstance(buf, list):
+            buf = []
+        _t = str(texto)
+        if len(_t) > 400:
+            _t = _t[:400] + "…"
+        buf.append((tipo, _t))
+        ss[_BUF] = buf[-6:]
+    except Exception:
+        pass
+
+
+def _marcar_commit(stmts):
+    """Hook de etl.db: esta transacción escribió. Guarda qué tablas tocó."""
+    ss = _ss()
+    if ss is None:
+        return
+    try:
+        import re as _re
+        _tabs = []
+        for _s in (stmts or []):
+            m = _re.search(r"(?is)\b(?:insert\s+into|update|delete\s+from)\s+"
+                           r"(?:produccion\.)?([a-z_][\w]*)", str(_s))
+            if m:
+                _t = m.group(1).lower()
+                if _t not in _tabs:
+                    _tabs.append(_t)
+        if not _tabs:
+            return                      # transacción de sólo lectura: no es un guardado
+        ss[_COMMIT] = {"ts": time.time(), "tablas": _tabs[:6]}
+    except Exception:
+        pass
+
+
+def instalar():
+    """Se llama UNA vez al arrancar la app (después de configurar etl.db)."""
+    if _INSTALADO[0]:
+        return
+    _INSTALADO[0] = True
+
+    # 1) hook de commit
+    try:
+        from etl import db as _etl_db
+        if _marcar_commit not in _etl_db.ON_COMMIT_HOOKS:
+            _etl_db.ON_COMMIT_HOOKS.append(_marcar_commit)
+    except Exception:
+        pass
+
+    # 2) envolver los carteles
+    for _nombre in ("success", "warning", "toast"):
+        _orig = getattr(st, _nombre, None)
+        if _orig is None or getattr(_orig, "_gdo", False):
+            continue
+
+        def _hacer(_o, _tipo):
+            def _w(*a, **k):
+                if a:
+                    _anotar_buffer(_tipo, a[0])
+                return _o(*a, **k)
+            _w._gdo = True
+            _w.__name__ = getattr(_o, "__name__", _tipo)
+            return _w
+        try:
+            setattr(st, _nombre, _hacer(_orig, _nombre))
+        except Exception:
+            pass
+
+    # 3) envolver el rerun
+    _rr = getattr(st, "rerun", None)
+    if _rr is not None and not getattr(_rr, "_gdo", False):
+        def _rerun(*a, **k):
+            ss = _ss()
+            try:
+                if ss is not None:
+                    _c = ss.get(_COMMIT)
+                    _b = ss.get(_BUF) or []
+                    # sólo se reenvía el cartel que acompañó una escritura real
+                    if isinstance(_c, dict) and _b and time.time() - float(_c.get("ts") or 0) < 60:
+                        ss[_FLASH] = {"msgs": list(_b), "tablas": list(_c.get("tablas") or []),
+                                      "ts": time.time(), "hora": time.strftime("%H:%M:%S")}
+                        ss.pop(_COMMIT, None)
+                        ss[_BUF] = []
+            except Exception:
+                pass
+            return _rr(*a, **k)
+        _rerun._gdo = True
+        try:
+            st.rerun = _rerun
+        except Exception:
+            pass
+
+
+def flash_mostrar(minutos=10, limpiar_buffer=True):
+    """Dibuja el cartel que el rerun se había comido. Va arriba de cada pantalla."""
+    ss = _ss()
+    if ss is None:
+        return
+    f = ss.get(_FLASH)
+    if limpiar_buffer:
+        ss[_BUF] = []               # arranca un dibujado nuevo
+    if not isinstance(f, dict):
+        return
+    if time.time() - float(f.get("ts") or 0) > minutos * 60:
+        ss.pop(_FLASH, None)
+        return
+    _msgs = [t for _tp, t in (f.get("msgs") or []) if str(t).strip()]
+    if not _msgs:
+        ss.pop(_FLASH, None)
+        return
+    _tabs = ", ".join(f.get("tablas") or [])
+    _html = ["<div style='border:2px solid #16a34a;background:#f0fdf4;border-radius:12px;"
+             "padding:10px 14px;margin:4px 0 10px'>",
+             "<div style='color:#166534;font-weight:900;font-size:.8rem;letter-spacing:.04em'>"
+             "✅ GUARDADO EN LA BASE · %s</div>" % f.get("hora", "")]
+    for m in _msgs:
+        _m = str(m).replace("<", "&lt;").replace(">", "&gt;")
+        _html.append("<div style='color:#0f172a;font-weight:700;font-size:1rem;margin-top:2px'>"
+                     "%s</div>" % _m)
+    if _tabs:
+        _html.append("<div style='color:#166534;font-size:.82rem;margin-top:5px'>"
+                     "Escrito en: <b>%s</b></div>" % _tabs)
+    _html.append("</div>")
+    st.markdown("".join(_html), unsafe_allow_html=True)
+    ss.pop(_FLASH, None)
