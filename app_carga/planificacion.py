@@ -1373,6 +1373,65 @@ def _registrar_destino_cierre(USR, cat, conectar, idb):
             st.exception(e)
 
 
+class _EstadoCambio(Exception):
+    """La reacción ya no está en el estado que mostraba la pantalla."""
+    def __init__(self, ahora):
+        self.ahora = ahora
+        Exception.__init__(self, str(ahora))
+
+
+def _estado_vivo(conectar, uid, idb):
+    """Estado de la reacción leído SIN caché.
+
+    Por qué: `cat()` cachea, y la reacción la mueven otros — el operario desde
+    Producción en marcha, y la regla de temperatura/acidez desde una evaluación
+    de laboratorio. Con la ficha abierta, la pantalla podía seguir mostrando
+    PLANIFICADO cuando la reacción ya estaba en REACCIÓN o REPOSO, y el botón
+    Arrancar la mandaba para atrás en vez de avanzarla. Devuelve (estado, etapa)
+    o (None, None) si no se pudo leer (ahí se usa lo cacheado, como antes)."""
+    _SQL = ("SELECT estado, etapa_actual FROM produccion.fact_batch_proceso WHERE id_batch=%s")
+    # Primero por el pool de lectura (sin handshake SSL): es una fila por índice
+    # primario, no pesa. Si no está disponible, se cae a conectar().
+    try:
+        import app as _app
+        with _app._lab_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_SQL, (int(idb),))
+                r = cur.fetchone()
+        return (str(r[0]), r[1]) if r else (None, None)
+    except Exception:
+        pass
+    try:
+        with conectar(int(uid)) as (conn, _a):
+            with conn.cursor() as cur:
+                cur.execute(_SQL, (int(idb),))
+                r = cur.fetchone()
+        return (str(r[0]), r[1]) if r else (None, None)
+    except Exception:
+        return (None, None)
+
+
+def _trabar_estado(cur, idb, esperado):
+    """Traba la fila y verifica que siga en el estado que la pantalla mostraba.
+    Si cambió, levanta _EstadoCambio y la transacción se deshace entera: nunca
+    se pisa un avance que hizo otro."""
+    cur.execute("SELECT estado FROM produccion.fact_batch_proceso WHERE id_batch=%s FOR UPDATE",
+                (int(idb),))
+    _r = cur.fetchone()
+    _ahora = str(_r[0]) if _r else None
+    if _ahora != esperado:
+        raise _EstadoCambio(_ahora)
+
+
+def _aviso_estado_cambio(e, cat):
+    st.warning("⚠️ Esta reacción ya está en **%s**: la movió otra pantalla (el operario, o la "
+               "regla de temperatura/acidez de laboratorio) mientras tenías la ficha abierta. "
+               "No se tocó nada. Actualizo la pantalla con el estado real."
+               % (e.ahora or "otro estado"))
+    cat.clear()
+    st.rerun()
+
+
 def render_avanzar_ficha(USR, cat, conectar, idb):
     info = cat("SELECT id_batch, identificador_unidad AS ident, tipo_proceso, estado, etapa_actual, "
                " id_producto_buscado, ticket_producto_final, id_tanque_are_final, id_tanque_gli_recup, "
@@ -1382,6 +1441,17 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
         st.error("No se encontró la reacción."); return
     b = info.iloc[0]
     est = str(b["estado"]); tp = str(b["tipo_proceso"] or "")
+    # El estado manda desde la base, no desde la caché: si otro la avanzó, esta
+    # ficha tiene que mostrar el paso que de verdad corresponde.
+    _ev, _etv = _estado_vivo(conectar, USR["id_usuario"], idb)
+    if _ev and _ev != est:
+        st.info("🔄 La reacción está en **%s** (esta pantalla mostraba %s). Ya está actualizado: "
+                "abajo tenés el paso que corresponde de verdad." % (_ev, est))
+        est = _ev
+        try:
+            cat.invalidar("fact_batch_proceso")
+        except Exception:
+            cat.clear()
     _es_are = tp == "PRODUCCION_ARE"; _es_desg = tp == "DESGOMADO_ACUOSO"
     _pasos = ["PLANIFICADO", "REACCION", "REPOSO", "DECANTACION", "FINALIZADO"]
     _emj = {"PLANIFICADO": "🅿️", "REACCION": "🔥", "REPOSO": "🧊", "DECANTACION": "🧴", "FINALIZADO": "✅"}
@@ -1415,6 +1485,7 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                     _mot = "Retroceso desde ficha: " + _rm.strip()
                     with conectar(uid) as (conn, audit):
                         with conn.cursor() as cur:
+                            _trabar_estado(cur, idb, est)
                             # el evento abierto de la etapa a la que se entró por error se borra…
                             cur.execute("DELETE FROM produccion.fact_etapa_evento "
                                         "WHERE id_batch=%s AND etapa=%s AND fin_ts IS NULL",
@@ -1438,6 +1509,8 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                                   {"retroceso": _prev, "motivo": _rm.strip()})
                     st.success("Reacción devuelta a **%s**." % _prev)
                     cat.clear(); st.rerun()
+                except _EstadoCambio as e:
+                    _aviso_estado_cambio(e, cat)
                 except Exception as e:
                     st.exception(e)
 
@@ -1452,15 +1525,35 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
             if _mpq is not None and not _mpq.empty:
                 _idp = int(_mpq.iloc[0]["id_producto"]) if pd.notna(_mpq.iloc[0]["id_producto"]) else None
                 _kgi = float(_mpq.iloc[0]["kg"] or 0)
+            if _kgi <= 0:
+                # La MP puede estar en el detalle del batch (fact_batch_insumo) o
+                # simplemente en el plan (kg_inicial), sin movimiento de stock todavía:
+                # eso NO es motivo para no dejar arrancar.
+                _mpb = cat("SELECT id_producto, sum(COALESCE(cantidad,0)) AS kg "
+                           "FROM produccion.fact_batch_insumo "
+                           "WHERE id_batch=%s AND rol='MP' AND NOT COALESCE(anulado,false) "
+                           "GROUP BY id_producto ORDER BY 2 DESC LIMIT 1", (int(idb),))
+                if _mpb is not None and not _mpb.empty:
+                    _idp = _idp or (int(_mpb.iloc[0]["id_producto"]) if pd.notna(_mpb.iloc[0]["id_producto"]) else None)
+                    _kgi = float(_mpb.iloc[0]["kg"] or 0)
+            if _kgi <= 0:
+                _plan = cat("SELECT id_producto_inicial, COALESCE(kg_inicial,0) AS kg "
+                            "FROM produccion.fact_batch_proceso WHERE id_batch=%s", (int(idb),))
+                if _plan is not None and not _plan.empty:
+                    _idp = _idp or (int(_plan.iloc[0]["id_producto_inicial"])
+                                    if pd.notna(_plan.iloc[0]["id_producto_inicial"]) else None)
+                    _kgi = float(_plan.iloc[0]["kg"] or 0)
             if _idp is None and pd.notna(b["id_producto_buscado"]):
                 _idp = int(b["id_producto_buscado"])
             if not _idp or _kgi <= 0:
-                st.error("Esta reacción no tiene **materia prima cargada** (kg). Cargá la MP antes de arrancar "
-                         "(desde ⏯️ Trabajar / Producción en planta o Cargar nueva reacción).")
+                st.error("Esta reacción no tiene **materia prima cargada** (kg) ni en el plan ni en el libro "
+                         "de stock. Cargá la MP antes de arrancar (desde ⏯️ Trabajar / Producción en planta "
+                         "o Cargar nueva reacción).")
                 return
             try:
                 with conectar(uid) as (conn, audit):
                     with conn.cursor() as cur:
+                        _trabar_estado(cur, idb, "PLANIFICADO")
                         cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL", (int(idb),))
                         cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,id_usuario) VALUES (%s,'REACCION',now(),%s)", (int(idb), uid))
                         cur.execute("UPDATE produccion.fact_batch_proceso SET estado='REACCION', etapa_actual='REACCION', "
@@ -1471,6 +1564,8 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                                     (_idp, _kgi, uid, int(idb)))
                     audit.log("U", "fact_batch_proceso", int(idb), {"estado": "REACCION", "kg_inicial": _kgi})
                 st.success("Reacción arrancada."); cat.clear(); st.rerun()
+            except _EstadoCambio as e:
+                _aviso_estado_cambio(e, cat)
             except Exception as e:
                 st.exception(e)
         return
@@ -1487,6 +1582,7 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                 _mot = "Avance desde ficha: " + motivo.strip()
                 with conectar(uid) as (conn, audit):
                     with conn.cursor() as cur:
+                        _trabar_estado(cur, idb, est)
                         cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() WHERE id_batch=%s AND fin_ts IS NULL", (int(idb),))
                         cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,id_usuario) VALUES (%s,%s,now(),%s)", (int(idb), _etapa, uid))
                         if est == "REACCION" and _es_are and not b["ticket_producto_final"]:
@@ -1506,6 +1602,8 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                                         (_next, _etapa, uid, _mot, int(idb)))
                     audit.log("U", "fact_batch_proceso", int(idb), {"avance": _next})
                 st.success(f"Pasada a {_next}."); cat.clear(); st.rerun()
+            except _EstadoCambio as e:
+                _aviso_estado_cambio(e, cat)
             except Exception as e:
                 st.exception(e)
         _retroceder_block()
@@ -3205,6 +3303,13 @@ def _avanzar_fase(USR, cat, conectar):
     sel = st.selectbox("Reacción", _opt, key="avf_sel")
     r = df.iloc[_opt.index(sel)]
     _tipo_badge(r["tipo_proceso"])
+    # El estado manda desde la base: la reacción la puede haber movido el operario
+    # o la regla de temperatura/acidez mientras esta pantalla estaba abierta.
+    _ev, _ = _estado_vivo(conectar, USR["id_usuario"], int(r["id_batch"]))
+    if _ev and _ev != str(r["estado"]):
+        st.info("🔄 La reacción está en **%s** (la lista mostraba %s). Actualizado."
+                % (_ev, r["estado"]))
+        r = r.copy(); r["estado"] = _ev
     _next = {"REACCION": "REPOSO", "REPOSO": "DECANTACION"}.get(r["estado"])
     _etapa = {"REPOSO": "REPOSANDO", "DECANTACION": "DECANTACION"}.get(_next)
     _es_are = str(r["tipo_proceso"]) == "PRODUCCION_ARE"
@@ -3223,6 +3328,7 @@ def _avanzar_fase(USR, cat, conectar):
             _mot = "Forzado por planificación: " + motivo.strip()
             with conectar(uid) as (conn, audit):
                 with conn.cursor() as cur:
+                    _trabar_estado(cur, int(r["id_batch"]), str(r["estado"]))
                     cur.execute("UPDATE produccion.fact_etapa_evento SET fin_ts=now() "
                                 "WHERE id_batch=%s AND fin_ts IS NULL", (int(r["id_batch"]),))
                     cur.execute("INSERT INTO produccion.fact_etapa_evento (id_batch,etapa,inicio_ts,id_usuario) "
@@ -3254,6 +3360,8 @@ def _avanzar_fase(USR, cat, conectar):
                           {"forzar_fase": _next, "motivo": motivo})
             st.success(f"Reacción #{int(r['id_batch'])} pasada a **{_next}** (manual).")
             st.balloons(); cat.clear(); st.rerun()
+        except _EstadoCambio as e:
+            _aviso_estado_cambio(e, cat)
         except Exception as e:
             st.exception(e)
 
