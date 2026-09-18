@@ -5031,6 +5031,14 @@ def _listado(USR, cat, conectar):
                 with conn.cursor() as cur:
                     cur.execute("UPDATE produccion.fact_despacho SET estado=%s, actualizado_en=now() "
                                 "WHERE id_despacho=%s", (_nuevo, int(sel)))
+                    # Anular la ODV libera sus tickets de portería: la pesada existió igual y
+                    # el camión salió, así que esos tickets tienen que poder imputarse a otra
+                    # orden. Si no se sueltan acá quedan atrapados (SOL-0045).
+                    _tk_libres = 0
+                    if _nuevo == "ANULADO":
+                        cur.execute("DELETE FROM produccion.fact_despacho_ticket "
+                                    "WHERE id_despacho=%s", (int(sel),))
+                        _tk_libres = cur.rowcount or 0
                     cur.execute("SELECT count(*), coalesce(sum(kg),0)/1000.0 "
                                 "FROM produccion.fact_movimiento_stock "
                                 "WHERE id_despacho=%s AND origen='despacho' AND anulado IS NOT TRUE",
@@ -5044,7 +5052,11 @@ def _listado(USR, cat, conectar):
                 st.warning("Estado actualizado, pero no se generaron movimientos de stock "
                            "(revisá que la orden de venta tenga líneas con tanque y litros).")
             else:
-                st.success("Estado actualizado. Se revirtieron los movimientos de stock de la orden de venta.")
+                _msg = "Estado actualizado. Se revirtieron los movimientos de stock de la orden de venta."
+                if _tk_libres:
+                    _msg += (f" Se liberaron {_tk_libres} ticket(s) de portería: ya se pueden "
+                             "imputar a otra orden de venta.")
+                st.success(_msg)
             _rerun_frag()
         except Exception as e:
             st.error(f"No se pudo actualizar: {e}")
@@ -5494,11 +5506,17 @@ def _tk_asignados(cat, id_despacho, rol):
 
 
 def _tk_candidatos(cat, clases, d1, d2, txt, familia):
+    # Un ticket cuenta como "ya asignado" SOLO si la orden de venta que lo tiene sigue viva.
+    # Al anular una ODV sus tickets quedaban enganchados y no se podian imputar a ninguna
+    # otra: la pesada estaba hecha, el camion habia salido, y el ticket no aparecia por
+    # ningun lado (SOL-0045). La ODV 59 tenia 8 tickets asi, 184,3 TN.
     q = ("SELECT p.id_transaccion, p.ticket, p.empresa, p.fecha, p.hora, p.producto, p.destino, "
          "p.area, p.procedencia, p.patente, p.kg, p.sin_pesada, p.familia, p.observaciones "
          "FROM produccion.v_porteria_ticket p "
          "LEFT JOIN produccion.fact_despacho_ticket a ON a.id_transaccion = p.id_transaccion "
-         "WHERE a.id_transaccion IS NULL AND p.clase = ANY(%s) "
+         "LEFT JOIN produccion.fact_despacho dd ON dd.id_despacho = a.id_despacho "
+         "WHERE (a.id_transaccion IS NULL OR COALESCE(dd.estado,'') = 'ANULADO') "
+         "AND p.clase = ANY(%s) "
          "AND p.fecha BETWEEN %s AND %s ")
     par = [list(clases), d1, d2]
     if familia and familia != "Todas":
@@ -5707,6 +5725,17 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                 _uid = int(USR.get("id_usuario") or 0)
                 with conectar(USR["id_usuario"]) as (conn, _x):
                     with conn.cursor() as cur:
+                        # Si alguno de estos tickets lo estaba reteniendo una ODV ANULADA,
+                        # se suelta antes de insertar: hay un unico por id_transaccion y el
+                        # ON CONFLICT DO NOTHING lo dejaba pasar en silencio, con lo cual la
+                        # pantalla decia "0 de N asignados" sin explicar por que.
+                        cur.execute(
+                            "DELETE FROM produccion.fact_despacho_ticket a "
+                            "USING produccion.fact_despacho d "
+                            "WHERE d.id_despacho = a.id_despacho "
+                            "  AND COALESCE(d.estado,'') = 'ANULADO' "
+                            "  AND a.id_transaccion = ANY(%s)",
+                            ([int(f[2]) for f in filas],))
                         _nok = 0
                         for _fl in filas:
                             cur.execute(
