@@ -1500,7 +1500,9 @@ def tickets_lab_disponibles_por_codigo(codigo_producto, dias=180, limit=30, solo
         where.append("t.lab_fecha IS NOT NULL")
     sql = (
         "SELECT t.transaccion AS ticket, ABS(t.peso_neto) AS kg, "
-        "       LOWER(t.corriente) AS corriente, t.procedencia, "
+        "       LOWER(COALESCE(produccion.fn_corriente_ticket("
+        "         t.lab_producto, t.lab_calidad, t.corriente), 'sin declarar')) AS corriente, "
+        "       t.procedencia, "
         "       t.fecha_entrada, t.lab_fecha, t.lab_producto, t.lab_calidad, "
         "       t.lab_prc_acidez, t.lab_prc_agua "
         "FROM produccion.v_transacciones_limpias t "
@@ -3047,13 +3049,24 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
                 st.caption(f"Portería: **{kg_port/_dpc:,.0f} L** · {kg_port:,.0f} kg · {kg_port/1000:,.2f} TN")
                 portions.append({"fuente": "TICKET", "ticket": (tkstr or None), "id_tanque": None, "kg": kg_port})
                 parts_lab.append((kg_port, _avg or {}))
+                # La corriente del ticket la define LABORATORIO, no portería (SOL-0044).
+                # Porteria escribe el producto a mano y "AG" a secas puede ser vegetal o
+                # animal, asi que su mapeo cae en sin_declarar: 108 tickets de AG-C con
+                # 775 TN quedaron asi desde julio. Si el laboratorio evaluo el ticket, el
+                # producto que le asigno ya dice la corriente. Cuando no hay ninguna de las
+                # dos, la corriente queda SIN DATO y NO entra en la comparacion: un ticket
+                # sin declarar no puede "chocar" con la corriente de un tanque.
                 try:
                     import re as _rec
                     _tn = [int(x) for x in _rec.findall(r"\d+", tkstr or "")]
                     if _tn:
-                        _dfc = cat("SELECT UPPER(corriente) corr, ABS(peso_neto) kg "
-                                   "FROM produccion.v_transacciones_limpias "
-                                   "WHERE transaccion = ANY(%s) AND corriente IS NOT NULL", (_tn,))
+                        _dfc = cat("SELECT produccion.fn_corriente_ticket("
+                                   "         t.lab_producto, t.lab_calidad, t.corriente) corr, "
+                                   "       ABS(t.peso_neto) kg "
+                                   "FROM produccion.v_transacciones_limpias t "
+                                   "WHERE t.transaccion = ANY(%s) "
+                                   "  AND produccion.fn_corriente_ticket("
+                                   "        t.lab_producto, t.lab_calidad, t.corriente) IS NOT NULL", (_tn,))
                         if not _dfc.empty:
                             parts_corr.append((kg_port, _dfc.groupby("corr")["kg"].sum().idxmax()))
                 except Exception:
@@ -3193,7 +3206,9 @@ def fuente_mp_combinada(cod, key_prefix, target_kg=None, permite_multiselect=Fal
     if len(_distinct_corr) > 1:
         st.error("⛔ La materia prima de **portería** y **tanque** tienen distinta corriente ("
                  + " vs ".join(sorted(_distinct_corr))
-                 + "). No se puede mezclar: elegí fuentes de la **misma corriente**. La carga queda bloqueada.")
+                 + "). No se puede mezclar: elegí fuentes de la **misma corriente**. La carga queda bloqueada. "
+                 "La corriente del ticket sale de la evaluación de laboratorio; si alguna está mal, "
+                 "corregila en la carga de laboratorio y volvé a entrar.")
     elif src_corr:
         st.session_state["mp_corr"] = src_corr
         st.caption("Corriente de la fuente: **"
