@@ -4280,22 +4280,44 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
         st.markdown("#### 🎯 Destino del producto (acopio final)")
         st.caption("Definí desde ahora a qué tanque va el **ARE final** y la **glicerina recuperada**. "
                    "Queda computado; después, en Decantación, se puede cambiar.")
-        _ftq = cat("SELECT t.id_tanque, t.nombre, t.sector, COALESCE(s.litros_actual,0) lt, COALESCE(t.capacidad_litros,0) cap "
-                   "FROM produccion.dim_tanque t JOIN produccion.dim_producto p ON p.id_producto=t.id_producto_principal "
+        # El destino se ofrece segun los TANQUES HABILITADOS para el producto final que se
+        # esta produciendo (dim_tanque_producto), no por el producto principal del tanque.
+        # Antes preguntaba por 'ARE-B' fijo: un ARE animal no ofrecia ningun tanque de
+        # Reactores, y un tanque habilitado para varios productos (el 11 esta habilitado
+        # para ARE-A, ARE-A-ANIMAL y ARE-B) solo aparecia para su principal. De ahi los dos
+        # pedidos de "habilitar TK 10 / TK 11": ya estaban habilitados, esta pantalla no lo
+        # miraba. Habilitar un tanque se hace en Admin -> Tanques, sin tocar codigo.
+        _pf_cod = fin_code.get(pf_id) or "ARE-B"
+        _ftq = cat("SELECT t.id_tanque, t.nombre, t.sector, COALESCE(s.litros_actual,0) lt, "
+                   "       COALESCE(t.capacidad_litros,0) cap, "
+                   "       COALESCE(tp.es_principal,false) principal, (tp.id_tanque IS NOT NULL) habilitado "
+                   "FROM produccion.dim_tanque t "
                    "LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
-                   "WHERE COALESCE(t.activo,true) AND (p.codigo_producto='ARE-B' OR t.sector ILIKE 'Exporta%%') "
-                   "ORDER BY (t.sector ILIKE 'Exporta%%') DESC, t.nombre")
+                   "LEFT JOIN produccion.dim_tanque_producto tp ON tp.id_tanque=t.id_tanque "
+                   "     AND tp.id_producto=(SELECT id_producto FROM produccion.dim_producto "
+                   "                          WHERE codigo_producto=%s) "
+                   "WHERE COALESCE(t.activo,true) AND COALESCE(t.condicion,'') <> 'FUERA DE USO' "
+                   "  AND tp.id_tanque IS NOT NULL "
+                   "ORDER BY COALESCE(tp.es_principal,false) DESC, t.sector, t.nombre", (_pf_cod,))
         _gtq = cat("SELECT t.id_tanque, t.nombre, COALESCE(s.litros_actual,0) lt, COALESCE(t.capacidad_litros,0) cap "
                    "FROM produccion.dim_tanque t LEFT JOIN produccion.vw_tanque_panel s ON s.id_tanque=t.id_tanque "
                    "WHERE t.id_tanque IN (88,87,81) ORDER BY t.nombre")
         _dc1, _dc2 = st.columns(2)
         with _dc1:
             if _ftq is not None and not _ftq.empty:
-                _fop = _ftq.apply(lambda r: f"{r['nombre']} · {r['sector']} · {float(r['lt']):,.0f}/{float(r['cap']):,.0f} L", axis=1).tolist()
-                _fs = st.selectbox("Tanque destino ARE final", _fop, key="pl_dest_final")
+                def _lbl_dest(r):
+                    _m = " · ★ tanque principal" if bool(r.get("principal")) else ""
+                    return (f"{r['nombre']} · {r['sector']} · "
+                            f"{float(r['lt']):,.0f}/{float(r['cap']):,.0f} L{_m}")
+                _fop = _ftq.apply(_lbl_dest, axis=1).tolist()
+                _fs = st.selectbox(f"Tanque destino {_pf_cod} final", _fop, key="pl_dest_final")
                 dest_are_final = int(_ftq.iloc[_fop.index(_fs)]["id_tanque"])
+                st.caption(f"{len(_ftq)} tanque(s) habilitados para **{_pf_cod}**. Si falta alguno, "
+                           "se habilita en **Admin → Tanques → productos habilitados**; no hace "
+                           "falta tocar el sistema.")
             else:
-                st.warning("No hay tanques destino para ARE-B.")
+                st.warning(f"Ningún tanque está habilitado para **{_pf_cod}**. Habilitalo en "
+                           "**Admin → Tanques → productos habilitados** y volvé a entrar.")
         with _dc2:
             if _gtq is not None and not _gtq.empty:
                 _gop = _gtq.apply(lambda r: f"{r['nombre']} · {float(r['lt']):,.0f}/{float(r['cap']):,.0f} L", axis=1).tolist()
