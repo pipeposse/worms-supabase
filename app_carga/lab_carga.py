@@ -102,7 +102,11 @@ CORRIENTE = ["VEGETAL", "ANIMAL"]
 # Calidades por familia — alineadas al maestro_final (revisado dirección 2026-07-07)
 FUERA = "FUERA DE ESPECIFICACION"
 CAL_AG    = ["A", "B", "C", "D", "E", FUERA]                 # AG-A..E
-CAL_AFE   = ["S", "SG", "G", "P", "AL", "M", FUERA]          # variantes AFE del maestro (M = maíz)
+CAL_AFE   = ["S", "SG", "G", "P", "AL", "M", "TCO", FUERA]   # variantes AFE del maestro:
+# S soja · SG soja con goma · G girasol · P pollo · AL algodón · M MANÍ · TCO MAÍZ.
+# Ojo con M y TCO: son cosas distintas y estuvieron cruzadas. M es maní (se corrigió en 09/2026)
+# y el maíz no tenía opción, por eso laboratorio la pidió (SOL-0046). Cada una resuelve a su
+# producto por dic_producto_lab: AFE/M → AFE-M, AFE/TCO → AFE-TCO.
 CAL_ARE   = ["A", "B", FUERA]                                # ARE-A / ARE-B
 CAL_EFLU  = ["LIQUIDO"]
 CAL_BORRA = ["A", "B", "ANIMAL", "PES", FUERA]               # BORRA-A/B (V) + animal + pescado
