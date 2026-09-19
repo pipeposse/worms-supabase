@@ -54,8 +54,20 @@ def _ahora():
 
 
 # ------------------------------------------------------------------ datos
+_SQL_PASOS = "SELECT * FROM produccion.v_op_instructivo WHERE id_batch=%s ORDER BY orden"
+
+
 def _pasos(cat, id_batch):
-    df = cat("SELECT * FROM produccion.v_op_instructivo WHERE id_batch=%s ORDER BY orden", (int(id_batch),)).copy()
+    """Los pasos y lo ya cargado, leídos SIN caché.
+
+    Mismo problema que en los tickets de exportación: el paso se guardaba bien y la
+    lista seguía saliendo de `cat()` (caché de 5 min), así que el operario confirmaba
+    y el paso seguía azul — "no responde a la confirmación". Son 16 filas por clave
+    primaria: se leen siempre de la base. Si la lectura directa no está, cae a cat()."""
+    df = _g.leer(_SQL_PASOS, (int(id_batch),))
+    if df is None:
+        df = cat(_SQL_PASOS, (int(id_batch),))
+    df = df.copy()
     for c in ("cant_esperada", "cantidad_real", "acidez_esp", "temp_esp", "tol_acidez", "tol_temp", "tol_cant_pct",
               "acidez_pct", "temp_c", "desvio_acidez", "desvio_temp", "desvio_cant_pct", "duracion_real_min"):
         if c in df:
@@ -198,9 +210,17 @@ def _confirmar(cat, conectar, USR, id_batch, p, titulo, detalle="", **campos):
         _invalidar(cat)
         _h = _g.contar("SELECT hecho FROM produccion.v_op_instructivo WHERE id_batch=%s AND orden=%s",
                        (int(id_batch), int(p["orden"])))
-        _g.anotar(clave, True, titulo, detalle=detalle,
-                  verificado=("el paso figura como hecho en la base" if _h else
-                              ("guardado, pero el paso todavía no figura como hecho" if _h is False else "")))
+        if _h is False:
+            # Se grabó pero el paso NO queda marcado: para el operario es idéntico a que
+            # el botón no haga nada, así que se muestra en rojo y queda registrado como
+            # traba en log_error_app en vez de un cartel verde que no se corresponde.
+            _g.anotar(clave, False, "El paso %d se guardó pero no quedó confirmado"
+                      % int(p["orden"]), detalle=detalle,
+                      error="Falta el dato que marca el paso como hecho (%s). "
+                            "Avisá a sistemas: queda registrado solo." % str(p.get("captura") or "—"))
+        else:
+            _g.anotar(clave, True, titulo, detalle=detalle,
+                      verificado=("el paso figura como hecho en la base" if _h else ""))
         # el selector salta solo al próximo paso pendiente (si no, quedaba clavado en el
         # que se acaba de confirmar y había que elegir el siguiente a mano)
         st.session_state.pop(f"opi_sel_{id_batch}", None)
@@ -297,6 +317,24 @@ def render(USR, cat, conectar, id_batch):
             campos = {}
             if cap == "MEDICION":
                 c1, c2 = st.columns(2)
+                # Si la fórmula no fijó ni temperatura ni acidez esperadas, igual hay que
+                # poder cargar la medición: sin ninguno de los dos campos el paso nunca
+                # queda "hecho" (v_op_instructivo: MEDICION → temp_c o acidez_pct no nulos)
+                # y confirmar no hacía nada visible.
+                _sin_spec = not (pd.notna(p.get("temp_esp")) or pd.notna(p.get("acidez_esp")))
+                if _sin_spec:
+                    st.caption("Este paso no tiene valor esperado en la fórmula: cargá "
+                               "temperatura y/o acidez para poder confirmarlo.")
+                    _t0 = float(p["temp_c"]) if pd.notna(p.get("temp_c")) else None
+                    _a0 = float(p["acidez_pct"]) if pd.notna(p.get("acidez_pct")) else None
+                    _tv = c1.number_input("Temperatura (°C)", 0.0, 300.0, _t0, 1.0,
+                                          key=f"opi_t_{id_batch}_{sel}")
+                    _av = c2.number_input("Acidez (%)", 0.0, 100.0, _a0, 0.5,
+                                          key=f"opi_a_{id_batch}_{sel}")
+                    if _tv is not None:
+                        campos["temp_c"] = _tv
+                    if _av is not None:
+                        campos["acidez_pct"] = _av
                 if pd.notna(p.get("temp_esp")):
                     campos["temp_c"] = c1.number_input("Temperatura (°C)", 0.0, 300.0,
                                                        float(p["temp_c"]) if pd.notna(p.get("temp_c")) else float(p["temp_esp"]),
@@ -313,6 +351,11 @@ def render(USR, cat, conectar, id_batch):
                 st.caption("Este paso no pide datos: confirmalo cuando esté hecho.")
             obs = st.text_input("Observación (opcional)", key=f"opi_obs_{id_batch}_{sel}")
             enviado = st.form_submit_button(f"✔ Confirmar paso {int(p['orden'])}", type="primary", use_container_width=True)
+
+        if enviado and cap == "MEDICION" and not campos:
+            st.warning("⚠️ Cargá la temperatura y/o la acidez: sin ninguno de los dos el paso "
+                       "no puede quedar confirmado.")
+            enviado = False
 
         if enviado:
             # desvíos: se calculan con lo que se mandó y van al recibo (queda registrado igual)
