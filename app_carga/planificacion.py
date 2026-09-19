@@ -881,18 +881,104 @@ def _recompute_final(cur, idb):
                 " WHERE id_batch=%s AND NOT COALESCE(anulado,false)) WHERE id_batch=%s", (int(idb), int(idb)))
 
 
-def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
+def _cambiar_producto_final(USR, cat, conectar, idb, pobj, tipo_proceso, kp=""):
+    """Cambiar el producto terminado de una reacción YA creada (SOL-0049).
+
+    Hasta ahora el producto final se elegía sólo al planificar y después no se podía
+    tocar. Las reacciones de desgomado de maní armadas antes del arreglo del 18/09
+    quedaron con AFE-S como producto final (la regla vieja daba AFE-S para todo lo que
+    no fuera girasol), así que la pantalla de tickets finales ofrecía únicamente
+    tickets evaluados como AFE-S y el maní no se podía cerrar.
+
+    Cambiar el producto acá NO es sólo una etiqueta: la salida ya asentada en el tanque
+    está guardada con el producto viejo. Por eso se corrigen en la misma operación los
+    movimientos de stock del producto final y los tickets ya asignados, y se dice
+    exactamente cuántos kilos cambian de producto antes de confirmar."""
+    _k = ("%s_%s" % (idb, kp)) if kp else str(idb)
+    _sec = cat("SELECT COALESCE(sector,'REACTORES') s FROM produccion.fact_batch_proceso "
+               "WHERE id_batch=%s", (int(idb),))
+    _sec = str(_sec.iloc[0]["s"]) if (_sec is not None and not _sec.empty) else "REACTORES"
+    _opc = _productos_proceso(cat, _sec, tipo_proceso, "FINAL")
+    if _opc is None or _opc.empty:
+        _opc = cat("SELECT id_producto, codigo_producto FROM produccion.dim_producto "
+                   "WHERE activo AND tipo_producto='FINAL' ORDER BY codigo_producto")
+    if _opc is None or _opc.empty:
+        st.caption("No hay productos finales habilitados para este proceso.")
+        return
+    _cods = _opc["codigo_producto"].astype(str).tolist()
+    _mov = cat("SELECT COALESCE(sum(kg),0) kg, count(*) n, "
+               "       string_agg(DISTINCT COALESCE(dt.nombre,'sin tanque'), ', ') tanques "
+               "FROM produccion.fact_movimiento_stock m "
+               "LEFT JOIN produccion.dim_tanque dt ON dt.id_tanque=m.id_tanque "
+               "WHERE m.id_batch=%s AND m.rol='PRODUCTO_FINAL' "
+               "  AND NOT COALESCE(m.anulado,false)", (int(idb),))
+    _kg_mov = float(_mov.iloc[0]["kg"] or 0) if (_mov is not None and not _mov.empty) else 0.0
+    _n_mov = int(_mov.iloc[0]["n"] or 0) if (_mov is not None and not _mov.empty) else 0
+    _tks = str(_mov.iloc[0]["tanques"] or "") if (_mov is not None and not _mov.empty) else ""
+    _n_tk = cat("SELECT count(*) n FROM produccion.fact_batch_ticket_final "
+                "WHERE id_batch=%s AND NOT COALESCE(anulado,false)", (int(idb),))
+    _n_tk = int(_n_tk.iloc[0]["n"] or 0) if (_n_tk is not None and not _n_tk.empty) else 0
+
+    with st.expander("✏️ Cambiar el producto terminado", expanded=(not pobj)):
+        st.caption("El producto terminado define qué tickets de balanza se ofrecen acá: sólo se "
+                   "listan los que laboratorio evaluó como ese producto. Si la reacción quedó con "
+                   "el producto equivocado, cambialo y los tickets correctos aparecen solos.")
+        _ix = _cods.index(pobj) if pobj in _cods else 0
+        _nuevo = st.selectbox("Producto terminado", _cods, index=_ix, key=f"pf_chg_{_k}")
+        if _nuevo == pobj:
+            st.caption("Es el que ya tiene.")
+            return
+        _det = ["la reacción pasa a producir **%s** en lugar de %s" % (_nuevo, pobj)]
+        if _n_mov:
+            _det.append("**%s kg** ya asentados en %s (%d movimiento(s)) pasan a figurar como %s"
+                        % ("{:,.0f}".format(_kg_mov).replace(",", "."), _tks or "el tanque", _n_mov, _nuevo))
+        if _n_tk:
+            _det.append("%d ticket(s) final(es) ya asignado(s) quedan como %s" % (_n_tk, _nuevo))
+        st.warning("Al confirmar: " + " · ".join(_det) + ".")
+        _ok = st.checkbox("Confirmo el cambio", key=f"pf_chg_ok_{_k}")
+        if st.button("💾 Cambiar el producto terminado", type="primary", disabled=not _ok,
+                     key=f"pf_chg_go_{_k}", use_container_width=True):
+            try:
+                _idp = int(_opc[_opc["codigo_producto"] == _nuevo].iloc[0]["id_producto"])
+                with conectar(int(USR["id_usuario"])) as (conn, audit):
+                    with conn.cursor() as cur:
+                        cur.execute("UPDATE produccion.fact_batch_proceso SET id_producto_buscado=%s "
+                                    "WHERE id_batch=%s", (_idp, int(idb)))
+                        cur.execute("UPDATE produccion.fact_movimiento_stock "
+                                    "SET id_producto=%s, producto=%s "
+                                    "WHERE id_batch=%s AND rol='PRODUCTO_FINAL' "
+                                    "  AND NOT COALESCE(anulado,false)", (_idp, _nuevo, int(idb)))
+                        _nm = cur.rowcount or 0
+                        cur.execute("UPDATE produccion.fact_batch_ticket_final SET producto=%s "
+                                    "WHERE id_batch=%s AND NOT COALESCE(anulado,false)",
+                                    (_nuevo, int(idb)))
+                        _nt = cur.rowcount or 0
+                        audit.log("U", "fact_batch_proceso", int(idb),
+                                  {"producto_final_anterior": pobj, "producto_final_nuevo": _nuevo,
+                                   "movimientos_corregidos": _nm, "tickets_corregidos": _nt})
+                cat.clear()
+                st.success("Producto terminado: %s → **%s**. Se corrigieron %d movimiento(s) de "
+                           "stock y %d ticket(s)." % (pobj, _nuevo, _nm, _nt))
+                st.rerun()
+            except Exception as e:
+                st.error("No se pudo cambiar el producto terminado: %s" % e)
+
+
+def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj, tipo_proceso=None, kp=""):
     st.caption("Asigná los **tickets de balanza (pesadas) ya evaluados por laboratorio** del producto final. "
                "La **suma de estos tickets define los kilos finales** de la reacción (editable por ticket).")
     _pobj = (producto_obj or "").strip()
-    if not _pobj:
-        st.info("Esta reacción no tiene producto final definido."); return
+    _k = ("%s_%s" % (idb, kp)) if kp else str(idb)
     asg = cat("SELECT id, ticket, producto, calidad, kg FROM produccion.fact_batch_ticket_final "
               "WHERE id_batch=%s AND NOT COALESCE(anulado,false) ORDER BY ticket", (int(idb),))
     _tot_kg = float(asg["kg"].fillna(0).sum()) if (asg is not None and not asg.empty) else 0.0
     c1, c2 = st.columns(2)
-    c1.metric("Producto final", _pobj)
+    c1.metric("Producto final", _pobj or "—")
     c2.metric("Total asignado (t)", f"{_tot_kg/1000:.2f}")
+    # SOL-0049: se puede corregir el producto terminado sin rehacer la reacción.
+    _cambiar_producto_final(USR, cat, conectar, int(idb), _pobj, tipo_proceso, kp)
+    if not _pobj:
+        st.info("Esta reacción no tiene producto final definido: elegilo arriba."); return
     cand = cat("SELECT tx.transaccion::text AS ticket, tx.lab_calidad AS calidad, "
                " round(abs(COALESCE(tx.peso_neto,0))::numeric,0) AS kg, tx.fecha_entrada AS fecha "
                "FROM produccion.v_transacciones_limpias tx "
@@ -904,8 +990,8 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
     st.markdown(f"**Tickets pesados disponibles** (evaluados como {_pobj})")
     if cand is not None and not cand.empty:
         _copt = cand.apply(lambda r: f"#{r['ticket']} · {float(r['kg'] or 0)/1000:.2f} t · cal {r['calidad'] or '-'} · {r['fecha']}", axis=1).tolist()
-        _selc = st.multiselect("Elegí tickets para asignar", _copt, key=f"pf_sel_{idb}")
-        if st.button("➕ Asignar seleccionados", type="primary", key=f"pf_add_{idb}", use_container_width=True) and _selc:
+        _selc = st.multiselect("Elegí tickets para asignar", _copt, key=f"pf_sel_{_k}")
+        if st.button("➕ Asignar seleccionados", type="primary", key=f"pf_add_{_k}", use_container_width=True) and _selc:
             try:
                 with conectar(int(USR["id_usuario"])) as (conn, audit):
                     with conn.cursor() as cur:
@@ -924,10 +1010,10 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
     else:
         st.caption("No hay tickets pesados sin asignar para este producto. Podés agregar uno manual abajo.")
     with st.expander("➕ Agregar ticket manual"):
-        _mt = st.text_input("N° de ticket", key=f"pf_mt_{idb}")
-        _mk = st.number_input("Kilos (si lo dejás vacío, se busca de balanza)", min_value=0.0, value=None, step=10.0, format="%g", key=f"pf_mk_{idb}")
-        _mc = st.text_input("Calidad", value="", key=f"pf_mc_{idb}")
-        if st.button("➕ Asignar manual", key=f"pf_addman_{idb}"):
+        _mt = st.text_input("N° de ticket", key=f"pf_mt_{_k}")
+        _mk = st.number_input("Kilos (si lo dejás vacío, se busca de balanza)", min_value=0.0, value=None, step=10.0, format="%g", key=f"pf_mk_{_k}")
+        _mc = st.text_input("Calidad", value="", key=f"pf_mc_{_k}")
+        if st.button("➕ Asignar manual", key=f"pf_addman_{_k}"):
             _mtv = (_mt or "").strip()
             if not _mtv:
                 st.warning("Poné el N° de ticket.")
@@ -954,10 +1040,10 @@ def _ficha_final_tickets(USR, cat, conectar, idb, producto_obj):
         _disp = asg.copy(); _disp["Quitar"] = False
         _disp = _disp.rename(columns={"ticket": "Ticket", "producto": "Producto", "calidad": "Calidad", "kg": "Kg"})
         edp = st.data_editor(_disp[["Ticket", "Producto", "Calidad", "Kg", "Quitar"]], hide_index=True, use_container_width=True,
-                             disabled=["Ticket", "Producto", "Calidad"], key=f"pf_ed_{idb}",
+                             disabled=["Ticket", "Producto", "Calidad"], key=f"pf_ed_{_k}",
                              column_config={"Kg": st.column_config.NumberColumn(format="%g"),
                                             "Quitar": st.column_config.CheckboxColumn()})
-        if st.button("💾 Guardar (definir kilos finales por estos tickets)", type="primary", key=f"pf_save_{idb}", use_container_width=True):
+        if st.button("💾 Guardar (definir kilos finales por estos tickets)", type="primary", key=f"pf_save_{_k}", use_container_width=True):
             try:
                 with conectar(int(USR["id_usuario"])) as (conn, audit):
                     with conn.cursor() as cur:
@@ -1931,7 +2017,7 @@ def _dlg_reaccion(USR, cat, conectar, idb):
         _registrar_destino_cierre(USR, cat, conectar, int(idb))
 
     with tPF:
-        _ficha_final_tickets(USR, cat, conectar, int(idb), b.get("producto_obj"))
+        _ficha_final_tickets(USR, cat, conectar, int(idb), b.get("producto_obj"), _tp)
 
     with tLM:
         render_checklist_limpieza(USR, cat, conectar, int(idb), b.get("tipo_proceso"))

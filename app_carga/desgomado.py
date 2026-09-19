@@ -183,7 +183,12 @@ def _destinos_de(b):
 
 
 def _pf_code(cat, b):
-    """Código del producto final del batch (AFE-S para AFE-SG, AFE-G para AFE-G). Fallback AFE-S."""
+    """Código del producto final del batch, tal como quedó guardado.
+
+    El desgomado devuelve el MISMO producto que entró (el girasol sigue siendo girasol
+    y el maní sigue siendo maní); la única excepción es la soja CON goma, que sale como
+    soja sin goma. Eso lo decide la planificación al armar la reacción; acá sólo se lee.
+    El fallback AFE-S es para reacciones viejas sin producto guardado."""
     try:
         _idp = b.get("id_producto_buscado")
         if _idp is not None and pd.notna(_idp):
@@ -206,7 +211,7 @@ def planificacion(USR, cat, conectar):
         return
     _cabecera(cat, b)
     uid = int(USR["id_usuario"])
-    _pf = _pf_code(cat, b)   # AFE-S (de AFE-SG) o AFE-G (de AFE-G): el desgomado de AFE-G termina en AFE-G
+    _pf = _pf_code(cat, b)   # el que quedó guardado en la reacción (AFE-S, AFE-G, AFE-M…)
     ays_max = _cond(cat, "DESGOM_AGUA_SED_MAX_PCT", AYS_MAX_DEF)
     reposo_hs = _cond(cat, "DESGOM_REPOSO_HORAS", REPOSO_HS_DEF)
 
@@ -339,7 +344,7 @@ def produccion(USR, cat, conectar, id_batch=None):
             return
     _cabecera(cat, b)
     uid = int(USR["id_usuario"])
-    _pf = _pf_code(cat, b)   # producto final real del batch (AFE-S o AFE-G)
+    _pf = _pf_code(cat, b)   # producto final real del batch
     ays_max = _cond(cat, "DESGOM_AGUA_SED_MAX_PCT", AYS_MAX_DEF)
 
     # -------- REPOSO: esperar decisión + fin de reposo, luego arrancar decantación --------
@@ -470,9 +475,14 @@ def produccion(USR, cat, conectar, id_batch=None):
     st.markdown("###### 🏁 Tickets de destino final (pesadas del producto)")
     st.caption("Cargá acá las pesadas de balanza del producto final ya evaluadas por laboratorio. "
                "La suma define los kilos finales reales de la reacción.")
+    # Este panel NUNCA se llegó a ver acá: se lo llamaba con un argumento (kp) que la
+    # función no aceptaba, el TypeError caía en el except y quedaba sólo el cartelito
+    # gris. El kp existe ahora de verdad: distingue las claves de los widgets cuando el
+    # mismo panel se dibuja en dos pantallas (SOL-0049).
     try:
         import planificacion as _plan
-        _plan._ficha_final_tickets(USR, cat, conectar, int(b["id_batch"]), _pf, kp="desg")
+        _plan._ficha_final_tickets(USR, cat, conectar, int(b["id_batch"]), _pf,
+                                   "DESGOMADO_ACUOSO", kp="desg")
     except Exception as _etk:
         st.caption(f"No se pudieron cargar los tickets finales: {_etk}")
     st.divider()
