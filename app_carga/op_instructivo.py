@@ -18,6 +18,8 @@ from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 
+import guardado as _g          # recibo de guardado que sobrevive al rerun (SOL-0051)
+
 try:
     _FRAGMENT = st.fragment
 except AttributeError:
@@ -36,6 +38,19 @@ def _rerun_fragment():
 _ICONO = {"CALDERA": "🔥", "CARGA_MP": "🛢️", "CARGA_INSUMO": "🧪", "VALIDAR_TEMP": "🌡️", "INICIO_RX": "⚗️",
           "REVISION": "🔎", "DECANTACION": "🧴", "REPOSO": "🧊", "REPOSANDO": "🧊", "EN_TANQUE": "📦"}
 _TZ = "America/Argentina/Buenos_Aires"
+
+
+def _ahora():
+    """Hora LOCAL de planta, sin tz (la sesión de la base ya está en hora Argentina).
+
+    SOL-0051: `datetime.now()` a secas es la hora del servidor (UTC en Streamlit
+    Cloud) y la base la tomaba como hora Argentina: los pasos quedaban 3 horas
+    adelantados (el 18/09 el paso 1 de RE-416 figura a las 16:34 y se cargó 13:34)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(_TZ)).replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
 
 
 # ------------------------------------------------------------------ datos
@@ -127,8 +142,6 @@ def _estado_icono(p, actual):
 
 
 # ------------------------------------------------------------------ bloque
-@_FRAGMENT
-
 def _origen_mp(cat, id_batch):
     """Cadena de trazabilidad de la MP: ticket de balanza directo, o los camiones
     que llenaron el tanque del que se sacó (origen probable, no lote identificado)."""
@@ -165,6 +178,38 @@ def _origen_mp(cat, id_batch):
                    "es el origen probable del contenido, no un lote identificado.")
 
 
+def _invalidar(cat):
+    """Que la próxima lectura del instructivo vaya a la base, sin esperar al hook."""
+    inv = getattr(cat, "invalidar", None)
+    try:
+        inv("fact_paso_medicion") if callable(inv) else cat.clear()
+    except Exception:
+        try:
+            cat.clear()
+        except Exception:
+            pass
+
+
+def _confirmar(cat, conectar, USR, id_batch, p, titulo, detalle="", **campos):
+    """Guarda el paso, relee la base y deja el recibo. Nunca deja la pantalla muda."""
+    clave = f"opi_{id_batch}"
+    try:
+        _guardar(conectar, USR, id_batch, p, **campos)
+        _invalidar(cat)
+        _h = _g.contar("SELECT hecho FROM produccion.v_op_instructivo WHERE id_batch=%s AND orden=%s",
+                       (int(id_batch), int(p["orden"])))
+        _g.anotar(clave, True, titulo, detalle=detalle,
+                  verificado=("el paso figura como hecho en la base" if _h else
+                              ("guardado, pero el paso todavía no figura como hecho" if _h is False else "")))
+        # el selector salta solo al próximo paso pendiente (si no, quedaba clavado en el
+        # que se acaba de confirmar y había que elegir el siguiente a mano)
+        st.session_state.pop(f"opi_sel_{id_batch}", None)
+    except Exception as e:
+        _g.anotar(clave, False, "No se guardó el paso %d" % int(p["orden"]), detalle=detalle, error=str(e))
+    _rerun_fragment()
+
+
+@_FRAGMENT
 def render(USR, cat, conectar, id_batch):
     _origen_mp(cat, id_batch)
     _congelar(conectar, cat, USR, id_batch)
@@ -180,6 +225,7 @@ def render(USR, cat, conectar, id_batch):
     fuera = int(df["fuera_tolerancia"].fillna(False).astype(bool).sum())
 
     st.markdown(f"#### 📑 Instructivo · {hechos} de {total} pasos" + (f" · ⚠️ {fuera} fuera de tolerancia" if fuera else ""))
+    _g.mostrar(f"opi_{id_batch}")
     st.progress(hechos / total if total else 0.0)
     ver = df.iloc[0].get("version")
     st.caption(f"Fórmula versión {int(ver) if pd.notna(ver) else '—'} · cantidades para {_n(df.iloc[0]['kg_inicial'])} kg de MP · "
@@ -211,8 +257,14 @@ def render(USR, cat, conectar, id_batch):
         if esp:
             st.caption("Esperado: " + esp + (f" · a las {p['hora_esperada'].strftime('%H:%M')}" if pd.notna(p.get("hora_esperada")) else ""))
         cap = p["captura"]
-        ahora = datetime.now()
-        campos, avisos = {}, []
+        ahora = _ahora()
+        _lbl = f"Paso {int(p['orden'])} · {p.get('descripcion') or p['etapa']}"
+
+        # SOL-0051 ("se da confirmar y no responde"). Con un number_input suelto, el
+        # operario escribe los kg y va derecho al botón: el click cae en el rerun que
+        # dispara el propio campo al perder el foco y Streamlit lo descarta. Los kg
+        # quedan en pantalla, el paso sigue azul, y parece que el botón no anda. Dentro
+        # de un st.form el campo no dispara nada: el botón manda valor y click juntos.
 
         if cap == "HORAS":
             c1, c2 = st.columns(2)
@@ -220,60 +272,73 @@ def render(USR, cat, conectar, id_batch):
             fin_prev = p["fin_ts"] if pd.notna(p.get("fin_ts")) else None
             if c1.button("▶ Inicio ahora" if ini_prev is None else f"▶ Inicio {ini_prev.strftime('%H:%M')} (cambiar a ahora)",
                          key=f"opi_ini_{id_batch}_{sel}", use_container_width=True, type=("primary" if ini_prev is None else "secondary")):
-                _guardar(conectar, USR, id_batch, p, inicio_ts=ahora)
-                _rerun_fragment()
+                _confirmar(cat, conectar, USR, id_batch, p, f"{_lbl}: inicio {ahora.strftime('%H:%M')}",
+                           inicio_ts=ahora)
             if c2.button("⏹ Fin ahora" if fin_prev is None else f"⏹ Fin {fin_prev.strftime('%H:%M')} (cambiar a ahora)",
                          key=f"opi_fin_{id_batch}_{sel}", use_container_width=True, type=("primary" if ini_prev is not None and fin_prev is None else "secondary")):
-                _guardar(conectar, USR, id_batch, p, fin_ts=ahora, inicio_ts=(ini_prev or ahora))
-                _rerun_fragment()
+                _confirmar(cat, conectar, USR, id_batch, p, f"{_lbl}: fin {ahora.strftime('%H:%M')}",
+                           fin_ts=ahora, inicio_ts=(ini_prev or ahora))
             with st.expander("Cargar horas a mano", expanded=False):
-                h1 = st.time_input("Inicio", value=(ini_prev.time() if ini_prev else ahora.time()), key=f"opi_h1_{id_batch}_{sel}")
-                h2 = st.time_input("Fin", value=(fin_prev.time() if fin_prev else ahora.time()), key=f"opi_h2_{id_batch}_{sel}")
-                obs = st.text_input("Observación", key=f"opi_obs_{id_batch}_{sel}")
-                if st.button("✔ Guardar horas", key=f"opi_go_{id_batch}_{sel}", type="primary"):
-                    d = (ini_prev or ahora).date()
-                    ini = datetime.combine(d, h1); fin = datetime.combine(d, h2)
-                    if fin < ini:
-                        fin += timedelta(days=1)
-                    _guardar(conectar, USR, id_batch, p, inicio_ts=ini, fin_ts=fin, observacion=(obs or None))
-                    _rerun_fragment()
+                with st.form(key=f"opi_fh_{id_batch}_{sel}", border=False):
+                    h1 = st.time_input("Inicio", value=(ini_prev.time() if ini_prev else ahora.time()), key=f"opi_h1_{id_batch}_{sel}")
+                    h2 = st.time_input("Fin", value=(fin_prev.time() if fin_prev else ahora.time()), key=f"opi_h2_{id_batch}_{sel}")
+                    obs = st.text_input("Observación", key=f"opi_obs_{id_batch}_{sel}")
+                    if st.form_submit_button("✔ Guardar horas", type="primary"):
+                        d = (ini_prev or ahora).date()
+                        ini = datetime.combine(d, h1); fin = datetime.combine(d, h2)
+                        if fin < ini:
+                            fin += timedelta(days=1)
+                        _confirmar(cat, conectar, USR, id_batch, p,
+                                   f"{_lbl}: {ini.strftime('%H:%M')} → {fin.strftime('%H:%M')}",
+                                   inicio_ts=ini, fin_ts=fin, observacion=(obs or None))
             return
 
-        if cap == "MEDICION":
-            c1, c2 = st.columns(2)
-            if pd.notna(p.get("temp_esp")):
-                campos["temp_c"] = c1.number_input("Temperatura (°C)", 0.0, 300.0,
-                                                   float(p["temp_c"]) if pd.notna(p.get("temp_c")) else float(p["temp_esp"]),
-                                                   1.0, key=f"opi_t_{id_batch}_{sel}")
+        with st.form(key=f"opi_f_{id_batch}_{sel}", border=False):
+            campos = {}
+            if cap == "MEDICION":
+                c1, c2 = st.columns(2)
+                if pd.notna(p.get("temp_esp")):
+                    campos["temp_c"] = c1.number_input("Temperatura (°C)", 0.0, 300.0,
+                                                       float(p["temp_c"]) if pd.notna(p.get("temp_c")) else float(p["temp_esp"]),
+                                                       1.0, key=f"opi_t_{id_batch}_{sel}")
+                if pd.notna(p.get("acidez_esp")):
+                    campos["acidez_pct"] = c2.number_input("Acidez (%)", 0.0, 100.0,
+                                                           float(p["acidez_pct"]) if pd.notna(p.get("acidez_pct")) else float(p["acidez_esp"]),
+                                                           0.5, key=f"opi_a_{id_batch}_{sel}")
+            elif cap == "CANTIDAD":
+                campos["cantidad"] = st.number_input(f"Cantidad cargada ({p.get('unidad') or ''})", 0.0, 10_000_000.0,
+                                                     float(p["cantidad_real"]) if pd.notna(p.get("cantidad_real")) else float(p.get("cant_esperada") or 0),
+                                                     10.0, key=f"opi_q_{id_batch}_{sel}")
+            else:
+                st.caption("Este paso no pide datos: confirmalo cuando esté hecho.")
+            obs = st.text_input("Observación (opcional)", key=f"opi_obs_{id_batch}_{sel}")
+            enviado = st.form_submit_button(f"✔ Confirmar paso {int(p['orden'])}", type="primary", use_container_width=True)
+
+        if enviado:
+            # desvíos: se calculan con lo que se mandó y van al recibo (queda registrado igual)
+            avisos = []
+            if "temp_c" in campos and pd.notna(p.get("temp_esp")):
                 d = campos["temp_c"] - float(p["temp_esp"])
                 if abs(d) > float(p.get("tol_temp") or 4):
                     avisos.append(f"temperatura {d:+.0f} °C fuera de tolerancia (±{_n(p.get('tol_temp'))})")
-            if pd.notna(p.get("acidez_esp")):
-                campos["acidez_pct"] = c2.number_input("Acidez (%)", 0.0, 100.0,
-                                                       float(p["acidez_pct"]) if pd.notna(p.get("acidez_pct")) else float(p["acidez_esp"]),
-                                                       0.5, key=f"opi_a_{id_batch}_{sel}")
+            if "acidez_pct" in campos and pd.notna(p.get("acidez_esp")):
                 d = campos["acidez_pct"] - float(p["acidez_esp"])
                 if abs(d) > float(p.get("tol_acidez") or 3):
                     avisos.append(f"acidez {d:+.1f} pts fuera de tolerancia (±{_n(p.get('tol_acidez'))})")
-        elif cap == "CANTIDAD":
-            campos["cantidad"] = st.number_input(f"Cantidad cargada ({p.get('unidad') or ''})", 0.0, 10_000_000.0,
-                                                 float(p["cantidad_real"]) if pd.notna(p.get("cantidad_real")) else float(p.get("cant_esperada") or 0),
-                                                 10.0, key=f"opi_q_{id_batch}_{sel}")
-            if pd.notna(p.get("cant_esperada")) and p["cant_esperada"] > 0:
+            if "cantidad" in campos and pd.notna(p.get("cant_esperada")) and p["cant_esperada"] > 0:
                 d = 100.0 * (campos["cantidad"] - float(p["cant_esperada"])) / float(p["cant_esperada"])
                 if abs(d) > float(p.get("tol_cant_pct") or 3):
                     avisos.append(f"cantidad {d:+.1f} % respecto de lo formulado (±{_n(p.get('tol_cant_pct'))} %)")
-        else:
-            st.caption("Este paso no pide datos: confirmalo cuando esté hecho.")
-
-        obs = st.text_input("Observación (opcional)", key=f"opi_obs_{id_batch}_{sel}")
-        for a in avisos:
-            st.warning("Desvío: " + a + ". Queda registrado con tu nombre y la hora, y lo ve el supervisor.")
-        if st.button(f"✔ Confirmar paso {int(p['orden'])}", key=f"opi_ok_{id_batch}_{sel}", type="primary", use_container_width=True):
-            try:
-                if cap == "NINGUNA" and not campos:
-                    campos["fin_ts"] = ahora
-                _guardar(conectar, USR, id_batch, p, observacion=(obs or None), **campos)
-                _rerun_fragment()
-            except Exception as e:
-                st.error(f"No se pudo guardar: {e}")
+            if cap == "NINGUNA" and not campos:
+                campos["fin_ts"] = ahora
+            _det = []
+            if "cantidad" in campos:
+                _det.append(f"{_n(campos['cantidad'])} {p.get('unidad') or ''}".strip())
+            if "temp_c" in campos:
+                _det.append(f"{_n(campos['temp_c'])} °C")
+            if "acidez_pct" in campos:
+                _det.append(f"acidez {_n(campos['acidez_pct'], 1)} %")
+            if avisos:
+                _det.append("⚠️ DESVÍO: " + "; ".join(avisos) + " — queda registrado con tu nombre y la hora, y lo ve el supervisor")
+            _confirmar(cat, conectar, USR, id_batch, p, f"{_lbl} confirmado", detalle=" · ".join(_det),
+                       observacion=(obs or None), **campos)

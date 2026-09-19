@@ -327,12 +327,20 @@ def _paso_reaccion(USR, cat, conectar, b):
     if prog is not None and not prog.empty:
         st.info(f"⏰ Próxima medición: a las **{prog.iloc[0]['hora']}**")
 
-    c1, c2 = st.columns(2)
-    ac = c1.number_input("ACIDEZ (%)", 0.0, 200.0, value=0.0, step=0.1, key="pp_ac")
-    tp = c2.number_input("TEMPERATURA (°C)", 0.0, 300.0, value=0.0, step=1.0, key="pp_tp")
-    obs = st.text_input("Nota (opcional)", key="pp_obs")
+    import guardado as _g
+    _g.mostrar(f"pp_med_{id_batch}")
+    # SOL-0051: la medición va en un st.form. Con los campos sueltos, el operario
+    # escribía la acidez y apretaba GUARDAR de una: el click caía en el rerun que
+    # dispara el campo al perder el foco y se perdía. La medición no se guardaba, la
+    # acidez nunca "bajaba" y la reacción no pasaba a reposo: "reacciones frenadas".
+    with st.form(key=f"pp_med_form_{id_batch}", clear_on_submit=True, border=False):
+        c1, c2 = st.columns(2)
+        ac = c1.number_input("ACIDEZ (%)", 0.0, 200.0, value=0.0, step=0.1, key=f"pp_ac_{id_batch}")
+        tp = c2.number_input("TEMPERATURA (°C)", 0.0, 300.0, value=0.0, step=1.0, key=f"pp_tp_{id_batch}")
+        obs = st.text_input("Nota (opcional)", key=f"pp_obs_{id_batch}")
+        _env = st.form_submit_button("✅  GUARDAR MEDICIÓN", type="primary", use_container_width=True)
 
-    if st.button("✅  GUARDAR MEDICIÓN", type="primary", use_container_width=True, key="pp_med"):
+    if _env:
         med = {}
         if ac > 0: med["acidez"] = float(ac)
         if tp > 0: med["temperatura"] = float(tp)
@@ -355,10 +363,15 @@ def _paso_reaccion(USR, cat, conectar, b):
                     audit.log("I", "fact_evaluacion_interna", int(_idm), med)
                 try: cat.clear()
                 except Exception: pass
-                st.success("¡Medición guardada!")
+                _est = _g.contar("SELECT estado FROM produccion.fact_batch_proceso WHERE id_batch=%s", (id_batch,))
+                _g.anotar(f"pp_med_{id_batch}", True, "Medición guardada",
+                          detalle=" · ".join(([f"acidez {med['acidez']:g} %"] if "acidez" in med else []) +
+                                             ([f"{med['temperatura']:g} °C"] if "temperatura" in med else [])),
+                          verificado=(f"la reacción está en estado {_est}" if _est else ""))
                 st.rerun()
             except Exception as e:
-                st.error(f"No se pudo guardar: {e}")
+                _g.anotar(f"pp_med_{id_batch}", False, "No se guardó la medición", error=str(e))
+                st.rerun()
 
     _ev = cat("SELECT to_char(ts,'DD/MM HH24:MI') AS \"Hora\", (mediciones->>'acidez')::numeric AS \"Acidez\", "
               "(mediciones->>'temperatura')::numeric AS \"Temp\" "
