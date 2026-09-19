@@ -1509,6 +1509,47 @@ def _trabar_estado(cur, idb, esperado):
         raise _EstadoCambio(_ahora)
 
 
+def _hora_planta():
+    """Hora local de planta. El server de Streamlit Cloud corre en UTC."""
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt
+        return _dt.now(ZoneInfo("America/Argentina/Buenos_Aires")).strftime("%H:%M")
+    except Exception:
+        from datetime import datetime as _dt
+        return _dt.now().strftime("%H:%M")
+
+
+def _aviso_etapa(idb, ident, desde, hasta, extra=""):
+    """Cartel ÚNICO de fin / cambio de etapa, verificado contra la base.
+
+    Planta pidió que cada terminación de etapa y cada cambio de etapa se avise
+    explícitamente. Antes el cartel decía "Pasada a REPOSO." y se lo comía el rerun:
+    el operario no sabía si el pase había ocurrido y volvía a apretar. Ahora dice
+    qué reacción, de qué etapa a qué etapa, a qué hora, y si la base lo confirma
+    — y sobrevive al rerun porque guardado.instalar() reenvía los st.success que
+    acompañaron una escritura real."""
+    _e = None
+    try:
+        import guardado as _gdo
+        _r = _gdo.fila("SELECT estado FROM produccion.fact_batch_proceso WHERE id_batch=%s",
+                       (int(idb),))
+        _e = str(_r[0]) if _r and _r[0] is not None else None
+    except Exception:
+        pass
+    _id = ident if ident and str(ident) != "nan" else ("#%d" % int(idb))
+    txt = "✅ **%s** · etapa **%s** TERMINADA → ahora en **%s** (%s hs)" % (_id, desde, hasta, _hora_planta())
+    if _e is None:
+        txt += " · no se pudo releer la base para confirmarlo"
+    elif _e.upper() == str(hasta).upper():
+        txt += " · confirmado en la base"
+    else:
+        txt += " · ⚠️ la base quedó en **%s**: avisá a sistemas" % _e
+    if extra:
+        txt += " · " + extra
+    return txt
+
+
 def _aviso_estado_cambio(e, cat):
     st.warning("⚠️ Esta reacción ya está en **%s**: la movió otra pantalla (el operario, o la "
                "regla de temperatura/acidez de laboratorio) mientras tenías la ficha abierta. "
@@ -1593,7 +1634,8 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                                         (_prev, _etp_prev, uid, _mot, int(idb)))
                         audit.log("U", "fact_batch_proceso", int(idb),
                                   {"retroceso": _prev, "motivo": _rm.strip()})
-                    st.success("Reacción devuelta a **%s**." % _prev)
+                    st.success("↩️ **%s** · RETROCESO de etapa: **%s** → **%s** (%s hs) · motivo: %s"
+                               % (b.get("ident") or ("#%d" % int(idb)), est, _prev, _hora_planta(), _rm.strip()))
                     cat.clear(); st.rerun()
                 except _EstadoCambio as e:
                     _aviso_estado_cambio(e, cat)
@@ -1649,7 +1691,8 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                                     "id_usuario_estado=%s, motivo_estado='Arrancada desde ficha' WHERE id_batch=%s",
                                     (_idp, _kgi, uid, int(idb)))
                     audit.log("U", "fact_batch_proceso", int(idb), {"estado": "REACCION", "kg_inicial": _kgi})
-                st.success("Reacción arrancada."); cat.clear(); st.rerun()
+                st.success(_aviso_etapa(idb, b.get("ident"), "PLANIFICADO", "REACCION",
+                                        "arrancó %s" % (USR.get("nombre") or ""))); cat.clear(); st.rerun()
             except _EstadoCambio as e:
                 _aviso_estado_cambio(e, cat)
             except Exception as e:
@@ -1687,7 +1730,7 @@ def render_avanzar_ficha(USR, cat, conectar, idb):
                             cur.execute("UPDATE produccion.fact_batch_proceso SET estado=%s, etapa_actual=%s, id_usuario_estado=%s, motivo_estado=%s WHERE id_batch=%s",
                                         (_next, _etapa, uid, _mot, int(idb)))
                     audit.log("U", "fact_batch_proceso", int(idb), {"avance": _next})
-                st.success(f"Pasada a {_next}."); cat.clear(); st.rerun()
+                st.success(_aviso_etapa(idb, b.get("ident"), est, _next, motivo.strip())); cat.clear(); st.rerun()
             except _EstadoCambio as e:
                 _aviso_estado_cambio(e, cat)
             except Exception as e:
@@ -3444,7 +3487,8 @@ def _avanzar_fase(USR, cat, conectar):
                                     (_next, _etapa, uid, _mot, int(r["id_batch"])))
                 audit.log("U", "fact_batch_proceso", int(r["id_batch"]),
                           {"forzar_fase": _next, "motivo": motivo})
-            st.success(f"Reacción #{int(r['id_batch'])} pasada a **{_next}** (manual).")
+            st.success(_aviso_etapa(int(r["id_batch"]), r.get("ident"), str(r["estado"]), _next,
+                                    "pase MANUAL · " + motivo.strip()))
             st.balloons(); cat.clear(); st.rerun()
         except _EstadoCambio as e:
             _aviso_estado_cambio(e, cat)
