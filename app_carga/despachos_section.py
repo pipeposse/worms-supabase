@@ -245,6 +245,76 @@ def _productos(cat):
     return df if df is not None else pd.DataFrame()
 
 
+# Parámetro del maestro de calidad -> campo de la especificación de venta.
+_SPEC_MAESTRO = {"% ACIDEZ": "acidez", "% H2O - SEDIMENTO & Gomas": "ays",
+                 "PPM AZUFRE": "azufre", "PPM FOSFORO": "fosforo"}
+_SPEC_NOM = {"acidez": "acidez", "ays": "agua+sedimento", "azufre": "azufre", "fosforo": "fósforo"}
+
+
+def _tope(esp):
+    """Número de un techo del maestro ('<= 10,0' -> 10.0). None si no es un techo.
+
+    Se toman SÓLO las de '<=': un '> 250' (el azufre del ARE-B) es un PISO que define
+    la calidad B, no un máximo de venta, y usarlo como techo sería al revés."""
+    t = str(esp or "").strip()
+    if not t.startswith("<="):
+        return None
+    try:
+        return float(t[2:].strip().replace(".", "").replace(",", "."))
+    except Exception:
+        return None
+
+
+def _spec_de_producto(cat, prod_cod):
+    """Máximos con los que arranca una orden de venta de este producto, y de dónde salen.
+
+    SOL-0050. Antes los cuatro máximos eran fijos: los del AG-E de exportación
+    (acidez 5 · AyS 2 · azufre 50 · fósforo 150). Para cualquier otro producto esa
+    especificación no es la suya: una orden de ARE animal, que sale de reactores con
+    150-180 ppm de azufre, aparecía como un desvío gravísimo y había que escribir los
+    cuatro números a mano cada vez (así se cargaron las órdenes #58 y #59: 12 · 2 ·
+    300 · 300 tecleados).
+
+    Orden de preferencia, por parámetro:
+      1. lo que se usó la última vez para ESE producto (una orden no anulada);
+      2. el techo del maestro de calidad del producto ('<= 10,0');
+      3. la especificación de exportación de siempre.
+    Nunca inventa un número: si el maestro dice que el parámetro se mide pero no lo
+    limita, queda el valor de exportación y la pantalla dice que es de ahí."""
+    spec = dict(SPEC_DEFAULT)
+    fuente = {k: "exportación" for k in spec}
+    cod = str(prod_cod or "").strip().upper()
+    if not cod:
+        return spec, fuente
+    try:
+        _m = cat("SELECT parametro, especificacion FROM produccion.v_parametro_producto "
+                 "WHERE codigo_producto=%s", (cod,))
+        if _m is not None and not _m.empty:
+            for _, r in _m.iterrows():
+                _campo = _SPEC_MAESTRO.get(str(r["parametro"]).strip())
+                _v = _tope(r["especificacion"])
+                if _campo and _v is not None:
+                    spec[_campo] = _v
+                    fuente[_campo] = "especificación del producto"
+    except Exception:
+        pass
+    try:
+        _u = cat("SELECT spec_acidez_max, spec_ays_max, spec_azufre_max, spec_fosforo_max "
+                 "FROM produccion.fact_despacho "
+                 "WHERE producto_codigo=%s AND COALESCE(estado,'') <> 'ANULADO' "
+                 "ORDER BY id_despacho DESC LIMIT 1", (cod,))
+        if _u is not None and not _u.empty:
+            _r = _u.iloc[0]
+            for _campo, _col in (("acidez", "spec_acidez_max"), ("ays", "spec_ays_max"),
+                                 ("azufre", "spec_azufre_max"), ("fosforo", "spec_fosforo_max")):
+                if pd.notna(_r[_col]) and float(_r[_col]) > 0:
+                    spec[_campo] = float(_r[_col])
+                    fuente[_campo] = "última orden de este producto"
+    except Exception:
+        pass
+    return spec, fuente
+
+
 # ------------------------------------------------------------------ cálculo
 
 def _clave_de(val, tks):
@@ -3766,6 +3836,22 @@ def _armar(USR, cat, conectar):
     prod_lbl = c1.selectbox("Producto a vender", _pl, index=_def_p, key="dsp_prod",
                             help="Rótulo oficial. Define el filtro de tanques en la sugerencia.")
     prod_cod = _pcod.get(prod_lbl, prod_lbl)
+    # SOL-0050: al cambiar de producto, los máximos se resiembran con los de ESE producto.
+    # Se hace acá, antes de dibujar los campos de la spec: el valor de un widget ya
+    # instanciado no se puede pisar dentro del mismo run.
+    _spec_fte = ss.get("_dsp_spec_fte") or {}
+    _spec_prev = ss.get("_dsp_spec_prod")
+    if _spec_prev != str(prod_cod):
+        ss["_dsp_spec_prod"] = str(prod_cod)
+        _sp0, _spec_fte = _spec_de_producto(cat, prod_cod)
+        ss["_dsp_spec_fte"] = _spec_fte
+        # Sólo se pisan los campos cuando el producto CAMBIA dentro de la sesión. En el
+        # primer dibujado no se tocan: ahí puede venir un borrador restaurado o una orden
+        # abierta para editar, y su spec manda sobre la del producto.
+        if _spec_prev is not None:
+            for _k, _c in (("dsp_spac", "acidez"), ("dsp_spays", "ays"),
+                           ("dsp_spaz", "azufre"), ("dsp_spfos", "fosforo")):
+                ss[_k] = float(_sp0[_c])
     tipo = c2.selectbox("Tipo de carga", TIPOS_CARGA, key="dsp_tipo")
     fecha = c3.date_input("Fecha de orden de venta", value=ss.get("dsp_fecha", hoy), key="dsp_fecha")
     semana = int(pd.Timestamp(fecha).isocalendar().week)
@@ -3797,6 +3883,14 @@ def _armar(USR, cat, conectar):
                                 step=5.0, key="dsp_spaz")
         sp_fos = s4.number_input("Fósforo ppm máx", min_value=0.0, value=float(ss.get("dsp_spfos", SPEC_DEFAULT["fosforo"])),
                                  step=10.0, key="dsp_spfos")
+        if _spec_fte:
+            _por = {}
+            for _c, _f in _spec_fte.items():
+                _por.setdefault(_f, []).append(_SPEC_NOM.get(_c, _c))
+            st.caption("Máximos de **%s**: " % prod_lbl
+                       + " · ".join("%s, de la %s" % (", ".join(v), k) for k, v in _por.items())
+                       + ". Se pueden pisar a mano para esta orden; lo que dejes acá es lo que "
+                         "va a proponer la próxima orden de este producto.")
     spec = {"acidez": sp_ac, "ays": sp_ays, "azufre": sp_az, "fosforo": sp_fos}
 
     # ---------- 2 · Tanques del producto ----------
@@ -5324,6 +5418,11 @@ def _editar_despacho(cat, ss, id_despacho):
     ss["dsp_obs"] = r["observaciones"] or ""
     ss["dsp_load_pend"] = [] if lin is None else lin.to_dict("records")
     ss["dsp_edit_id"] = int(id_despacho)
+    # la spec de la orden que se edita manda: se marca el producto como ya sembrado para
+    # que el armador no la reemplace por la del producto (SOL-0050).
+    ss["_dsp_spec_prod"] = str(r["producto_codigo"] or "")
+    ss["_dsp_spec_fte"] = {"acidez": "esta orden", "ays": "esta orden",
+                           "azufre": "esta orden", "fosforo": "esta orden"}
     ss["dsp_tab_next"] = "🧪 Armar / editar orden de venta"
 
 
