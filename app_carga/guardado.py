@@ -42,18 +42,69 @@ import time
 
 import streamlit as st
 
+def _hora():
+    """Hora de planta. El server de Streamlit Cloud corre en UTC: los recibos salían
+    con 3 horas de más y no coincidían con lo que el operario tenía en el reloj."""
+    try:
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) + timedelta(hours=-3)).strftime("%H:%M:%S")
+    except Exception:
+        return time.strftime("%H:%M:%S")
+
+
 _PREFIJO = "_gdo_"
 _MINUTOS = 30          # después de esto el recibo se va solo (es de la sesión anterior)
 
 
 # ------------------------------------------------------------------ lectura de verificación
+_CF = [None]          # fábrica de conexiones de lectura (la pone configurar())
+_CTX = {"pantalla": None, "usuario": None, "id_usuario": None}
+
+
+def configurar(conn_factory, pantalla=None):
+    """La app registra acá su pool de lectura (`_lab_conn`).
+
+    ANTES ESTO ESTABA MAL: `_conn()` hacía `import app`. Bajo Streamlit el script
+    principal se ejecuta como `__main__`, así que ese import NO devuelve el módulo
+    en marcha: vuelve a ejecutar app.py de cero en un módulo nuevo y revienta en
+    `st.set_page_config` (ya llamado). Resultado: TODA verificación devolvía None y
+    cada recibo decía "no se pudo releer la base para confirmarlo" — que es
+    exactamente lo que vio planta. Ahora la conexión se inyecta, no se adivina."""
+    if conn_factory is not None:
+        _CF[0] = conn_factory
+    if pantalla:
+        _CTX["pantalla"] = pantalla
+
+
+def contexto(pantalla=None, usuario=None, id_usuario=None):
+    """Quién está y en qué pantalla: se guarda con cada error registrado."""
+    if pantalla is not None:
+        _CTX["pantalla"] = pantalla
+    if usuario is not None:
+        _CTX["usuario"] = usuario
+    if id_usuario is not None:
+        try:
+            _CTX["id_usuario"] = int(id_usuario)
+        except Exception:
+            pass
+
+
 def _conn():
-    """Conexión de lectura del pool de la app (sin handshake). None si no está."""
+    """Fábrica de conexiones de lectura. None si la app todavía no la registró."""
+    if _CF[0] is not None:
+        return _CF[0]
+    # Respaldo sin importar nada: el módulo de la app ya está cargado bajo otro
+    # nombre (__main__ o el de la página). Se lo busca, no se lo re-importa.
     try:
-        import app as _app
-        return _app._lab_conn
+        import sys as _sys
+        for _m in list(_sys.modules.values()):
+            _f = getattr(_m, "_lab_conn", None)
+            if callable(_f) and getattr(_m, "__name__", "") != __name__:
+                _CF[0] = _f
+                return _f
     except Exception:
-        return None
+        pass
+    return None
 
 
 def contar(sql, params=None):
@@ -89,6 +140,69 @@ def fila(sql, params=None):
         return None
 
 
+def leer(sql, params=None):
+    """DataFrame leído SIN caché. Para lo que se acaba de escribir: la caché de
+    `cat()` puede estar vieja y la pantalla mostraría el estado anterior — que fue
+    justo lo que pasó con los tickets de exportación. Devuelve None si no pudo."""
+    cf = _conn()
+    if cf is None:
+        return None
+    try:
+        import pandas as _pd
+        with cf() as conn:
+            return _pd.read_sql_query(sql, conn, params=params)
+    except Exception as e:
+        registrar_error("EXCEPCION", "lectura sin caché falló: %s" % e,
+                        accion="guardado.leer", detalle={"sql": str(sql)[:300]})
+        return None
+
+
+# ------------------------------------------------------------------ registro de errores
+_SQL_ERR = (
+    "INSERT INTO produccion.log_error_app "
+    "(tipo, pantalla, accion, id_usuario, usuario, mensaje, detalle, traceback) "
+    "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s)")
+
+
+def registrar_error(tipo, mensaje, accion=None, pantalla=None, detalle=None,
+                    con_traceback=False):
+    """Deja el error en produccion.log_error_app. NUNCA levanta ni frena al usuario.
+
+    Usa una conexión propia con autocommit: tiene que poder escribir aunque la
+    transacción del usuario se haya caído (si compartiera la transacción, el
+    rollback se llevaría también el registro del error — es lo que pasa con
+    log_doble_carga)."""
+    try:
+        import json as _json
+        import traceback as _tb
+        from etl.db import db_connect as _dbc
+        _tbtxt = _tb.format_exc() if con_traceback else None
+        if _tbtxt and "NoneType: None" in _tbtxt:
+            _tbtxt = None
+        _det = _json.dumps(detalle or {}, default=str)[:20000]
+        conn = _dbc()
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(_SQL_ERR, (
+                    str(tipo)[:40],
+                    (pantalla or _CTX.get("pantalla") or None),
+                    (accion or None),
+                    _CTX.get("id_usuario"),
+                    (_CTX.get("usuario") or None),
+                    str(mensaje)[:4000],
+                    _det,
+                    _tbtxt))
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return True
+    except Exception:
+        return False
+
+
 # ------------------------------------------------------------------ recibo
 def anotar(clave, ok, titulo, detalle="", verificado="", error=""):
     """Deja el recibo listo para mostrarse en el próximo dibujado de la pantalla."""
@@ -96,8 +210,13 @@ def anotar(clave, ok, titulo, detalle="", verificado="", error=""):
         "ok": bool(ok), "titulo": str(titulo or ""), "detalle": str(detalle or ""),
         "verificado": str(verificado or ""), "error": str(error or ""),
         "ts": time.time(),
-        "hora": time.strftime("%H:%M:%S"),
+        "hora": _hora(),
     }
+    # Todo recibo en rojo es una traba que vio un usuario: queda registrada sola.
+    if not ok:
+        registrar_error("TRABA", str(titulo or "")[:400], accion=str(clave),
+                        detalle={"detalle": str(detalle or ""), "error": str(error or "")},
+                        con_traceback=True)
 
 
 def limpiar(clave):
@@ -272,6 +391,39 @@ def instalar():
     except Exception:
         pass
 
+    # 1b) cada st.error / st.exception que ve un usuario queda registrado solo
+    _err = getattr(st, "error", None)
+    if _err is not None and not getattr(_err, "_gdo", False):
+        def _w_error(*a, **k):
+            try:
+                if a:
+                    registrar_error("EXCEPCION", str(a[0])[:2000], accion="st.error",
+                                    con_traceback=True)
+            except Exception:
+                pass
+            return _err(*a, **k)
+        _w_error._gdo = True
+        try:
+            st.error = _w_error
+        except Exception:
+            pass
+
+    _exc = getattr(st, "exception", None)
+    if _exc is not None and not getattr(_exc, "_gdo", False):
+        def _w_exc(*a, **k):
+            try:
+                if a:
+                    registrar_error("EXCEPCION", "%s: %s" % (type(a[0]).__name__, a[0]),
+                                    accion="st.exception", con_traceback=True)
+            except Exception:
+                pass
+            return _exc(*a, **k)
+        _w_exc._gdo = True
+        try:
+            st.exception = _w_exc
+        except Exception:
+            pass
+
     # 2) envolver los carteles
     for _nombre in ("success", "warning", "toast"):
         _orig = getattr(st, _nombre, None)
@@ -303,7 +455,7 @@ def instalar():
                     # sólo se reenvía el cartel que acompañó una escritura real
                     if isinstance(_c, dict) and _b and time.time() - float(_c.get("ts") or 0) < 60:
                         ss[_FLASH] = {"msgs": list(_b), "tablas": list(_c.get("tablas") or []),
-                                      "ts": time.time(), "hora": time.strftime("%H:%M:%S")}
+                                      "ts": time.time(), "hora": _hora()}
                         ss.pop(_COMMIT, None)
                         ss[_BUF] = []
             except Exception:

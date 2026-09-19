@@ -5710,11 +5710,30 @@ _ROLES_TK = {
 }
 
 
+_SQL_TK_ASIG = (
+    "SELECT id_dt, ticket, empresa, fecha, producto, destino, patente, kg, area, "
+    "nro_contenedor, precinto, observaciones, estado_validacion, familia, sin_pesada "
+    "FROM produccion.v_despacho_ticket WHERE id_despacho=%s AND rol=%s "
+    "ORDER BY fecha, ticket")
+
+
 def _tk_asignados(cat, id_despacho, rol):
-    return cat("SELECT id_dt, ticket, empresa, fecha, producto, destino, patente, kg, area, "
-               "nro_contenedor, precinto, observaciones, estado_validacion, familia, sin_pesada "
-               "FROM produccion.v_despacho_ticket WHERE id_despacho=%s AND rol=%s "
-               "ORDER BY fecha, ticket", (int(id_despacho), rol))
+    """Los tickets ya asignados, leídos SIN caché.
+
+    POR QUÉ SIN CACHÉ. Este es el bug que planta reportó tres veces seguidas: se
+    asignaban los tickets, la base los guardaba bien (verificado: las ODV 59, 60,
+    61 y 62 tienen todos sus tickets en fact_despacho_ticket con la hora exacta
+    del click) y la pantalla seguía mostrando "Todavía no hay tickets asignados".
+    El operario concluía —con razón— que no se había guardado, y volvía a intentar
+    con otra orden. La lista salía de `cat()`, que es caché de 5 minutos; el
+    invalidador global no la estaba refrescando en este camino. Una lista de como
+    mucho 60 filas por clave primaria no necesita caché: se lee siempre de la base
+    y se terminó la clase entera de problema. Si la lectura directa no está
+    disponible, cae a `cat()` como antes."""
+    _df = _g.leer(_SQL_TK_ASIG, (int(id_despacho), rol))
+    if _df is not None:
+        return _df
+    return cat(_SQL_TK_ASIG, (int(id_despacho), rol))
 
 
 def _tk_candidatos(cat, clases, d1, d2, txt, familia):
@@ -5769,6 +5788,8 @@ def _tk_purgar(actual, rol):
 
 
 def _tk_panel(USR, cat, conectar, cab, rol):
+    _g.contexto(pantalla="Exportación · Tickets de portería",
+                usuario=USR.get("nombre"), id_usuario=USR.get("id_usuario"))
     spec = _ROLES_TK[rol]
     st.markdown(f"##### {spec['titulo']}")
     st.caption(spec["ayuda"])
@@ -6033,8 +6054,13 @@ def _tickets(USR, cat, conectar):
         st.warning("Esta orden está en **BORRADOR**: los tickets se pueden asignar, pero la "
                    "salida de stock recién se genera al confirmarla en 🔬 Control y confirmación.")
 
-    res = cat("SELECT tickets_salida, tickets_mp, kg_salida, kg_mp, tickets_error, tickets_aviso "
-              "FROM produccion.v_despacho_ticket_resumen WHERE id_despacho=%s", (int(sel),))
+    # Los contadores de arriba (contenedores y TN de salida) se leen SIN caché por lo
+    # mismo que la lista: mostraban "0 de 2" con los dos tickets ya guardados.
+    _SQL_RES = ("SELECT tickets_salida, tickets_mp, kg_salida, kg_mp, tickets_error, tickets_aviso "
+                "FROM produccion.v_despacho_ticket_resumen WHERE id_despacho=%s")
+    res = _g.leer(_SQL_RES, (int(sel),))
+    if res is None:
+        res = cat(_SQL_RES, (int(sel),))
     r = res.iloc[0] if res is not None and not res.empty else {}
     _ns = int(r.get("tickets_salida") or 0)
     _nc = int(cab.get("n_contenedores") or 0)

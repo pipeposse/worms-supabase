@@ -908,6 +908,11 @@ def _home_df(sql, params=None):
 # vuelta escribió de verdad contra la base (lo avisa el hook de commit de etl.db).
 try:
     import guardado as _gdo
+    # La conexión de lectura se INYECTA. Antes guardado.py hacía `import app`, que bajo
+    # Streamlit no devuelve este módulo (corre como __main__) sino que re-ejecuta app.py
+    # y revienta: por eso cada recibo decía "no se pudo releer la base para confirmarlo".
+    _gdo.configurar(_lab_conn)
+    _gdo.contexto(usuario=USR.get("nombre"), id_usuario=USR.get("id_usuario"))
     _gdo.instalar()
     _gdo.flash_mostrar()        # el cartel que dejó el rerun anterior, ahora sí visible
 except Exception:

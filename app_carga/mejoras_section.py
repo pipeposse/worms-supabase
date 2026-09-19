@@ -416,9 +416,23 @@ def render(USR, cat, conectar, lab_conn=None):
         except Exception:
             pass
         lbl = f"🛠️ Administrar ({n_pend})" + (f" 🔴{n_bloq}" if n_bloq else "")
-        t_adm, t_new, t_mios = st.tabs([lbl, "➕ Nueva solicitud", "📋 Mis solicitudes"])
+        # Lo que el sistema le tiró a la gente, sin que nadie lo tenga que reportar.
+        _nerr = 0
+        try:
+            import errores_app as _err
+            _nerr = _err.pendientes()
+        except Exception:
+            _err = None
+        _lerr = "🚨 Errores del sistema" + (f" ({_nerr})" if _nerr else "")
+        t_adm, t_err, t_new, t_mios = st.tabs(
+            [lbl, _lerr, "➕ Nueva solicitud", "📋 Mis solicitudes"])
         with t_adm:
             _admin(USR, cat, conectar, lab_conn)
+        with t_err:
+            if _err is None:
+                st.info("El registro de errores no está disponible en esta versión.")
+            else:
+                _err.render(USR, cat, conectar)
     else:
         t_new, t_mios = st.tabs(["➕ Nueva solicitud", "📋 Mis solicitudes"])
     with t_new:
