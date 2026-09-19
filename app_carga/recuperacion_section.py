@@ -37,6 +37,8 @@ from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 
+import guardado as _g          # recibo de guardado + lectura sin caché (SOL-0053)
+
 DIAS_BANDEJA = 21          # cuántos días hacia atrás busca candidatos la bandeja
 DENS_DEFAULT = 0.92        # densidad AG si no hay dato de lab
 VACIO_KG = 300.0           # menos que esto = tanque vacío: toma los parámetros del ticket
@@ -93,7 +95,17 @@ def _candidatos(cat):
     una variante está mal catalogada en porteria_limpieza —le pasó a AG-B, que
     tenía producto_base='AG-B'— el camión igual entra en la bandeja. AGUA no
     entra: el patrón pide espacio, guion o fin después de 'AG'."""
-    return cat(
+    # SOL-0053 "demora en aparecer las pesadas": la bandeja se leía de cat() (5 min).
+    # Es una consulta chica y es LA pantalla donde el operario espera ver el camión
+    # que acaba de salir de balanza: va siempre a la base. Si la lectura directa no
+    # está disponible, cae a cat().
+    df = _g.leer(_SQL_CANDIDATOS, (DIAS_BANDEJA,))
+    if df is not None:
+        return df
+    return cat(_SQL_CANDIDATOS, (DIAS_BANDEJA,))
+
+
+_SQL_CANDIDATOS = (
         "SELECT t.transaccion, t.fecha_entrada, t.hora_e, t.hora_s, t.conductor, "
         "       t.patente_chasis, ABS(t.peso_neto) AS kg, t.producto, t.balanza, "
         "       t.observaciones, t.estado_camion, t.evaluado, t.lab_calidad, "
@@ -111,8 +123,17 @@ def _candidatos(cat):
         "  AND NOT EXISTS (SELECT 1 FROM produccion.fact_recuperacion_ticket r "
         "                  WHERE r.ticket = to_char(t.transaccion,'FM999999999999') "
         "                    AND NOT r.anulado) "
-        "ORDER BY t.transaccion DESC",
-        (DIAS_BANDEJA,))
+        "ORDER BY t.transaccion DESC")
+
+
+def _ya_clasificado(tk):
+    """(clasificacion, hora, usuario) si el ticket ya está clasificado y vigente; None si no.
+    Lectura directa, sin caché: es la guarda anti doble confirmación."""
+    r = _g.fila("SELECT r.clasificacion, to_char(r.confirmado_en,'HH24:MI'), COALESCE(u.nombre,'—') "
+                "FROM produccion.fact_recuperacion_ticket r "
+                "LEFT JOIN produccion.dim_usuario u ON u.id_usuario=r.id_usuario "
+                "WHERE r.ticket=%s AND NOT r.anulado", (str(tk),))
+    return tuple(r) if r else None
 
 
 def _tanques_destino(cat):
@@ -487,7 +508,53 @@ def _panel_jornada(cat, conectar, USR, n_pend):
     return j
 
 
+def _clasificar(cat, conectar, USR, tk, r, clasif, prod, destino_tipo, tanque, obs, id_j,
+                sector_gestion=None):
+    """Confirma UNA vez, verifica contra la base y deja el recibo. Nunca deja la pantalla muda.
+
+    SOL-0053: el ticket 6833 se confirmó 11 veces en 4 minutos (13:09 → 13:13) porque la
+    bandeja seguía mostrándolo. Cada confirmación anulaba el movimiento de stock anterior
+    y creaba otro: el stock quedó bien, pero con 10 movimientos basura y sin que el
+    operario supiera nunca si había guardado. Ahora: (1) si ya está clasificado, no se
+    toca nada y se avisa; (2) si se guarda, se relee la base y el recibo lo dice;
+    (3) si falla, queda en rojo y registrado en log_error_app."""
+    clave = "rec_bandeja"
+    _prev = _ya_clasificado(tk)
+    if _prev is not None:
+        _g.anotar(clave, True, "El ticket %s YA ESTABA confirmado — no se volvió a cargar" % tk,
+                  detalle="%s a las %s por %s" % (_prev[0], _prev[1], _prev[2]),
+                  verificado="el registro anterior quedó intacto; para cambiarlo, anulalo en Historial")
+        cat.clear(); st.rerun()
+        return
+    try:
+        id_rec = _confirmar(conectar, USR, tk, r.to_dict(), clasif, prod, destino_tipo, tanque,
+                            obs, id_j, sector_gestion=sector_gestion)
+        _chk = _ya_clasificado(tk)
+        _mov = _g.contar("SELECT count(*) FROM produccion.fact_movimiento_stock "
+                         "WHERE origen='recuperacion_ag' AND NOT COALESCE(anulado,false) "
+                         "  AND regexp_replace(COALESCE(ticket_porteria,''),'\\.0+$','')=%s", (str(tk),))
+        if clasif == "RECUPERACION":
+            _tit = "Ticket %s confirmado como RECUPERACIÓN · %s kg → %s" % (
+                tk, _n(r["kg"]), (str(tanque["nombre"]) if tanque is not None else destino_tipo))
+        else:
+            _tit = "Ticket %s marcado como NO recuperación" % tk
+        _ver = ""
+        if _chk is not None:
+            _ver = "clasificación leída de vuelta desde la base (registro #%s)" % id_rec
+            if clasif == "RECUPERACION" and tanque is not None and _mov is not None:
+                _ver += " · %d movimiento de stock vigente" % int(_mov)
+        _g.anotar(clave, _chk is not None, _tit, verificado=_ver,
+                  error=("" if _chk is not None else
+                         "Se ejecutó el guardado pero el ticket no aparece clasificado en la base. "
+                         "Avisá a sistemas: queda registrado solo."))
+    except Exception as e:
+        _g.anotar(clave, False, "No se pudo confirmar el ticket %s" % tk, error=str(e))
+    cat.clear()
+    st.rerun()
+
+
 def _panel_bandeja(cat, conectar, USR, cand, j):
+    _g.mostrar("rec_bandeja")
     if cand.empty:
         st.success("No hay tickets pendientes de clasificar. 🎉")
         return
@@ -563,19 +630,15 @@ def _panel_bandeja(cat, conectar, USR, cand, j):
                 if prod is None:
                     st.error("No existe el producto %s en dim_producto." % cal)
                 else:
-                    _confirmar(conectar, USR, tk, r.to_dict(), "RECUPERACION", prod,
-                               destino_tipo, tanque, obs, id_j,
-                               sector_gestion=("BACHAS" if "Bachas" in sec_g else "PILETAS"))
-                    cat.clear()
-                    st.rerun()
+                    _clasificar(cat, conectar, USR, tk, r, "RECUPERACION", prod,
+                                destino_tipo, tanque, obs, id_j,
+                                sector_gestion=("BACHAS" if "Bachas" in sec_g else "PILETAS"))
             if b2.button("🚫 NO es recuperación", key="rec_no_%s" % tk,
                          use_container_width=True,
                          help="Movimiento interno común: queda registrado para que no vuelva "
                               "a aparecer acá, y el stock automático no se toca."):
-                _confirmar(conectar, USR, tk, r.to_dict(), "NO_RECUPERACION", None,
-                           None, None, obs, id_j)
-                cat.clear()
-                st.rerun()
+                _clasificar(cat, conectar, USR, tk, r, "NO_RECUPERACION", None,
+                            None, None, obs, id_j)
 
 
 def _panel_historial(cat, conectar, USR):
@@ -606,6 +669,11 @@ def _panel_historial(cat, conectar, USR):
 
 
 def render(USR, cat, conectar, contexto="PLANTA"):
+    try:
+        _g.contexto(pantalla="Recuperación de Ácidos Grasos", usuario=USR.get("nombre"),
+                    id_usuario=USR.get("id_usuario"))
+    except Exception:
+        pass
     st.markdown("### ♻️ Recuperación de Ácidos Grasos")
     st.caption("Piletas → camión de vacío → muestra de lab → pesada → descarga en reactores. "
                "Cada ticket de portería se clasifica acá: eso es lo que separa una "

@@ -1251,8 +1251,19 @@ except Exception:
 
 
 @st.cache_data(ttl=300, max_entries=400)
-def _cat_cached(query, params, _rev):
+def _cat_cached(query, params, rev):
     # Pool compartido: evita un handshake SSL (~0,5 s) por CADA cache-miss.
+    #
+    # SOL-0053 (y detrás: SOL-0043, 0045, 0049, 0050, 0051 y "no toma la confirmación"
+    # en toda la app desde el 08/09). El parámetro de revisión se llamaba `_rev`, y
+    # st.cache_data EXCLUYE DEL HASH todo parámetro que empieza con "_" (cache_utils:
+    # "Underscore-prefixed args are deliberately excluded from hashing"). O sea: la
+    # revisión nunca formó parte de la clave, cat.clear() / cat.invalidar() no
+    # invalidaban NADA y cada lectura seguía saliendo vieja hasta que vencían los
+    # 5 minutos de TTL. Por eso el operario confirmaba, la pantalla le mostraba lo
+    # mismo, y volvía a confirmar (ticket 6833: 11 confirmaciones en 4 minutos).
+    # Con `rev` (sin guión bajo) la revisión entra en la clave y la invalidación
+    # por tabla de cache_rev.py funciona como fue diseñada.
     with _lab_conn() as conn:
         return pd.read_sql_query(query, conn, params=params)
 
