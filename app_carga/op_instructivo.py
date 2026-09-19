@@ -221,8 +221,14 @@ def _confirmar(cat, conectar, USR, id_batch, p, titulo, detalle="", **campos):
         else:
             _g.anotar(clave, True, titulo, detalle=detalle,
                       verificado=("el paso figura como hecho en la base" if _h else ""))
-        # el selector salta solo al próximo paso pendiente (si no, quedaba clavado en el
-        # que se acaba de confirmar y había que elegir el siguiente a mano)
+        # El selector salta al próximo paso pendiente, y SIEMPRE hacia adelante.
+        # Antes sólo se borraba la elección y el índice se recalculaba con el primer
+        # pendiente de la tabla: si esa tabla venía de la caché y todavía no mostraba
+        # el paso recién confirmado, el selector volvía al paso que se acababa de
+        # cargar. Eso es lo que planta reportó como "volvió al paso 4 y no funciona":
+        # confirmaba, el sistema lo devolvía al mismo lugar, y volvía a confirmar
+        # (paso 4 de RE-416 quedó escrito dos veces, 12:00 y 12:14).
+        st.session_state[f"opi_desde_{id_batch}"] = int(p["orden"])
         st.session_state.pop(f"opi_sel_{id_batch}", None)
     except Exception as e:
         _g.anotar(clave, False, "No se guardó el paso %d" % int(p["orden"]), detalle=detalle, error=str(e))
@@ -266,7 +272,19 @@ def render(USR, cat, conectar, id_batch):
     # ---- paso a cargar ----
     opciones = [int(o) for o in df["orden"]]
     etiquetas = {int(p["orden"]): f"{int(p['orden'])} · {p.get('descripcion') or p['etapa']}" for _, p in df.iterrows()}
-    idx = opciones.index(actual_orden) if actual_orden in opciones else 0
+    # Nunca hacia atrás: después de confirmar el paso N se arranca en el primer
+    # pendiente DESPUÉS de N. Si no quedara ninguno, en el primer pendiente; y si
+    # están todos hechos, en el último. Así, aunque la lectura venga desfasada, el
+    # operario avanza y nunca lo devuelve al paso que acaba de cargar.
+    _desde = st.session_state.pop(f"opi_desde_{id_batch}", None)
+    _pendientes = [int(o) for o in pend["orden"]] if not pend.empty else []
+    _default = actual_orden
+    if _desde is not None:
+        _sig = [o for o in _pendientes if o > int(_desde)]
+        _default = _sig[0] if _sig else (_pendientes[0] if _pendientes else opciones[-1])
+    if _default is None:
+        _default = opciones[-1]
+    idx = opciones.index(_default) if _default in opciones else 0
     sel = st.selectbox("Paso", opciones, index=idx, format_func=lambda o: etiquetas[o], key=f"opi_sel_{id_batch}",
                        label_visibility="collapsed")
     p = df[df["orden"] == sel].iloc[0]

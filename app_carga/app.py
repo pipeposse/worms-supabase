@@ -908,11 +908,6 @@ def _home_df(sql, params=None):
 # vuelta escribió de verdad contra la base (lo avisa el hook de commit de etl.db).
 try:
     import guardado as _gdo
-    # La conexión de lectura se INYECTA. Antes guardado.py hacía `import app`, que bajo
-    # Streamlit no devuelve este módulo (corre como __main__) sino que re-ejecuta app.py
-    # y revienta: por eso cada recibo decía "no se pudo releer la base para confirmarlo".
-    _gdo.configurar(_lab_conn)
-    _gdo.contexto(usuario=USR.get("nombre"), id_usuario=USR.get("id_usuario"))
     _gdo.instalar()
     _gdo.flash_mostrar()        # el cartel que dejó el rerun anterior, ahora sí visible
 except Exception:
@@ -7033,6 +7028,21 @@ with tab_objs[0]:
                     "Cerralas para que no queden cargas incompletas: "
                     + ", ".join(f"#{int(r['id_batch'])}·{r['ticket'] or '—'}" for _, r in _abiertas.head(12).iterrows())
                 )
+            # El agujero real: la reacción llega a EN_TANQUE y NADIE carga los kilos
+            # obtenidos. Quedan 29 órdenes así (6 de esta semana), y como el rendimiento
+            # sale de kg_obtenido, Gestión semanal muestra 0 TN producidas y 0 % de
+            # cumplimiento con los reactores trabajando. El aviso de arriba no las veía
+            # porque filtra etapa ≠ EN_TANQUE, que es justo lo que NO son.
+            _sinkg = df_pf[(df_pf["etapa_actual"].fillna("") == "EN_TANQUE")
+                           & (pd.to_numeric(df_pf["kg_obtenido"], errors="coerce").fillna(0) <= 0)]
+            if not _sinkg.empty:
+                st.error(
+                    f"🏁 Hay **{len(_sinkg)}** reacción/es cerradas **sin los kilos obtenidos**. "
+                    "Sin ese dato no hay rendimiento y la gestión semanal las cuenta como 0 TN. "
+                    "Elegilas acá abajo y cargá el acopio final: "
+                    + ", ".join(f"#{int(r['id_batch'])}·{r['ticket'] or '—'}"
+                                for _, r in _sinkg.head(12).iterrows())
+                    + ("…" if len(_sinkg) > 12 else ""))
         if df_pf.empty:
             st.info("Sin reacciones/bachas para cerrar.")
         else:
