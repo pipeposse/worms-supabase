@@ -146,10 +146,20 @@ def _real(p):
 
 
 def _estado_icono(p, actual):
-    if bool(p.get("fuera_tolerancia")):
+    """El tilde dice SI SE GUARDÓ; el triángulo, si el valor se fue de tolerancia.
+
+    Antes el ⚠️ REEMPLAZABA al ✅: el paso quedaba guardado y confirmado en la base,
+    pero en la lista no aparecía ningún tilde verde, así que para el operario era
+    idéntico a que el botón no hubiera hecho nada y volvía a cargarlo. Es lo que pasó
+    con los pasos 11 y 12 de la RE-416 (19/09 13:12 y 13:13, `hecho`=true las dos
+    veces, `fuera_tolerancia`=true por temperatura). Son dos cosas distintas y ahora
+    se muestran las dos: primero que se guardó, después que el valor está fuera."""
+    hecho = bool(p.get("hecho"))
+    fuera = bool(p.get("fuera_tolerancia"))
+    if hecho:
+        return "✅⚠️" if fuera else "✅"
+    if fuera:
         return "⚠️"
-    if bool(p.get("hecho")):
-        return "✅"
     return "🔵" if actual else "⚪"
 
 
@@ -208,8 +218,14 @@ def _confirmar(cat, conectar, USR, id_batch, p, titulo, detalle="", **campos):
     try:
         _guardar(conectar, USR, id_batch, p, **campos)
         _invalidar(cat)
-        _h = _g.contar("SELECT hecho FROM produccion.v_op_instructivo WHERE id_batch=%s AND orden=%s",
-                       (int(id_batch), int(p["orden"])))
+        _r = _g.fila("SELECT hecho, fuera_tolerancia FROM produccion.v_op_instructivo "
+                     "WHERE id_batch=%s AND orden=%s", (int(id_batch), int(p["orden"])))
+        _h = _r[0] if _r else None
+        _ft = bool(_r[1]) if _r else False
+        if _ft and _h:
+            # Guardado y fuera de tolerancia: el recibo lo dice en una sola línea, para
+            # que el ⚠️ de la lista se lea como "el valor está fuera", no como "no guardó".
+            detalle = (detalle + " · " if detalle else "") + "⚠️ fuera de tolerancia — el paso QUEDÓ GUARDADO igual"
         if _h is False:
             # Se grabó pero el paso NO queda marcado: para el operario es idéntico a que
             # el botón no haga nada, así que se muestra en rojo y queda registrado como
@@ -294,6 +310,21 @@ def render(USR, cat, conectar, id_batch):
         esp = _esperado(p)
         if esp:
             st.caption("Esperado: " + esp + (f" · a las {p['hora_esperada'].strftime('%H:%M')}" if pd.notna(p.get("hora_esperada")) else ""))
+        # Que el estado del paso se lea acá, sin tener que buscarlo en la lista de arriba:
+        # el operario mira la tarjeta, no la grilla. Guardado y fuera de tolerancia son
+        # dos cosas distintas y se dicen por separado.
+        if bool(p.get("hecho")):
+            # OJO: acá NO van st.success / st.warning. Los envuelve guardado.instalar()
+            # para reenviarlos después de un rerun, y este cartel se dibuja en cada
+            # pasada: terminaría apareciendo arriba de la pantalla siguiente como si
+            # fuera el resultado de un guardado que nunca pasó.
+            _rl = _real(p)
+            st.markdown(":green[✅ **Este paso ya está cargado**" + (f": {_rl}" if _rl else "") +
+                        "]. Si volvés a confirmar, se pisa el valor anterior.")
+            if bool(p.get("fuera_tolerancia")):
+                st.markdown(":orange[⚠️ **El valor quedó fuera de la tolerancia de la fórmula — "
+                            "pero el paso está guardado igual.**] El triángulo de la lista avisa del "
+                            "desvío, no de un error de carga.")
         cap = p["captura"]
         ahora = _ahora()
         _lbl = f"Paso {int(p['orden'])} · {p.get('descripcion') or p['etapa']}"
