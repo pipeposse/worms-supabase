@@ -156,6 +156,63 @@ def _prio_efectiva(r):
 
 
 # ---------------------------------------------------------------- usuario ---
+_SQL_MAILS = (
+    "SELECT t.email, count(DISTINCT t.id_ticket) AS n, max(t.creado_ts) AS ult, "
+    "       bool_or(COALESCE(m.enviado_email,false)) AS respondido "
+    "FROM produccion.ticket_pedido t "
+    "LEFT JOIN produccion.ticket_pedido_msg m ON m.id_ticket=t.id_ticket AND m.autor='ADMIN' "
+    "WHERE t.id_usuario=%s AND COALESCE(t.email,'') <> '' "
+    "GROUP BY t.email ORDER BY n DESC, ult DESC LIMIT 8")
+_OTRO = "✏️ Otro mail (escribilo abajo)"
+
+
+def _mails_previos(USR):
+    """Mails con los que este usuario ya mandó solicitudes, los más usados primero.
+
+    Pedido de dirección: que el mail salga preseleccionado y no haya que escribirlo
+    de nuevo. La historia mostraba por qué: una misma usuaria cargó 7 variantes con
+    errores de tipeo (wormsargetina, wormsragentina, wormargentina…) y las
+    respuestas a esas fueron a ninguna parte. Se ordena por cantidad de usos: el
+    mail bueno se usó 23 veces, cada error una. Primero va el guardado en prefs
+    (último con el que se envió), después la historia."""
+    out = []
+    try:
+        import guardado as _g
+        df = _g.leer(_SQL_MAILS, (int(USR["id_usuario"]),))
+        if df is not None and not df.empty:
+            out = [(str(r["email"]).strip().lower(), int(r["n"]), bool(r["respondido"]))
+                   for _, r in df.iterrows()]
+    except Exception:
+        out = []
+    pref = None
+    try:
+        pref = (st.session_state.get("_prefs") or {}).get("mail_soporte")
+        if not pref:
+            import guardado as _g
+            _r = _g.fila("SELECT COALESCE(prefs,'{}'::jsonb)->>'mail_soporte' FROM produccion.dim_usuario "
+                         "WHERE id_usuario=%s", (int(USR["id_usuario"]),))
+            pref = _r[0] if _r else None
+    except Exception:
+        pref = None
+    pref = (pref or st.session_state.get("mj_email_mem") or "").strip().lower()
+    if pref and _RE_EMAIL.match(pref):
+        out = [(pref, next((n for e, n, _ in out if e == pref), 0), True)] + [x for x in out if x[0] != pref]
+    return out
+
+
+def _guardar_mail_pref(conn, USR, email):
+    """Deja el mail como preferencia del usuario (dim_usuario.prefs.mail_soporte)."""
+    try:
+        import json as _json
+        with conn.cursor() as cur:
+            cur.execute("UPDATE produccion.dim_usuario SET prefs = COALESCE(prefs,'{}'::jsonb) || %s::jsonb "
+                        "WHERE id_usuario=%s", (_json.dumps({"mail_soporte": email}), int(USR["id_usuario"])))
+        if isinstance(st.session_state.get("_prefs"), dict):
+            st.session_state["_prefs"]["mail_soporte"] = email
+    except Exception:
+        pass
+
+
 def _form_nuevo(USR, conectar):
     st.markdown("Contá qué necesitás **de la plataforma**: algo que no anda, algo que "
                 "falta o una duda de uso. Lo veo al instante y te respondo **a tu mail**.")
@@ -164,8 +221,21 @@ def _form_nuevo(USR, conectar):
         c1, c2 = st.columns([2, 1])
         titulo = c1.text_input("¿Qué necesitás? (resumen corto) *",
                                placeholder='Ej: "Quiero agregar la opción de desgomar AFE-L"')
-        email = c2.text_input("Tu mail *", value=st.session_state.get("mj_email_mem", ""),
-                              placeholder="nombre@empresa.com")
+        _prev = _mails_previos(USR)
+        _ops = [e for e, _, _ in _prev] + [_OTRO]
+        _n = {e: n for e, n, _ in _prev}
+        if _prev:
+            sel_mail = c2.selectbox(
+                "Tu mail *", _ops, index=0,
+                format_func=lambda e: e if e == _OTRO else (e + ("  · usado %d %s" % (_n[e], "vez" if _n[e] == 1 else "veces") if _n.get(e) else "")),
+                help="Los mails con los que ya mandaste solicitudes, el más usado primero. "
+                     "Elegí uno o escribí otro abajo.")
+        else:
+            sel_mail = _OTRO
+            c2.caption("Tu mail queda guardado para la próxima vez.")
+        otro_mail = c2.text_input("Otro mail (sólo si no está en la lista)",
+                                  value="" if _prev else st.session_state.get("mj_email_mem", ""),
+                                  placeholder="nombre@empresa.com")
         c3, c4 = st.columns(2)
         tipo = c3.selectbox("Tipo *", _TIPOS, index=1,
                             format_func=lambda t: _TIPO_LABEL[t])
@@ -180,7 +250,9 @@ def _form_nuevo(USR, conectar):
                                         use_container_width=True)
     if not enviado:
         return
-    email = (email or "").strip().lower()
+    email = (otro_mail or "").strip().lower()
+    if not email and sel_mail != _OTRO:
+        email = str(sel_mail).strip().lower()
     if not (titulo or "").strip():
         st.error("Falta el resumen de lo que necesitás."); return
     if not _RE_EMAIL.match(email):
@@ -204,6 +276,8 @@ def _form_nuevo(USR, conectar):
                  email, titulo.strip(), (descripcion or "").strip() or None,
                  tipo, prioridad))
             id_tk, codigo = cur.fetchone()
+        _guardar_mail_pref(conn, USR, email)
+        with conn.cursor() as cur:
             for nom, mime, data in adj:
                 cur.execute(
                     "INSERT INTO produccion.ticket_pedido_adjunto (id_ticket, nombre_archivo, mime, datos) "
