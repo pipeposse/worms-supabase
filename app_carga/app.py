@@ -908,10 +908,26 @@ def _home_df(sql, params=None):
 # vuelta escribió de verdad contra la base (lo avisa el hook de commit de etl.db).
 try:
     import guardado as _gdo
+    # La conexión de lectura se INYECTA acá. Sin esta línea, guardado.py no consigue
+    # conexión y TODAS las lecturas sin caché (tickets de expo, instructivo de la OP)
+    # se caen de vuelta a `cat()`, que es la caché que causaba el problema: el arreglo
+    # queda anulado en silencio. También se registra quién está y en qué pantalla,
+    # para que cada error de log_error_app diga a quién le pasó.
+    _gdo.configurar(_lab_conn)
+    _gdo.contexto(usuario=USR.get("nombre"), id_usuario=USR.get("id_usuario"))
     _gdo.instalar()
     _gdo.flash_mostrar()        # el cartel que dejó el rerun anterior, ahora sí visible
 except Exception:
     _gdo = None
+
+# Aviso de actualización: lo prende dirección antes de un deploy y lo ve TODA la
+# planta arriba de cualquier pantalla, con la cuenta regresiva. Un push reconstruye
+# la app y mata las sesiones: sin este aviso, el que estaba cargando pierde lo tipeado.
+try:
+    import aviso as _aviso
+    _aviso.mostrar()
+except Exception:
+    _aviso = None
 
 
 # ---- Accesos de la portada (misma lista para la vista clásica y la navegación v2) ----

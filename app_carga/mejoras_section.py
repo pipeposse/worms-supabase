@@ -423,12 +423,18 @@ def render(USR, cat, conectar, lab_conn=None):
             _nerr = _err.pendientes()
         except Exception:
             _err = None
-        _lerr = "🚨 Errores del sistema" + (f" ({_nerr})" if _nerr else "")
+        _lerr = "🚨 Errores y aviso" + (f" ({_nerr})" if _nerr else "")
         t_adm, t_err, t_new, t_mios = st.tabs(
             [lbl, _lerr, "➕ Nueva solicitud", "📋 Mis solicitudes"])
         with t_adm:
             _admin(USR, cat, conectar, lab_conn)
         with t_err:
+            try:
+                import aviso as _avi
+                _avi.panel(USR, cat, conectar)
+                st.divider()
+            except Exception as _e:
+                st.caption("Aviso de actualización no disponible: %s" % _e)
             if _err is None:
                 st.info("El registro de errores no está disponible en esta versión.")
             else:
