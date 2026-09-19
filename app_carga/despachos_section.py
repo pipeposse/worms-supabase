@@ -2745,8 +2745,30 @@ def _borr_limpiar(conectar, USR):
 # ------------------------------------------------------------------ persistencia
 
 def _guardar(conectar, USR, cab, res, id_despacho=None, desvios=None):
+    """Devuelve (id_despacho, reutilizada).
+
+    reutilizada=True cuando no se esta editando y ya existia una orden IGUAL (mismo
+    usuario, titulo, fecha, producto y contenedores, no anulada) creada hace menos
+    de 15 minutos: se pisa esa en vez de crear otra. SOL-0043: el 17/09 el mismo
+    guardado se apreto dos veces con 24 segundos de diferencia (la pantalla no
+    cambiaba) y quedaron las ODV 58 y 59 identicas."""
+    reutilizada = False
     with conectar(USR["id_usuario"]) as (conn, _a):
         with conn.cursor() as cur:
+            if not id_despacho:
+                cur.execute(
+                    "SELECT id_despacho FROM produccion.fact_despacho "
+                    "WHERE creado_por = %s AND titulo = %s AND fecha_despacho = %s "
+                    "  AND producto_codigo = %s AND n_contenedores = %s "
+                    "  AND COALESCE(estado,'') <> 'ANULADO' "
+                    "  AND creado_en >= now() - interval '15 minutes' "
+                    "ORDER BY id_despacho DESC LIMIT 1",
+                    (USR.get("nombre"), cab["titulo"], cab["fecha"], cab["producto_codigo"],
+                     cab["n_cont"]))
+                _dup = cur.fetchone()
+                if _dup:
+                    id_despacho = int(_dup[0])
+                    reutilizada = True
             if id_despacho:
                 cur.execute(
                     "UPDATE produccion.fact_despacho SET titulo=%s, destino=%s, cliente=%s, "
@@ -2801,7 +2823,7 @@ def _guardar(conectar, USR, cab, res, id_despacho=None, desvios=None):
                             "VALUES (%s,%s,%s,%s,%s,'ARMADO',%s,%s)",
                             (_id, d["param"], d["valor"], d["limite"], round(d["exceso"], 2),
                              USR.get("nombre"), d.get("motivo")))
-    return _id
+    return _id, reutilizada
 
 
 def _n(v):
@@ -2861,6 +2883,17 @@ try:
 except AttributeError:             # sin fragmentos: decorador nulo, todo como antes
     def _FRAGMENT(f):
         return f
+
+
+def _listo(clave, titulo, detalle="", verificado="", ok=True, error=""):
+    """Recibo + redibujo, en lugar del par `st.success(...); _rerun_frag()`.
+
+    SOL-0043: ese par mostraba el cartel medio parpadeo y el rerun se lo llevaba,
+    asi que planta no sabia si habia guardado y volvia a apretar. El recibo queda
+    en la sesion y lo dibuja `_g.mostrar(clave)` arriba de la vista, con la hora y
+    lo que se comprobo releyendo la base."""
+    _g.anotar(clave, ok, titulo, detalle=detalle, verificado=verificado, error=error)
+    _rerun_frag()
 
 
 @_FRAGMENT
@@ -3092,6 +3125,7 @@ def _reglas(USR, cat, conectar):
 def _monitor_baja(USR, cat, conectar):
     """¿El producto despachado se dio de baja del stock de verdad?"""
     st.markdown("#### 🔎 Baja de stock por orden de venta")
+    _g.mostrar("dsp_baja")
     st.caption("Cada orden de venta se controla con **cuatro evidencias independientes**: lo "
                "planificado, el asiento en el ledger de stock, los kg pesados en portería "
                "y la caída medida en el tanque. Si las cuatro coinciden, el producto salió "
@@ -3258,11 +3292,13 @@ def _monitor_baja(USR, cat, conectar):
                                       {"estado": "DESPACHADO", "motivo": "tickets completos",
                                        "desde": "monitor de baja"})
                 cat.clear()
-                st.success("%d orden de venta(s) cerrados: sus movimientos de stock pasan a "
-                           "EJECUTADO." % len(_ids))
-                _rerun_frag()
+                _listo("dsp_baja", "%d orden(es) de venta cerradas" % len(_ids),
+                       detalle="sus movimientos de stock pasan a EJECUTADO",
+                       verificado=("%s en DESPACHADO" % _g.contar(
+                           "SELECT count(*) FROM produccion.fact_despacho "
+                           "WHERE id_despacho = ANY(%s) AND estado='DESPACHADO'", (_ids,))))
             except Exception as e:
-                st.error("No se pudieron cerrar: %s" % e)
+                _listo("dsp_baja", "No se pudieron cerrar", ok=False, error=str(e))
 
     st.divider()
     st.markdown("##### 🔬 Detalle tanque por tanque")
@@ -3594,8 +3630,25 @@ def _lineas_set(ss, df):
     ss["dsp_rev"] = int(ss.get("dsp_rev") or 0) + 1
 
 
+def _armar_limpiar(ss):
+    """Deja el armador vacio (mismas claves que 'Restablecer ultima carga'). Se llama
+    ANTES de instanciar los widgets: el estado de un widget ya dibujado no se puede
+    tocar en el mismo run."""
+    for _k in list(_BORR_KEYS) + ["dsp_lineas", "dsp_lineas_undo", "_dsp_last_ed",
+                                  "_dsp_lst_fir", "_dsp_borr_ts", "dsp_edit_id"]:
+        ss.pop(_k, None)
+    ss["dsp_ed_nonce"] = int(ss.get("dsp_ed_nonce") or 0) + 1
+    ss["dsp_rev"] = int(ss.get("dsp_rev") or 0) + 1
+
+
 def _armar(USR, cat, conectar):
     ss = st.session_state
+    # SOL-0043: despues de guardar, el armador arranca VACIO. Antes quedaba la misma
+    # formulacion en pantalla (el recibo aparecia arriba, fuera de la vista, y el boton
+    # Guardar al final de una pagina larga), asi que se volvia a apretar y se creaba
+    # otra orden igual.
+    if ss.pop("_dsp_limpiar", False):
+        _armar_limpiar(ss)
     # Lo primero que se ve: si la última vez guardó o no. Sobrevive al rerun.
     _g.mostrar("dsp_armado")
     # Keep-alive: re-marcar los campos como estado programático ANTES de instanciar los
@@ -3893,6 +3946,7 @@ def _armar(USR, cat, conectar):
         _lu = _u2.number_input("Litros medidos", min_value=0.0, step=500.0, key="dsp_up_l")
         _du = float(_ru["densidad"]) if pd.notna(_ru["densidad"]) else 0.91
         _u3.metric("kg (× dens. %.2f)" % _du, f"{_lu * _du:,.0f}")
+        _g.mostrar("dsp_tanque")
         if st.button("💾 Guardar medición del tanque", key="dsp_up_go", use_container_width=True):
             try:
                 with conectar(USR["id_usuario"]) as (conn, audit):
@@ -3910,10 +3964,16 @@ def _armar(USR, cat, conectar):
                     audit.log("I", "fact_stock_tanque", int(_ru["id_tanque"]),
                               {"litros": float(_lu), "desde": "despachos"})
                 cat.clear()
-                st.success("Stock de %s actualizado a %s L." % (_ru["nombre"], f"{_lu:,.0f}"))
-                _rerun_frag()
+                _v = _g.contar("SELECT litros FROM produccion.fact_stock_tanque "
+                               "WHERE id_tanque=%s ORDER BY medido_en DESC LIMIT 1",
+                               (int(_ru["id_tanque"]),))
+                _listo("dsp_tanque", "Medición de %s guardada" % _ru["nombre"],
+                       detalle="%s L · %s kg" % (f"{_lu:,.0f}", f"{_lu * _du:,.0f}"),
+                       verificado=("último litraje leído de la base: %s L" % f"{float(_v):,.0f}")
+                                  if _v is not None else "")
             except Exception as e:
-                st.error("No se pudo actualizar: %s" % e)
+                _listo("dsp_tanque", "No se guardó la medición de %s" % _ru["nombre"],
+                       ok=False, error=str(e))
 
     with st.expander("🧪 Actualizar parámetros de lab de un tanque acá mismo"):
         st.caption("Pisa el último análisis del tanque — lo mismo que carga Laboratorio — y "
@@ -3939,6 +3999,7 @@ def _armar(USR, cat, conectar):
                                value=(float(_rq["agua_sedimento"])
                                       if pd.notna(_rq["agua_sedimento"]) else 0.0),
                                key="dsp_lab_ays")
+        _g.mostrar("dsp_lab_tanque")
         if st.button("💾 Guardar parámetros del tanque", key="dsp_lab_go",
                      use_container_width=True):
             try:
@@ -3973,10 +4034,12 @@ def _armar(USR, cat, conectar):
                                "azufre": float(_qs), "ays": float(_qy),
                                "desde": "despachos"})
                 cat.clear()
-                st.success("Parámetros de %s actualizados." % _rq["nombre"])
-                _rerun_frag()
+                _listo("dsp_lab_tanque", "Parámetros de %s guardados" % _rq["nombre"],
+                       detalle="acidez %.2f · AyS %.2f · azufre %.0f · fósforo %.0f"
+                               % (float(_qa), float(_qy), float(_qs), float(_qp)))
             except Exception as e:
-                st.error("No se pudo actualizar el lab: %s" % e)
+                _listo("dsp_lab_tanque", "No se guardaron los parámetros de %s" % _rq["nombre"],
+                       ok=False, error=str(e))
     if not _s0.empty:
         st.caption("Sin medición de nivel cargada, pero igual seleccionables: **" +
                    "**, **".join(_s0["nombre"].astype(str).tolist()) +
@@ -4703,7 +4766,7 @@ def _armar(USR, cat, conectar):
         _tit_ov = cab["titulo"]
         try:
             with st.spinner("Guardando la formulación…"):
-                _id = _guardar(conectar, USR, cab, res, ss.get("dsp_edit_id"), desvios=_desv)
+                _id, _reut = _guardar(conectar, USR, cab, res, ss.get("dsp_edit_id"), desvios=_desv)
             # No alcanza con que el INSERT no explote: se vuelve a leer la base y se
             # cuenta lo que quedó. Si acá dan 0 líneas, el recibo lo dice y nadie se
             # queda pensando que guardó.
@@ -4728,14 +4791,20 @@ def _armar(USR, cat, conectar):
             _borr_limpiar(conectar, USR)
             cat.clear()
             ss["dsp_edit_id"] = None
-            _g.anotar("dsp_armado", True,
-                      ("Orden de venta #%d ACTUALIZADA" if _era_edicion
-                       else "Orden de venta #%d CREADA") % _id,
-                      detalle="%s · %s · %s L en %d tanque(s) · estado %s"
+            ss["_dsp_limpiar"] = True          # el proximo dibujado arranca con el armador vacio
+            if _reut:
+                _tit_rec = "Orden de venta #%d — ya estaba guardada, NO se duplicó" % _id
+            elif _era_edicion:
+                _tit_rec = "Orden de venta #%d ACTUALIZADA" % _id
+            else:
+                _tit_rec = "Orden de venta #%d CREADA" % _id
+            _g.anotar("dsp_armado", True, _tit_rec,
+                      detalle="%s · %s · %s L en %d tanque(s) · estado %s. El armador queda "
+                              "vacío: para tocarla, entrá por *Órdenes de venta cargadas → "
+                              "Modificar en el armador*."
                               % (_tit_ov, cab["producto_codigo"],
                                  "{:,.0f}".format(tot_l).replace(",", "."), len(res), cab["estado"]),
                       verificado=_verif)
-            st.balloons()
             _rerun_frag()
         except Exception as e:
             _g.anotar("dsp_armado", False, "No se guardó la orden de venta",
@@ -4748,6 +4817,7 @@ def _armar(USR, cat, conectar):
 
 
 def _listado(USR, cat, conectar):
+    _g.mostrar("dsp_listado")
     df = cat("SELECT id_despacho, titulo, destino, cliente, producto, tipo_carga, fecha_despacho, "
              "semana_iso, n_contenedores, litros_objetivo, litros_total, tn_total, pct_cubierto, "
              "acidez_pond, fosforo_pond, azufre_pond, ays_pond, spec_acidez_max, spec_fosforo_max, "
@@ -4944,9 +5014,10 @@ def _listado(USR, cat, conectar):
                 _a.log("RENOMBRAR", "fact_despacho", int(sel),
                        {"titulo_anterior": _tit_now, "titulo_nuevo": (_tit_ed or "").strip()})
             cat.clear()
-            st.success("Orden #%d renombrada: %s → %s" % (int(sel), _tit_now or "—",
-                                                          (_tit_ed or "").strip()))
-            _rerun_frag()
+            _listo("dsp_listado", "Orden #%d renombrada" % int(sel),
+                   detalle="%s → %s" % (_tit_now or "—", (_tit_ed or "").strip()),
+                   verificado="título leído de la base: %s" % _g.contar(
+                       "SELECT titulo FROM produccion.fact_despacho WHERE id_despacho=%s", (int(sel),)))
         except Exception as e:
             st.error("No se pudo renombrar: %s" % e)
 
@@ -5013,19 +5084,30 @@ def _listado(USR, cat, conectar):
                                {"cerrada_en": _ntk, "remanente": _rem,
                                 "nueva_orden": _idn, "titulo_nuevo": _tit_nva})
                     cat.clear()
-                    st.success("✅ Orden #%d cerrada en %d contenedores. Nueva "
-                               "orden #%d «%s» para el %s con %d contenedores. La formulación "
-                               "de la nueva se arma en el armador cuando toque; el booking "
-                               "final se pone con ✏️ Renombrar."
-                               % (int(sel), _ntk, _idn, _tit_nva,
-                                  _f_nva.strftime("%d/%m/%Y"), _rem))
-                    _rerun_frag()
+                    _listo("dsp_listado", "Orden #%d cerrada en %d contenedores" % (int(sel), _ntk),
+                           detalle="Nueva orden #%d «%s» para el %s con %d contenedores. La "
+                                   "formulación de la nueva se arma en el armador cuando toque; "
+                                   "el booking final se pone con ✏️ Renombrar."
+                                   % (_idn, _tit_nva, _f_nva.strftime("%d/%m/%Y"), _rem),
+                           verificado="la orden #%d existe en la base con estado %s"
+                                      % (_idn, _g.contar("SELECT estado FROM produccion.fact_despacho "
+                                                         "WHERE id_despacho=%s", (_idn,))))
                 except Exception as e:
-                    st.error("No se pudo hacer el cierre parcial: %s" % e)
+                    _listo("dsp_listado", "No se pudo hacer el cierre parcial", ok=False, error=str(e))
 
     c1, c2, c3 = st.columns([1.2, 1, 2])
-    _nuevo = c1.selectbox("Cambiar estado", ESTADOS, index=ESTADOS.index(r["estado"]), key="dsp_est_up")
-    if c2.button("Aplicar", use_container_width=True):
+    # SOL-0043: la key lleva la orden. Con una key fija, el estado elegido para una orden
+    # (p.ej. ANULADO) quedaba puesto al pasar a la siguiente, y "Aplicar" la anulaba
+    # también. El 17/09 quedaron anuladas tres órdenes seguidas en media hora.
+    _nuevo = c1.selectbox("Cambiar estado", ESTADOS, index=ESTADOS.index(r["estado"]),
+                          key="dsp_est_up_%d" % int(sel))
+    _anula_ok = True
+    if _nuevo == "ANULADO" and r["estado"] != "ANULADO":
+        _anula_ok = c3.checkbox(
+            "Confirmo que anulo la orden #%d: se revierte su salida de stock y sus tickets de "
+            "portería quedan libres para otra orden" % int(sel), key="dsp_anula_ok_%d" % int(sel))
+    if c2.button("Aplicar", use_container_width=True, key="dsp_est_go_%d" % int(sel),
+                 disabled=(_nuevo == r["estado"]) or not _anula_ok):
         try:
             with conectar(USR["id_usuario"]) as (conn, _a):
                 with conn.cursor() as cur:
@@ -5045,35 +5127,53 @@ def _listado(USR, cat, conectar):
                                 (int(sel),))
                     _nm, _tn = cur.fetchone()
             cat.clear()
+            _est_db = _g.contar("SELECT estado FROM produccion.fact_despacho WHERE id_despacho=%s",
+                                (int(sel),))
+            _ver = ("estado leído de la base: %s" % _est_db) if _est_db else ""
             if _nm:
-                st.success(f"Estado actualizado. Impacto en stock: {_nm} movimiento(s) de salida "
-                           f"por {float(_tn):,.1f} t descontados de los tanques.")
+                _listo("dsp_listado", "Orden #%d → %s" % (int(sel), _nuevo),
+                       detalle=f"Impacto en stock: {_nm} movimiento(s) de salida por "
+                               f"{float(_tn):,.1f} TN descontados de los tanques.", verificado=_ver)
             elif _nuevo in ("CONFIRMADO", "DESPACHADO"):
-                st.warning("Estado actualizado, pero no se generaron movimientos de stock "
-                           "(revisá que la orden de venta tenga líneas con tanque y litros).")
+                _listo("dsp_listado", "Orden #%d → %s, pero SIN movimientos de stock" % (int(sel), _nuevo),
+                       detalle="Revisá que la orden tenga líneas con tanque y litros.", verificado=_ver)
             else:
-                _msg = "Estado actualizado. Se revirtieron los movimientos de stock de la orden de venta."
+                _det = "Se revirtieron los movimientos de stock de la orden."
                 if _tk_libres:
-                    _msg += (f" Se liberaron {_tk_libres} ticket(s) de portería: ya se pueden "
-                             "imputar a otra orden de venta.")
-                st.success(_msg)
-            _rerun_frag()
+                    _det += (f" Se liberaron {_tk_libres} ticket(s) de portería: ya se pueden "
+                             "imputar a otra orden. La orden anulada deja de aparecer en "
+                             "🎟️ Tickets de portería.")
+                _listo("dsp_listado", "Orden #%d → %s" % (int(sel), _nuevo), detalle=_det,
+                       verificado=_ver)
         except Exception as e:
-            st.error(f"No se pudo actualizar: {e}")
-    if c3.checkbox("Habilitar borrado", key="dsp_del_ok") and c3.button("🗑️ Borrar orden de venta"):
+            _listo("dsp_listado", "No se pudo cambiar el estado de la orden #%d" % int(sel),
+                   ok=False, error=str(e))
+    if c3.checkbox("Habilitar borrado definitivo", key="dsp_del_ok_%d" % int(sel),
+                   help="Borra la orden con sus líneas, tickets y movimientos de stock. No se "
+                        "puede deshacer. Para sacarla de circulación sin perderla, anulala.") \
+            and c3.button("🗑️ Borrar orden de venta", key="dsp_del_go_%d" % int(sel)):
         try:
             with conectar(USR["id_usuario"]) as (conn, _a):
                 with conn.cursor() as cur:
                     cur.execute("DELETE FROM produccion.fact_despacho WHERE id_despacho=%s", (int(sel),))
-            cat.clear(); st.success("Orden de venta borrado."); _rerun_frag()
+                    _nb = cur.rowcount or 0
+            cat.clear()
+            _queda = _g.contar("SELECT count(*) FROM produccion.fact_despacho WHERE id_despacho=%s",
+                               (int(sel),))
+            _listo("dsp_listado", "Orden #%d «%s» borrada" % (int(sel), _tit_now or ""),
+                   detalle="con sus líneas, tickets y movimientos de stock",
+                   verificado=("ya no está en la base" if _queda == 0 else
+                               ("SIGUE en la base" if _queda else "")),
+                   ok=(_nb > 0 and _queda == 0))
         except Exception as e:
-            st.error(f"No se pudo borrar: {e}")
+            _listo("dsp_listado", "No se pudo borrar la orden #%d" % int(sel), ok=False, error=str(e))
 
 
 def _borradores(USR, cat, conectar):
     """Órdenes de venta a medio armar: seguir, duplicar o borrar."""
     ss = st.session_state
     st.markdown("#### 📝 Órdenes de venta en borrador")
+    _g.mostrar("dsp_borradores")
     st.caption("Lo que quedó a medio armar. Un borrador **no descuenta stock** ni cuenta en el "
                "balance: recién al confirmarlo pasa a comprometer los tanques. Desde acá se "
                "sigue editando, se duplica como base de otra orden, o se borra.")
@@ -5174,10 +5274,13 @@ def _borradores(USR, cat, conectar):
                         audit.log("D", "fact_despacho", _idd, {"estado": "BORRADOR"})
                     cat.clear()
                     if _n2:
-                        st.success("Borrador #%d eliminado." % _idd)
+                        _listo("dsp_borradores", "Borrador #%d eliminado" % _idd,
+                               verificado="ya no está en la base" if _g.contar(
+                                   "SELECT count(*) FROM produccion.fact_despacho WHERE id_despacho=%s",
+                                   (_idd,)) == 0 else "")
                     else:
-                        st.warning("El #%d ya no está en borrador: no se borró." % _idd)
-                    _rerun_frag()
+                        _listo("dsp_borradores", "El #%d ya no está en borrador: no se borró" % _idd,
+                               ok=False, error="cambió de estado antes de borrarlo")
                 except Exception as e:
                     st.error("No se pudo borrar: %s" % e)
 
@@ -5230,6 +5333,7 @@ def _control(USR, cat, conectar):
     """Repaso de las órdenes de venta pre-cargados: refrescar laboratorio, verificar spec, confirmar."""
     ss = st.session_state
     st.markdown("#### 🔬 Control y confirmación")
+    _g.mostrar("dsp_control")
     st.caption("Los **borradores se guardan aunque no cumplan** la especificación (el laboratorio "
                "de los tanques suele estar desactualizado al armarlos). Acá se actualizan los "
                "parámetros con el último análisis, se controla la spec y, cuando cumple, se "
@@ -5380,10 +5484,10 @@ def _control(USR, cat, conectar):
                     cur.execute(_sqlu, (int(sel),))
                     _nu = cur.rowcount
             cat.clear()
-            st.success("%d línea(s) actualizadas con el último análisis de su tanque." % _nu)
-            _rerun_frag()
+            _listo("dsp_control", "Laboratorio de la orden #%d actualizado" % int(sel),
+                   detalle="%d línea(s) tomaron el último análisis de su tanque" % _nu)
         except Exception as e:
-            st.error("No se pudo actualizar: %s" % e)
+            _listo("dsp_control", "No se pudo actualizar el laboratorio", ok=False, error=str(e))
     if c2.button("✏️ Modificar en el armador", key="dsp_ctl_edit", use_container_width=True):
         _editar_despacho(cat, ss, int(sel))
         _rerun_frag()
@@ -5406,11 +5510,17 @@ def _control(USR, cat, conectar):
                                             (int(sel), d["param"], d["valor"], d["limite"],
                                              round(d["exceso"], 2), USR.get("nombre")))
                     cat.clear()
-                    st.success("Orden de venta #%d CONFIRMADO%s." % (int(sel),
-                               " con desvío registrado" if _dv_g else ""))
-                    _rerun_frag()
+                    _listo("dsp_control", "Orden de venta #%d CONFIRMADA%s" % (int(sel),
+                           " con desvío registrado" if _dv_g else ""),
+                           detalle="Ya descuenta stock. Los tickets se asignan en 🎟️ Tickets de portería.",
+                           verificado="estado leído de la base: %s · %s movimiento(s) de stock" % (
+                               _g.contar("SELECT estado FROM produccion.fact_despacho WHERE id_despacho=%s",
+                                         (int(sel),)),
+                               _g.contar("SELECT count(*) FROM produccion.fact_movimiento_stock "
+                                         "WHERE id_despacho=%s AND origen='despacho'", (int(sel),))))
                 except Exception as e:
-                    st.error("No se pudo confirmar: %s" % e)
+                    _listo("dsp_control", "No se pudo confirmar la orden #%d" % int(sel),
+                           ok=False, error=str(e))
         else:
             _mtv = c3.text_input("Motivo del desvío (obligatorio)", key="dsp_ctl_motivo",
                                  placeholder="fuera de tolerancia: justificá para confirmar")
@@ -5433,11 +5543,14 @@ def _control(USR, cat, conectar):
                                              round(d["exceso"], 2), USR.get("nombre"),
                                              (_mtv or "").strip() or None))
                     cat.clear()
-                    st.success("Orden de venta #%d CONFIRMADO fuera de tolerancia, con desvío y motivo "
-                               "registrados." % int(sel))
-                    _rerun_frag()
+                    _listo("dsp_control", "Orden de venta #%d CONFIRMADA fuera de tolerancia" % int(sel),
+                           detalle="Desvío y motivo registrados. Ya descuenta stock.",
+                           verificado="estado leído de la base: %s" % _g.contar(
+                               "SELECT estado FROM produccion.fact_despacho WHERE id_despacho=%s",
+                               (int(sel),)))
                 except Exception as e:
-                    st.error("No se pudo confirmar: %s" % e)
+                    _listo("dsp_control", "No se pudo confirmar la orden #%d" % int(sel),
+                           ok=False, error=str(e))
     else:
         c3.caption("Ya está **CONFIRMADO**. El estado se maneja desde *Órdenes de venta cargadas*.")
 
@@ -5605,9 +5718,16 @@ def _tk_panel(USR, cat, conectar, cab, rol):
                                     ([int(i) for i in _q],))
                         if rol == "SALIDA":
                             _desvio_balanza(cur, int(cab["id_despacho"]), USR.get("nombre"))
-                cat.clear(); st.success("Tickets desasignados (el stock se resincroniza solo)."); _rerun_frag()
+                cat.clear()
+                _listo("dsp_tk_%s_%s" % (rol, cab["id_despacho"]),
+                       "%d ticket(s) quitados de la orden #%d" % (len(_q), int(cab["id_despacho"])),
+                       detalle="el stock se resincroniza solo",
+                       verificado="%s ticket(s) quedan en la orden" % _g.contar(
+                           "SELECT count(*) FROM produccion.fact_despacho_ticket "
+                           "WHERE id_despacho=%s AND rol=%s", (int(cab["id_despacho"]), rol)))
             except Exception as e:
-                st.error(f"No se pudo quitar: {e}")
+                _listo("dsp_tk_%s_%s" % (rol, cab["id_despacho"]), "No se pudieron quitar los tickets",
+                       ok=False, error=str(e))
     else:
         st.info("Todavía no hay tickets asignados en este rol.")
 
@@ -5789,21 +5909,30 @@ def _tk_panel(USR, cat, conectar, cab, rol):
 
 
 def _tickets(USR, cat, conectar):
+    # SOL-0043: las órdenes ANULADAS no se ofrecen. Una anulada no genera salida de
+    # stock, así que un ticket asignado ahí es un camión que salió y no se descuenta
+    # de ningún tanque. El 18/09 se asignaron 12 tickets (276 TN) a dos órdenes
+    # anuladas porque el selector las mostraba igual que a las vivas.
     df = cat("SELECT id_despacho, titulo, destino, cliente, producto, producto_codigo, "
              "fecha_despacho, n_contenedores, litros_objetivo, tn_total, estado, kg_total "
              "FROM produccion.v_despacho_resumen "
+             "WHERE COALESCE(estado,'') <> 'ANULADO' "
              "ORDER BY fecha_despacho DESC NULLS LAST, id_despacho DESC")
     if df is None or df.empty:
         st.info("Primero cargá una orden de venta en *Armar / editar orden de venta*.")
         return
     _lbl = {int(r["id_despacho"]): (f"#{int(r['id_despacho'])} · {r['titulo']} · "
-                                    f"{r['destino'] or 's/destino'} · {r['fecha_despacho'] or 's/fecha'}")
+                                    f"{r['destino'] or 's/destino'} · {r['fecha_despacho'] or 's/fecha'}"
+                                    f" · {r['estado']}")
             for _, r in df.iterrows()}
     sel = st.selectbox("Orden de venta", df["id_despacho"].tolist(),
                        format_func=lambda i: _lbl.get(int(i), str(i)), key="dsp_tk_desp")
     if sel is None:
         return
     cab = df[df["id_despacho"] == sel].iloc[0]
+    if str(cab.get("estado")) == "BORRADOR":
+        st.warning("Esta orden está en **BORRADOR**: los tickets se pueden asignar, pero la "
+                   "salida de stock recién se genera al confirmarla en 🔬 Control y confirmación.")
 
     res = cat("SELECT tickets_salida, tickets_mp, kg_salida, kg_mp, tickets_error, tickets_aviso "
               "FROM produccion.v_despacho_ticket_resumen WHERE id_despacho=%s", (int(sel),))

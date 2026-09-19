@@ -3890,9 +3890,19 @@ def render(USR, cat, conectar, siguiente_identificador, H=None):
             if not _ff.empty:
                 fin = _ff
     else:
-        _dcod_fin = 'AFE-G' if str(mp).upper().startswith('AFE-G') else 'AFE-S'
+        # DESGOMADO: el producto final es EL MISMO que entro, porque lo que se saca es la
+        # goma y el agua — el girasol sigue siendo girasol y el mani sigue siendo mani. La
+        # unica excepcion es la soja CON goma, que al desgomarse pasa a ser soja sin goma.
+        # Antes estaba escrito al reves: 'AFE-G' si la MP empezaba con AFE-G y AFE-S para
+        # todo lo demas, asi que desgomar AFE-M terminaba dando AFE-S.
+        _mp_up = str(mp).upper().strip()
+        _dcod_fin = 'AFE-S' if _mp_up == 'AFE-SG' else _mp_up
         fin = cat("SELECT id_producto, codigo_producto, nombre_producto FROM produccion.dim_producto "
                   "WHERE activo AND codigo_producto=%s", (_dcod_fin,))
+        if fin is None or fin.empty:
+            # producto sin final propio registrado: se ofrecen los finales habilitados para
+            # el proceso en lugar de forzar uno que no corresponde.
+            fin = _productos_proceso(cat, sector, proc, "FINAL")
     if fin.empty:
         fin = cat("SELECT id_producto, codigo_producto, nombre_producto FROM produccion.dim_producto "
                   "WHERE activo AND tipo_producto='FINAL' ORDER BY codigo_producto")

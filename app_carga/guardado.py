@@ -118,6 +118,15 @@ def mostrar(clave, minutos=_MINUTOS):
     if time.time() - float(r.get("ts") or 0) > minutos * 60:
         st.session_state.pop(k, None)
         return
+    # SOL-0043: el recibo se dibuja donde está la vista, pero el operario suele estar
+    # al final de una pantalla larga (el botón Guardar). El toast aparece en la esquina
+    # de la ventana esté donde esté el scroll. Una sola vez por recibo.
+    if not r.get("toast"):
+        r["toast"] = True
+        try:
+            st.toast(("✅ " if r["ok"] else "❌ ") + r["titulo"])
+        except Exception:
+            pass
 
     if r["ok"]:
         _borde, _fondo, _tit, _ic = "#16a34a", "#f0fdf4", "#166534", "✅"
