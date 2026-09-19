@@ -24,6 +24,8 @@ import io
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from .kpis import _FRAGMENT, _TTL, _kpi, _n, _i, _rerun_fragment
 
 _GRUPO_LBL = {"MP": "Materia prima", "INSUMO": "Insumos", "PT": "Producto terminado", "OTRO": "Otros"}
@@ -34,7 +36,7 @@ _NUM = ("cap_l", "act_l", "libre_l", "comp_l", "disp_l",
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer(_cf, sector):
     sql = ("SELECT id_tanque, tanque_codigo, tanque, grupo_fisico, tipo_tanque, producto, "
            "producto_codigo, grupo, densidad, cap_l, act_l, libre_l, comp_l, disp_l, "

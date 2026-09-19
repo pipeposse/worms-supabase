@@ -20,6 +20,8 @@ las muestras que de verdad faltan.
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from .kpis import _FRAGMENT, _TTL, _kpi, _rerun_fragment
 
 _COLS = ("id_ticket, ticket_lab, op, rol, fuente, producto, tanque, creado_en, dias_desde_pedido, "
@@ -27,7 +29,7 @@ _COLS = ("id_ticket, ticket_lab, op, rol, fuente, producto, tanque, creado_en, d
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _propuestas(_cf):
     """Pedidos con un análisis probable pero de confianza BAJA: los confirma una persona."""
     try:
@@ -40,7 +42,7 @@ def _propuestas(_cf):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _faltantes(_cf):
     """Pedidos sin ningún análisis que los respalde: las muestras que realmente faltan."""
     try:
@@ -53,7 +55,7 @@ def _faltantes(_cf):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _resumen(_cf):
     try:
         with _cf() as conn:

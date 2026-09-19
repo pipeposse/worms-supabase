@@ -304,6 +304,8 @@ def _objetivos(USR, cat, conectar, anio, semana):
                                   (USR.get("nombre") or str(uid)), int(anio), int(semana)))
                 audit.log("U", "fact_objetivo_semanal", int(anio) * 100 + int(semana),
                           {"cerrado": not _cerrado})
+            st.success(("🔓 Plan de la semana %d/%d REABIERTO." if _cerrado
+                        else "🔒 Plan de la semana %d/%d CERRADO.") % (int(semana), int(anio)))
             cat.clear()
             st.rerun()
         except Exception as e:

@@ -583,7 +583,11 @@ def go_to(sec):
     st.session_state.section = sec
     st.rerun()
 
-@st.cache_data(ttl=60)
+import cache_rev as _cache_rev
+_cache_rev.configurar(_lab_conn)   # antes del primer uso: la portada se dibuja antes de llegar a cat()
+
+
+@_cache_rev.cachear(ttl=60)
 def _landing_kpis():
     """KPIs del pantallazo inicial. Devuelve dict o None si falla la conexion."""
     if not DATABASE_URL:

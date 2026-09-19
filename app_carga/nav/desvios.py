@@ -13,12 +13,14 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from . import periodo as _per
 from .kpis import _FRAGMENT, _TTL, _kpi
 from .plan_semanal import _semana, _lunes
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer(_cf, sector, anio, semana):
     sql = ("SELECT id_batch, op, formula, version, fecha, estado, orden, variable, unidad, esperado, real, desvio, "
            "desvio_pct, tolerancia, fuera_tolerancia, medido FROM produccion.v_desvio_op "
@@ -84,7 +86,7 @@ def _tabla(ctx, sec, anio, semana):
                "Tiempo: ± 15 % de la duración prevista.")
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer_tanques(_cf, sector, desde, hasta):
     """Lo declarado que salió contra lo que bajó la medición física, tanque por tanque."""
     try:

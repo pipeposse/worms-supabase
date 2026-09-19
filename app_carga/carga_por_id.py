@@ -420,6 +420,12 @@ def _paso_reposo(USR, cat, conectar, b):
                                 "id_usuario_estado=%s, motivo_estado='Inicio de decantación (operario)' WHERE id_batch=%s",
                                 (uid, id_batch))
                 audit.log("U", "fact_batch_proceso", id_batch, {"estado": "DECANTACION"})
+            try:
+                import guardado as _gdo
+                st.success(_gdo.aviso_etapa(id_batch, "REPOSO", "DECANTACION",
+                                            "iniciada por %s" % (USR.get("nombre") or "")))
+            except Exception:
+                st.success("Decantación iniciada.")
             try: cat.clear()
             except Exception: pass
             st.rerun()

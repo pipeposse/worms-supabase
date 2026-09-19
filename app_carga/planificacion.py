@@ -1478,13 +1478,15 @@ def _estado_vivo(conectar, uid, idb):
     _SQL = ("SELECT estado, etapa_actual FROM produccion.fact_batch_proceso WHERE id_batch=%s")
     # Primero por el pool de lectura (sin handshake SSL): es una fila por índice
     # primario, no pesa. Si no está disponible, se cae a conectar().
+    # OJO: NO `import app`. Bajo Streamlit el script principal corre como __main__,
+    # así que ese import re-ejecuta app.py desde cero en un módulo nuevo y revienta
+    # en st.set_page_config: siempre caía al except y abría una conexión nueva con
+    # handshake SSL en cada ficha. guardado.fila() usa el pool sin importar nada.
     try:
-        import app as _app
-        with _app._lab_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(_SQL, (int(idb),))
-                r = cur.fetchone()
-        return (str(r[0]), r[1]) if r else (None, None)
+        import guardado as _gdo
+        r = _gdo.fila(_SQL, (int(idb),))
+        if r:
+            return (str(r[0]), r[1])
     except Exception:
         pass
     try:
@@ -3690,7 +3692,8 @@ def _descuentos_tickets(USR, cat, conectar):
     if st.button("💾 Guardar descuentos", type="primary", disabled=not _cmb, key="dsc_save"):
         import lab_carga as _lc
         try:
-            from app import _lab_conn as _gc
+            import guardado as _gdo
+            _gc = _gdo._conn()          # el pool de lectura de la app, sin `import app`
         except Exception:
             _gc = None
         _ok, _err = 0, []

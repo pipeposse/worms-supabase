@@ -200,6 +200,44 @@ def _origen_mp(cat, id_batch):
                    "es el origen probable del contenido, no un lote identificado.")
 
 
+_NOMBRE_ETAPA = {"CALDERA": "Caldera", "CARGA_MP": "Carga de materia prima",
+                 "CARGA_INSUMO": "Carga de insumos", "VALIDAR_TEMP": "Validación de temperatura",
+                 "INICIO_RX": "Inicio de reacción", "REVISION": "Revisiones de reacción",
+                 "DECANTACION": "Decantación", "REPOSO": "Reposo"}
+
+
+def _avance(id_batch, orden):
+    """Qué avisá el sistema después de confirmar el paso `orden`.
+
+    Planta pidió que SIEMPRE se avise el fin de una etapa y el cambio a la siguiente:
+    si el operario no ve el corte, no sabe si terminó y vuelve a cargar. Se relee el
+    instructivo entero SIN caché — con `cat()` el paso recién confirmado todavía no
+    figura y el aviso sale al revés. Devuelve (texto, orden_siguiente)."""
+    df = _g.leer(_SQL_PASOS, (int(id_batch),))
+    if df is None or df.empty:
+        return "", None
+    _h = df["hecho"].fillna(False).astype(bool)
+    hechos, total = int(_h.sum()), len(df)
+    fila = df[df["orden"] == int(orden)]
+    etapa = str(fila.iloc[0]["etapa"]) if not fila.empty else ""
+    nom = _NOMBRE_ETAPA.get(etapa, etapa)
+    pend = df[~_h]
+    if pend.empty:
+        return ("🏁 **INSTRUCTIVO COMPLETO** · %d de %d pasos cargados. "
+                "Cerrá la etapa desde la ficha de la reacción." % (hechos, total)), None
+    sig = pend.iloc[0]
+    sig_orden = int(sig["orden"])
+    sig_txt = "paso %d · %s" % (sig_orden, sig.get("descripcion") or sig["etapa"])
+    # ¿quedó algún paso pendiente de la MISMA etapa?
+    _mismos = df[(df["etapa"] == etapa) & (~_h)]
+    if etapa and _mismos.empty:
+        _n_et = int((df["etapa"] == etapa).sum())
+        sig_nom = _NOMBRE_ETAPA.get(str(sig["etapa"]), str(sig["etapa"]))
+        return ("🏁 **Etapa «%s» TERMINADA** (%d de %d pasos) → empieza «%s»: %s · "
+                "%d de %d pasos del instructivo." % (nom, _n_et, _n_et, sig_nom, sig_txt, hechos, total)), sig_orden
+    return ("➡️ Sigue el %s · %d de %d pasos cargados." % (sig_txt, hechos, total)), sig_orden
+
+
 def _invalidar(cat):
     """Que la próxima lectura del instructivo vaya a la base, sin esperar al hook."""
     inv = getattr(cat, "invalidar", None)
@@ -222,6 +260,12 @@ def _confirmar(cat, conectar, USR, id_batch, p, titulo, detalle="", **campos):
                      "WHERE id_batch=%s AND orden=%s", (int(id_batch), int(p["orden"])))
         _h = _r[0] if _r else None
         _ft = bool(_r[1]) if _r else False
+        # Un paso de HORAS con sólo el inicio marcado NO está hecho todavía, y está
+        # bien: el operario marca el fin después. No es una traba (log_error_app #1,
+        # "El paso 9 se guardó pero no quedó confirmado", era exactamente esto).
+        _parcial = False
+        if _h is False and str(p.get("captura")) == "HORAS" and campos.get("fin_ts") is None:
+            _h, _parcial = None, True
         if _ft and _h:
             # Guardado y fuera de tolerancia: el recibo lo dice en una sola línea, para
             # que el ⚠️ de la lista se lea como "el valor está fuera", no como "no guardó".
@@ -235,8 +279,13 @@ def _confirmar(cat, conectar, USR, id_batch, p, titulo, detalle="", **campos):
                       error="Falta el dato que marca el paso como hecho (%s). "
                             "Avisá a sistemas: queda registrado solo." % str(p.get("captura") or "—"))
         else:
+            _av, _sig = _avance(id_batch, int(p["orden"]))
+            if _av and _h:
+                detalle = (detalle + "  \n" if detalle else "") + _av
             _g.anotar(clave, True, titulo, detalle=detalle,
-                      verificado=("el paso figura como hecho en la base" if _h else ""))
+                      verificado=("el paso figura como hecho en la base" if _h else
+                                  ("inicio registrado en la base; falta marcar el fin para completar el paso"
+                                   if _parcial else "")))
         # El selector salta al próximo paso pendiente, y SIEMPRE hacia adelante.
         # Antes sólo se borraba la elección y el índice se recalculaba con el primer
         # pendiente de la tabla: si esa tabla venía de la caché y todavía no mostraba
@@ -325,6 +374,16 @@ def render(USR, cat, conectar, id_batch):
                 st.markdown(":orange[⚠️ **El valor quedó fuera de la tolerancia de la fórmula — "
                             "pero el paso está guardado igual.**] El triángulo de la lista avisa del "
                             "desvío, no de un error de carga.")
+        # ANTI DOBLE CARGA. El paso ya cargado se puede corregir, pero no de un solo
+        # click reflejo: hay que decir expresamente que se quiere pisar el valor. Es lo
+        # que evita que el operario, al no ver confirmación, vuelva a confirmar y tape
+        # un dato bueno con otro (fact_paso_medicion es upsert por (id_batch, orden):
+        # no se duplica la fila, se pisa el contenido, que es peor).
+        _ya = bool(p.get("hecho"))
+        _pisar = False
+        if _ya:
+            _pisar = st.checkbox("✏️ Corregir el valor ya cargado (se pisa el anterior)",
+                                 key=f"opi_pisar_{id_batch}_{sel}")
         cap = p["captura"]
         ahora = _ahora()
         _lbl = f"Paso {int(p['orden'])} · {p.get('descripcion') or p['etapa']}"
@@ -399,7 +458,23 @@ def render(USR, cat, conectar, id_batch):
             else:
                 st.caption("Este paso no pide datos: confirmalo cuando esté hecho.")
             obs = st.text_input("Observación (opcional)", key=f"opi_obs_{id_batch}_{sel}")
-            enviado = st.form_submit_button(f"✔ Confirmar paso {int(p['orden'])}", type="primary", use_container_width=True)
+            enviado = st.form_submit_button(
+                (f"✏️ Corregir paso {int(p['orden'])}" if _ya else f"✔ Confirmar paso {int(p['orden'])}"),
+                type=("secondary" if _ya else "primary"), use_container_width=True)
+
+        if enviado and _ya and not _pisar:
+            # Recibo, no st.warning: el recibo sobrevive al rerun del fragment y no se
+            # mezcla con el buffer de carteles que guardado.instalar() reenvía.
+            _av, _sig = _avance(id_batch, int(p["orden"]))
+            _g.anotar(f"opi_{id_batch}", True,
+                      "El paso %d ya estaba cargado: no se cargó de nuevo" % int(p["orden"]),
+                      detalle=((_real(p) or "") + ("  \n" + _av if _av else "")),
+                      verificado="el dato anterior quedó intacto — para cambiarlo, marcá "
+                                 "«Corregir el valor ya cargado»")
+            if _sig is not None:
+                st.session_state[f"opi_desde_{id_batch}"] = int(p["orden"])
+                st.session_state.pop(f"opi_sel_{id_batch}", None)
+            _rerun_fragment()
 
         if enviado and cap == "MEDICION" and not campos:
             st.warning("⚠️ Cargá la temperatura y/o la acidez: sin ninguno de los dos el paso "

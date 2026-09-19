@@ -27,6 +27,8 @@ import io
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 # Orden de lectura de los parámetros: primero lo que define calidad en casi todos, después
 # lo que se mide para trazabilidad. El que no esté en la lista va al final, alfabético.
 _ORDEN = ["% ACIDEZ", "% H2O - SEDIMENTO & Gomas", "% H2O", "% SEDIMENTO", "% GOMAS",
@@ -42,7 +44,7 @@ _FAM_NOMBRE = {"AFE": "AFE — aceites filtrados", "AG": "AG — ácidos grasos"
                "INSUMOS QUIMICOS": "Insumos químicos"}
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@_cache_rev.cachear(ttl=600, show_spinner=False)
 def _leer(_cf):
     p = ("SELECT familia, producto, calidad, descripcion, rubro, corriente, parametro, "
          "especificacion, define_calidad, codigo_producto, es_liquido, nombre_producto, "

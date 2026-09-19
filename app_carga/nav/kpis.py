@@ -21,6 +21,8 @@ import json
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from . import state as _st
 
 _TTL = 60  # s · los KPIs se recalculan como mucho cada minuto por proceso
@@ -42,7 +44,7 @@ def _rerun_fragment():
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer_kpis(_cf):
     """Una fila con todos los indicadores. None si la base no responde."""
     try:
@@ -63,7 +65,7 @@ def _leer_kpis(_cf):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer_capacidad(_cf):
     try:
         with _cf() as conn:

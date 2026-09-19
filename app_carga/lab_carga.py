@@ -83,6 +83,19 @@ def _conn_cm(get_conn):
     return get_conn() if get_conn else _default_conn()
 
 
+def _avisar_cache(*tablas):
+    """Las escrituras de laboratorio van por conexión propia (no por etl.db.conectar),
+    así que el hook de commit que invalida la caché de cat() no las ve. Se avisa a
+    mano: sin esto, Producción seguía mostrando «esperando validación de lab» hasta
+    5 minutos después de cargado el análisis."""
+    try:
+        import cache_rev as _cr
+        _cr.bump_tablas(*(tablas or ("lab_evaluaciones", "procesos_lab")))
+        _cr._EXT_TS[0] = 0.0     # y que relea pg_stat: los triggers tocan otras tablas
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Catalogos (valores reales de produccion.procesos_lab)
 # ---------------------------------------------------------------------------
@@ -183,6 +196,7 @@ def insertar_evaluacion(data, get_conn=None):
             cur.execute(sql, [payload[c] for c in cols])
             new_id = cur.fetchone()[0]
         conn.commit()
+        _avisar_cache()
         return new_id
 
 
@@ -196,6 +210,7 @@ def actualizar_evaluacion(le_id, data, get_conn=None):
         with conn.cursor() as cur:
             cur.execute(sql, [payload[c] for c in payload] + [le_id])
         conn.commit()
+        _avisar_cache()
 
 
 def anular_evaluacion(source_id, id_access, usuario=None, get_conn=None):
@@ -213,6 +228,7 @@ def anular_evaluacion(source_id, id_access, usuario=None, get_conn=None):
                     "WHERE source_id=%s AND id_access=%s",
                     (usuario or "app", source_id, str(id_access)))
         conn.commit()
+    _avisar_cache()
     return True
 
 

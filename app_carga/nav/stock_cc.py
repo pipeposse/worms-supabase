@@ -53,6 +53,8 @@ import io
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from . import periodo as _per
 from .kpis import _FRAGMENT, _TTL, _kpi, _n, _rerun_fragment
 
@@ -65,7 +67,7 @@ _COLS = ("id_mov, momento, fecha, cuenta, cuenta_nombre, calidad, corriente_nomb
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _movs(_cf, sector, desde, hasta):
     sql = (f"SELECT {_COLS} FROM produccion.v_stock_cuenta_sector "
            "WHERE sector = %s AND fecha BETWEEN %s AND %s ORDER BY momento, id_mov")
@@ -84,7 +86,7 @@ def _movs(_cf, sector, desde, hasta):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _saldo_inicial(_cf, sector, desde):
     """El saldo con el que arranca el período, por cuenta.
 
@@ -116,7 +118,7 @@ def _cerrar_corte(conectar, USR, sector, fecha):
     return row
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _cuentas(_cf, sector):
     """Qué es cada producto del sector y qué papel juega: si se exporta o sólo está acopiado.
     Es la columna DESCRIPCIÓN y el filtro de la pantalla (produccion.v_cuenta_sector)."""
@@ -133,7 +135,7 @@ def _cuentas(_cf, sector):
                                      "producto_codigo", "tanques_en_uso", "salidas_odv", "tn_odv"])
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _sin_evaluar(_cf, sector):
     """Lo que está en tanque esperando que laboratorio lo califique, con el ticket del último
     ingreso para ir a buscarlo. Es la cuenta NO EVALUADO."""
@@ -148,7 +150,7 @@ def _sin_evaluar(_cf, sector):
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _medido_tanques(_cf, sector):
     """Control: lo que hoy hay MEDIDO en los tanques del sector (TN y KL)."""
     sql = ("SELECT COALESCE(SUM(act_tn),0) AS tn, COALESCE(SUM(act_l),0)/1000.0 AS kl "
@@ -162,7 +164,7 @@ def _medido_tanques(_cf, sector):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _medido_cuenta(_cf, sector):
     """Qué tanques tiene asignados hoy cada producto del sector y cuánto miden.
 

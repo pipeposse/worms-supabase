@@ -21,6 +21,8 @@ planificación. No hay roles hardcodeados acá.
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from . import state as _st
 from .kpis import _FRAGMENT, _TTL, _kpi, _rerun_fragment
 
@@ -63,7 +65,7 @@ _SEG_DEFAULT = ("INICIAR", {"iniciar_view": "👷 Iniciar producción"})
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer(_cf):
     sql = ("SELECT tipo, ref, marca, prioridad, titulo, detalle, seccion, vista, sector_nav, "
            "id_batch, op, cuando, n FROM produccion.v_pendientes "

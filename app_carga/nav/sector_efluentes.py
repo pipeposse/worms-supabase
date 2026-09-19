@@ -21,6 +21,8 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from .kpis import _TTL, _kpi, _n, _i
 
 PB = "DISPOSICION FINAL DE LIQUIDOS"          # producto_base (portería) y producto_lab (laboratorio)
@@ -31,7 +33,7 @@ _EXCL_CLI = ("NOT EXISTS (SELECT 1 FROM produccion.dic_cliente_excluido e WHERE 
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer_kpis(_cf, dia):
     sql = f"""
         SELECT count(*) FILTER (WHERE t.fecha_entrada::date = %s)                                   AS camiones_hoy,
@@ -55,7 +57,7 @@ def _leer_kpis(_cf, dia):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _camiones(_cf, desde, hasta):
     # "En stock": cada camión de efluente es una ENTRADA a piletas en el libro de stock
     # (produccion.fn_sync_movimientos_efluente, corre cada 15 minutos).
@@ -81,7 +83,7 @@ def _camiones(_cf, desde, hasta):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _historico(_cf, meses=6):
     """Un renglón por día de los últimos N meses: con eso se arma el acumulado
     por día del mes, la comparación entre meses y la proyección de cierre."""
@@ -108,7 +110,7 @@ def _historico(_cf, meses=6):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _flujo_piletas(_cf, n=6):
     """Mes a mes: efluente que entró a piletas vs AG recuperado que salió."""
     try:

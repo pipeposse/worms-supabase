@@ -23,6 +23,8 @@ bandeja HOY.
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from .kpis import _FRAGMENT, _TTL, _kpi
 
 # Umbrales de ocupación. Por encima de LLENO no entra un camión más.
@@ -31,7 +33,7 @@ _MIN_TN = 1.0          # recipientes de menos de 1 TN (soda, gasoil) no ordenan 
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _capacidad(_cf):
     try:
         with _cf() as conn:
@@ -43,7 +45,7 @@ def _capacidad(_cf):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _evaluados(_cf):
     """% de ingresos evaluados por laboratorio. El objetivo declarado es 100%."""
     try:

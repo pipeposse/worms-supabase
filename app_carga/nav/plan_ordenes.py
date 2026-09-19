@@ -14,6 +14,8 @@ import io
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from . import periodo as _per
 from . import state as _st
 from .kpis import _FRAGMENT, _TTL, _kpi, _n, _rerun_fragment
@@ -22,7 +24,7 @@ _ESTADO_UI = {"BORRADOR": "📝 Borrador", "CONFIRMADO": "✅ Confirmada",
               "DESPACHADO": "🚚 Cargada", "ANULADO": "✖ Anulada"}
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer(_cf, desde, hasta):
     sql = """
         SELECT d.id_despacho AS id, d.titulo, d.cliente, d.destino, d.producto_codigo AS producto,
@@ -52,7 +54,7 @@ def _leer(_cf, desde, hasta):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _tickets(_cf, id_orden):
     try:
         with _cf() as conn:

@@ -19,6 +19,8 @@ import io
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from . import periodo as _per
 from .kpis import _FRAGMENT, _TTL, _kpi, _n, _rerun_fragment
 
@@ -44,7 +46,7 @@ _RESULTADO = {"ACEPTADO": "✅ Aceptado", "RECHAZADO": "⛔ Rechazado",
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer(_cf, sector, desde, hasta):
     sql = ("SELECT fecha, dia, ticket, num_muestra, familia_lab, producto_lab, calidad, estado, "
            "corriente, empleado, tanque, conclusion, prc_acidez, prc_agua, prc_sedimentos, "

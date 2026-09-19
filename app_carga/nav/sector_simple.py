@@ -13,6 +13,8 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from . import state as _st
 from .kpis import _FRAGMENT, _TTL, _kpi, _n, _i, _leer_kpis, _rerun_fragment
 from .sectores import sector_por_codigo
@@ -23,7 +25,7 @@ _OTRO = "Otro (escribir)…"
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _saldos(_cf, codigo):
     try:
         with _cf() as conn:
@@ -33,7 +35,7 @@ def _saldos(_cf, codigo):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _ultimos(_cf, codigo, n=30):
     sql = ("SELECT m.id_mov, m.fecha, m.producto, m.tipo, m.kg, m.ticket, m.contraparte, m.observacion, "
            "u.nombre_full AS usuario, m.creado_en FROM produccion.fact_stock_sector m "
@@ -48,7 +50,7 @@ def _ultimos(_cf, codigo, n=30):
         return None
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@_cache_rev.cachear(ttl=3600, show_spinner=False)
 def _productos_solidos(_cf):
     try:
         with _cf() as conn:
@@ -59,7 +61,7 @@ def _productos_solidos(_cf):
         return []
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _actividad(_cf, codigo):
     try:
         with _cf() as conn:

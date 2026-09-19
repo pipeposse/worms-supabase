@@ -145,6 +145,11 @@ def destinos(USR, cat, conectar):
                                     "etapa_actual='DECANTACION', id_usuario_estado=%s, "
                                     "motivo_estado='Inicio de decantación' WHERE id_batch=%s", (uid, int(b["id_batch"])))
                     audit.log("U", "fact_batch_proceso", int(b["id_batch"]), {"estado": "DECANTACION"})
+                try:
+                    import guardado as _gdo
+                    st.success(_gdo.aviso_etapa(int(b["id_batch"]), "REPOSO", "DECANTACION"))
+                except Exception:
+                    st.success("Decantación iniciada.")
                 cat.clear(); st.rerun()
             except Exception as e:
                 st.exception(e)

@@ -45,6 +45,18 @@ _CATALOGO = {             # se llena con cargar_catalogo(conn_factory)
 }
 _CONN_FACTORY = [None]
 _TTL_CATALOGO = 6 * 3600
+# Revisión EXTERNA por tabla: contadores de pg_stat_user_tables (ins+upd+del).
+# Cubre lo que este proceso no ve escribir: la sincronización de portería y de
+# laboratorio, los jobs de pg_cron, otra instancia de la app, una función SQL que
+# escribe por dentro, un UPDATE a mano en la base. Se relee como mucho cada
+# _POLL_EXT segundos POR PROCESO (una consulta chica a una vista de estadísticas,
+# no a las tablas), y entra en la clave de caché junto con la revisión local.
+_EXT = {}                 # tabla -> int (contador acumulado de modificaciones)
+_EXT_TS = [0.0]           # cuándo se leyó por última vez
+_POLL_EXT = 20.0
+_SQL_EXT = ("SELECT relname, n_tup_ins + n_tup_upd + n_tup_del "
+            "FROM pg_stat_user_tables "
+            "WHERE schemaname IN ('public','produccion','reporting','gapre','wa')")
 _SQL_CACHE = {}           # sql -> frozenset(tablas base)  (memo del parseo)
 _SQL_CACHE_MAX = 2000
 
@@ -173,17 +185,70 @@ def tablas_base_de_sql(sql):
     return out
 
 
+_FN_OPACA = re.compile(r"\bfn_\w+\s*\(", re.IGNORECASE)
+
+
 def es_escritura(sql):
     return bool(_ESCRITURA.match(sql if isinstance(sql, str) else str(sql)))
 
 
+def es_escritura_opaca(sql):
+    """`SELECT produccion.fn_x(...)` o `CALL ...` dentro de una transacción de
+    escritura: la función puede escribir cualquier tabla y el parseo no lo ve."""
+    t = sql if isinstance(sql, str) else str(sql)
+    return bool(_FN_OPACA.search(t)) or t.strip().upper().startswith("CALL")
+
+
 # ------------------------------------------------------------------ revisiones
+def _refrescar_ext(forzar=False):
+    """Relee los contadores de pg_stat_user_tables si pasaron _POLL_EXT segundos.
+    Nunca levanta: si la base no responde, se sigue con lo último leído."""
+    ahora = time.time()
+    if not forzar and ahora - _EXT_TS[0] < _POLL_EXT:
+        return
+    cf = _CONN_FACTORY[0]
+    if cf is None:
+        return
+    with _lock:
+        # otro hilo ya lo está leyendo: que no se amontonen
+        if not forzar and ahora - _EXT_TS[0] < _POLL_EXT:
+            return
+        _EXT_TS[0] = ahora
+    try:
+        with cf() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_SQL_EXT)
+                filas = cur.fetchall()
+        nuevo = {str(r[0]).lower(): int(r[1] or 0) for r in filas}
+        with _lock:
+            _EXT.update(nuevo)
+    except Exception:
+        pass
+
+
+def rev_de_tablas(tablas):
+    """Tupla de revisión para un conjunto de tablas base: (rev global, (tabla, rev
+    local, rev externa)...). Es lo que va en la clave de st.cache_data."""
+    _refrescar_ext()
+    with _lock:
+        return (_REV_GLOBAL[0],) + tuple(sorted((t, _REV.get(t, 0), _EXT.get(t, 0)) for t in tablas))
+
+
+def rev_global():
+    """Revisión «todo»: cambia si cambió cualquier tabla (local o externa)."""
+    _refrescar_ext()
+    with _lock:
+        return (_REV_GLOBAL[0], sum(_REV.values()), sum(_EXT.values()))
+
+
 def rev_key(sql):
-    """Clave de revisión de una consulta: (rev global, rev de cada tabla base)."""
+    """Clave de revisión de una consulta: (rev global, (tabla, rev local, rev externa)...).
+    Si la consulta no menciona ninguna tabla conocida, queda atada a rev_global()."""
     cargar_catalogo()
     tablas = tablas_base_de_sql(sql)
-    with _lock:
-        return (_REV_GLOBAL[0],) + tuple(sorted((t, _REV.get(t, 0)) for t in tablas))
+    if not tablas:
+        return rev_global()
+    return rev_de_tablas(tablas)
 
 
 def bump_tablas(*tablas):
@@ -229,8 +294,11 @@ def on_commit(stmts):
                     tablas |= t
                 else:
                     escritura_opaca = True   # CALL fn(), tabla desconocida… → global
+            elif es_escritura_opaca(s):
+                escritura_opaca = True       # SELECT fn_x(): escribe por dentro
         if escritura_opaca:
             bump_global()
+            _EXT_TS[0] = 0.0                 # y que la próxima lectura relea pg_stat ya
         elif tablas:
             bump_tablas(*tablas)
     except Exception:
@@ -248,3 +316,57 @@ def estado():
                 "vistas_expandidas": sum(1 for k, v in _CATALOGO["base_de"].items() if v != frozenset([k])),
                 "tablas_con_trigger": len(_CATALOGO["trigger_escribe"]),
                 "catalogo_hace_s": int(time.time() - _CATALOGO["cargado_en"]) if _CATALOGO["cargado_en"] else None}
+
+
+# ------------------------------------------------------------------ cachés propias
+def cachear(ttl=300, show_spinner=False, **kw):
+    """Reemplazo directo de `@st.cache_data(...)` para funciones de LECTURA.
+
+    Las pantallas nuevas (nav/*) y algunos KPIs tenían su propio st.cache_data,
+    fuera de cat(): ninguna escritura las invalidaba, sólo el TTL. Con este
+    decorador la clave de caché incluye la revisión de las tablas que menciona el
+    módulo de la función (local + externa vía pg_stat), así que una escritura de
+    la app la invalida al instante y una externa en ≤ _POLL_EXT segundos. Si el
+    módulo no menciona ninguna tabla conocida, queda atada a rev_global().
+
+    Respeta las reglas de st.cache_data: los parámetros que empiezan con "_"
+    (p. ej. `_cf`, la fábrica de conexiones) siguen fuera del hash, porque se
+    conserva la firma original de la función."""
+    import functools
+    import inspect
+    import streamlit as st
+
+    def deco(fn):
+        try:
+            _src = inspect.getsource(inspect.getmodule(fn)) or ""
+        except Exception:
+            _src = ""
+        _tablas = [None]     # se resuelve en la primera llamada (el catálogo carga tarde)
+
+        def _rev():
+            cargar_catalogo()
+            if _tablas[0] is None and _CATALOGO["relaciones"]:
+                _tablas[0] = tablas_base_de_sql(_src)
+            t = _tablas[0]
+            return rev_de_tablas(t) if t else rev_global()
+
+        def _inner(rev, *a, **k):
+            return fn(*a, **k)
+        _inner.__name__ = getattr(fn, "__name__", "cachear")
+        _inner.__qualname__ = getattr(fn, "__qualname__", _inner.__name__)
+        _inner.__module__ = getattr(fn, "__module__", __name__)
+        try:
+            _sig = inspect.signature(fn)
+            _inner.__signature__ = _sig.replace(
+                parameters=[inspect.Parameter("rev", inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+                           + list(_sig.parameters.values()))
+        except Exception:
+            pass
+        _cached = st.cache_data(ttl=ttl, show_spinner=show_spinner, **kw)(_inner)
+
+        @functools.wraps(fn)
+        def wrapper(*a, **k):
+            return _cached(_rev(), *a, **k)
+        wrapper.clear = getattr(_cached, "clear", lambda *x, **y: None)
+        return wrapper
+    return deco

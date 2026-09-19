@@ -16,6 +16,8 @@ sección aprenda a filtrar por sector, el wrapper sólo cambia el preset.
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from . import state as _st
 from .kpis import _FRAGMENT, _TTL, _kpi, _n, _i, _presencia_abierta, _marcar_presencia, _leer_kpis, _rerun_fragment
 from .sectores import sector_por_codigo
@@ -106,7 +108,7 @@ def tarjetas(sec):
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer_kpi_sector(_cf, codigo):
     try:
         with _cf() as conn:

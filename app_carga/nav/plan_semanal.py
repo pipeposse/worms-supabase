@@ -18,6 +18,8 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from . import state as _st
 from . import periodo as _per
 from .kpis import _FRAGMENT, _TTL, _rerun_fragment
@@ -37,7 +39,7 @@ _SEGUIMIENTO = {
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer_plan(_cf, sector, desde, hasta):
     sql = ("SELECT id_batch, op, proceso, equipo, plan_inicio, plan_fin, fecha_plan, semana_iso, dia_iso, "
            "id_formula, formula, responsable, responsable_plan, kg_inicial, estado, estado_plan, real_inicio, real_fin, "
@@ -58,7 +60,7 @@ def _leer_plan(_cf, sector, desde, hasta):
         return None
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@_cache_rev.cachear(ttl=600, show_spinner=False)
 def _catalogos(_cf, sector_batch):
     try:
         with _cf() as conn:

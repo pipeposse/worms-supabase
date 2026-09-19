@@ -424,6 +424,40 @@ def instalar():
         except Exception:
             pass
 
+    # 1c) excepciones NO atrapadas (el traceback rojo de Streamlit). Hasta ahora
+    # sólo se registraban los st.error / st.exception explícitos; un botón sin
+    # try/except que reventaba (recuperación, SOL-0053) mostraba el rojo de
+    # Streamlit y no dejaba rastro en log_error_app. Se envuelve el handler que
+    # usan el script principal y los fragments: registra y después muestra igual.
+    try:
+        from streamlit import error_util as _eu
+        _orig_h = getattr(_eu, "handle_uncaught_app_exception", None)
+        if _orig_h is not None and not getattr(_orig_h, "_gdo", False):
+            def _w_uncaught(ex):
+                try:
+                    import traceback as _tb
+                    _tbtxt = "".join(_tb.format_exception(type(ex), ex, ex.__traceback__))[-8000:]
+                    registrar_error("EXCEPCION", "%s: %s" % (type(ex).__name__, ex),
+                                    accion="uncaught", detalle={"traceback": _tbtxt})
+                except Exception:
+                    pass
+                return _orig_h(ex)
+            _w_uncaught._gdo = True
+            _eu.handle_uncaught_app_exception = _w_uncaught
+            # los módulos que importaron el nombre directamente
+            for _modname in ("streamlit.runtime.scriptrunner.exec_code",
+                             "streamlit.runtime.scriptrunner.script_runner",
+                             "streamlit.runtime.fragment"):
+                try:
+                    import importlib as _il
+                    _m = _il.import_module(_modname)
+                    if getattr(_m, "handle_uncaught_app_exception", None) is _orig_h:
+                        _m.handle_uncaught_app_exception = _w_uncaught
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # 2) envolver los carteles
     for _nombre in ("success", "warning", "toast"):
         _orig = getattr(st, _nombre, None)
@@ -500,3 +534,27 @@ def flash_mostrar(minutos=10, limpiar_buffer=True):
     _html.append("</div>")
     st.markdown("".join(_html), unsafe_allow_html=True)
     ss.pop(_FLASH, None)
+
+
+# ------------------------------------------------------------------ aviso de etapa
+def aviso_etapa(id_batch, desde, hasta, extra=""):
+    """Texto Único para todo cambio de etapa de una reacción, verificado contra la base.
+
+    Planta pidió que SIEMPRE se avise el fin de una etapa y el pase a la siguiente.
+    Se relee fact_batch_proceso sin caché: si la base quedó en otro estado, el
+    cartel lo dice en vez de festejar. Va dentro de st.success(): guardado.instalar()
+    lo reenvía después del rerun, así que el operario lo ve."""
+    r = fila("SELECT identificador_unidad, estado FROM produccion.fact_batch_proceso "
+             "WHERE id_batch=%s", (int(id_batch),))
+    ident = (r[0] if r and r[0] else None) or ("#%d" % int(id_batch))
+    est = str(r[1]) if r and r[1] is not None else None
+    txt = "✅ **%s** · etapa **%s** TERMINADA → ahora en **%s** (%s hs)" % (ident, desde, hasta, _hora()[:5])
+    if est is None:
+        txt += " · no se pudo releer la base para confirmarlo"
+    elif est.upper() == str(hasta).upper():
+        txt += " · confirmado en la base"
+    else:
+        txt += " · ⚠️ la base quedó en **%s**: avisá a sistemas" % est
+    if extra:
+        txt += " · " + extra
+    return txt

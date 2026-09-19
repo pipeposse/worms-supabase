@@ -382,6 +382,11 @@ def produccion(USR, cat, conectar, id_batch=None):
                                     "motivo_estado='Inicio de purga/decantación' WHERE id_batch=%s",
                                     (uid, int(b["id_batch"])))
                     audit.log("U", "fact_batch_proceso", int(b["id_batch"]), {"estado": "DECANTACION"})
+                try:
+                    import guardado as _gdo
+                    st.success(_gdo.aviso_etapa(int(b["id_batch"]), "REPOSO", "DECANTACION", "purga y decantación"))
+                except Exception:
+                    st.success("Purga y decantación iniciadas.")
                 cat.clear(); st.rerun()
             except Exception as e:
                 st.exception(e)

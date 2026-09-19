@@ -28,6 +28,8 @@ import io
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from . import periodo as _per
 from .kpis import _FRAGMENT, _TTL, _kpi, _n, _rerun_fragment
 from .stock_cc import _UM, _q
@@ -38,7 +40,7 @@ _COLS = ("id_mov, momento, fecha, sector, sector_nombre, cuenta, cuenta_nombre, 
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _movs(_cf, desde, hasta):
     """Todos los movimientos de stock de los sectores con tanque, en una sola consulta."""
     sql = (f"SELECT {_COLS} FROM produccion.v_stock_cuenta_sector v "
@@ -58,7 +60,7 @@ def _movs(_cf, desde, hasta):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _saldo_inicial(_cf, desde):
     sql = ("SELECT sector, sector_nombre, cuenta, cuenta_nombre, calidad, corriente_nombre, "
            "kg_neto, litros_neto, base_fecha, base_fuente "
@@ -74,7 +76,7 @@ def _saldo_inicial(_cf, desde):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _medido(_cf):
     """Lo que hoy miden los tanques, por sector y por producto."""
     sql = ("SELECT sector, cuenta, tanques, tanques_con_producto, tanques_con_producto_txt, tn, kl "
@@ -90,7 +92,7 @@ def _medido(_cf):
                                      "tanques_con_producto_txt", "tn", "kl"])
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _sin_tanque(_cf, desde, hasta):
     """Lo que se consume o se produce sin pasar por ningún tanque: no descuenta de nada."""
     sql = ("SELECT sector, sector_nombre, id_mov, fecha, producto, producto_codigo, grupo, tipo, "
@@ -106,7 +108,7 @@ def _sin_tanque(_cf, desde, hasta):
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _cuentas(_cf):
     sql = ("SELECT sector, cuenta, descripcion, rol, del_sector, producto_codigo "
            "FROM produccion.v_cuenta_sector")

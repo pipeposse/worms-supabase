@@ -24,6 +24,8 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+import cache_rev as _cache_rev   # caché que una escritura invalida (no sólo el TTL)
+
 from .kpis import _TTL, _kpi, _n, _i
 
 # --- qué NO es sólido ------------------------------------------------------
@@ -44,7 +46,7 @@ _BASE = f"t.peso_neto > 0 AND {_ES_SOLIDO} AND {_EXCL_CLI}"
 
 
 # ------------------------------------------------------------------ datos
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer_kpis(_cf, dia):
     sql = f"""
         SELECT count(*) FILTER (WHERE t.fecha_entrada::date = %s)                                  AS camiones_hoy,
@@ -67,7 +69,7 @@ def _leer_kpis(_cf, dia):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _camiones(_cf, desde, hasta):
     sql = f"""
         SELECT t.transaccion::bigint AS ticket, t.fecha_entrada::date AS fecha, t.hora_e AS hora,
@@ -87,7 +89,7 @@ def _camiones(_cf, desde, hasta):
         return None
 
 
-@st.cache_data(ttl=_TTL, show_spinner=False)
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _historico(_cf, meses=6):
     """Un renglón por camión de los últimos N meses: con eso se arma el acumulado
     por día del mes, la comparación entre meses y la proyección de cierre."""

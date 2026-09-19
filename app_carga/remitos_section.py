@@ -395,6 +395,7 @@ def _carga_manual(USR, conectar):
                 with conn.cursor() as cur:
                     cur.execute("UPDATE produccion.fact_remito_fallido SET estado='DESCARTADO', resuelto_en=now() WHERE id=%s",
                                 (int(_r["id"]),))
+            st.success("Pendiente descartado.")
             st.rerun()
 
 
