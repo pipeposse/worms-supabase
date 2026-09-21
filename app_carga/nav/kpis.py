@@ -66,6 +66,27 @@ def _leer_kpis(_cf):
 
 
 @_cache_rev.cachear(ttl=_TTL, show_spinner=False)
+def _camiones_adentro(_cf):
+    """Los camiones que están AHORA adentro de la planta (mismo criterio que el
+    indicador `camiones_adentro` de v_kpi_area_produccion). El indicador decía
+    cuántos pero no cuáles: "no me deja ver qué camiones están en planta"."""
+    try:
+        with _cf() as conn:
+            return pd.read_sql_query(
+                "SELECT transaccion AS ticket, hora_e AS entrada, "
+                "       COALESCE(producto_base, producto) AS producto, corriente, cliente, "
+                "       procedencia, destino_final AS destino, conductor, patente_chasis AS patente, "
+                "       peso_entrada, CASE WHEN COALESCE(evaluado,'NO')='SI' THEN lab_calidad ELSE 'sin evaluar' END AS lab, "
+                "       balanza "
+                "FROM produccion.v_transacciones_limpias "
+                "WHERE fecha_entrada >= CURRENT_DATE - 1 AND fecha_salida IS NULL "
+                "  AND estado_camion = 'ADENTRO' "
+                "ORDER BY fecha_entrada DESC, hora_e DESC", conn)
+    except Exception:
+        return None
+
+
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
 def _leer_capacidad(_cf):
     try:
         with _cf() as conn:
@@ -193,6 +214,20 @@ def render_kpis_area(ctx):
               "warn" if tp > 0 else "ok")
 
     st.markdown(f'<div class="kpi-grid">{c1}{c2}{c3}{c4}{c5}</div>', unsafe_allow_html=True)
+
+    # ---- qué camiones son: el número solo no alcanza ----
+    if cam > 0:
+        with st.expander(f"🚛 Camiones en planta ahora · {cam}", expanded=False):
+            _dc = _camiones_adentro(cf)
+            if _dc is None:
+                st.caption("No se pudo leer portería en este momento.")
+            elif _dc.empty:
+                st.caption("Portería no muestra camiones adentro en este momento (el indicador se recalcula cada minuto).")
+            else:
+                st.dataframe(_dc, hide_index=True, use_container_width=True,
+                             column_config={"peso_entrada": st.column_config.NumberColumn("peso entrada (kg)", format="%d")})
+                st.caption("Entraron por balanza y todavía no cerraron la pesada de salida. "
+                           "El peso neto se conoce recién cuando salen.")
 
     # ---- acciones: presencia + accesos directos + refresco ----
     b1, b2, b3, b4 = st.columns([1.5, 1.4, 1.4, 0.9])

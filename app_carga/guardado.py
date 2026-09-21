@@ -76,15 +76,30 @@ def configurar(conn_factory, pantalla=None):
         _CTX["pantalla"] = pantalla
 
 
+def _ctx_ss():
+    """El contexto vive en la SESIÓN, no en el módulo. `_CTX` es global del proceso
+    y Streamlit atiende a todos los usuarios en el mismo proceso: el log atribuía
+    la pantalla de un usuario al error de otro (todo salía como "Recuperación de
+    Ácidos Grasos" porque fue la última pantalla que llamó a contexto())."""
+    try:
+        ss = st.session_state
+        if "_gdo_ctx" not in ss:
+            ss["_gdo_ctx"] = {"pantalla": None, "usuario": None, "id_usuario": None}
+        return ss["_gdo_ctx"]
+    except Exception:
+        return _CTX
+
+
 def contexto(pantalla=None, usuario=None, id_usuario=None):
     """Quién está y en qué pantalla: se guarda con cada error registrado."""
+    c = _ctx_ss()
     if pantalla is not None:
-        _CTX["pantalla"] = pantalla
+        c["pantalla"] = pantalla
     if usuario is not None:
-        _CTX["usuario"] = usuario
+        c["usuario"] = usuario
     if id_usuario is not None:
         try:
-            _CTX["id_usuario"] = int(id_usuario)
+            c["id_usuario"] = int(id_usuario)
         except Exception:
             pass
 
@@ -184,12 +199,13 @@ def registrar_error(tipo, mensaje, accion=None, pantalla=None, detalle=None,
         try:
             conn.autocommit = True
             with conn.cursor() as cur:
+                _c = _ctx_ss()
                 cur.execute(_SQL_ERR, (
                     str(tipo)[:40],
-                    (pantalla or _CTX.get("pantalla") or None),
+                    (pantalla or _c.get("pantalla") or None),
                     (accion or None),
-                    _CTX.get("id_usuario"),
-                    (_CTX.get("usuario") or None),
+                    _c.get("id_usuario"),
+                    (_c.get("usuario") or None),
                     str(mensaje)[:4000],
                     _det,
                     _tbtxt))
@@ -395,8 +411,13 @@ def instalar():
     _err = getattr(st, "error", None)
     if _err is not None and not getattr(_err, "_gdo", False):
         def _w_error(*a, **k):
+            # Sólo cuenta como error del sistema si hay una excepción en curso (estamos
+            # dentro de un except). Un st.error de validación ("falta la calidad",
+            # "la mezcla se pasa de la especificación") es un aviso al usuario, no una
+            # traba: en dos días llenó el log con 266 filas y tapó lo que importa.
             try:
-                if a:
+                import sys as _sys
+                if a and _sys.exc_info()[0] is not None:
                     registrar_error("EXCEPCION", str(a[0])[:2000], accion="st.error",
                                     con_traceback=True)
             except Exception:

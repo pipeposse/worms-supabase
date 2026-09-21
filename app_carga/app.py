@@ -7070,10 +7070,18 @@ with tab_objs[0]:
                 st.error(
                     f"🏁 Hay **{len(_sinkg)}** reacción/es cerradas **sin los kilos obtenidos**. "
                     "Sin ese dato no hay rendimiento y la gestión semanal las cuenta como 0 TN. "
-                    "Elegilas acá abajo y cargá el acopio final: "
-                    + ", ".join(f"#{int(r['id_batch'])}·{r['ticket'] or '—'}"
-                                for _, r in _sinkg.head(12).iterrows())
-                    + ("…" if len(_sinkg) > 12 else ""))
+                    "Abajo está la lista completa; tildá el filtro para elegirlas una por una y cargar el acopio final.")
+                # "No me deja ver cuáles son": el cartel cortaba en 12 y no había lista.
+                with st.expander(f"📋 Ver las {len(_sinkg)} órdenes sin kilos obtenidos", expanded=True):
+                    _v = _sinkg[["id_batch", "ticket", "fecha", "sector", "tipo_proceso", "buscado",
+                                 "calidad_buscada", "estimado_are_kg", "tanque_destino"]].copy()
+                    _v.columns = ["#", "Orden", "Fecha", "Sector", "Proceso", "Producto buscado",
+                                  "Calidad", "Estimado (kg)", "Tanque destino"]
+                    st.dataframe(_v, hide_index=True, use_container_width=True,
+                                 height=min(60 + 35 * len(_v), 420))
+                if st.checkbox("Mostrar sólo las órdenes sin kilos obtenidos", key="pf_solo_sinkg",
+                               value=False):
+                    df_pf = _sinkg
         if df_pf.empty:
             st.info("Sin reacciones/bachas para cerrar.")
         else:
