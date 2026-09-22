@@ -128,8 +128,12 @@ def _tickets(cat, dias, estado):
     return cat(sql)
 
 
-def _candidatos(cat, id_producto):
-    """Tanques de acopio habilitados para el producto, con stock, parámetros e historial."""
+def _candidatos(cat, id_producto, todos=False):
+    """Tanques de acopio habilitados para el producto, con stock, parámetros e historial.
+
+    `todos=True`: cualquier tanque de acopio activo, habilitado o no. Es el respaldo
+    para que la asignación NUNCA quede bloqueada (SOL-0054: AFE-AL no tenía ningún
+    tanque habilitado y el operario no podía registrar dónde descargó)."""
     sql = (
         "WITH hist AS ("
         "  SELECT m.id_tanque, COUNT(*) AS n, SUM(COALESCE(m.kg,0)) AS kg "
@@ -163,9 +167,10 @@ def _candidatos(cat, id_producto):
         "WHERE COALESCE(t.activo,true) "
         "  AND COALESCE(t.condicion,'EN USO') <> 'FUERA DE USO' "
         "  AND COALESCE(t.uso,'ACOPIO') = 'ACOPIO' "
-        "  AND (pp.id_tanque IS NOT NULL OR t.id_producto_principal = %d) "
+        "  AND (%s OR pp.id_tanque IS NOT NULL OR t.id_producto_principal = %d) "
         "ORDER BY t.nombre"
-    ) % (DIAS_HIST, int(id_producto), int(id_producto), int(id_producto), int(id_producto), int(id_producto))
+    ) % (DIAS_HIST, int(id_producto), int(id_producto), int(id_producto), int(id_producto),
+         ("true" if todos else "false"), int(id_producto))
     return cat(sql)
 
 
@@ -724,8 +729,22 @@ def _pendientes(USR, cat, conectar, contexto):
 
     cand = _candidatos(cat, _idp)
     if cand is None or cand.empty:
-        st.error("No hay tanques de acopio habilitados para este producto.")
-        return
+        # Nunca bloquear: el camión ya descargó y hay que registrar dónde. Se ofrecen
+        # todos los tanques de acopio y queda avisado para que sistemas habilite el
+        # producto en el tanque elegido.
+        cand = _candidatos(cat, _idp, todos=True)
+        if cand is None or cand.empty:
+            st.error("No hay tanques de acopio activos en el sistema. Avisá a sistemas.")
+            return
+        st.warning("⚠️ Este producto (calidad **%s**) todavía no está habilitado en ningún tanque. "
+                   "Te muestro **todos los tanques de acopio** para que registres dónde se descargó; "
+                   "queda avisado a sistemas para habilitarlo." % (r.get("calidad_final_lab") or "—"))
+        try:
+            import guardado as _gdo
+            _gdo.registrar_error("DATO_MAESTRO", "Producto sin tanques habilitados (id_producto=%s, ticket %s)"
+                                 % (_idp, r.get("tk")), accion="asignacion_afe")
+        except Exception:
+            pass
     med = _medianas(cand.to_dict("records"))
     rank = _rankear(cand, tk_par, litros, kg)
     sug = _sugerir(rank, kg, dens)
