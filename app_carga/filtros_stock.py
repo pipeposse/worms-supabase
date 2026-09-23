@@ -3,7 +3,8 @@
 
 Pedido de dirección (23/09): los filtros del stock estaban repartidos por solapa,
 cada una con los suyos, sin fecha desde/hasta, sin ticket y sin sector. Acá hay una
-sola barra, compacta, con ayuda en cada control (tooltip) y los filtros activos
+sola barra, compacta: cada filtro es un DESPLEGABLE simple (una opción, con
+«(todos)» arriba), con ayuda en cada control (tooltip) y los filtros activos
 resumidos en chips:
 
     🧪 Producto · 🏭 Sector · 📅 Desde / Hasta (calendario) · 🎫 Ticket · ➕ Más
@@ -83,17 +84,52 @@ def _aplicar_periodo(key, per):
 
 
 # ------------------------------------------------------------------ barra
-def barra(cat, key="stk", titulo="🔎 Buscar en el stock"):
-    """Dibuja la barra y devuelve el dict de filtros elegidos."""
-    st.markdown(f"#### {titulo}")
+_TODOS = "(todos)"
+
+
+def _sel(col, label, opciones, key, help=None, fmt=None):
+    """Desplegable simple con «(todos)» primero. Devuelve None si no se filtra."""
+    ops = [_TODOS] + list(opciones)
+    v = col.selectbox(label, ops, key=key, help=help,
+                      format_func=(lambda o: _TODOS if o == _TODOS else (fmt(o) if fmt else o)))
+    return None if v == _TODOS else v
+
+
+def _multi(col, label, opciones, key, help=None, fmt=None, placeholder="Todos"):
+    """Desplegable que admite una o varias opciones. Vacío = todos (no filtra)."""
+    return col.multiselect(label, list(opciones), key=key, help=help, placeholder=placeholder,
+                           format_func=(fmt or (lambda o: o)))
+
+
+def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
+          campos=("prod", "sec", "fecha", "tk"),
+          extras=("tq", "tipo", "orig", "est", "usr", "anul"),
+          catalogos=None, multi=False, extras_fn=None, buscar=False, etiquetas=None):
+    """Dibuja la barra y devuelve el dict de filtros elegidos.
+
+    `campos`   → qué va en la barra principal (prod, sec, fecha, tk).
+    `extras`   → qué va dentro de «➕ Más» (tq, tipo, orig, est, usr, anul). Vacío = sin botón.
+    `catalogos`→ dict opcional para reemplazar las listas (p. ej. {"prod": [...]}) cuando la
+                 pantalla filtra otra cosa que el libro de stock. Así la misma barra sirve
+                 para Tanques, Portería, Remitos, etc. con el mismo diseño.
+    `multi`    → Producto y Sector admiten varias opciones (para comparar). Vacío = todos.
+    `extras_fn`→ función que dibuja filtros propios dentro de «➕ Más» y devuelve un dict;
+                 reemplaza a `extras`.
+    `buscar`   → agrega el botón 🔍 Buscar; la barra devuelve (filtros, apretado).
+    `etiquetas`→ dict opcional para renombrar las opciones que se muestran ({valor: texto})."""
+    catalogos = catalogos or {}
+    etiquetas = etiquetas or {}
+    _fmt_prod = (lambda o: etiquetas.get(o, o)) if etiquetas else None
+    if titulo:
+        st.markdown(f"#### {titulo}")
 
     # Limpiar y período se resuelven ANTES de instanciar los widgets: Streamlit no
     # deja tocar session_state de un widget ya dibujado en la misma pasada.
     if st.session_state.pop(_k(key, "reset"), False):
         _limpiar(key)
 
-    productos = _lista(cat, _SQL_PRODUCTOS)
-    sectores = _lista(cat, _SQL_SECTORES)
+    productos = catalogos.get("prod") if "prod" in catalogos else _lista(cat, _SQL_PRODUCTOS)
+    sectores = catalogos.get("sec") if "sec" in catalogos else _lista(cat, _SQL_SECTORES)
 
     # valores por defecto: últimos 30 días, sin ningún otro filtro
     st.session_state.setdefault(_k(key, "desde"), date.today() - timedelta(days=29))
@@ -109,66 +145,108 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock"):
     if not per:
         st.session_state.pop(_k(key, "per_aplicado"), None)
 
-    c1, c2, c3, c4, c5, c6, c7 = st.columns([2.2, 1.8, 1.2, 1.2, 1.3, 0.8, 0.8])
-    prod = c1.multiselect("🧪 Producto", productos, key=_k(key, "prod"), placeholder="Todos los productos",
-                          help="Uno o varios productos. Vacío = todos.")
-    sec = c2.multiselect("🏭 Sector", sectores, key=_k(key, "sec"), placeholder="Todos los sectores",
-                         help="Sector del tanque donde ocurrió el movimiento (plataformas, reactores, piletas…).")
-    desde = c3.date_input("📅 Desde", key=_k(key, "desde"), format="DD/MM/YYYY",
-                          help="Primer día incluido. Tocá el campo para abrir el calendario.")
-    hasta = c4.date_input("📅 Hasta", key=_k(key, "hasta"), format="DD/MM/YYYY",
-                          help="Último día incluido (hasta las 23:59).")
-    tk = c5.text_input("🎫 Ticket", key=_k(key, "tk"), placeholder="6850 · R1234 · MS-…",
-                       help="Número de ticket de portería, ticket de laboratorio o ticket de movimiento (MS-…). "
-                            "Busca por coincidencia parcial.")
+    # columnas según lo que pide la pantalla
+    anchos = {"prod": 2.0, "sec": 1.8, "fecha": 2.4, "tk": 1.4}
+    _hay_mas = bool(extras) or extras_fn is not None
+    cols = st.columns([anchos[c] for c in campos] + ([0.8] if _hay_mas else []) + [0.8])
+    ci = 0
+    prod = sec = desde = hasta = None
+    tk = ""
+    if "prod" in campos:
+        if multi:
+            prod = _multi(cols[ci], "🧪 Producto", productos, _k(key, "prod"), fmt=_fmt_prod,
+                          placeholder="Todos los productos",
+                          help="Uno o varios productos (para comparar). Vacío = todos.")
+        else:
+            prod = _sel(cols[ci], "🧪 Producto", productos, _k(key, "prod"), fmt=_fmt_prod,
+                        help="Elegí un producto de la lista. «(todos)» no filtra.")
+        ci += 1
+    if "sec" in campos:
+        if multi:
+            sec = _multi(cols[ci], "🏭 Sector", sectores, _k(key, "sec"), fmt=_fmt_prod,
+                         placeholder="Todos los sectores",
+                         help="Uno o varios sectores (para comparar). Vacío = todos.")
+        else:
+            sec = _sel(cols[ci], "🏭 Sector", sectores, _k(key, "sec"),
+                       help="Sector del tanque donde ocurrió el movimiento (plataformas, reactores, piletas…).")
+        ci += 1
+    if "fecha" in campos:
+        cd, ch = cols[ci].columns(2); ci += 1
+        desde = cd.date_input("📅 Desde", key=_k(key, "desde"), format="DD/MM/YYYY",
+                              help="Primer día incluido. Tocá el campo para abrir el calendario.")
+        hasta = ch.date_input("📅 Hasta", key=_k(key, "hasta"), format="DD/MM/YYYY",
+                              help="Último día incluido (hasta las 23:59).")
+    if "tk" in campos:
+        tk = cols[ci].text_input("🎫 Ticket", key=_k(key, "tk"), placeholder="6850 · R1234 · MS-…",
+                                 help="Número de ticket de portería (exacto), o ticket de laboratorio / "
+                                      "movimiento / orden por coincidencia parcial."); ci += 1
 
-    # ➕ Más filtros: los secundarios, en un popover para no cargar la barra
-    with c6:
+    tq = tipo = orig = est = usr = None
+    anul = False
+    _tq_ids, _u_ids = {}, {}
+    propios = {}
+    if _hay_mas:
+        with cols[ci]:
+            ci += 1
+            st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+            with st.popover("➕ Más", help="Más filtros", use_container_width=True):
+                if extras_fn is not None:
+                    propios = extras_fn() or {}
+                    extras = ()
+                if "tq" in extras:
+                    tqs = cat(_SQL_TANQUES)
+                    if tqs is not None and not tqs.empty:
+                        _tq_ids = {f"{r['nombre']}  ·  {r['sector']}": int(r["id_tanque"]) for _, r in tqs.iterrows()}
+                    tq = _sel(st, "🛢️ Tanque", list(_tq_ids), _k(key, "tq"))
+                if "tipo" in extras:
+                    tipo = _sel(st, "↕️ Tipo de movimiento", list(_TIPO_UI), _k(key, "tipo"),
+                                fmt=lambda t: _TIPO_UI.get(t, t))
+                if "orig" in extras:
+                    orig = _sel(st, "🔌 Origen", _lista(cat, _SQL_ORIGENES), _k(key, "orig"),
+                                fmt=lambda o: _ORIGEN_UI.get(o, o))
+                if "est" in extras:
+                    est = _sel(st, "📌 Estado", list(_ESTADO_UI), _k(key, "est"),
+                               fmt=lambda e: _ESTADO_UI.get(e, e))
+                if "usr" in extras:
+                    usrs = cat(_SQL_USUARIOS)
+                    if usrs is not None and not usrs.empty:
+                        _u_ids = {str(r["nombre"]): int(r["id_usuario"]) for _, r in usrs.iterrows()}
+                    usr = _sel(st, "👤 Usuario", list(_u_ids), _k(key, "usr"))
+                if "anul" in extras:
+                    anul = st.checkbox("Incluir anulados", key=_k(key, "anul"), value=False)
+    with cols[ci]:
         st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-        with st.popover("➕ Más", help="Tanque, tipo de movimiento, origen, estado, usuario, anulados", use_container_width=True):
-            tqs = cat(_SQL_TANQUES)
-            _tq_opts = ([f"{r['nombre']}  ·  {r['sector']}" for _, r in tqs.iterrows()]
-                        if tqs is not None and not tqs.empty else [])
-            _tq_ids = ({f"{r['nombre']}  ·  {r['sector']}": int(r["id_tanque"]) for _, r in tqs.iterrows()}
-                       if tqs is not None and not tqs.empty else {})
-            tq = st.multiselect("🛢️ Tanque", _tq_opts, key=_k(key, "tq"), placeholder="Todos")
-            tipo = st.multiselect("↕️ Tipo", list(_TIPO_UI), key=_k(key, "tipo"),
-                                  format_func=lambda t: _TIPO_UI.get(t, t), placeholder="Entradas, salidas y ajustes")
-            origs = _lista(cat, _SQL_ORIGENES)
-            orig = st.multiselect("🔌 Origen", origs, key=_k(key, "orig"),
-                                  format_func=lambda o: _ORIGEN_UI.get(o, o), placeholder="Todos")
-            est = st.multiselect("📌 Estado", list(_ESTADO_UI), key=_k(key, "est"),
-                                 format_func=lambda e: _ESTADO_UI.get(e, e), placeholder="Ejecutado y planificado")
-            usrs = cat(_SQL_USUARIOS)
-            _u_opts = usrs["nombre"].astype(str).tolist() if usrs is not None and not usrs.empty else []
-            _u_ids = ({str(r["nombre"]): int(r["id_usuario"]) for _, r in usrs.iterrows()}
-                      if usrs is not None and not usrs.empty else {})
-            usr = st.multiselect("👤 Usuario", _u_opts, key=_k(key, "usr"), placeholder="Todos")
-            anul = st.checkbox("Incluir anulados", key=_k(key, "anul"), value=False)
-    with c7:
-        st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-        if st.button("✖ Limpiar", key=_k(key, "clr"), use_container_width=True, help="Vuelve a «últimos 30 días» sin filtros."):
+        if st.button("✖ Limpiar", key=_k(key, "clr"), use_container_width=True,
+                     help="Vuelve a «últimos 30 días» sin filtros."):
             st.session_state[_k(key, "reset")] = True
             st.rerun()
 
     if desde and hasta and desde > hasta:
         st.warning("«Desde» es posterior a «Hasta»: no va a encontrar nada.")
 
-    f = {"prod": prod, "sec": sec, "desde": desde, "hasta": hasta, "tk": (tk or "").strip(),
-         "tq": [_tq_ids[x] for x in (tq or []) if x in _tq_ids], "tq_lbl": tq or [],
-         "tipo": tipo or [], "orig": orig or [], "est": est or [],
-         "usr": [_u_ids[x] for x in (usr or []) if x in _u_ids], "usr_lbl": usr or [], "anul": bool(anul)}
-    _chips(f)
+    _l = lambda x: (list(x) if isinstance(x, (list, tuple)) else ([x] if x else []))  # noqa: E731
+    f = {"prod": _l(prod), "sec": _l(sec), "desde": desde, "hasta": hasta,
+         "tk": (tk or "").strip(),
+         "tq": [_tq_ids[tq]] if tq in _tq_ids else [], "tq_lbl": [tq] if tq else [],
+         "tipo": [tipo] if tipo else [], "orig": [orig] if orig else [], "est": [est] if est else [],
+         "usr": [_u_ids[usr]] if usr in _u_ids else [], "usr_lbl": [usr] if usr else [], "anul": bool(anul),
+         "propios": propios}
+    _chips(f, etiquetas)
+    if buscar:
+        apretado = st.button("🔍 Buscar", key=_k(key, "go"), type="primary",
+                             help="Aplica los filtros y muestra el resultado.")
+        return f, apretado
     return f
 
 
-def _chips(f):
+def _chips(f, etiquetas=None):
     """Los filtros activos, como chips: se ve de un vistazo qué está filtrando."""
+    etiquetas = etiquetas or {}
     chips = []
     if f["prod"]:
-        chips.append("🧪 " + ", ".join(f["prod"][:4]) + ("…" if len(f["prod"]) > 4 else ""))
+        chips.append("🧪 " + ", ".join(etiquetas.get(p, p) for p in f["prod"][:4]) + ("…" if len(f["prod"]) > 4 else ""))
     if f["sec"]:
-        chips.append("🏭 " + ", ".join(f["sec"][:3]) + ("…" if len(f["sec"]) > 3 else ""))
+        chips.append("🏭 " + ", ".join(etiquetas.get(x, x) for x in f["sec"][:3]) + ("…" if len(f["sec"]) > 3 else ""))
     if f["desde"] or f["hasta"]:
         chips.append("📅 %s → %s" % (f["desde"].strftime("%d/%m/%y") if f["desde"] else "inicio",
                                      f["hasta"].strftime("%d/%m/%y") if f["hasta"] else "hoy"))
@@ -186,6 +264,9 @@ def _chips(f):
         chips.append("👤 " + ", ".join(f["usr_lbl"][:3]))
     if f["anul"]:
         chips.append("incluye anulados")
+    for k, val in (f.get("propios") or {}).items():
+        if val not in (None, "", [], False, "(todos)"):
+            chips.append(f"{k}: {', '.join(map(str, val)) if isinstance(val, (list, tuple)) else val}")
     if chips:
         st.markdown(" ".join(
             f"<span style='display:inline-block;padding:2px 10px;margin:2px 4px 2px 0;border-radius:999px;"
