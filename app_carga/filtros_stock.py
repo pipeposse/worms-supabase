@@ -90,14 +90,14 @@ _TODOS = "(todos)"
 def _sel(col, label, opciones, key, help=None, fmt=None):
     """Desplegable simple con «(todos)» primero. Devuelve None si no se filtra."""
     ops = [_TODOS] + list(opciones)
-    v = col.selectbox(label, ops, key=key, help=help,
+    v = col.selectbox(label, ops, key=key,
                       format_func=(lambda o: _TODOS if o == _TODOS else (fmt(o) if fmt else o)))
     return None if v == _TODOS else v
 
 
 def _multi(col, label, opciones, key, help=None, fmt=None, placeholder="Todos"):
     """Desplegable que admite una o varias opciones. Vacío = todos (no filtra)."""
-    return col.multiselect(label, list(opciones), key=key, help=help, placeholder=placeholder,
+    return col.multiselect(label, list(opciones), key=key, placeholder=placeholder,
                            format_func=(fmt or (lambda o: o)))
 
 
@@ -137,8 +137,7 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
 
     # atajos de período (arriba de la barra: escriben Desde/Hasta antes de dibujarlos)
     per = st.pills("Período rápido", _PERIODOS, key=_k(key, "per"), default="30 días",
-                   label_visibility="collapsed",
-                   help="Escribe Desde/Hasta; después podés ajustarlas con el calendario.")
+                   label_visibility="collapsed")
     if per and st.session_state.get(_k(key, "per_aplicado")) != per:
         st.session_state[_k(key, "per_aplicado")] = per
         _aplicar_periodo(key, per)
@@ -155,31 +154,23 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
     if "prod" in campos:
         if multi:
             prod = _multi(cols[ci], "🧪 Producto", productos, _k(key, "prod"), fmt=_fmt_prod,
-                          placeholder="Todos los productos",
-                          help="Uno o varios productos (para comparar). Vacío = todos.")
+                          placeholder="Todos los productos")
         else:
-            prod = _sel(cols[ci], "🧪 Producto", productos, _k(key, "prod"), fmt=_fmt_prod,
-                        help="Elegí un producto de la lista. «(todos)» no filtra.")
+            prod = _sel(cols[ci], "🧪 Producto", productos, _k(key, "prod"), fmt=_fmt_prod)
         ci += 1
     if "sec" in campos:
         if multi:
             sec = _multi(cols[ci], "🏭 Sector", sectores, _k(key, "sec"), fmt=_fmt_prod,
-                         placeholder="Todos los sectores",
-                         help="Uno o varios sectores (para comparar). Vacío = todos.")
+                         placeholder="Todos los sectores")
         else:
-            sec = _sel(cols[ci], "🏭 Sector", sectores, _k(key, "sec"),
-                       help="Sector del tanque donde ocurrió el movimiento (plataformas, reactores, piletas…).")
+            sec = _sel(cols[ci], "🏭 Sector", sectores, _k(key, "sec"))
         ci += 1
     if "fecha" in campos:
         cd, ch = cols[ci].columns(2); ci += 1
-        desde = cd.date_input("📅 Desde", key=_k(key, "desde"), format="DD/MM/YYYY",
-                              help="Primer día incluido. Tocá el campo para abrir el calendario.")
-        hasta = ch.date_input("📅 Hasta", key=_k(key, "hasta"), format="DD/MM/YYYY",
-                              help="Último día incluido (hasta las 23:59).")
+        desde = cd.date_input("📅 Desde", key=_k(key, "desde"), format="DD/MM/YYYY")
+        hasta = ch.date_input("📅 Hasta", key=_k(key, "hasta"), format="DD/MM/YYYY")
     if "tk" in campos:
-        tk = cols[ci].text_input("🎫 Ticket", key=_k(key, "tk"), placeholder="6850 · R1234 · MS-…",
-                                 help="Número de ticket de portería (exacto), o ticket de laboratorio / "
-                                      "movimiento / orden por coincidencia parcial."); ci += 1
+        tk = cols[ci].text_input("🎫 Ticket", key=_k(key, "tk"), placeholder="6850 · R1234 · MS-…"); ci += 1
 
     tq = tipo = orig = est = usr = None
     anul = False
@@ -189,7 +180,7 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
         with cols[ci]:
             ci += 1
             st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-            with st.popover("➕ Más", help="Más filtros", use_container_width=True):
+            with st.popover("➕ Más", use_container_width=True):
                 if extras_fn is not None:
                     propios = extras_fn() or {}
                     extras = ()
@@ -216,13 +207,12 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
                     anul = st.checkbox("Incluir anulados", key=_k(key, "anul"), value=False)
     with cols[ci]:
         st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-        if st.button("✖ Limpiar", key=_k(key, "clr"), use_container_width=True,
-                     help="Vuelve a «últimos 30 días» sin filtros."):
+        if st.button("✖ Limpiar", key=_k(key, "clr"), use_container_width=True):
             st.session_state[_k(key, "reset")] = True
             st.rerun()
 
-    if desde and hasta and desde > hasta:
-        st.warning("«Desde» es posterior a «Hasta»: no va a encontrar nada.")
+    if desde and hasta and desde > hasta:      # sin cartel: se invierte solo
+        desde, hasta = hasta, desde
 
     _l = lambda x: (list(x) if isinstance(x, (list, tuple)) else ([x] if x else []))  # noqa: E731
     f = {"prod": _l(prod), "sec": _l(sec), "desde": desde, "hasta": hasta,
@@ -233,8 +223,7 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
          "propios": propios}
     _chips(f, etiquetas)
     if buscar:
-        apretado = st.button("🔍 Buscar", key=_k(key, "go"), type="primary",
-                             help="Aplica los filtros y muestra el resultado.")
+        apretado = st.button("🔍 Buscar", key=_k(key, "go"), type="primary")
         return f, apretado
     return f
 

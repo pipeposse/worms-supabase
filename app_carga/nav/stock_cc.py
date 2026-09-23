@@ -132,8 +132,21 @@ def _tanques_de(_cf, sectores):
         return []
 
 
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
+def _medido(_cf, sectores):
+    """Lo que hoy miden los tanques de esos sectores (TN, KL). Sólo para Notificaciones."""
+    try:
+        with _cf() as conn:
+            df = pd.read_sql_query("SELECT COALESCE(SUM(act_tn),0) AS tn, COALESCE(SUM(act_l),0)/1000.0 AS kl "
+                                   "FROM produccion.v_acopio_sector WHERE sector = ANY(%s) AND activo "
+                                   "AND condicion <> 'FUERA DE USO'", conn, params=(list(sectores),))
+        return float(df.iloc[0]["tn"]), float(df.iloc[0]["kl"])
+    except Exception:
+        return None
+
+
 def invalidar():
-    _movs.clear(); _saldo_inicial.clear(); _cuentas_de.clear(); _tanques_de.clear()
+    _movs.clear(); _saldo_inicial.clear(); _cuentas_de.clear(); _tanques_de.clear(); _medido.clear()
 
 
 # ------------------------------------------------------------------ helpers
@@ -266,9 +279,27 @@ def _cat_de(cf):
     return _cat
 
 
+def _notificaciones(slot, avisos):
+    """Todo lo que antes era leyenda va acá: un botón «🔔 Notificaciones» con el número de
+    avisos; adentro, uno por renglón. La pantalla queda con filtros y cuadros, nada más."""
+    if slot is None:
+        return
+    with slot:
+        with st.popover(f"🔔 Notificaciones · {len(avisos)}" if avisos else "🔔 Notificaciones",
+                        use_container_width=True):
+            if not avisos:
+                st.write("Sin notificaciones.")
+            for a in avisos:
+                st.markdown(f"- {a}")
+
+
 @_FRAGMENT
-def _movimientos(ctx, sec):
+def _movimientos(ctx, sec, slot=None):
     import filtros_stock as _fs
+    # el botón de Notificaciones vive dentro del fragmento (un fragmento no puede escribir
+    # en contenedores de afuera)
+    if slot is None:
+        slot = st.columns([5, 1.3])[1].container()
     cod = sec["codigo"]
     cf = ctx["conn_factory"]
     hoy = date.today()
@@ -313,7 +344,7 @@ def _movimientos(ctx, sec):
         st.session_state[k_ap] = f
     fa = st.session_state.get(k_ap)
     if not fa:
-        st.info("Elegí los filtros y apretá **🔍 Buscar**.")
+        _notificaciones(slot, [])
         return
 
     desde = fa["desde"] or corte
@@ -328,7 +359,7 @@ def _movimientos(ctx, sec):
     df = _movs(cf, tuple(secs), desde, hasta)
     inis = [_saldo_inicial(cf, s_, desde) for s_ in secs]
     if df is None or any(x is None for x in inis):
-        st.caption("Sin conexión a la base en este momento.")
+        _notificaciones(slot, ["Sin conexión a la base en este momento: volvé a apretar Buscar."])
         return
     ini = pd.concat(inis, ignore_index=True) if inis else pd.DataFrame(columns=["cuenta", "kg_neto", "litros_neto"])
 
@@ -365,13 +396,30 @@ def _movimientos(ctx, sec):
             m_tk = m_tk | v[c].fillna("").astype(str).str.lower().str.contains(q, regex=False)
 
     _secs_txt = ", ".join(secs_nav.get(x, x) for x in secs)
-    if v.empty and float(ini["_val"].abs().sum()) == 0:
-        st.info(f"Sin movimientos para estos filtros · {_secs_txt} · {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}.")
-        return
+
+    # ---- notificaciones (lo que antes eran leyendas) ----
+    avisos = []
+    _bf0 = ini["base_fecha"].dropna() if "base_fecha" in ini.columns else pd.Series([], dtype=object)
+    s_fin = float(ini["_val"].sum()) + float(v["_val"].sum())
+    med = _medido(cf, tuple(secs))
+    if len(_bf0):
+        avisos.append(f"Saldo inicial del {pd.to_datetime(_bf0.iloc[0]):%d/%m/%Y}: medición física de los "
+                      f"tanques de {_secs_txt}.")
+    else:
+        avisos.append(f"{_secs_txt}: todavía no hay saldo inicial cargado; el saldo es el arrastre del libro.")
+    if med is not None:
+        _m = med[0] if um == "TN" else med[1]
+        avisos.append(f"Hoy los tanques miden **{_m:,.1f} {um}** y el libro cierra en **{s_fin:,.1f} {um}**: "
+                      f"diferencia **{s_fin - _m:+,.1f} {um}**.")
+    _neg = sorted(ini.loc[ini["_val"] < -0.05, "cuenta"].dropna().astype(str).unique().tolist())
+    if _neg:
+        avisos.append("Arrancan en negativo: **" + ", ".join(_neg) + "** — falta cargar salidas o asentar un "
+                      "cambio de categoría.")
+    _notificaciones(slot, avisos)
 
     # ---- SALDO CONSOLIDADO POR PRODUCTO ----
-    st.markdown(f"<div class='section-title' style='margin:10px 0 2px'>SALDO CONSOLIDADO POR PRODUCTO · "
-                f"{_secs_txt} · {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title' style='margin:10px 0 2px'>SALDO CONSOLIDADO POR PRODUCTO</div>",
+                unsafe_allow_html=True)
     cons = _consolidado(v, ini, um, nombre_de)
     if m_tk is not None:
         _keep = set(v.loc[m_tk, "ticket"].fillna("").astype(str)) | set(v.loc[m_tk, "referencia"].fillna("").astype(str))
@@ -385,10 +433,11 @@ def _movimientos(ctx, sec):
 
     # ---- CUENTA CORRIENTE DEL PRODUCTO ----
     ctas = sorted(set(v["cuenta"].dropna()) | set(ini.loc[ini["_val"].abs() >= 0.05, "cuenta"].dropna()))
-    if not ctas:
-        return
     st.markdown("<div class='section-title' style='margin:14px 0 2px'>CUENTA CORRIENTE DEL PRODUCTO</div>",
                 unsafe_allow_html=True)
+    if not ctas:
+        st.dataframe(_cuenta_corriente(v.iloc[0:0], 0.0, desde), hide_index=True, use_container_width=True)
+        return
     k_c = f"{key}_cta"
     if st.session_state.get(k_c) not in ctas:
         st.session_state[k_c] = ctas[0]
