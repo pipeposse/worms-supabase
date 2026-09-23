@@ -65,6 +65,8 @@ def _k(key, nombre):
 def _limpiar(key):
     for n in ("prod", "sec", "desde", "hasta", "tk", "tq", "tipo", "orig", "est", "usr", "anul", "per", "per_aplicado"):
         st.session_state.pop(_k(key, n), None)
+    for k in [k for k in st.session_state.keys() if str(k).startswith(_k(key, "g_"))]:
+        st.session_state.pop(k, None)
 
 
 def _aplicar_periodo(key, per):
@@ -104,7 +106,7 @@ def _multi(col, label, opciones, key, help=None, fmt=None, placeholder="Todos"):
 def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
           campos=("prod", "sec", "fecha", "tk"),
           extras=("tq", "tipo", "orig", "est", "usr", "anul"),
-          catalogos=None, multi=False, extras_fn=None, buscar=False, etiquetas=None):
+          catalogos=None, multi=False, extras_fn=None, buscar=False, etiquetas=None, grupos=None):
     """Dibuja la barra y devuelve el dict de filtros elegidos.
 
     `campos`   → qué va en la barra principal (prod, sec, fecha, tk).
@@ -116,7 +118,10 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
     `extras_fn`→ función que dibuja filtros propios dentro de «➕ Más» y devuelve un dict;
                  reemplaza a `extras`.
     `buscar`   → agrega el botón 🔍 Buscar; la barra devuelve (filtros, apretado).
-    `etiquetas`→ dict opcional para renombrar las opciones que se muestran ({valor: texto})."""
+    `etiquetas`→ dict opcional para renombrar las opciones que se muestran ({valor: texto}).
+    `grupos`   → [(clave, etiqueta, opciones)]: una fila de desplegables (uno o varios, vacío =
+                 todos) arriba de la barra, en ese orden. Reactor: Materia prima · Insumo ·
+                 Producto terminado. Vuelven en f["grupos"] = {clave: [...]}."""
     catalogos = catalogos or {}
     etiquetas = etiquetas or {}
     _fmt_prod = (lambda o: etiquetas.get(o, o)) if etiquetas else None
@@ -130,6 +135,14 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
 
     productos = catalogos.get("prod") if "prod" in catalogos else _lista(cat, _SQL_PRODUCTOS)
     sectores = catalogos.get("sec") if "sec" in catalogos else _lista(cat, _SQL_SECTORES)
+
+    # desplegables por grupo de producto (primera fila, en el orden que pide la pantalla)
+    elegidos_g = {}
+    if grupos:
+        gcols = st.columns(len(grupos))
+        for gc, (clave, etq, ops) in zip(gcols, grupos):
+            elegidos_g[clave] = _multi(gc, etq, ops, _k(key, f"g_{clave}"), fmt=_fmt_prod,
+                                       placeholder="Todos")
 
     # valores por defecto: últimos 30 días, sin ningún otro filtro
     st.session_state.setdefault(_k(key, "desde"), date.today() - timedelta(days=29))
@@ -220,18 +233,23 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
          "tq": [_tq_ids[tq]] if tq in _tq_ids else [], "tq_lbl": [tq] if tq else [],
          "tipo": [tipo] if tipo else [], "orig": [orig] if orig else [], "est": [est] if est else [],
          "usr": [_u_ids[usr]] if usr in _u_ids else [], "usr_lbl": [usr] if usr else [], "anul": bool(anul),
-         "propios": propios}
-    _chips(f, etiquetas)
+         "propios": propios, "grupos": elegidos_g}
+    _chips(f, etiquetas, grupos)
     if buscar:
         apretado = st.button("🔍 Buscar", key=_k(key, "go"), type="primary")
         return f, apretado
     return f
 
 
-def _chips(f, etiquetas=None):
+def _chips(f, etiquetas=None, grupos=None):
     """Los filtros activos, como chips: se ve de un vistazo qué está filtrando."""
     etiquetas = etiquetas or {}
     chips = []
+    for clave, etq, _ops in (grupos or []):
+        sel = (f.get("grupos") or {}).get(clave) or []
+        if sel:
+            chips.append(etq.split(" ")[0] + " " + ", ".join(etiquetas.get(p, p).split(" · ")[0] for p in sel[:4])
+                         + ("…" if len(sel) > 4 else ""))
     if f["prod"]:
         chips.append("🧪 " + ", ".join(etiquetas.get(p, p) for p in f["prod"][:4]) + ("…" if len(f["prod"]) > 4 else ""))
     if f["sec"]:

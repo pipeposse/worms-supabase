@@ -43,10 +43,10 @@ def render(USR, cat):
             "- Así, incluso un tanque medido 1 vez al día queda **vivo**. La **confianza** indica qué tan fresco es el dato.\n"
             "- **Real vs teórico**: comparamos la variación física medida contra lo que movió producción.")
 
-    tp, tcov, tctrl, tdes, tsal, tmov, t1, t2, t4, t3, tcomp = st.tabs(
-        ["📊 Por producto", "🌎 Cobertura total", "🎯 Control teórico", "🤖 Designación auto",
+    t2, tp, tcov, tctrl, tdes, tsal, tmov, t1, t4, t3, tcomp = st.tabs(
+        ["🔎 Buscar movimientos", "📊 Por producto", "🌎 Cobertura total", "🎯 Control teórico", "🤖 Designación auto",
          "📤 Salidas / balance", "🧭 Movimientos y reasignación",
-         "🛢️ Stock por tanque (tiempo real)", "🔁 Movimientos",
+         "🛢️ Stock por tanque (tiempo real)",
          "⚖️ Real vs teórico (por día)", "🛡️ Conciliación", "🧮 Composición del stock"])
 
     # ---------- Composición del stock / impacto de tickets evaluados ----------
@@ -513,36 +513,11 @@ def render(USR, cat):
 
     # ---------- 2 · Movimientos ----------
     with t2:
-        mv = cat("SELECT momento, ticket_mov, identificador_prod, estado_mov, tipo_movimiento, rol, "
-                 "COALESCE(producto, codigo_insumo) AS item, fuente, "
-                 "COALESCE(tanque_label, ticket_porteria) AS origen, cantidad, unidad, kg, litros, "
-                 "kg_neto, litros_neto, origen AS registrado_por "
-                 "FROM reporting.v_movimientos_stock ORDER BY momento DESC")
-        f1, f2, f3 = st.columns(3)
-        fest = f1.selectbox("Estado", ["(todos)"] + sorted(mv["estado_mov"].dropna().unique().tolist()), key="mv_est")
-        frol = f2.selectbox("Rol", ["(todos)"] + sorted(mv["rol"].dropna().unique().tolist()), key="mv_rol")
-        ffue = f3.selectbox("Fuente", ["(todas)"] + sorted(mv["fuente"].dropna().unique().tolist()), key="mv_fue")
-        d = mv.copy()
-        if fest != "(todos)":
-            d = d[d["estado_mov"] == fest]
-        if frol != "(todos)":
-            d = d[d["rol"] == frol]
-        if ffue != "(todas)":
-            d = d[d["fuente"] == ffue]
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Movimientos", len(d))
-        k2.metric("Ingresos netos", f"{pd.to_numeric(d['kg_neto'], errors='coerce').clip(lower=0).sum()/1000.0:,.1f} t")
-        k3.metric("Egresos netos", f"{-pd.to_numeric(d['kg_neto'], errors='coerce').clip(upper=0).sum()/1000.0:,.1f} t")
-        _d = d.copy()
-        _d["TN"] = pd.to_numeric(_d["kg"], errors="coerce") / 1000.0
-        _d["TN neto"] = pd.to_numeric(_d["kg_neto"], errors="coerce") / 1000.0
-        _d = _d.drop(columns=["kg", "litros", "kg_neto", "litros_neto", "cantidad", "unidad"], errors="ignore")
-        st.dataframe(_d, use_container_width=True, hide_index=True, column_config={
-            "momento": st.column_config.DatetimeColumn("Momento", format="DD/MM/YYYY HH:mm"),
-            "TN": st.column_config.NumberColumn(format="%.2f"),
-            "TN neto": st.column_config.NumberColumn(format="%.2f"),
-        })
-        _dl(_d, "movimientos_stock.csv", "dl_mv")
+        # Una sola barra de filtros para todo el libro de stock (pedido de dirección 23/09):
+        # producto, sector, desde/hasta con calendario, ticket, y «➕ Más» para el resto.
+        # Reemplaza a la vieja solapa «🔁 Movimientos», que traía todo y filtraba en memoria.
+        import filtros_stock as _fs
+        _fs.render(cat, key="stk_mov")
         st.caption("PLANIFICADO = creado por dirección · EJECUTADO = confirmado por el operario (afecta stock).")
 
     # ---------- 4 · Real vs teórico por día ----------
