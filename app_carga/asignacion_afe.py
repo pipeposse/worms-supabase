@@ -131,6 +131,12 @@ def _tickets(cat, dias, estado):
 def _candidatos(cat, id_producto, todos=False):
     """Tanques de acopio habilitados para el producto, con stock, parámetros e historial.
 
+    La habilitación que se mantiene desde Admin → Tanques es dim_tanque_producto. Esta
+    pantalla leía SOLO dim_tanque_producto_permitido, una tabla que ninguna pantalla
+    escribe y que quedó vieja: para AFE-SG tenía 5 tanques cuando la habilitación real
+    tiene 42 de los 47 de Exportación (SOL-0055, "sólo me aparecen algunos tanques").
+    Ahora un tanque es candidato si está en CUALQUIERA de las dos, o es su principal.
+
     `todos=True`: cualquier tanque de acopio activo, habilitado o no. Es el respaldo
     para que la asignación NUNCA quede bloqueada (SOL-0054: AFE-AL no tenía ningún
     tanque habilitado y el operario no podía registrar dónde descargó)."""
@@ -158,8 +164,14 @@ def _candidatos(cat, id_producto, todos=False):
         "       p.ppm_azufre, p.ppm_fosforo, p.ultima_evaluacion_ts, "
         "       c.acidez_max, c.agua_max, c.sedimentos_max, c.azufre_max, c.fosforo_max "
         "FROM produccion.dim_tanque t "
-        "LEFT JOIN produccion.dim_tanque_producto_permitido pp "
-        "       ON pp.id_tanque = t.id_tanque AND pp.id_producto = %d "
+        "LEFT JOIN (SELECT u.id_tanque, bool_or(u.es_principal) AS es_principal "
+        "             FROM (SELECT tp.id_tanque, COALESCE(tp.es_principal,false) AS es_principal "
+        "                     FROM produccion.dim_tanque_producto tp WHERE tp.id_producto = %d "
+        "                   UNION ALL "
+        "                   SELECT pp0.id_tanque, COALESCE(pp0.es_principal,false) "
+        "                     FROM produccion.dim_tanque_producto_permitido pp0 WHERE pp0.id_producto = %d) u "
+        "            GROUP BY u.id_tanque) pp "
+        "       ON pp.id_tanque = t.id_tanque "
         "LEFT JOIN produccion.vw_stock_tanque_actual s ON s.id_tanque = t.id_tanque "
         "LEFT JOIN produccion.fact_param_tanque p ON p.id_tanque = t.id_tanque AND p.id_producto = %d "
         "LEFT JOIN produccion.dic_tanque_condicion c ON c.id_tanque = t.id_tanque AND c.id_producto = %d "
@@ -170,7 +182,7 @@ def _candidatos(cat, id_producto, todos=False):
         "  AND (%s OR pp.id_tanque IS NOT NULL OR t.id_producto_principal = %d) "
         "ORDER BY t.nombre"
     ) % (DIAS_HIST, int(id_producto), int(id_producto), int(id_producto), int(id_producto),
-         ("true" if todos else "false"), int(id_producto))
+         int(id_producto), ("true" if todos else "false"), int(id_producto))
     return cat(sql)
 
 

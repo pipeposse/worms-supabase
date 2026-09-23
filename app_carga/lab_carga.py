@@ -875,7 +875,12 @@ def sugerir_tanque(get_conn=None, producto_base=None, kg=None):
            "SELECT t.id_tanque, t.nombre, t.codigo, "
            "  GREATEST(COALESCE(t.capacidad_litros,0)-COALESCE(s.litros_actual,0),0) AS disp "
            "FROM produccion.dim_tanque t "
-           "JOIN produccion.dim_tanque_producto_permitido pp ON pp.id_tanque=t.id_tanque "
+           # habilitación real (Admin → Tanques) + la tabla vieja 'permitido' (SOL-0055)
+           "JOIN (SELECT id_tanque, id_producto, bool_or(COALESCE(es_principal,false)) AS es_principal "
+           "        FROM (SELECT id_tanque, id_producto, es_principal FROM produccion.dim_tanque_producto "
+           "              UNION ALL "
+           "              SELECT id_tanque, id_producto, es_principal FROM produccion.dim_tanque_producto_permitido) u "
+           "       GROUP BY id_tanque, id_producto) pp ON pp.id_tanque=t.id_tanque "
            "JOIN prod p ON p.id_producto=pp.id_producto "
            "LEFT JOIN produccion.vw_stock_tanque_actual s ON s.id_tanque=t.id_tanque "
            "LEFT JOIN produccion.dic_tanque_preferencia pref ON pref.id_producto=pp.id_producto AND pref.id_tanque=t.id_tanque "
