@@ -135,10 +135,9 @@ def _producto_de(cuenta, cta_prod, productos):
 
 
 def _nombre_cuenta(cuenta, cta_prod, nom_prod):
-    """«V-AFE-S-A · AFE Soja»: código oficial + nombre de la planilla de parámetros."""
-    n = nom_prod.get(_producto_de(cuenta, cta_prod, nom_prod), "")
-    n = re.sub(r"\s*\[FUSIONADO.*\]$", "", n)
-    return f"{cuenta} · {n}" if n else str(cuenta)
+    """El producto se nombra SIEMPRE con su sigla oficial (V-AFE-S-A), nunca con el nombre
+    largo («AFE Soja», «Aceite filtrado especial…»): regla de dirección, 24/09/2026."""
+    return str(cuenta)
 
 
 @_cache_rev.cachear(ttl=600, show_spinner=False)
@@ -196,6 +195,11 @@ def _medido(_cf, sectores):
 
 def invalidar():
     _movs.clear(); _saldo_inicial.clear(); _cuentas_de.clear(); _tanques_de.clear(); _medido.clear()
+    for _f in ("_saldo_hoy", "_cuentas_con_tanque", "_porteria"):
+        try:
+            globals()[_f].clear()
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------------ helpers
@@ -588,6 +592,211 @@ def _movimientos(ctx, sec, slot=None):
                 st.error(f"No se pudo recalcular el saldo inicial: {e}")
 
 
+# ------------------------------------------------------------------ EXPORTACIÓN (24/09/2026)
+# Pedido de dirección: primero SALDO CONSOLIDADO (PRODUCTO · SALDO, siempre visible y al día),
+# abajo CUENTA CORRIENTE POR PRODUCTO (FECHA · ORIGEN / DESTINO · N° TICKET · UM · INGRESO ·
+# EGRESO · SALDO · COMENTARIOS), con el formato de la planilla de Fer. El saldo consolidado de
+# cada producto es exactamente el último SALDO de su cuenta corriente (misma fuente, misma
+# fórmula): saldo inicial del corte + movimientos hasta hoy, de los tanques de las tres
+# plataformas (Plataforma 1 BPV, Plataforma 2 BPN y Plataforma central).
+
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
+def _saldo_hoy(_cf, sector, hoy):
+    """Saldo de cada cuenta al cierre de hoy: fn_stock_saldo_a(sector, mañana)."""
+    return _saldo_inicial(_cf, sector, date.fromordinal(hoy.toordinal() + 1))
+
+
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
+def _cuentas_con_tanque(_cf, sector):
+    try:
+        with _cf() as conn:
+            df = pd.read_sql_query("SELECT cuenta FROM produccion.v_cuenta_sector "
+                                   "WHERE sector = %s AND tanques_en_uso > 0", conn, params=(sector,))
+        return set(df["cuenta"].dropna().astype(str))
+    except Exception:
+        return set()
+
+
+@_cache_rev.cachear(ttl=_TTL, show_spinner=False)
+def _porteria(_cf, tickets):
+    """Ticket de portería → (cliente, procedencia). La procedencia dice de qué sector viene un
+    «MOVIMIENTO INTERNO»."""
+    if not tickets:
+        return {}
+    sql = ("SELECT DISTINCT ON (tk) tk, cliente, procedencia FROM ("
+           "  SELECT regexp_replace(transaccion::text, '\\.0+$', '') AS tk, cliente, procedencia, fecha_entrada"
+           "    FROM produccion.v_transacciones_limpias"
+           "   WHERE regexp_replace(transaccion::text, '\\.0+$', '') = ANY(%s)) x "
+           "ORDER BY tk, fecha_entrada DESC NULLS LAST")
+    try:
+        with _cf() as conn:
+            df = pd.read_sql_query(sql, conn, params=(list(tickets),))
+        return {str(r.tk): (str(r.cliente or "").strip(), str(r.procedencia or "").strip()) for r in df.itertuples()}
+    except Exception:
+        return {}
+
+
+_SECTOR_UI = {"REACTORES": "REACTOR", "REACTOR": "REACTOR", "EXPORTACION": "EXPORTACIÓN",
+              "EXPORTACIÓN": "EXPORTACIÓN", "BACHAS": "BACHAS", "BACHA": "BACHAS", "PILETAS": "PILETAS",
+              "PILETA": "PILETAS"}
+
+
+def _origen_destino(v, port):
+    """ORIGEN / DESTINO como en la planilla: el proveedor (DIECI), el sector interno
+    (REACTOR, BACHAS) o la ODV con su cliente. Nunca el tanque."""
+    out = []
+    for val, tipo, o, d, tk in zip(v["_val"], v["tipo"].fillna(""), v["origen"].fillna(""),
+                                   v["destino"].fillna(""), v["ticket"].fillna("")):
+        if tipo == "AJUSTE":
+            out.append("AJUSTE")
+            continue
+        entra = tipo == "ENTRADA" or (tipo != "SALIDA" and val > 0)
+        x = str(o if entra else d)
+        if x.startswith("Portería · "):
+            nom = x[len("Portería · "):].strip()
+            if "MOVIMIENTO INTERNO" in nom.upper():
+                proc = (port.get(re.sub(r"\.0+$", "", str(tk))) or ("", ""))[1].upper()
+                nom = _SECTOR_UI.get(proc, proc) or "MOVIMIENTO INTERNO"
+            out.append(nom)
+        elif re.match(r"^RE-\d+", x):
+            out.append("REACTOR")
+        elif re.match(r"^BA-\d+", x):
+            out.append("BACHAS")
+        elif x.startswith("Cambio de categoría"):
+            out.append("CAMBIO DE CATEGORÍA")
+        else:
+            out.append(x or "—")
+    return out
+
+
+def _ar(x, dec=2):
+    """Número como en la planilla: 1.234,56. Sin «-0,00»."""
+    x = round(float(x), dec)
+    x = x if x != 0 else 0.0
+    return f"{x:,.{dec}f}".replace(",", "§").replace(".", ",").replace("§", ".")
+
+
+def _cc_expo(w, s_ini, desde, um, port, com_ini=""):
+    cols = ["FECHA", "ORIGEN / DESTINO", "N° TICKET", "UM", "INGRESO", "EGRESO", "SALDO", "COMENTARIOS"]
+    cab = {"FECHA": f"{desde:%d/%m/%Y}", "ORIGEN / DESTINO": "SALDO INICIAL", "N° TICKET": "", "UM": um,
+           "INGRESO": _ar(s_ini) if s_ini > 0 else "", "EGRESO": _ar(-s_ini) if s_ini < 0 else "",
+           "SALDO": _ar(s_ini), "COMENTARIOS": com_ini}
+    if w.empty:
+        return pd.DataFrame([cab], columns=cols)
+    ing = w["_val"].map(lambda x: x if x > 0 else 0.0)
+    egr = w["_val"].map(lambda x: -x if x < 0 else 0.0)
+    saldo = s_ini + (ing - egr).cumsum()
+    cuerpo = pd.DataFrame({
+        "FECHA": w["momento"].map(lambda t: pd.to_datetime(t).strftime("%d/%m/%Y") if not pd.isna(t) else "").values,
+        "ORIGEN / DESTINO": _origen_destino(w, port),
+        "N° TICKET": _ticket(w),
+        "UM": um,
+        "INGRESO": ing.map(lambda x: _ar(x) if x else "").values,
+        "EGRESO": egr.map(lambda x: _ar(x) if x else "").values,
+        "SALDO": saldo.map(_ar).values,
+        "COMENTARIOS": _comentario(w, con_tk=True),
+    })
+    return pd.concat([pd.DataFrame([cab]), cuerpo], ignore_index=True)[cols]
+
+
+@_FRAGMENT
+def _pantalla_expo(ctx, sec):
+    cod = sec["codigo"]
+    cf = ctx["conn_factory"]
+    hoy = date.today()
+    corte = _primer_dia_habil(hoy)
+    key = f"stkexp_{cod}"
+    _, c_um = st.columns([5, 1.2])      # dentro del fragmento: no puede escribir en contenedores de afuera
+    um = c_um.radio("Unidad", ["KL", "TN"], horizontal=True, key=f"{key}_um", label_visibility="collapsed")
+    col, div = _UM[um]
+
+    # ---- SALDO CONSOLIDADO ----
+    sh = _saldo_hoy(cf, cod, hoy)
+    if sh is None:
+        st.warning("Sin conexión a la base en este momento: volvé a entrar en unos segundos.")
+        return
+    sh = sh.copy()
+    sh["_val"] = pd.to_numeric(sh[col], errors="coerce").fillna(0.0) / div
+    sal = sh.groupby("cuenta")["_val"].sum()
+    ctas = sorted(set(sal[sal.abs() >= 0.005].index.astype(str)) | _cuentas_con_tanque(cf, cod))
+    cons = pd.DataFrame({"PRODUCTO": ctas, f"SALDO ({um})": [_ar(sal.get(c, 0.0)) for c in ctas]})
+    st.markdown(f"<div class='section-title' style='margin:8px 0 2px'>SALDO CONSOLIDADO · al {hoy:%d/%m/%Y}</div>",
+                unsafe_allow_html=True)
+    k_c = f"{key}_prod"
+    ev = st.dataframe(cons, hide_index=True, use_container_width=False, key=f"{key}_cons",
+                      height=min(600, 38 + 35 * max(len(cons), 1)), on_select="rerun", selection_mode="single-row",
+                      column_config={"PRODUCTO": st.column_config.TextColumn(width="medium"),
+                                     f"SALDO ({um})": st.column_config.TextColumn(width="medium")})
+    try:
+        _rows = ev.selection.rows
+    except Exception:
+        _rows = []
+    if _rows and 0 <= _rows[0] < len(ctas) and st.session_state.get(f"{key}_sel_prev") != _rows[0]:
+        st.session_state[f"{key}_sel_prev"] = _rows[0]
+        st.session_state[k_c] = ctas[_rows[0]]
+
+    # ---- CUENTA CORRIENTE POR PRODUCTO ----
+    st.markdown("<div class='section-title' style='margin:16px 0 2px'>CUENTA CORRIENTE POR PRODUCTO</div>",
+                unsafe_allow_html=True)
+    if not ctas:
+        st.dataframe(pd.DataFrame(columns=["FECHA", "ORIGEN / DESTINO", "N° TICKET", "UM", "INGRESO", "EGRESO",
+                                           "SALDO", "COMENTARIOS"]), hide_index=True, use_container_width=True)
+        return
+    if st.session_state.get(k_c) not in ctas:
+        st.session_state[k_c] = ctas[0]
+    st.session_state.setdefault(f"{key}_desde", corte)
+    st.session_state.setdefault(f"{key}_hasta", hoy)
+    c1, c2, c3 = st.columns([2, 1.2, 1.2])
+    cta = c1.selectbox("Producto", ctas, key=k_c)
+    desde = c2.date_input("Desde", key=f"{key}_desde", format="DD/MM/YYYY")
+    hasta = c3.date_input("Hasta", key=f"{key}_hasta", format="DD/MM/YYYY")
+    if hasta < desde:
+        desde, hasta = hasta, desde
+
+    df = _movs(cf, (cod,), desde, hasta)
+    ini = _saldo_inicial(cf, cod, desde)
+    if df is None or ini is None:
+        st.warning("Sin conexión a la base en este momento: volvé a intentar en unos segundos.")
+        return
+    v = df[df["es_stock"] & ~df["es_ajuste_sistema"]].copy()
+    v = v[(v["kg_neto"] != 0) | (v["litros_neto"] != 0)]
+    v["_val"] = v[col] / div
+    w = v[v["cuenta"] == cta].sort_values(["momento", "id_mov"])
+    ini = ini.copy()
+    ini["_val"] = pd.to_numeric(ini[col], errors="coerce").fillna(0.0) / div
+    s_ini = float(ini.loc[ini["cuenta"] == cta, "_val"].sum())
+    tks = tuple(sorted({re.sub(r"\.0+$", "", str(t)) for t, o, d in zip(w["ticket"].fillna(""), w["origen"].fillna(""),
+                                                                      w["destino"].fillna(""))
+                        if str(t).strip() and ("Portería" in str(o) or "Portería" in str(d))}))
+    port = _porteria(cf, tks)
+    tabla = _cc_expo(w, s_ini, desde, um, port, _texto_saldo_inicial(ini, desde))
+    st.dataframe(tabla, hide_index=True, use_container_width=True, height=min(640, 40 + 35 * len(tabla)),
+                 column_config={"ORIGEN / DESTINO": st.column_config.TextColumn(width="medium"),
+                                "N° TICKET": st.column_config.TextColumn(width="medium"),
+                                "COMENTARIOS": st.column_config.TextColumn(width="large")})
+
+    # ---- Excel y avisos ----
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        cons.to_excel(xw, index=False, sheet_name="SALDO CONSOLIDADO")
+        tabla.to_excel(xw, index=False, sheet_name=str(cta)[:28])
+    b1, b2, _ = st.columns([1.3, 1.3, 2.4])
+    b1.download_button("⬇️ Descargar Excel", buf.getvalue(), file_name=f"stock_exportacion_{cta}_{hoy:%Y%m%d}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       key=f"{key}_xls", use_container_width=True)
+    avisos = [f"Saldo inicial al {desde:%d/%m/%Y}: {_texto_saldo_inicial(ini, desde)}."]
+    _neg = [c for c in ctas if sal.get(c, 0.0) < -0.005]
+    if _neg:
+        avisos.append("Saldo negativo hoy: **" + ", ".join(_neg) + "**.")
+    med = _medido(cf, (cod,))
+    if med is not None:
+        _m = med[0] if um == "TN" else med[1]
+        _l = float(sal.sum())
+        avisos.append(f"Hoy los tanques miden **{_ar(_m, 1)} {um}** y el libro da **{_ar(_l, 1)} {um}**: "
+                      f"diferencia **{_ar(_l - _m, 1)} {um}**.")
+    _notificaciones(b2.container(), avisos)
+
+
 def render_stock(ctx, sec):
     c1, c2 = st.columns([3, 1.2])
     c1.markdown(f"<div class='section-title' style='margin:6px 0'>📦 STOCK · {sec['nombre_ui'].upper()}</div>",
@@ -598,5 +807,8 @@ def render_stock(ctx, sec):
     if sec.get("codigo") in ("REACTORES", "PILETAS"):   # regla de negocio propia (≠ Exportación)
         from .stock_reactor import pantalla
         pantalla(ctx, sec)
+        return
+    if sec.get("codigo") == "EXPORTACION":
+        _pantalla_expo(ctx, sec)
         return
     _movimientos(ctx, sec)
