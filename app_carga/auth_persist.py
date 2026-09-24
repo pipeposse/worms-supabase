@@ -135,19 +135,63 @@ def set_section_cookie(section: str | None) -> None:
 
 
 def get_section_cookie() -> str | None:
+    v = None
     try:
         v = st.context.cookies.get(SECTION_COOKIE)
-        return (v or "").strip() or None
+    except Exception:
+        v = None
+    if not v:                       # Community Cloud: la cookie llega por el navegador
+        _f = st.session_state.get("_worms_cookies")
+        if isinstance(_f, dict):
+            v = _f.get("sec")
+    return (v or "").strip() or None
+
+
+# ---- SOL-0056: leer la cookie en el NAVEGADOR -----------------------------------------
+# En Streamlit Community Cloud el proxy filtra las cookies antes de que lleguen a la app:
+# st.context.cookies viene VACÍO y la sesión no se restauraba nunca al refrescar (en local
+# sí andaba, por eso no se notó). Un componente mínimo lee document.cookie en el navegador
+# y devuelve el token a la app.
+PENDIENTE = "___pendiente___"   # el navegador todavía no respondió (primer instante de la carga)
+_LECTOR = []
+
+
+def _lector():
+    if not _LECTOR:
+        _LECTOR.append(components.declare_component(
+            "worms_cookie_lector",
+            path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "componentes", "cookie_lector")))
+    return _LECTOR[0]
+
+
+def cookies_navegador():
+    """{'s': token, 'sec': sección} leídas en el navegador, o PENDIENTE si todavía no llegó
+    la respuesta (el componente dispara un rerun apenas la tiene)."""
+    try:
+        v = _lector()(key="_worms_cookies", default=None)
+    except Exception:
+        return {}
+    if v is None:
+        return PENDIENTE
+    return v if isinstance(v, dict) else {}
+
+
+def _token_request():
+    try:
+        return st.context.cookies.get(COOKIE)
     except Exception:
         return None
 
 
 def restaurar_sesion():
-    """Lee la cookie del request actual. Usuario, None (token inválido) o RETRY (DB caída)."""
-    try:
-        tok = st.context.cookies.get(COOKIE)
-    except Exception:
-        return None
+    """Usuario, None (sin cookie o token inválido), RETRY (DB caída) o PENDIENTE (el navegador
+    todavía no devolvió la cookie)."""
+    tok = _token_request()
+    if not tok:
+        front = cookies_navegador()
+        if front == PENDIENTE:
+            return PENDIENTE
+        tok = (front or {}).get("s") or None
     if not tok:
         return None
     id_u = validar_token(tok)

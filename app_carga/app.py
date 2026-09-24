@@ -508,6 +508,10 @@ if st.session_state.pop("_clear_cookie", False):
 # Restaurar sesion desde cookie firmada (sobrevive bloqueo del celular / recarga)
 if "user" not in st.session_state and not st.session_state.get("_logged_out"):
     _u_rest = _auth.restaurar_sesion()
+    if _u_rest == _auth.PENDIENTE:
+        # SOL-0056: el navegador todavía no devolvió la cookie; se muestra el login y, si
+        # había sesión, apenas llega la cookie se restaura sola (rerun del componente).
+        _u_rest = None
     if _u_rest == _auth.RETRY:
         # La DB no respondió: NO es un token inválido. Antes este caso tiraba al
         # operario al login por un hipo de red; ahora se reintenta unos segundos.
