@@ -701,28 +701,66 @@ def _cc_expo(w, s_ini, desde, um, port, com_ini=""):
 
 @_FRAGMENT
 def _pantalla_expo(ctx, sec):
+    import filtros_stock as _fs
     cod = sec["codigo"]
     cf = ctx["conn_factory"]
     hoy = date.today()
     corte = _primer_dia_habil(hoy)
     key = f"stkexp_{cod}"
-    _, c_um = st.columns([5, 1.2])      # dentro del fragmento: no puede escribir en contenedores de afuera
-    um = c_um.radio("Unidad", ["KL", "TN"], horizontal=True, key=f"{key}_um", label_visibility="collapsed")
-    col, div = _UM[um]
 
-    # ---- SALDO CONSOLIDADO ----
-    sh = _saldo_hoy(cf, cod, hoy)
-    if sh is None:
+    # ---- filtros: la misma barra de siempre (producto · sector · fechas · ticket · ➕ · ✖ · Buscar) ----
+    secs_nav = _sectores(cf)
+    st.session_state.setdefault(f"{key}_sec", [cod])
+    st.session_state.setdefault(f"{key}_desde", corte)
+    st.session_state.setdefault(f"{key}_hasta", hoy)
+    _secs_sel = tuple(st.session_state.get(f"{key}_sec") or [cod])
+    _ctas_all = _cuentas_de(cf, _secs_sel)
+    _etq = dict(secs_nav)
+
+    def _mas():
+        out = {}
+        out["Unidad"] = st.radio("Unidad", ["KL", "TN"], horizontal=True, key=f"{key}_um")
+        out["Tipo"] = st.selectbox("Tipo de movimiento", ["(todos)", "Ingresos", "Egresos"], key=f"{key}_tipo")
+        out["Tanque"] = st.selectbox("TK / Acopio", ["(todos)"] + _tanques_de(cf, _secs_sel), key=f"{key}_tq")
+        out["Origen/Destino"] = st.text_input("Origen / destino contiene", key=f"{key}_od",
+                                              placeholder="proveedor, cliente, ODV, reactor, sector…")
+        out["Usuario"] = st.text_input("Usuario", key=f"{key}_usr", placeholder="quien cargó el movimiento")
+        return out
+
+    f, apretado = _fs.barra(_cat_de(cf), key=key, titulo=None, campos=("prod", "sec", "fecha", "tk"),
+                            catalogos={"prod": _ctas_all, "sec": list(secs_nav)},
+                            multi=True, extras_fn=_mas, buscar=True, etiquetas=_etq)
+    k_ap = f"{key}_aplicado"
+    if apretado or k_ap not in st.session_state:     # al entrar se ve todo, sin apretar Buscar
+        st.session_state[k_ap] = f
+    fa = st.session_state[k_ap]
+    secs = list(fa["sec"] or [cod])
+    prop = fa.get("propios") or {}
+    um = prop.get("Unidad") or "KL"
+    col, div = _UM[um]
+    desde = fa["desde"] or corte
+    hasta = fa["hasta"] or hoy
+    if hasta < desde:
+        desde, hasta = hasta, desde
+
+    # ---- SALDO CONSOLIDADO (siempre, al día de hoy) ----
+    partes = [_saldo_hoy(cf, s_, hoy) for s_ in secs]
+    if any(x is None for x in partes):
         st.warning("Sin conexión a la base en este momento: volvé a entrar en unos segundos.")
         return
-    sh = sh.copy()
+    sh = pd.concat(partes, ignore_index=True) if partes else pd.DataFrame(columns=["cuenta", col])
     sh["_val"] = pd.to_numeric(sh[col], errors="coerce").fillna(0.0) / div
     sal = sh.groupby("cuenta")["_val"].sum()
-    ctas = sorted(set(sal[sal.abs() >= 0.005].index.astype(str)) | _cuentas_con_tanque(cf, cod))
+    con_tq = set()
+    for s_ in secs:
+        con_tq |= _cuentas_con_tanque(cf, s_)
+    ctas = sorted(set(sal[sal.abs() >= 0.005].index.astype(str)) | con_tq)
+    if fa["prod"]:
+        ctas = [c for c in ctas if c in fa["prod"]]
     cons = pd.DataFrame({"PRODUCTO": ctas, f"SALDO ({um})": [_ar(sal.get(c, 0.0)) for c in ctas]})
     st.markdown(f"<div class='section-title' style='margin:8px 0 2px'>SALDO CONSOLIDADO · al {hoy:%d/%m/%Y}</div>",
                 unsafe_allow_html=True)
-    k_c = f"{key}_prod"
+    k_c = f"{key}_cta"
     ev = st.dataframe(cons, hide_index=True, use_container_width=False, key=f"{key}_cons",
                       height=min(600, 38 + 35 * max(len(cons), 1)), on_select="rerun", selection_mode="single-row",
                       column_config={"PRODUCTO": st.column_config.TextColumn(width="medium"),
@@ -744,24 +782,38 @@ def _pantalla_expo(ctx, sec):
         return
     if st.session_state.get(k_c) not in ctas:
         st.session_state[k_c] = ctas[0]
-    st.session_state.setdefault(f"{key}_desde", corte)
-    st.session_state.setdefault(f"{key}_hasta", hoy)
-    c1, c2, c3 = st.columns([2, 1.2, 1.2])
-    cta = c1.selectbox("Producto", ctas, key=k_c)
-    desde = c2.date_input("Desde", key=f"{key}_desde", format="DD/MM/YYYY")
-    hasta = c3.date_input("Hasta", key=f"{key}_hasta", format="DD/MM/YYYY")
-    if hasta < desde:
-        desde, hasta = hasta, desde
+    cta = st.selectbox("Producto", ctas, key=k_c, label_visibility="collapsed")
 
-    df = _movs(cf, (cod,), desde, hasta)
-    ini = _saldo_inicial(cf, cod, desde)
-    if df is None or ini is None:
+    df = _movs(cf, tuple(secs), desde, hasta)
+    inis = [_saldo_inicial(cf, s_, desde) for s_ in secs]
+    if df is None or any(x is None for x in inis):
         st.warning("Sin conexión a la base en este momento: volvé a intentar en unos segundos.")
         return
-    v = df[df["es_stock"] & ~df["es_ajuste_sistema"]].copy()
+    ini = pd.concat(inis, ignore_index=True)
+    v = df[df["es_stock"]].copy()
     v = v[(v["kg_neto"] != 0) | (v["litros_neto"] != 0)]
+    if not prop.get("Ajustes"):
+        v = v[~v["es_ajuste_sistema"]]
     v["_val"] = v[col] / div
     w = v[v["cuenta"] == cta].sort_values(["momento", "id_mov"])
+    if prop.get("Tipo") == "Ingresos":
+        w = w[w["_val"] > 0]
+    elif prop.get("Tipo") == "Egresos":
+        w = w[w["_val"] < 0]
+    if prop.get("Tanque") not in (None, "", "(todos)"):
+        w = w[_col(w, "tanque", "").fillna("").astype(str) == prop["Tanque"]]
+    if (prop.get("Origen/Destino") or "").strip():
+        q = prop["Origen/Destino"].strip().lower()
+        w = w[pd.Series(_contraparte(w), index=w.index).str.lower().str.contains(q, regex=False)]
+    if (prop.get("Usuario") or "").strip():
+        q = prop["Usuario"].strip().lower()
+        w = w[_col(w, "usuario", "").fillna("").astype(str).str.lower().str.contains(q, regex=False)]
+    if fa["tk"]:
+        q = fa["tk"].strip().lower()
+        m = w["id_mov"].astype(str).str.contains(q, regex=False)
+        for c in ("ticket", "tickets_detalle", "referencia"):
+            m = m | w[c].fillna("").astype(str).str.lower().str.contains(q, regex=False)
+        w = w[m]
     ini = ini.copy()
     ini["_val"] = pd.to_numeric(ini[col], errors="coerce").fillna(0.0) / div
     s_ini = float(ini.loc[ini["cuenta"] == cta, "_val"].sum())
@@ -788,7 +840,7 @@ def _pantalla_expo(ctx, sec):
     _neg = [c for c in ctas if sal.get(c, 0.0) < -0.005]
     if _neg:
         avisos.append("Saldo negativo hoy: **" + ", ".join(_neg) + "**.")
-    med = _medido(cf, (cod,))
+    med = _medido(cf, tuple(secs))
     if med is not None:
         _m = med[0] if um == "TN" else med[1]
         _l = float(sal.sum())

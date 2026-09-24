@@ -136,6 +136,8 @@ def _repetidas(_cf, sector):
             df = pd.read_sql_query(sql, conn, params=(sector,))
     except Exception:
         return {}
+    if df is None or df.empty or not {"id_tanque", "dia", "litros"} <= set(df.columns):
+        return {}
     out = {}
     for tq, g in df.sort_values("dia").groupby("id_tanque"):
         vals = pd.to_numeric(g["litros"], errors="coerce").tolist()

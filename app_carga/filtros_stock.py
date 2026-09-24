@@ -160,7 +160,8 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
     # columnas según lo que pide la pantalla
     anchos = {"prod": 2.0, "sec": 1.8, "fecha": 2.4, "tk": 1.4}
     _hay_mas = bool(extras) or extras_fn is not None
-    cols = st.columns([anchos[c] for c in campos] + ([0.8] if _hay_mas else []) + [0.8])
+    # ➕ Más y ✖ Limpiar: chicos y discretos, sin ocupar columna entera (dirección, 24/09)
+    cols = st.columns([anchos[c] for c in campos] + ([0.45] if _hay_mas else []) + [0.45])
     ci = 0
     prod = sec = desde = hasta = None
     tk = ""
@@ -193,7 +194,7 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
         with cols[ci]:
             ci += 1
             st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-            with st.popover("➕ Más", use_container_width=True):
+            with st.popover("➕", use_container_width=False):
                 if extras_fn is not None:
                     propios = extras_fn() or {}
                     extras = ()
@@ -220,7 +221,11 @@ def barra(cat, key="stk", titulo="🔎 Buscar en el stock",
                     anul = st.checkbox("Incluir anulados", key=_k(key, "anul"), value=False)
     with cols[ci]:
         st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-        if st.button("✖ Limpiar", key=_k(key, "clr"), use_container_width=True):
+        try:
+            _clr = st.button("✖", key=_k(key, "clr"), type="tertiary")
+        except Exception:
+            _clr = st.button("✖", key=_k(key, "clr"))
+        if _clr:
             st.session_state[_k(key, "reset")] = True
             st.rerun()
 
