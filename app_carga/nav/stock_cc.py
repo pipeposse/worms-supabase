@@ -18,6 +18,7 @@ de la planilla de parámetros («V-AFE-S-A · AFE Soja»).
 """
 
 import io
+import re
 from datetime import date
 
 import pandas as pd
@@ -32,6 +33,28 @@ _COLS = ("id_mov, momento, fecha, cuenta, tipo, origen, destino, ticket, tickets
          "kg_neto, litros_neto, referencia, es_ajuste_sistema, observacion, tanque, sector, es_stock, "
          "producto_codigo, usuario")
 _TODOS = "TODOS"
+_TZ = "America/Argentina/Buenos_Aires"
+
+# Textos que arma el sistema al registrar un movimiento: no son comentarios de nadie y en
+# la columna COMENTARIO sólo tapaban lo útil (revisión 24/09/2026).
+_AUTO = re.compile(r"^(ODV \d+ línea \d+|Asignación AFE ticket.*|Ingreso capturado desde laboratorio.*"
+                   r"|Asignación automática por laboratorio.*|Recuperación AG ticket \d+|RE-\d+|RX-[\d-]+"
+                   r"|BA-\d+|MS-\d+)$", re.IGNORECASE)
+
+
+def _hora_planta(serie):
+    """Fechas en hora de PLANTA (Argentina), sin zona.
+
+    pandas lee los timestamptz de la base y los devuelve en UTC: sin esta conversión
+    todas las fechas y horas del stock salían 3 horas adelantadas (un movimiento de las
+    19:00 figuraba a las 22:00; los de «medianoche» a las 03:00)."""
+    t = pd.to_datetime(serie, errors="coerce")
+    try:
+        if getattr(t.dt, "tz", None) is not None:
+            t = t.dt.tz_convert(_TZ).dt.tz_localize(None)
+    except Exception:
+        pass
+    return t
 
 
 # ------------------------------------------------------------------ datos
@@ -49,6 +72,7 @@ def _movs(_cf, sector, desde, hasta):
         df["es_ajuste_sistema"] = df["es_ajuste_sistema"].fillna(False).astype(bool)
         df["es_stock"] = df["es_stock"].fillna(True).astype(bool) if "es_stock" in df.columns else True
         df["cuenta"] = df["cuenta"].fillna("(sin producto)")
+        df["momento"] = _hora_planta(df["momento"])
         return df
     except Exception:
         return None
@@ -95,12 +119,37 @@ def _catalogo(_cf):
         return {}, {}
 
 
+def _producto_de(cuenta, cta_prod, productos):
+    """Código de producto de una cuenta. Las cuentas históricas (V-AFE-M-NE, V-AFE-SG-NE…)
+    no figuran en v_cuenta_sector: se deduce sacando la corriente (V-/A-) y la calidad."""
+    c = str(cuenta or "")
+    if c in cta_prod:
+        return cta_prod[c]
+    x = re.sub(r"^[VA]-", "", c)
+    partes = x.split("-")
+    for n in range(len(partes), 0, -1):
+        cand = "-".join(partes[:n])
+        if cand in productos:
+            return cand
+    return ""
+
+
+def _nombre_cuenta(cuenta, cta_prod, nom_prod):
+    """«V-AFE-S-A · AFE Soja»: código oficial + nombre de la planilla de parámetros."""
+    n = nom_prod.get(_producto_de(cuenta, cta_prod, nom_prod), "")
+    n = re.sub(r"\s*\[FUSIONADO.*\]$", "", n)
+    return f"{cuenta} · {n}" if n else str(cuenta)
+
+
 @_cache_rev.cachear(ttl=600, show_spinner=False)
 def _sectores(_cf):
     try:
         with _cf() as conn:
-            df = pd.read_sql_query("SELECT codigo, nombre_ui FROM produccion.dim_sector_nav "
+            # sólo los sectores que tienen stock (tanques): Administración, Portería,
+            # Laboratorio… no tienen nada que mostrar acá
+            df = pd.read_sql_query("SELECT codigo, nombre_ui FROM produccion.dim_sector_nav s "
                                    "WHERE COALESCE(activo,true) AND NOT COALESCE(en_construccion,false) "
+                                   "  AND EXISTS (SELECT 1 FROM produccion.v_acopio_sector a WHERE a.sector = s.codigo) "
                                    "ORDER BY nombre_ui", conn)
         return dict(zip(df["codigo"].astype(str), df["nombre_ui"].astype(str)))
     except Exception:
@@ -113,7 +162,7 @@ def _cuentas_de(_cf, sectores):
     try:
         with _cf() as conn:
             df = pd.read_sql_query("SELECT DISTINCT cuenta FROM produccion.v_stock_cuenta_sector "
-                                   "WHERE sector = ANY(%s) AND cuenta IS NOT NULL ORDER BY 1",
+                                   "WHERE sector = ANY(%s) AND cuenta IS NOT NULL AND es_stock ORDER BY 1",
                                    conn, params=(list(sectores),))
         return df["cuenta"].astype(str).tolist()
     except Exception:
@@ -178,11 +227,61 @@ def _contraparte(v):
     for val, tipo, o, d in zip(v["_val"], v["tipo"].fillna(""), v["origen"].fillna(""), v["destino"].fillna("")):
         if tipo == "AJUSTE":
             out.append("AJUSTE")
-        elif val > 0:
+        elif tipo == "ENTRADA" or (tipo != "SALIDA" and val > 0):
             out.append(o or "—")
         else:
             out.append(d or "—")
     return out
+
+
+_OP = re.compile(r"^(RE|RX|BA)-[\w-]+$")
+
+
+def _ticket(v):
+    """N° TICKET completo: si el movimiento tiene varios (una ODV con 6 camiones) van todos,
+    no «74681 +5». En los consumos y producciones de una reacción es la OP de la reacción
+    (la de ORIGEN / DESTINO): 47 movimientos viejos tienen guardado otro código (RX-2026-00xx
+    o la OP de otra reacción) y el N° TICKET no coincidía con la reacción."""
+    det = _col(v, "tickets_detalle", "").fillna("").astype(str)
+    tk = v["ticket"].fillna("").astype(str)
+    cp = _contraparte(v) if "_val" in v.columns else [""] * len(v)
+    out = []
+    for d, t, c in zip(det, tk, cp):
+        t2 = d if d.strip() else t
+        m = re.match(r"^((?:RE|BA)-\d+) · ", str(c))
+        if m and _OP.match(t2.strip()):
+            t2 = m.group(1)
+        out.append(t2)
+    return out
+
+
+def _f1(x):
+    """Un decimal, sin «-0.0»."""
+    x = round(float(x), 1)
+    return f"{(x if x != 0 else 0.0):,.1f}"
+
+
+def _comentario(v, con_tk):
+    """COMENTARIO: la observación que escribió una persona; en las ODV, el contenedor; y en
+    el consolidado (que no tiene columna TK) el tanque. Los textos automáticos del sistema
+    («ODV 31 línea 442», «Ingreso capturado desde laboratorio…») no van."""
+    out = []
+    for o, r, d, tq in zip(v["observacion"].fillna(""), v["referencia"].fillna(""),
+                           v["destino"].fillna(""), _col(v, "tanque", "").fillna("")):
+        partes = []
+        o, r = str(o).strip(), str(r).strip()
+        if o and not _AUTO.match(o):
+            partes.append(o)
+        if r and str(d).startswith("ODV") and not _AUTO.match(r):
+            partes.append(f"Contenedor {r}")
+        if con_tk and str(tq).strip():
+            partes.append(f"TK {str(tq).strip()}")
+        out.append(" · ".join(partes))
+    return out
+
+
+def _fecha_txt(t):
+    return pd.to_datetime(t).strftime("%d/%m/%Y %H:%M") if t is not None and not pd.isna(t) else ""
 
 
 def _filas(v, saldo_ini, con_cuenta):
@@ -193,16 +292,16 @@ def _filas(v, saldo_ini, con_cuenta):
     saldo = saldo_ini + (ing - egr).cumsum()
     f = pd.DataFrame({
         "ID": v["id_mov"].map(lambda i: "" if pd.isna(i) else f"{int(i)}"),
-        "FECHA": v["momento"].map(lambda t: pd.to_datetime(t).strftime("%d/%m/%Y %H:%M") if not pd.isna(t) else ""),
+        "FECHA": v["momento"].map(_fecha_txt),
         "CUENTA": v["cuenta"].fillna(""),
         "ORIGEN / DESTINO": _contraparte(v),
         "TK / ACOPIO": _col(v, "tanque", "").fillna("").replace("", "—"),
-        "N° TICKET": v["ticket"].fillna(""),
+        "N° TICKET": _ticket(v),
         "INGRESO": ing.map(lambda x: _q(x, "")),
         "EGRESO": egr.map(lambda x: _q(x, "")),
-        "SALDO": saldo.map(lambda x: f"{float(x):,.1f}"),
-        "COMENTARIOS": [(o or r or "") for o, r in zip(v["observacion"].fillna(""), v["referencia"].fillna(""))],
-    })
+        "SALDO": saldo.map(_f1),
+        "COMENTARIOS": _comentario(v, con_tk=False),
+    }, index=v.index)
     return f if con_cuenta else f.drop(columns=["CUENTA"])
 
 
@@ -215,53 +314,63 @@ def _cuenta_corriente(v, saldo_ini, fecha_ini, comentario_ini="", con_cuenta=Fal
     cab = pd.DataFrame([{
         "ID": "", "FECHA": f"{fecha_ini:%d/%m/%Y}", "CUENTA": "", "ORIGEN / DESTINO": "SALDO INICIAL",
         "TK / ACOPIO": "", "N° TICKET": "", "INGRESO": "", "EGRESO": "",
-        "SALDO": f"{float(saldo_ini):,.1f}", "COMENTARIOS": comentario_ini,
+        "SALDO": _f1(saldo_ini), "COMENTARIOS": comentario_ini,
     }])
     return pd.concat([cab, filas], ignore_index=True)[cols]
 
 
-def _sin_tz(serie):
-    t = pd.to_datetime(serie, utc=True, errors="coerce")
-    return t.dt.tz_convert("America/Argentina/Buenos_Aires").dt.tz_localize(None).values
-
-
-def _consolidado(v, ini, um, nombre_de):
-    """SALDO CONSOLIDADO POR PRODUCTO (dirección, 23/09): el libro de todos los productos
-    elegidos, en orden de fecha, con el saldo corriendo por producto.
-    FECHA · PRODUCTO · ORIGEN / DESTINO · N° TICKET · UM · INGRESO · EGRESO · SALDO · COMENTARIO."""
+def _consolidado(v, ini, um, nombre_de, fecha_ini, orden=None):
+    """SALDO CONSOLIDADO POR PRODUCTO (dirección, 23/09): producto por producto, cada uno
+    con su SALDO INICIAL y sus movimientos en orden de fecha, con el saldo corriendo.
+    FECHA · PRODUCTO · ORIGEN / DESTINO · N° TICKET · UM · INGRESO · EGRESO · SALDO · COMENTARIO.
+    Revisión 24/09: antes mezclaba todos los productos por fecha (el saldo de cada renglón
+    era de un producto distinto al de arriba) y el saldo inicial ponía el texto en FECHA.
+    `orden`: función cuenta → clave de orden (Reactor: materia prima, insumo, terminado)."""
     cols = ["FECHA", "PRODUCTO", "ORIGEN / DESTINO", "N° TICKET", "UM", "INGRESO", "EGRESO", "SALDO", "COMENTARIO"]
     partes = []
-    for c in sorted(set(v["cuenta"].dropna()) | set(ini["cuenta"].dropna())):
+    ctas = sorted(set(v["cuenta"].dropna()) | set(ini["cuenta"].dropna()),
+                  key=(orden or (lambda c: str(c))))
+    for c in ctas:
         w = v[v["cuenta"] == c].sort_values(["momento", "id_mov"])
         s0 = float(ini.loc[ini["cuenta"] == c, "_val"].sum())
         if w.empty and abs(s0) < 0.05:
             continue
-        partes.append(pd.DataFrame([{"_t": pd.Timestamp.min, "_c": c, "FECHA": "SALDO INICIAL",
-                                     "PRODUCTO": nombre_de(c), "ORIGEN / DESTINO": "", "N° TICKET": "",
-                                     "UM": um, "INGRESO": "", "EGRESO": "", "SALDO": f"{s0:,.1f}",
-                                     "COMENTARIO": ""}]))
+        partes.append(pd.DataFrame([{"FECHA": f"{fecha_ini:%d/%m/%Y}", "PRODUCTO": nombre_de(c),
+                                     "ORIGEN / DESTINO": "SALDO INICIAL", "N° TICKET": "", "UM": um,
+                                     "INGRESO": "", "EGRESO": "", "SALDO": _f1(s0), "COMENTARIO": ""}]))
         if w.empty:
             continue
         ing = w["_val"].map(lambda x: x if x > 0 else 0.0)
         egr = w["_val"].map(lambda x: -x if x < 0 else 0.0)
         saldo = s0 + (ing - egr).cumsum()
         partes.append(pd.DataFrame({
-            "_t": _sin_tz(w["momento"]),
-            "_c": c,
-            "FECHA": w["momento"].map(lambda t: pd.to_datetime(t).strftime("%d/%m/%Y %H:%M") if not pd.isna(t) else "").values,
+            "FECHA": w["momento"].map(_fecha_txt).values,
             "PRODUCTO": nombre_de(c),
             "ORIGEN / DESTINO": _contraparte(w),
-            "N° TICKET": w["ticket"].fillna("").values,
+            "N° TICKET": _ticket(w),
             "UM": um,
             "INGRESO": ing.map(lambda x: _q(x, "")).values,
             "EGRESO": egr.map(lambda x: _q(x, "")).values,
-            "SALDO": saldo.map(lambda x: f"{float(x):,.1f}").values,
-            "COMENTARIO": [(o or r or "") for o, r in zip(w["observacion"].fillna(""), w["referencia"].fillna(""))],
+            "SALDO": saldo.map(_f1).values,
+            "COMENTARIO": _comentario(w, con_tk=True),
         }))
     if not partes:
         return pd.DataFrame(columns=cols)
-    out = pd.concat(partes, ignore_index=True).sort_values(["_t", "_c"], kind="stable")
-    return out[cols].reset_index(drop=True)
+    return pd.concat(partes, ignore_index=True)[cols]
+
+
+def _texto_saldo_inicial(ini, desde):
+    """De dónde sale el saldo inicial, dicho bien: la medición es de otro día que el
+    «desde» elegido casi siempre."""
+    bf = ini["base_fecha"].dropna() if "base_fecha" in ini.columns else pd.Series([], dtype=object)
+    if not len(bf):
+        return "arrastre del libro (sin medición de corte cargada)"
+    b = pd.to_datetime(bf.iloc[0]).date()
+    if b == desde:
+        return f"medición de tanques del {b:%d/%m/%Y}"
+    if b < desde:
+        return f"medición de tanques del {b:%d/%m/%Y} + movimientos hasta el {desde:%d/%m/%Y}"
+    return f"medición de tanques del {b:%d/%m/%Y} − movimientos del {desde:%d/%m/%Y} al {b:%d/%m/%Y}"
 
 
 def _ir_stock_clasico(ctx):
@@ -311,8 +420,7 @@ def _movimientos(ctx, sec, slot=None):
 
     def nombre_de(c):
         """«V-AFE-S-A · AFE Soja»: código oficial + nombre de la planilla de parámetros."""
-        n = nom_prod.get(cta_prod.get(str(c), ""), "")
-        return f"{c} · {n}" if n else str(c)
+        return _nombre_cuenta(c, cta_prod, nom_prod)
 
     # Sector: arranca en el de la pantalla; se pueden sumar otros para comparar.
     st.session_state.setdefault(f"{key}_sec", [cod])
@@ -364,6 +472,7 @@ def _movimientos(ctx, sec, slot=None):
     ini = pd.concat(inis, ignore_index=True) if inis else pd.DataFrame(columns=["cuenta", "kg_neto", "litros_neto"])
 
     v = df[df["es_stock"]].copy()
+    v = v[(v["kg_neto"] != 0) | (v["litros_neto"] != 0)]     # asignaciones de 0 kg: no son movimientos
     if not prop.get("Ajustes"):
         v = v[~v["es_ajuste_sistema"]]
     v = v[v["sector"].isin(secs)] if "sector" in v.columns else v   # red de seguridad
@@ -402,11 +511,7 @@ def _movimientos(ctx, sec, slot=None):
     _bf0 = ini["base_fecha"].dropna() if "base_fecha" in ini.columns else pd.Series([], dtype=object)
     s_fin = float(ini["_val"].sum()) + float(v["_val"].sum())
     med = _medido(cf, tuple(secs))
-    if len(_bf0):
-        avisos.append(f"Saldo inicial del {pd.to_datetime(_bf0.iloc[0]):%d/%m/%Y}: medición física de los "
-                      f"tanques de {_secs_txt}.")
-    else:
-        avisos.append(f"{_secs_txt}: todavía no hay saldo inicial cargado; el saldo es el arrastre del libro.")
+    avisos.append(f"Saldo inicial al {desde:%d/%m/%Y} ({_secs_txt}): {_texto_saldo_inicial(ini, desde)}.")
     if med is not None:
         _m = med[0] if um == "TN" else med[1]
         avisos.append(f"Hoy los tanques miden **{_m:,.1f} {um}** y el libro cierra en **{s_fin:,.1f} {um}**: "
@@ -420,11 +525,15 @@ def _movimientos(ctx, sec, slot=None):
     # ---- SALDO CONSOLIDADO POR PRODUCTO ----
     st.markdown("<div class='section-title' style='margin:10px 0 2px'>SALDO CONSOLIDADO POR PRODUCTO</div>",
                 unsafe_allow_html=True)
-    cons = _consolidado(v, ini, um, nombre_de)
     if m_tk is not None:
-        _keep = set(v.loc[m_tk, "ticket"].fillna("").astype(str)) | set(v.loc[m_tk, "referencia"].fillna("").astype(str))
-        cons = cons[(cons["FECHA"] == "SALDO INICIAL") | cons["N° TICKET"].astype(str).isin(_keep)
-                    | cons["COMENTARIO"].astype(str).isin(_keep)]
+        # el ticket filtra los renglones; el saldo de cada uno sigue siendo el real del libro
+        _cons_all = _consolidado(v, ini, um, nombre_de, desde)
+        _vm = v[m_tk]
+        _keep = set(_ticket(_vm))
+        cons = _cons_all[(_cons_all["ORIGEN / DESTINO"] == "SALDO INICIAL")
+                         | _cons_all["N° TICKET"].astype(str).isin(_keep)]
+    else:
+        cons = _consolidado(v, ini, um, nombre_de, desde)
     st.dataframe(cons, hide_index=True, use_container_width=True, height=min(560, 40 + 35 * len(cons)),
                  column_config={"PRODUCTO": st.column_config.TextColumn(width="medium"),
                                 "ORIGEN / DESTINO": st.column_config.TextColumn(width="medium"),
@@ -444,9 +553,7 @@ def _movimientos(ctx, sec, slot=None):
     cta = st.selectbox("Producto", ctas, key=k_c, label_visibility="collapsed", format_func=nombre_de)
     w = v[v["cuenta"] == cta].sort_values(["momento", "id_mov"])
     s_ini_cta = float(ini.loc[ini["cuenta"] == cta, "_val"].sum())
-    _bf = ini["base_fecha"].dropna() if "base_fecha" in ini.columns else pd.Series([], dtype=object)
-    _com_ini = (f"medición de tanques al {pd.to_datetime(_bf.iloc[0]):%d/%m/%Y}" if len(_bf)
-                else "arrastre del libro (sin corte cargado)")
+    _com_ini = _texto_saldo_inicial(ini, desde)
     mw = m_tk.loc[w.index] if m_tk is not None else None
     tabla = _cuenta_corriente(w, s_ini_cta, desde, _com_ini, con_cuenta=False, mascara=mw)
     st.dataframe(tabla, hide_index=True, use_container_width=True, height=min(620, 40 + 35 * len(tabla)),
@@ -488,7 +595,7 @@ def render_stock(ctx, sec):
     if ctx["puede_seccion"]("STOCK"):
         c2.button("📋 Stock clásico (físico por tanque)", key="nav_cc_clasico", use_container_width=True,
                   on_click=_ir_stock_clasico(ctx))
-    if sec.get("codigo") == "REACTORES":         # regla de negocio propia (≠ Exportación)
+    if sec.get("codigo") in ("REACTORES", "PILETAS"):   # regla de negocio propia (≠ Exportación)
         from .stock_reactor import pantalla
         pantalla(ctx, sec)
         return

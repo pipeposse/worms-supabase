@@ -33,7 +33,30 @@ def _dl(df, name, key):
                        file_name=name, mime="text/csv", key=key, use_container_width=True)
 
 
+def _en_hora_planta(cat):
+    """cat() que devuelve las fechas con hora en hora de PLANTA (Argentina).
+
+    pandas entrega los timestamptz en UTC y las grillas mostraban todas las horas 3 h
+    adelantadas (revisión de stock 24/09/2026). No toca el DataFrame cacheado: copia."""
+    def _c(*a, **k):
+        df = cat(*a, **k)
+        try:
+            tzc = [c for c in df.columns if getattr(df[c].dtype, "tz", None) is not None]
+            if tzc:
+                df = df.copy()
+                for c in tzc:
+                    df[c] = df[c].dt.tz_convert("America/Argentina/Buenos_Aires").dt.tz_localize(None)
+        except Exception:
+            pass
+        return df
+    for _a in ("invalidar", "clear"):
+        if hasattr(cat, _a):
+            setattr(_c, _a, getattr(cat, _a))
+    return _c
+
+
 def render(USR, cat):
+    cat = _en_hora_planta(cat)
     st.title("📦 Stock")
     with st.expander("¿Cómo se calcula el stock teórico?", expanded=False):
         st.markdown(

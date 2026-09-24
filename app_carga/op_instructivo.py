@@ -54,7 +54,24 @@ def _ahora():
 
 
 # ------------------------------------------------------------------ datos
-_SQL_PASOS = "SELECT * FROM produccion.v_op_instructivo WHERE id_batch=%s ORDER BY orden"
+# SOL-0058: el orden de la pantalla es `pos` (las mediciones agregadas por el operario van
+# después de la última revisión de la fórmula, con orden 1001…1100). «Paso N» es la posición
+# en la lista (`nro`), no el `orden` interno.
+_SQL_PASOS = "SELECT * FROM produccion.v_op_instructivo WHERE id_batch=%s ORDER BY pos, orden"
+_MAX_EXTRA = 100
+
+
+def _numerar(df):
+    """Agrega `nro` (1…N en el orden de la pantalla) y deja `pos` numérico."""
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    if "pos" not in df.columns:
+        df["pos"] = df["orden"]
+    df["pos"] = pd.to_numeric(df["pos"], errors="coerce").fillna(pd.to_numeric(df["orden"], errors="coerce"))
+    df = df.sort_values(["pos", "orden"]).reset_index(drop=True)
+    df["nro"] = range(1, len(df) + 1)
+    return df
 
 
 def _pasos(cat, id_batch):
@@ -79,7 +96,7 @@ def _pasos(cat, id_batch):
                 df[c] = df[c].dt.tz_convert(_TZ).dt.tz_localize(None)
             except Exception:
                 pass
-    return df
+    return _numerar(df)
 
 
 def _congelar(conectar, cat, USR, id_batch):
@@ -213,7 +230,7 @@ def _avance(id_batch, orden):
     si el operario no ve el corte, no sabe si terminó y vuelve a cargar. Se relee el
     instructivo entero SIN caché — con `cat()` el paso recién confirmado todavía no
     figura y el aviso sale al revés. Devuelve (texto, orden_siguiente)."""
-    df = _g.leer(_SQL_PASOS, (int(id_batch),))
+    df = _numerar(_g.leer(_SQL_PASOS, (int(id_batch),)))
     if df is None or df.empty:
         return "", None
     _h = df["hecho"].fillna(False).astype(bool)
@@ -225,9 +242,11 @@ def _avance(id_batch, orden):
     if pend.empty:
         return ("🏁 **INSTRUCTIVO COMPLETO** · %d de %d pasos cargados. "
                 "Cerrá la etapa desde la ficha de la reacción." % (hechos, total)), None
-    sig = pend.iloc[0]
+    _pos0 = float(fila.iloc[0]["pos"]) if not fila.empty else -1.0
+    _desp = pend[pend["pos"].astype(float) > _pos0]
+    sig = _desp.iloc[0] if not _desp.empty else pend.iloc[0]
     sig_orden = int(sig["orden"])
-    sig_txt = "paso %d · %s" % (sig_orden, sig.get("descripcion") or sig["etapa"])
+    sig_txt = "paso %d · %s" % (int(sig["nro"]), sig.get("descripcion") or sig["etapa"])
     # ¿quedó algún paso pendiente de la MISMA etapa?
     _mismos = df[(df["etapa"] == etapa) & (~_h)]
     if etapa and _mismos.empty:
@@ -275,7 +294,7 @@ def _confirmar(cat, conectar, USR, id_batch, p, titulo, detalle="", **campos):
             # el botón no haga nada, así que se muestra en rojo y queda registrado como
             # traba en log_error_app en vez de un cartel verde que no se corresponde.
             _g.anotar(clave, False, "El paso %d se guardó pero no quedó confirmado"
-                      % int(p["orden"]), detalle=detalle,
+                      % int(p.get("nro") or p["orden"]), detalle=detalle,
                       error="Falta el dato que marca el paso como hecho (%s). "
                             "Avisá a sistemas: queda registrado solo." % str(p.get("captura") or "—"))
         else:
@@ -293,11 +312,56 @@ def _confirmar(cat, conectar, USR, id_batch, p, titulo, detalle="", **campos):
         # cargar. Eso es lo que planta reportó como "volvió al paso 4 y no funciona":
         # confirmaba, el sistema lo devolvía al mismo lugar, y volvía a confirmar
         # (paso 4 de RE-416 quedó escrito dos veces, 12:00 y 12:14).
-        st.session_state[f"opi_desde_{id_batch}"] = int(p["orden"])
+        st.session_state[f"opi_desde_{id_batch}"] = float(p.get("pos") if pd.notna(p.get("pos")) else p["orden"])
         st.session_state.pop(f"opi_sel_{id_batch}", None)
     except Exception as e:
-        _g.anotar(clave, False, "No se guardó el paso %d" % int(p["orden"]), detalle=detalle, error=str(e))
+        _g.anotar(clave, False, "No se guardó el paso %d" % int(p.get("nro") or p["orden"]), detalle=detalle, error=str(e))
     _rerun_fragment()
+
+
+def _agregar_mediciones(cat, conectar, USR, id_batch, df):
+    """SOL-0058: la reacción no siempre baja la acidez en las horas de la fórmula. El
+    operario suma las mediciones de temperatura y acidez que necesite (hasta 100 por OP):
+    van después de la última revisión, con el mismo esperado y tolerancia que ésta."""
+    if df is None or df.empty or not (df["etapa"] == "REVISION").any():
+        return
+    n_ext = int((pd.to_numeric(df["orden"], errors="coerce") > 1000).sum())
+    quedan = _MAX_EXTRA - n_ext
+    _prox = int((df["etapa"] == "REVISION").sum()) + 1
+    c1, c2, c3 = st.columns([1.1, 2.6, 2.3])
+    if quedan <= 0:
+        c3.caption(f"Ya se agregaron {n_ext} mediciones: es el máximo por OP.")
+        return
+    cant = c1.number_input("Cantidad", 1, min(quedan, 24), 1, 1, key=f"opi_addn_{id_batch}",
+                           label_visibility="collapsed")
+    # etiqueta fija: si cambiara con la cantidad, el click podría perderse (otro widget)
+    if c2.button("➕ Agregar medición de temperatura y acidez",
+                 key=f"opi_add_{id_batch}", use_container_width=True):
+        clave = f"opi_{id_batch}"
+        try:
+            with conectar(int(USR["id_usuario"])) as (conn, audit):
+                with conn.cursor() as cur:
+                    cur.execute("SELECT produccion.fn_op_agregar_revision(%s, %s, %s)",
+                                (int(id_batch), int(USR["id_usuario"]), int(cant)))
+                    nuevos = list(cur.fetchone()[0] or [])
+                audit.log("I", "fact_batch_paso_extra", int(id_batch), {"ordenes": nuevos})
+            _invalidar(cat)
+            _chk = _g.leer("SELECT count(*) AS n FROM produccion.fact_batch_paso_extra WHERE id_batch=%s",
+                           (int(id_batch),))
+            _n = int(_chk.iloc[0]["n"]) if _chk is not None and not _chk.empty else None
+            _g.anotar(clave, True,
+                      "Se agregó %d medición(es) de temperatura y acidez" % len(nuevos),
+                      detalle="hora %d" % _prox + (f" a {_prox + len(nuevos) - 1}" if len(nuevos) > 1 else "")
+                              + " · mismo esperado y tolerancia que la última revisión",
+                      verificado=(f"la OP tiene {_n} medición(es) agregada(s) en la base" if _n is not None else ""))
+            # el selector va a la primera medición nueva
+            _ult_rev = df[df["etapa"] == "REVISION"].iloc[-1]
+            st.session_state[f"opi_desde_{id_batch}"] = float(_ult_rev["pos"])
+            st.session_state.pop(f"opi_sel_{id_batch}", None)
+        except Exception as e:
+            _g.anotar(clave, False, "No se pudo agregar la medición", error=str(e))
+        _rerun_fragment()
+    c3.caption(f"Próxima: hora {_prox}" + (f" · {n_ext} agregada(s), quedan {quedan}" if n_ext else ""))
 
 
 @_FRAGMENT
@@ -326,17 +390,19 @@ def render(USR, cat, conectar, id_batch):
     filas = []
     for _, p in df.iterrows():
         filas.append({
-            "": _estado_icono(p, int(p["orden"]) == actual_orden), "#": int(p["orden"]),
+            "": _estado_icono(p, int(p["orden"]) == actual_orden), "#": int(p["nro"]),
             "Paso": f"{_ICONO.get(p['etapa'], '•')} {p.get('descripcion') or p['etapa']}" + (f" · {p['codigo_insumo']}" if p.get("codigo_insumo") else ""),
             "Esperado": _esperado(p),
             "Hora": p["hora_esperada"].strftime("%H:%M") if pd.notna(p.get("hora_esperada")) else "",
             "Real": _real(p),
         })
     st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True, height=min(60 + 35 * total, 420))
+    _agregar_mediciones(cat, conectar, USR, id_batch, df)
 
     # ---- paso a cargar ----
     opciones = [int(o) for o in df["orden"]]
-    etiquetas = {int(p["orden"]): f"{int(p['orden'])} · {p.get('descripcion') or p['etapa']}" for _, p in df.iterrows()}
+    etiquetas = {int(p["orden"]): f"{int(p['nro'])} · {p.get('descripcion') or p['etapa']}" for _, p in df.iterrows()}
+    _pos_de = {int(p["orden"]): float(p["pos"]) for _, p in df.iterrows()}
     # Nunca hacia atrás: después de confirmar el paso N se arranca en el primer
     # pendiente DESPUÉS de N. Si no quedara ninguno, en el primer pendiente; y si
     # están todos hechos, en el último. Así, aunque la lectura venga desfasada, el
@@ -345,7 +411,7 @@ def render(USR, cat, conectar, id_batch):
     _pendientes = [int(o) for o in pend["orden"]] if not pend.empty else []
     _default = actual_orden
     if _desde is not None:
-        _sig = [o for o in _pendientes if o > int(_desde)]
+        _sig = [o for o in _pendientes if _pos_de.get(o, o) > float(_desde)]
         _default = _sig[0] if _sig else (_pendientes[0] if _pendientes else opciones[-1])
     if _default is None:
         _default = opciones[-1]
@@ -354,7 +420,7 @@ def render(USR, cat, conectar, id_batch):
                        label_visibility="collapsed")
     p = df[df["orden"] == sel].iloc[0]
     with st.container(border=True):
-        st.markdown(f"**{_ICONO.get(p['etapa'], '•')} Paso {int(p['orden'])} · {p.get('descripcion') or p['etapa']}**"
+        st.markdown(f"**{_ICONO.get(p['etapa'], '•')} Paso {int(p['nro'])} · {p.get('descripcion') or p['etapa']}**"
                     + (f" · {p['codigo_insumo']}" if p.get("codigo_insumo") else ""))
         esp = _esperado(p)
         if esp:
@@ -386,7 +452,7 @@ def render(USR, cat, conectar, id_batch):
                                  key=f"opi_pisar_{id_batch}_{sel}")
         cap = p["captura"]
         ahora = _ahora()
-        _lbl = f"Paso {int(p['orden'])} · {p.get('descripcion') or p['etapa']}"
+        _lbl = f"Paso {int(p['nro'])} · {p.get('descripcion') or p['etapa']}"
 
         # SOL-0051 ("se da confirmar y no responde"). Con un number_input suelto, el
         # operario escribe los kg y va derecho al botón: el click cae en el rerun que
@@ -459,7 +525,7 @@ def render(USR, cat, conectar, id_batch):
                 st.caption("Este paso no pide datos: confirmalo cuando esté hecho.")
             obs = st.text_input("Observación (opcional)", key=f"opi_obs_{id_batch}_{sel}")
             enviado = st.form_submit_button(
-                (f"✏️ Corregir paso {int(p['orden'])}" if _ya else f"✔ Confirmar paso {int(p['orden'])}"),
+                (f"✏️ Corregir paso {int(p['nro'])}" if _ya else f"✔ Confirmar paso {int(p['nro'])}"),
                 type=("secondary" if _ya else "primary"), use_container_width=True)
 
         if enviado and _ya and not _pisar:
@@ -467,12 +533,12 @@ def render(USR, cat, conectar, id_batch):
             # mezcla con el buffer de carteles que guardado.instalar() reenvía.
             _av, _sig = _avance(id_batch, int(p["orden"]))
             _g.anotar(f"opi_{id_batch}", True,
-                      "El paso %d ya estaba cargado: no se cargó de nuevo" % int(p["orden"]),
+                      "El paso %d ya estaba cargado: no se cargó de nuevo" % int(p["nro"]),
                       detalle=((_real(p) or "") + ("  \n" + _av if _av else "")),
                       verificado="el dato anterior quedó intacto — para cambiarlo, marcá "
                                  "«Corregir el valor ya cargado»")
             if _sig is not None:
-                st.session_state[f"opi_desde_{id_batch}"] = int(p["orden"])
+                st.session_state[f"opi_desde_{id_batch}"] = float(p["pos"])
                 st.session_state.pop(f"opi_sel_{id_batch}", None)
             _rerun_fragment()
 

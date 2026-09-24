@@ -342,6 +342,14 @@ def resultados(cat, f, key="stk"):
         st.info("Ningún movimiento coincide con estos filtros.")
         return df
     d = df.copy()
+    # hora de planta: pandas devuelve los timestamptz en UTC (se veían 3 h adelantados)
+    try:
+        _t = pd.to_datetime(d["momento"], errors="coerce")
+        if getattr(_t.dt, "tz", None) is not None:
+            _t = _t.dt.tz_convert("America/Argentina/Buenos_Aires").dt.tz_localize(None)
+        d["momento"] = _t
+    except Exception:
+        pass
     d["kg"] = pd.to_numeric(d["kg"], errors="coerce").fillna(0)
     ent = d.loc[d["tipo_movimiento"] == "ENTRADA", "kg"].sum() / 1000.0
     sal = d.loc[d["tipo_movimiento"] == "SALIDA", "kg"].sum() / 1000.0

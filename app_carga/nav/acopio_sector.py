@@ -53,6 +53,14 @@ def _leer(_cf, sector):
         df["activo"] = df["activo"].fillna(False).astype(bool)
         df["producto"] = df["producto"].fillna("(vacío / sin producto)")
         df["grupo"] = df["grupo"].fillna("OTRO")
+        # hora de planta (pandas devuelve UTC: la última medición salía 3 h adelantada)
+        try:
+            _t = pd.to_datetime(df["ultima_medicion"], errors="coerce")
+            if getattr(_t.dt, "tz", None) is not None:
+                _t = _t.dt.tz_convert("America/Argentina/Buenos_Aires").dt.tz_localize(None)
+            df["ultima_medicion"] = _t
+        except Exception:
+            pass
         return df
     except Exception:
         return None
