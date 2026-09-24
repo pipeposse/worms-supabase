@@ -1005,7 +1005,7 @@ def _selector_lista(ss, tp, fam, spec, tks, conectar, USR, inc_vacios, prod_cod,
                 _r["Litros"] = float(int(float(_mm[_k2]) // 10) * 10)
             _nl.append(_r)
         if _nl:
-            _d2 = pd.DataFrame(_nl).reindex(columns=_COLS_ED)
+            _d2 = pd.DataFrame(_nl).reindex(columns=_COLS_ED).reset_index(drop=True)
             _lineas_set(ss, _d2)
             ss["_dsp_last_ed"] = _d2.copy()
             _borr_guardar(conectar, USR, _d2)
@@ -3689,6 +3689,8 @@ def _lineas_set(ss, df):
     _prev = ss.get("dsp_lineas")
     if isinstance(_prev, pd.DataFrame) and not _prev.dropna(how="all").empty:
         ss["dsp_lineas_undo"] = _prev.copy()
+    if isinstance(df, pd.DataFrame):
+        df = df.reset_index(drop=True)     # SOL-0057: siempre índice 0..n (ver la grilla del modo clásico)
     ss["dsp_lineas"] = df
     ss["_dsp_last_ed"] = df.copy() if isinstance(df, pd.DataFrame) else df
     ss["_dsp_lst_fir"] = None      # la lista se rearma en ESTE rerun, no en el próximo click
@@ -4584,6 +4586,12 @@ def _armar(USR, cat, conectar):
         base = _info_lineas(base, tks, spec)
         base = base.reindex(columns=["Tanque", "Litros", "Disp.", "Calidad"]
                             + [c for c in _cols if c not in ("Tanque", "Litros")])
+        # SOL-0057: la grilla SIEMPRE con índice 0..n. Si dsp_lineas llegaba con otro
+        # índice (p. ej. después de «Tildados al tope», que la arma con filas de iterrows),
+        # st.data_editor DESCARTA en silencio las filas agregadas a mano (les exige un valor
+        # de índice que la grilla no muestra): se veían en pantalla pero no entraban a la
+        # carga hasta refrescar la página.
+        base = base.reset_index(drop=True)
 
         # Opciones ESTABLES: TODAS las claves de la familia, SIEMPRE, y cacheadas por
         # sesión. Si la lista cambiara con el stock (una medición nueva movía tanques
