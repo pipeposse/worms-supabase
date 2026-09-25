@@ -676,9 +676,13 @@ def _ar(x, dec=2):
     return f"{x:,.{dec}f}".replace(",", "§").replace(".", ",").replace("§", ".")
 
 
-def _cc_expo(w, s_ini, desde, um, port, com_ini=""):
+def _cc_expo(w, s_ini, desde, um, port, com_ini="", ubic_de=None):
+    """CUENTA CORRIENTE POR PRODUCTO, formato de la planilla de Fer. Siempre es LIBRO.
+    `ubic_de`: tanque → ACOPIO / PROCESO (Reactor y Piletas); agrega la columna UBICACIÓN."""
     cols = ["FECHA", "ORIGEN / DESTINO", "N° TICKET", "UM", "INGRESO", "EGRESO", "SALDO", "COMENTARIOS"]
-    cab = {"FECHA": f"{desde:%d/%m/%Y}", "ORIGEN / DESTINO": "SALDO INICIAL", "N° TICKET": "", "UM": um,
+    if ubic_de is not None:
+        cols.insert(2, "UBICACIÓN")
+    cab = {"FECHA": f"{desde:%d/%m/%Y}", "ORIGEN / DESTINO": "SALDO INICIAL", "UBICACIÓN": "", "N° TICKET": "", "UM": um,
            "INGRESO": _ar(s_ini) if s_ini > 0 else "", "EGRESO": _ar(-s_ini) if s_ini < 0 else "",
            "SALDO": _ar(s_ini), "COMENTARIOS": com_ini}
     if w.empty:
@@ -689,6 +693,7 @@ def _cc_expo(w, s_ini, desde, um, port, com_ini=""):
     cuerpo = pd.DataFrame({
         "FECHA": w["momento"].map(lambda t: pd.to_datetime(t).strftime("%d/%m/%Y") if not pd.isna(t) else "").values,
         "ORIGEN / DESTINO": _origen_destino(w, port),
+        "UBICACIÓN": [ubic_de(t) if ubic_de else "" for t in _col(w, "tanque", "").fillna("").astype(str)],
         "N° TICKET": _ticket(w),
         "UM": um,
         "INGRESO": ing.map(lambda x: _ar(x) if x else "").values,
@@ -697,6 +702,65 @@ def _cc_expo(w, s_ini, desde, um, port, com_ini=""):
         "COMENTARIOS": _comentario(w, con_tk=True),
     })
     return pd.concat([pd.DataFrame([cab]), cuerpo], ignore_index=True)[cols]
+
+
+def _cuenta_corriente_producto(cf, secs, cta, desde, hasta, um, fa, prop, ubic_de=None):
+    """La cuenta corriente (LIBRO) de una cuenta con los filtros aplicados. Devuelve (tabla, ini) o (None, None)."""
+    col, div = _UM[um]
+    df = _movs(cf, tuple(secs), desde, hasta)
+    inis = [_saldo_inicial(cf, s_, desde) for s_ in secs]
+    if df is None or any(x is None for x in inis):
+        return None, None
+    ini = pd.concat(inis, ignore_index=True).copy()
+    v = df[df["es_stock"]].copy()
+    v = v[(v["kg_neto"] != 0) | (v["litros_neto"] != 0)]
+    if not prop.get("Ajustes"):
+        v = v[~v["es_ajuste_sistema"]]
+    v["_val"] = v[col] / div
+    w = v[v["cuenta"] == cta].sort_values(["momento", "id_mov"])
+    if prop.get("Tipo") == "Ingresos":
+        w = w[w["_val"] > 0]
+    elif prop.get("Tipo") == "Egresos":
+        w = w[w["_val"] < 0]
+    if prop.get("Tanque") not in (None, "", "(todos)"):
+        w = w[_col(w, "tanque", "").fillna("").astype(str) == prop["Tanque"]]
+    if prop.get("Ubicación") in ("ACOPIO", "PROCESO", "PILETAS", "CÓNICOS BACHAS") and ubic_de is not None:
+        w = w[_col(w, "tanque", "").fillna("").astype(str).map(ubic_de) == prop["Ubicación"]]
+    if (prop.get("Origen/Destino") or "").strip():
+        q = prop["Origen/Destino"].strip().lower()
+        w = w[pd.Series(_contraparte(w), index=w.index).str.lower().str.contains(q, regex=False)]
+    if (prop.get("Usuario") or "").strip():
+        q = prop["Usuario"].strip().lower()
+        w = w[_col(w, "usuario", "").fillna("").astype(str).str.lower().str.contains(q, regex=False)]
+    if fa.get("tk"):
+        q = fa["tk"].strip().lower()
+        m = w["id_mov"].astype(str).str.contains(q, regex=False)
+        for c in ("ticket", "tickets_detalle", "referencia"):
+            m = m | w[c].fillna("").astype(str).str.lower().str.contains(q, regex=False)
+        w = w[m]
+    ini["_val"] = pd.to_numeric(ini[col], errors="coerce").fillna(0.0) / div
+    s_ini = float(ini.loc[ini["cuenta"] == cta, "_val"].sum())
+    tks = tuple(sorted({re.sub(r"\.0+$", "", str(t)) for t, o, d in zip(w["ticket"].fillna(""), w["origen"].fillna(""),
+                                                                      w["destino"].fillna(""))
+                        if str(t).strip() and ("Portería" in str(o) or "Portería" in str(d))}))
+    port = _porteria(cf, tks)
+    return _cc_expo(w, s_ini, desde, um, port, _texto_saldo_inicial(ini, desde), ubic_de), ini
+
+
+def _medido_por_cuenta(cf, secs, um):
+    """SALDO CONSOLIDADO = lo MEDIDO hoy en los tanques (regla de dirección, 25/09): cuenta → saldo."""
+    from .stock_reactor import _tanques
+    partes = []
+    for s_ in secs:
+        t = _tanques(cf, s_)
+        if t is None:
+            return None
+        partes.append(t)
+    t = pd.concat(partes, ignore_index=True) if partes else pd.DataFrame(columns=["cuenta", "act_l", "act_tn"])
+    if t.empty:
+        return pd.Series(dtype=float)
+    val = t["act_l"] / 1000.0 if um == "KL" else t["act_tn"]
+    return val.groupby(t["cuenta"].astype(str)).sum()
 
 
 @_FRAGMENT
@@ -743,22 +807,16 @@ def _pantalla_expo(ctx, sec):
     if hasta < desde:
         desde, hasta = hasta, desde
 
-    # ---- SALDO CONSOLIDADO (siempre, al día de hoy) ----
-    partes = [_saldo_hoy(cf, s_, hoy) for s_ in secs]
-    if any(x is None for x in partes):
+    # ---- SALDO CONSOLIDADO = MEDIDO hoy (dirección, 25/09) ----
+    sal = _medido_por_cuenta(cf, secs, um)
+    if sal is None:
         st.warning("Sin conexión a la base en este momento: volvé a entrar en unos segundos.")
         return
-    sh = pd.concat(partes, ignore_index=True) if partes else pd.DataFrame(columns=["cuenta", col])
-    sh["_val"] = pd.to_numeric(sh[col], errors="coerce").fillna(0.0) / div
-    sal = sh.groupby("cuenta")["_val"].sum()
-    con_tq = set()
-    for s_ in secs:
-        con_tq |= _cuentas_con_tanque(cf, s_)
-    ctas = sorted(set(sal[sal.abs() >= 0.005].index.astype(str)) | con_tq)
+    ctas = sorted(set(sal[sal.abs() >= 0.005].index.astype(str)))
     if fa["prod"]:
         ctas = [c for c in ctas if c in fa["prod"]]
     cons = pd.DataFrame({"PRODUCTO": ctas, f"SALDO ({um})": [_ar(sal.get(c, 0.0)) for c in ctas]})
-    st.markdown(f"<div class='section-title' style='margin:8px 0 2px'>SALDO CONSOLIDADO · al {hoy:%d/%m/%Y}</div>",
+    st.markdown(f"<div class='section-title' style='margin:8px 0 2px'>SALDO CONSOLIDADO · medido al {hoy:%d/%m/%Y}</div>",
                 unsafe_allow_html=True)
     k_c = f"{key}_cta"
     ev = st.dataframe(cons, hide_index=True, use_container_width=False, key=f"{key}_cons",
@@ -773,55 +831,24 @@ def _pantalla_expo(ctx, sec):
         st.session_state[f"{key}_sel_prev"] = _rows[0]
         st.session_state[k_c] = ctas[_rows[0]]
 
-    # ---- CUENTA CORRIENTE POR PRODUCTO ----
+    # ---- CUENTA CORRIENTE POR PRODUCTO = LIBRO ----
+    # el desplegable incluye también las cuentas que tienen movimientos sin tanque medido
+    ctas_cc = sorted(set(ctas) | set(_cuentas_de(cf, tuple(secs))))
+    if fa["prod"]:
+        ctas_cc = [c for c in ctas_cc if c in fa["prod"]]
     st.markdown("<div class='section-title' style='margin:16px 0 2px'>CUENTA CORRIENTE POR PRODUCTO</div>",
                 unsafe_allow_html=True)
-    if not ctas:
+    if not ctas_cc:
         st.dataframe(pd.DataFrame(columns=["FECHA", "ORIGEN / DESTINO", "N° TICKET", "UM", "INGRESO", "EGRESO",
                                            "SALDO", "COMENTARIOS"]), hide_index=True, use_container_width=True)
         return
-    if st.session_state.get(k_c) not in ctas:
-        st.session_state[k_c] = ctas[0]
-    cta = st.selectbox("Producto", ctas, key=k_c, label_visibility="collapsed")
-
-    df = _movs(cf, tuple(secs), desde, hasta)
-    inis = [_saldo_inicial(cf, s_, desde) for s_ in secs]
-    if df is None or any(x is None for x in inis):
+    if st.session_state.get(k_c) not in ctas_cc:
+        st.session_state[k_c] = ctas_cc[0]
+    cta = st.selectbox("Producto", ctas_cc, key=k_c, label_visibility="collapsed")
+    tabla, ini = _cuenta_corriente_producto(cf, secs, cta, desde, hasta, um, fa, prop)
+    if tabla is None:
         st.warning("Sin conexión a la base en este momento: volvé a intentar en unos segundos.")
         return
-    ini = pd.concat(inis, ignore_index=True)
-    v = df[df["es_stock"]].copy()
-    v = v[(v["kg_neto"] != 0) | (v["litros_neto"] != 0)]
-    if not prop.get("Ajustes"):
-        v = v[~v["es_ajuste_sistema"]]
-    v["_val"] = v[col] / div
-    w = v[v["cuenta"] == cta].sort_values(["momento", "id_mov"])
-    if prop.get("Tipo") == "Ingresos":
-        w = w[w["_val"] > 0]
-    elif prop.get("Tipo") == "Egresos":
-        w = w[w["_val"] < 0]
-    if prop.get("Tanque") not in (None, "", "(todos)"):
-        w = w[_col(w, "tanque", "").fillna("").astype(str) == prop["Tanque"]]
-    if (prop.get("Origen/Destino") or "").strip():
-        q = prop["Origen/Destino"].strip().lower()
-        w = w[pd.Series(_contraparte(w), index=w.index).str.lower().str.contains(q, regex=False)]
-    if (prop.get("Usuario") or "").strip():
-        q = prop["Usuario"].strip().lower()
-        w = w[_col(w, "usuario", "").fillna("").astype(str).str.lower().str.contains(q, regex=False)]
-    if fa["tk"]:
-        q = fa["tk"].strip().lower()
-        m = w["id_mov"].astype(str).str.contains(q, regex=False)
-        for c in ("ticket", "tickets_detalle", "referencia"):
-            m = m | w[c].fillna("").astype(str).str.lower().str.contains(q, regex=False)
-        w = w[m]
-    ini = ini.copy()
-    ini["_val"] = pd.to_numeric(ini[col], errors="coerce").fillna(0.0) / div
-    s_ini = float(ini.loc[ini["cuenta"] == cta, "_val"].sum())
-    tks = tuple(sorted({re.sub(r"\.0+$", "", str(t)) for t, o, d in zip(w["ticket"].fillna(""), w["origen"].fillna(""),
-                                                                      w["destino"].fillna(""))
-                        if str(t).strip() and ("Portería" in str(o) or "Portería" in str(d))}))
-    port = _porteria(cf, tks)
-    tabla = _cc_expo(w, s_ini, desde, um, port, _texto_saldo_inicial(ini, desde))
     st.dataframe(tabla, hide_index=True, use_container_width=True, height=min(640, 40 + 35 * len(tabla)),
                  column_config={"ORIGEN / DESTINO": st.column_config.TextColumn(width="medium"),
                                 "N° TICKET": st.column_config.TextColumn(width="medium"),
@@ -836,16 +863,7 @@ def _pantalla_expo(ctx, sec):
     b1.download_button("⬇️ Descargar Excel", buf.getvalue(), file_name=f"stock_exportacion_{cta}_{hoy:%Y%m%d}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        key=f"{key}_xls", use_container_width=True)
-    avisos = [f"Saldo inicial al {desde:%d/%m/%Y}: {_texto_saldo_inicial(ini, desde)}."]
-    _neg = [c for c in ctas if sal.get(c, 0.0) < -0.005]
-    if _neg:
-        avisos.append("Saldo negativo hoy: **" + ", ".join(_neg) + "**.")
-    med = _medido(cf, tuple(secs))
-    if med is not None:
-        _m = med[0] if um == "TN" else med[1]
-        _l = float(sal.sum())
-        avisos.append(f"Hoy los tanques miden **{_ar(_m, 1)} {um}** y el libro da **{_ar(_l, 1)} {um}**: "
-                      f"diferencia **{_ar(_l - _m, 1)} {um}**.")
+    avisos = [f"Saldo inicial de la cuenta corriente al {desde:%d/%m/%Y}: {_texto_saldo_inicial(ini, desde)}."]
     _notificaciones(b2.container(), avisos)
 
 
