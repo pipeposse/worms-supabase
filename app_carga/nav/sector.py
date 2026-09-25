@@ -213,6 +213,10 @@ def _en_obra(ctx, sec):
                "Cuando esté lista se habilita desde acá mismo, sin que tengas que hacer nada.")
     st.caption("Si necesitás cargar o consultar algo de este sector mientras tanto, escribile a "
                "sistemas para que te indique por dónde hacerlo.")
+    if sec.get("patron_tanques"):     # lo único habilitado de un sector en obra: su stock
+        c1, _ = st.columns([1.2, 3.8])
+        c1.button("📦 Ver stock", key="nav_obra_stock", use_container_width=True,
+                  on_click=_ir_vista(ctx, sec, "STOCK", None, {}))
     _pie_soporte(ctx)
     return True
 

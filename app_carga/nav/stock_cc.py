@@ -874,7 +874,7 @@ def render_stock(ctx, sec):
     if ctx["puede_seccion"]("STOCK"):
         c2.button("📋 Stock clásico (físico por tanque)", key="nav_cc_clasico", use_container_width=True,
                   on_click=_ir_stock_clasico(ctx))
-    if sec.get("codigo") in ("REACTORES", "PILETAS"):   # regla de negocio propia (≠ Exportación)
+    if sec.get("codigo") in ("REACTORES", "BACHAS", "PILETAS"):   # regla de negocio propia (≠ Exportación)
         from .stock_reactor import pantalla
         pantalla(ctx, sec)
         return

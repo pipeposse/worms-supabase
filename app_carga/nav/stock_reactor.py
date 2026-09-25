@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Stock MEDIDO + libro de PRODUCCIÓN › REACTOR y PRODUCCIÓN › PILETAS.
+"""Stock MEDIDO + libro de PRODUCCIÓN › REACTOR, › BACHAS y › PILETAS.
 
 Cada sector con su regla de negocio (≠ Exportación, que sigue en stock_cc):
 
@@ -15,7 +15,13 @@ PILETAS (24/09/2026)
     Otros). Ubicación: PILETAS o CÓNICOS BACHAS (el sector Bachas está en construcción y
     sus cónicos se ven acá).
 
-Para los dos: solapas «Consolidado del sector» y «Ficha por producto», cuenta corriente con
+BACHAS (25/09/2026)
+  · Mismo criterio que Reactor: MATERIA PRIMA → INSUMO → PRODUCTO TERMINADO, ACOPIO / PROCESO
+    («Bachas (acopio)» / «Bachas (proceso)»). El grupo sale de las fórmulas del sector
+    (dic_formula: codigo_pf = PT, codigo_mp = MP), porque AFE-S es MP en el maestro pero es
+    lo que produce la bacha. El sector sigue «en construcción»: sólo se entra al stock.
+
+Para todos: cuenta corriente con
 el formato de la planilla de Fer (FECHA · ORIGEN / DESTINO · N° TICKET · UM · INGRESO ·
 EGRESO · SALDO · COMENTARIO) en KL por defecto, «📊 Indicadores» y «🔔 Notificaciones»
 debajo de los filtros, sin leyendas.
@@ -68,6 +74,13 @@ _CONF = {
         ubicaciones=("ACOPIO", "PROCESO"), ubi_label="Acopio / proceso",
         ubic_fn=lambda gf: "PROCESO" if "proceso" in str(gf or "").lower() else "ACOPIO",
         titulo_ind="MATERIA PRIMA E INSUMOS · TOTALES", archivo="stock_reactor"),
+    "BACHAS": dict(
+        grupos=(("MP", "🧱 Materia prima"), ("INSUMO", "🧪 Insumo"), ("PT", "✅ Producto terminado")),
+        grupo_ui={"MP": "MATERIA PRIMA", "INSUMO": "INSUMO", "PT": "PRODUCTO TERMINADO", "OTRO": "OTRO"},
+        grupo_fn=_grupo_reactor, por_formula="BACHAS",
+        ubicaciones=("ACOPIO", "PROCESO"), ubi_label="Acopio / proceso",
+        ubic_fn=lambda gf: "PROCESO" if "proceso" in str(gf or "").lower() else "ACOPIO",
+        titulo_ind="STOCK MEDIDO · TOTALES", archivo="stock_bachas"),
     "PILETAS": dict(
         grupos=(("AFE", "🛢️ AFE"), ("AG", "🧴 Ácidos grasos"), ("OTRO", "📦 Otros")),
         grupo_ui={"AFE": "AFE", "AG": "ÁCIDOS GRASOS", "OTRO": "OTROS"},
@@ -119,6 +132,35 @@ def _productos(_cf):
                 for r in df.itertuples()}
     except Exception:
         return None
+
+
+@_cache_rev.cachear(ttl=600, show_spinner=False)
+def _roles_formula(_cf, sector_batch):
+    """(productos que el sector PRODUCE, materias primas que CONSUME) según sus fórmulas activas."""
+    try:
+        with _cf() as conn:
+            df = pd.read_sql_query("SELECT codigo_mp, codigo_pf FROM produccion.dic_formula "
+                                   "WHERE sector = %s AND COALESCE(activo, true)", conn, params=(sector_batch,))
+        return ({str(x).upper() for x in df["codigo_pf"].dropna()},
+                {str(x).upper() for x in df["codigo_mp"].dropna()})
+    except Exception:
+        return set(), set()
+
+
+def _grupo_fn(cf, conf):
+    base = conf["grupo_fn"]
+    if not conf.get("por_formula"):
+        return base
+    pts, mps = _roles_formula(cf, conf["por_formula"])
+
+    def fn(prod, tipo):
+        p = str(prod or "").upper()
+        if p in pts:
+            return "PT"
+        if p in mps:
+            return "MP"
+        return base(prod, tipo)
+    return fn
 
 
 @_cache_rev.cachear(ttl=_TTL, show_spinner=False)
@@ -214,13 +256,14 @@ def pantalla(ctx, sec):
         st.warning("Sin conexión a la base en este momento: volvé a entrar en unos segundos.")
         return
     cta_prod, _nom_cat = _catalogo(cf)
+    gfn = _grupo_fn(cf, conf)
 
     def nombre_de(c):
         return _nombre_cuenta(c, cta_prod, {})
 
     def grupo_de(c):
         pr = _producto_de(c, cta_prod, prods)
-        return conf["grupo_fn"](pr, (prods.get(pr) or ("", ""))[1])
+        return gfn(pr, (prods.get(pr) or ("", ""))[1])
 
     _ordg = {k: i for i, (k, _) in enumerate(GR)}
 
@@ -228,7 +271,7 @@ def pantalla(ctx, sec):
         return (_ordg.get(grupo_de(c), len(_ordg)), str(c))
 
     tq_all = tq_all.copy()
-    tq_all["grupo"] = [conf["grupo_fn"](p_, t_) for p_, t_ in zip(tq_all["producto_codigo"], tq_all["tipo_producto"])]
+    tq_all["grupo"] = [gfn(p_, t_) for p_, t_ in zip(tq_all["producto_codigo"], tq_all["tipo_producto"])]
     tq_all["ubicacion"] = tq_all["grupo_fisico"].map(conf["ubic_fn"])
     _ubic_tq = dict(zip(tq_all["tanque"].astype(str), tq_all["ubicacion"]))
     ubic_de = lambda t: _ubic_tq.get(str(t), "")   # noqa: E731
@@ -356,6 +399,9 @@ def pantalla(ctx, sec):
                                 "N° TICKET": st.column_config.TextColumn(width="medium"),
                                 "COMENTARIOS": st.column_config.TextColumn(width="large")})
     avisos.append(f"Saldo inicial de la cuenta corriente al {desde:%d/%m/%Y}: {_texto_saldo_inicial(ini, desde)}.")
+    if len(tabla) <= 1:
+        avisos.append(f"**{nombre_de(cta)}** no tiene ingresos ni egresos cargados entre el {desde:%d/%m} y el "
+                      f"{hasta:%d/%m}: la cuenta corriente muestra sólo el saldo inicial.")
     _notificaciones(slot_not, avisos)
 
     # ---- Excel y corte del mes ----

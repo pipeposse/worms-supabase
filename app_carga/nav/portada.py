@@ -115,6 +115,14 @@ def _ir(ctx, area, sector, seccion):
     return _cb
 
 
+def _ir_stock_obra(codigo):
+    """Tarjeta de un sector en construcción: entra directo a su stock."""
+    def _cb():
+        _st.set_nav("PRODUCCION", codigo, "STOCK", rerun=False)
+        st.session_state.section = None
+    return _cb
+
+
 def _ir_sector(ctx, sec):
     """Tarjeta de sector: si el sector tiene home propio (unidad de gestión) se queda en la
     portada mostrando ese home; si no, salta a la sección clásica que lo cubre."""
@@ -202,6 +210,13 @@ def _area_produccion(ctx):
         sec_cl = r.get("seccion_clasica")
         habil = (bool(sec_cl) and puede(sec_cl)) or tiene_home(r.to_dict())
         sin_datos = not bool(r.get("tiene_datos"))
+        if bool(r.get("en_construccion")) and r.get("patron_tanques"):
+            # Sector en obra con tanques: por ahora sólo se entra a su stock (dirección, 25/09).
+            return dict(icono="🚧", titulo=r["nombre_ui"],
+                        desc="Sección en construcción. Por ahora, sólo el stock del sector.",
+                        key=f"nav_sec_{r['codigo']}", disabled=False, label="📦 Ver stock",
+                        tipo="secondary", atenuado=False,
+                        on_click=_ir_stock_obra(r["codigo"]))
         if bool(r.get("en_construccion")):
             # Sector en obra: se muestra para que se sepa que existe, pero no se entra.
             return dict(icono="🚧", titulo=r["nombre_ui"],
